@@ -14,7 +14,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from ...state import db
+from ...state import db, programme
 from ...state import intent as intent_mod
 from .. import context
 
@@ -51,7 +51,16 @@ def _section_forward_brief(conn: sqlite3.Connection,
             "(decision row carries none; treat as open-ended.)",
             "",
         ]
-    return [header, "", str(row["brief"]).strip(), ""]
+    brief = str(row["brief"]).strip()
+    # The two-part brick (owner ruling 2026-08-30): the statement is the
+    # assignment, shown first and on its own. p406 (2026-08-30): with the
+    # claim buried in prose the intake measured this lemma brick against
+    # the charter's root and bounced it.
+    head, statement, _, err = programme.parse_brick_proof(brief)
+    assignment: list[str] = []
+    if not err and statement:
+        assignment = ["## Your assignment", "", f"{head}. {statement}", ""]
+    return assignment + [header, "", brief, ""]
 
 
 def _section_library_inventory(conn: sqlite3.Connection, problem: str,

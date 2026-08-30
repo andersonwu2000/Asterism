@@ -1,6 +1,6 @@
 Your goal is in `patch.lean` (locked signature `<kind> s<id> ... := by sorry`). Prove it.
 
-`## Proof` argues the claim; formalize it in Lean — keep the claim, the Lean shape is yours.
+`Theorem.` is the claim, `Proof.` argues it; formalize it in Lean — keep the claim, the Lean shape is yours.
 
 `Context.md` carries `## Candidate lemmas`, FORBIDDEN_LEMMAS, and failure records; `PAST_*.md` has full failure detail, read on demand. If your prior turn timed out, read `## Your previous progress note`.
 

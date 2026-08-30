@@ -18,6 +18,7 @@ and moved before Roadmap, whose entries cash its gaps).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
@@ -132,6 +133,49 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
             return None, f"programme `{header}` section is empty"
         sections[names[header]] = text
     return sections, None
+
+
+#: The two-part brick (owner ruling 2026-08-30): an Inject's `proof` is
+#: `Theorem.` <its full statement> then `Proof.` <its argument> — the
+#: shape a mathematician writes. The statement thereby has a position
+#: of its own: the mint worker's `## Your assignment`, the judge's
+#: per-brick unit, a handle for dedupe and same-gap detection. A
+#: definition brick writes `Definition.` and carries no `Proof.`.
+BRICK_SHAPE = ("`Theorem.` <its full statement>, then `Proof.` <its argument> "
+               "(a definition brick: `Definition.` <what it defines>, no `Proof.`)")
+_BRICK_HEAD = re.compile(r"^\s*(?:\*\*)?(Theorem|Definition)\.(?:\*\*)?\s*(.*)$")
+_BRICK_PROOF = re.compile(r"^\s*(?:\*\*)?Proof\.(?:\*\*)?\s*(.*)$")
+
+
+def parse_brick_proof(text: "str | None") -> tuple[str, str, str, str]:
+    """Split one brick into (head, statement, argument, error).
+
+    `head` is 'Theorem' or 'Definition'; `error` is '' on the contract
+    shape and otherwise a teaching sentence naming the defect and the
+    shape. Bold markers (`**Theorem.**`) are accepted."""
+    lines = (text or "").splitlines()
+    head_i = proof_i = None
+    for i, ln in enumerate(lines):
+        if head_i is None and _BRICK_HEAD.match(ln):
+            head_i = i
+            continue
+        if proof_i is None and _BRICK_PROOF.match(ln):
+            proof_i = i
+    if head_i is None:
+        return "", "", "", f"no `Theorem.` line — write the brick as {BRICK_SHAPE}"
+    if proof_i is not None and proof_i < head_i:
+        return "", "", "", f"`Theorem.` must come before `Proof.` — {BRICK_SHAPE}"
+    m = _BRICK_HEAD.match(lines[head_i])
+    head = m.group(1)
+    end = proof_i if proof_i is not None else len(lines)
+    statement = "\n".join([m.group(2)] + lines[head_i + 1:end]).strip()
+    if head == "Theorem" and proof_i is None:
+        return "", "", "", f"no `Proof.` line — write the brick as {BRICK_SHAPE}"
+    argument = ""
+    if proof_i is not None:
+        pm = _BRICK_PROOF.match(lines[proof_i])
+        argument = "\n".join([pm.group(1)] + lines[proof_i + 1:]).strip()
+    return head, statement, argument, ""
 
 
 def extract_conventions(body: "str | None") -> str:

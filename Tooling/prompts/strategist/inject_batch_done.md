@@ -41,10 +41,11 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 
     # <Title>       one line: this batch's goal
     ## Argument     why achieving the charter's requirement needs this plan — grounded in the latest outcomes
-    ## Proof        a complete argument for every claim this batch dispatches, written
-                    as a mathematician writes proofs — no logical gaps. Once complete,
-                    copy each brick's part into its Inject's `proof`. (Nothing to
-                    argue → the single line "No new mathematics this batch.")
+    ## Proof        every brick this batch dispatches, each as `Theorem.` its full
+                    statement, then `Proof.` a complete argument — no logical gaps.
+                    Once complete, copy each brick's `Theorem.` + `Proof.` into its
+                    Inject's `proof`. (Nothing to argue → the single line
+                    "No new mathematics this batch.")
     ## Roadmap      how this route settles the MAIN claim, in three bands:
                     PAST — closed lines, one per bullet, collapsed to their conclusions
                     (a shelved or dead goal carries its restart condition);
@@ -59,9 +60,9 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof.
 
 ## Decision kinds
-- `Inject` — `proof`. The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Three shapes:
+- `Inject` — `proof`. This brick's `Theorem.` statement and `Proof.` argument, copied from this batch's `## Proof` with the vocabulary it uses. The worker formalizes the Theorem against the Proof; it does not read the rest. Three shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
-  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
+  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
   - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `charter`, `reason`, optional `brief`, optional `target_goal_id`. Dispatches sub-groups:

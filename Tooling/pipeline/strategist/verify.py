@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ...core import dispatcher as _dispatcher
 from ...state import db, transitions
+from ...state import programme as _programme
 from ...state import groups as _groups
 
 from .model import BATCH_DONE_LIKE, Decision, RETURN_FLAVOURS
@@ -142,9 +143,17 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             # passes the wrong one, which is what retired the `Roadmap:`
             # check on this same field. The reader who CAN tell is the
             # worker, and `return_to_nl` is how it says so.
-            return ("Inject requires non-empty `proof` (string): the part "
-                    "of this batch's `## Proof` that settles this brick, "
-                    "copied across with the vocabulary it uses")
+            return ("Inject requires non-empty `proof` (string): this "
+                    "brick's `Theorem.` statement and `Proof.` argument, "
+                    "copied from this batch's `## Proof` with the "
+                    "vocabulary it uses")
+        # The two-part brick (owner ruling 2026-08-30): the statement is
+        # a structural position — the mint worker's assignment, the
+        # judge's unit — so its presence is checked here, its truth is
+        # not (that reader is the worker, via `return_to_nl`).
+        _, _, _, shape_err = _programme.parse_brick_proof(decision.brief)
+        if shape_err:
+            return f"Inject `proof`: {shape_err}"
         if (decision.payload.get("briefs") or decision.payload.get("directive")
                 or decision.payload.get("brief")):
             return (f"Inject schema uses top-level `proof: str`; "
