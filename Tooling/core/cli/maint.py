@@ -384,9 +384,12 @@ def cmd_revive(args: argparse.Namespace) -> int:
     if row is None:
         print(f"[revive] unknown problem {problem!r}")
         return 1
-    if str(row["state"]) != "revoked":
-        print(f"[revive] {problem!r} is {row['state']!r}, not 'revoked' — "
-              f"nothing to revive.")
+    # `refuted` (v46, 2026-08-30) leaves the same way: the operator's
+    # re-grind decision after a kernel-disproved root — e.g. the charter
+    # was amended and the old refutation no longer applies.
+    if str(row["state"]) not in ("revoked", "refuted"):
+        print(f"[revive] {problem!r} is {row['state']!r}, not 'revoked' or "
+              f"'refuted' — nothing to revive.")
         return 1
     db.set_problem_ingested(conn, problem, ingested=False)
     _transitions.apply_problem_transition(
