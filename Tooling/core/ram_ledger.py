@@ -44,6 +44,7 @@ legacy static-pool semantics apply unchanged.
 from __future__ import annotations
 
 import math
+import os as _os
 import re
 import time
 
@@ -358,27 +359,59 @@ def nl_gb_measured() -> float:
     return val
 
 
-# ─── CPU axis: pure backpressure, no admission (owner 2026-08-26) ───
+# ─── CPU axis: measured veto, never a plan (owner 2026-08-26 / 08-30) ───
 #
-# The ledger's CPU story ends at the gateway's elaboration gate. One
-# mechanism per resource: RAM bounds the SESSION field (this module's
-# target), CPU bounds CONCURRENT ELABORATIONS (the gateway's
-# `_elab_gate` lanes — tool calls queue when the cores are busy, and
-# the queue time is credited back to the session's wall). The interim
-# AIMD session cap (2026-08-25) is deleted: it re-conflated the axes —
-# clamping the WARM POOL to throttle CPU shrank a resource that was
-# never scarce, paid a warm-up on every grow step, and guessed from
-# history what the tool queue answers exactly, live, for free.
+# RAM PLANS the session field (this module's target); CPU never sizes
+# it. The interim AIMD session cap (2026-08-25) is deleted: it
+# re-conflated the axes — clamping the WARM POOL to throttle CPU shrank
+# a resource that was never scarce, paid a warm-up on every grow step,
+# and guessed from history what the tool queue answers exactly, live,
+# for free. Concurrent ELABORATIONS are the gateway's `_elab_gate`
+# lanes' business (tool calls queue when the cores are busy, and the
+# queue time is credited back to the session's wall).
+#
+# What CPU does get (owner ruling 2026-08-30) is the same VETO RAM has:
+# the machine's run queue is a second measured pressure axis. Flagship
+# 16 OCPU / 125 GB, 00:00Z: RAM read calm all night, the ramp climbed
+# to 31 slots, and the cores ran a queue of 69 (load 48-58 on 16). Hot
+# pauses dispatch, calm resumes, the band between holds, and the ramp
+# climbs only when BOTH axes are calm. Slots per core stay many-to-one
+# — a thinking agent adds nothing to the load average, so only the
+# slots actually elaborating (or building) count.
+
+#: Load average (1-min) over cores. Every elab lane busy with nothing
+#: queued reads ~(cores-2)/cores ≈ 0.9 — calm; the 2026-08-30 flagship
+#: read 1.9-3.6 and the 2026-08-29 one 13. Hysteresis between the two.
+CPU_CALM_RATIO = 1.0
+CPU_HOT_RATIO = 1.25
+
+
+def cpu_load_ratio() -> "float | None":
+    """1-minute load average per core, or None when the platform cannot
+    say (the axis then abstains — RAM's verdict stands alone). psutil
+    emulates the load average on Windows from the processor queue
+    length (5 s samples; measured 2026-08-30 on the 16-core dev box:
+    32 spinners read 8.6 → 26 over 24 s, so the shape matches Linux).
+    The first ~5 s after import read 0.0 there — harmless: a climb needs
+    a calm MINUTE since the last step, a pause needs hot."""
+    try:
+        import psutil
+        load1 = float(psutil.getloadavg()[0])
+    except (OSError, AttributeError, RuntimeError, ValueError):
+        return None
+    cores = _os.cpu_count() or 0
+    if cores <= 0 or load1 < 0:
+        return None
+    return load1 / cores
 
 
 def elab_lanes() -> int:
     """The gateway's elaboration lane count (same formula as
     `lsp/gateway/elab.py`, env override included) — the ledger's OPENING
     bid for the warm pool, never its ceiling (owner ruling 2026-08-29):
-    RAM alone decides how high the pool climbs; the lanes only decide
-    where the climb starts, so a 4-core box does not open 12 sessions
-    onto 2 lanes at boot."""
-    import os as _os
+    RAM alone plans how high the pool climbs (the measured axes veto);
+    the lanes only decide where the climb starts, so a 4-core box does
+    not open 12 sessions onto 2 lanes at boot."""
     env = _os.environ.get("ASTERISM_LEAN_ELAB_CONCURRENCY")
     try:
         if env and int(env) > 0:
@@ -400,8 +433,9 @@ class DispatcherLedger:
     PUSH_INTERVAL_SEC = 15.0
     #: Measured-growth ramp (owner ruling 2026-08-29): the pool opens at
     #: min(elab lanes, RAM target) and climbs ONE slot per calm interval
-    #: — calm being the pressure band's own verdict — up to the RAM
-    #: target. Shrinking is the outlet's/freezer's business, as before.
+    #: — calm being the pressure bands' own verdict, BOTH axes (RAM and,
+    #: since 2026-08-30, the run queue) — up to the RAM target. Shrinking
+    #: is the outlet's/freezer's business, as before.
     #: The 2026-08-29 flagship boot (4 OCPU / 24 GB) opened 9-11 slots
     #: from a per-worker constant the field then measured at 2.5-2.9 GB:
     #: load 53, 6 frozen slots, 0 bricks. No constant survives here.
@@ -445,6 +479,7 @@ class DispatcherLedger:
         self._ramp_at = 0.0
         self.last_calm = False
         self.last_hot = False
+        self.last_cpu_ratio: "float | None" = None
         # -inf, not 0.0: monotonic() is uptime-anchored, so on a young
         # machine 0.0 is INSIDE the interval and the first push gets
         # suppressed — CI runners boot minutes before the suite and sat
@@ -529,26 +564,40 @@ class DispatcherLedger:
         only stops reinforcements."""
         cur = framework_current_gb()
         avail = available_gb()
-        hot = ((cur is not None
-                and cur > self.budget_gb - self.PRESSURE_HEADROOM_GB)
-               or avail < pressure_low_gb(self.machine_gb))
-        calm = ((cur is None
-                 or cur < (self.budget_gb - self.PRESSURE_HEADROOM_GB
-                           - self.PRESSURE_RELEASE_SLACK_GB))
-                and avail > pressure_high_gb(self.machine_gb))
+        ram_hot = ((cur is not None
+                    and cur > self.budget_gb - self.PRESSURE_HEADROOM_GB)
+                   or avail < pressure_low_gb(self.machine_gb))
+        ram_calm = ((cur is None
+                     or cur < (self.budget_gb - self.PRESSURE_HEADROOM_GB
+                               - self.PRESSURE_RELEASE_SLACK_GB))
+                    and avail > pressure_high_gb(self.machine_gb))
+        # CPU axis (owner 2026-08-30): the run queue votes exactly like
+        # RAM — hot / calm / hold — and abstains when unreadable.
+        load = cpu_load_ratio()
+        self.last_cpu_ratio = load
+        cpu_hot = load is not None and load > CPU_HOT_RATIO
+        cpu_calm = load is None or load < CPU_CALM_RATIO
+        hot = ram_hot or cpu_hot
+        calm = ram_calm and cpu_calm
         self.last_hot, self.last_calm = bool(hot), bool(calm)
         if hot:
             if not self.dispatch_paused:
                 cur_s = "n/a" if cur is None else f"{cur:.1f}G"
-                print(f"[ledger] measured pressure — dispatch PAUSED "
-                      f"(cgroup {cur_s} vs budget {self.budget_gb:.0f}G, "
-                      f"available {avail:.1f}G); the gateway outlet "
-                      f"sheds one measured kill at a time", flush=True)
+                load_s = "n/a" if load is None else f"{load:.2f}"
+                axis = " + ".join(a for a, on in (("RAM", ram_hot),
+                                                 ("CPU", cpu_hot)) if on)
+                print(f"[ledger] measured pressure ({axis}) — dispatch "
+                      f"PAUSED (cgroup {cur_s} vs budget "
+                      f"{self.budget_gb:.0f}G, available {avail:.1f}G, "
+                      f"load/core {load_s}); the gateway outlet sheds "
+                      f"one measured kill at a time", flush=True)
             self.dispatch_paused = True
         elif calm:
             if self.dispatch_paused:
+                load_s = "n/a" if load is None else f"{load:.2f}"
                 print(f"[ledger] pressure cleared — dispatch resumes "
-                      f"(available {avail:.1f}G)", flush=True)
+                      f"(available {avail:.1f}G, load/core {load_s})",
+                      flush=True)
             self.dispatch_paused = False
         # between the bands: hold state (hysteresis)
         return target
