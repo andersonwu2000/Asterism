@@ -28,6 +28,21 @@ def test_extra_decls_names_everything_but_the_stub_itself():
     assert assemble.extra_decls(stub, "atom_weight_bound") == ["fin5_weight", "<instance>"]
 
 
+def test_extra_decls_sees_abbrev_opaque_lemma_and_axiom_heads_too():
+    """Experiment 6 (2026-08-30, 1,132 local stubs): the helpers agents
+    actually write include `abbrev` (2) and `opaque` (4) — heads the
+    commit parser's DECL_HEAD_RE does not know. The gate must count
+    every declaration form, not the parser's subset."""
+    stub = ("import Mathlib\nnamespace Problems.p\n"
+            "abbrev fin4_s : Finset (Fin 4) := Finset.univ\n"
+            "opaque bit_row_score : ℕ → ℕ\n"
+            "lemma helper_lemma : True := trivial\n"
+            "axiom bad_axiom : False\n"
+            "theorem t : True := by sorry\nend Problems.p\n")
+    assert assemble.extra_decls(stub, "t") == [
+        "fin4_s", "bit_row_score", "helper_lemma", "bad_axiom"]
+
+
 def test_extra_decls_is_empty_for_a_clean_stub():
     stub = ("import Mathlib\nopen Finset\n\nnamespace Problems.p\n\n"
             "set_option linter.unusedVariables false in\n"
