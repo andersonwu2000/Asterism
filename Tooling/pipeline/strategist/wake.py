@@ -488,12 +488,21 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # Exhaustion on the adversarial channel discards the
                 # proposal AND the session: the rejected draft + full
                 # criticism go to the DB for audit; the next wake gets
-                # one line and re-derives blind (design §1/§3).
+                # the record, the judge's rebuttal and — since
+                # 2026-08-30 — the author's last words, one short turn
+                # on this same session while the debate is in context.
+                from . import last_words as _last_words
+                note = _last_words.collect(
+                    spawn=agent.spawn_llm, attempts_dir=attempts_dir,
+                    problem_dir=problem_dir, workspace=workspace, sid=sid,
+                    mcp_config_path=tools_cfg,
+                    timeout_sec=strategist_timeout, rounds=rounds_used)
                 _discard_proposal(
                     conn, problem, proposal_body, dialogue, rounds_used,
                     "adversary rebuttal", attempts_dir,
                     group_id=group_id,
-                    channel="strategist_proposal_rejected")
+                    channel="strategist_proposal_rejected",
+                    last_words=note)
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="strategist_proposal_rejected",
@@ -803,7 +812,8 @@ def _discard_proposal(conn, problem: str,
                       reason: str,
                       attempts_dir: "Path | None" = None,
                       group_id: "int | None" = None,
-                      channel: "str | None" = None) -> None:
+                      channel: "str | None" = None,
+                      last_words: "str | None" = None) -> None:
     """Record a proposal that did NOT commit, whichever channel dropped
     it (Adversary refutation / package verify / revision spawn failure /
     unusable revision output).
@@ -843,7 +853,8 @@ def _discard_proposal(conn, problem: str,
                                     discard_reason=reason,
                                     group_id=group_id,
                                     discard_channel=channel,
-                                    verdict=last_verdict)
+                                    verdict=last_verdict,
+                                    last_words=last_words)
         conn.commit()
     except Exception as e:  # noqa: BLE001 — audit record, never fatal
         print(f"[strategist] {problem}: discard record failed: "

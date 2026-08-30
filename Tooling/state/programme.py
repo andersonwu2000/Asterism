@@ -426,8 +426,15 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
                      discard_reason: Optional[str] = None,
                      group_id: "int | None" = None,
                      discard_channel: Optional[str] = None,
-                     verdict: "dict[str, Any] | None" = None) -> None:
-    """Keep a discarded proposal + full criticism for audit.
+                     verdict: "dict[str, Any] | None" = None,
+                     last_words: Optional[str] = None) -> int:
+    """Keep a discarded proposal + full criticism for audit. Returns
+    the new row id.
+
+    `last_words` (2026-08-30): the author's own three-section note
+    written after the discard (`strategist/last_words.py`) — facts,
+    dead routes, the one lead — shown to the successor beside the
+    judge's rebuttal, never to the judge.
 
     `discard_reason` (v34) names WHICH channel dropped it — adversary
     refutation, verify rounds exhausted, revision spawn failure. Every
@@ -446,16 +453,18 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
         " (problem, rev, body, status, verdict, dialogue, rounds,"
         "  batch_id, created_at, discard_reason, group_id,"
         "  discard_channel,"
-        "  judge_model, judge_provider, judge_effort, rubric_sha)"
+        "  judge_model, judge_provider, judge_effort, rubric_sha,"
+        "  last_words)"
         # Survey P3 (2026-08-29): rejected rows used to hard-code
         # verdict=NULL — 89 final verdicts destroyed. The wrongful-kill
         # audit reads exactly this column.
-        " VALUES (?,?,?,'rejected',?,?,?,NULL,?,?,?,?,?,?,?,?)",
+        " VALUES (?,?,?,'rejected',?,?,?,NULL,?,?,?,?,?,?,?,?,?)",
         (problem, next_rev_number(conn, problem, group_id), body,
          json.dumps(verdict, ensure_ascii=False)
          if verdict is not None else None,
          json.dumps(dialogue, ensure_ascii=False), rounds, now(),
-         discard_reason, group_id, discard_channel, *j))
+         discard_reason, group_id, discard_channel, *j, last_words))
+    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
 
 def rejection_notice(conn: sqlite3.Connection, problem: str,
@@ -588,7 +597,21 @@ def rejection_history_md(cycle: "list[sqlite3.Row]") -> str:
             parts += [transcript, ""]
         else:
             parts += ["(no adversary criticisms recorded)", ""]
+        lw = last_words_of(row)
+        if lw:
+            parts += ["**The author's last words (its own record, unverified)**",
+                      "", lw.rstrip("\n"), ""]
     return "\n".join(parts) if any_round else ""
+
+
+def last_words_of(row: sqlite3.Row) -> Optional[str]:
+    """The note on a rejected rev, or None (pre-2026-08-30 rows, or a
+    cycle whose author wrote nothing)."""
+    try:
+        v = row["last_words"]
+    except (IndexError, KeyError):
+        return None
+    return str(v) if v else None
 
 
 def _dialogue_transcript(dialogue_json: Optional[str]) -> str:

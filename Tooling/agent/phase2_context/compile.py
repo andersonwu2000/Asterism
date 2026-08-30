@@ -1094,6 +1094,11 @@ def _rebuttal_surface(conn: sqlite3.Connection, problem: str,
                 f"of rev {last['rev']}):**", ""]
         out += [f"- {c}" for c in crits]
         out.append("")
+    note = _programme.last_words_of(last)
+    if note:
+        out += ["**The author's last words (its own record, unverified):**", ""]
+        out += [f"> {ln}" if ln.strip() else ">" for ln in note.rstrip("\n").splitlines()]
+        out.append("")
     if attempts_dir is not None:
         md = _programme.rejection_history_md(cycle)
         if md:

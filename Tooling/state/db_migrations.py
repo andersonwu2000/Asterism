@@ -1016,8 +1016,9 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
     # already carries them) no-op here.
     pr_cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(programme_revisions)")}
+    # `last_words` (2026-08-30): the author's post-discard note.
     for col in ("judge_model", "judge_provider", "judge_effort",
-                "rubric_sha"):
+                "rubric_sha", "last_words"):
         if col not in pr_cols:
             conn.execute(f"ALTER TABLE programme_revisions"
                          f" ADD COLUMN {col} TEXT NULL DEFAULT NULL")
