@@ -893,3 +893,18 @@ def test_zen_turn_budget_margin_scales_with_the_wall(tmp_path: Path) -> None:
         cfg = codex_cli._render_config(req, "x-preview-f-free", "high",
                                        flavor="zen")
         assert f"/b/{want}/v1" in cfg, (wall, cfg)
+
+
+def test_project_docs_are_not_read_into_the_spawn(tmp_path: Path) -> None:
+    """codex reads every `AGENTS.md` from the cwd up to the git root as
+    instructions. Our spawns run under `.attempts/<pid>/` INSIDE the
+    repo, so a stray root `AGENTS.md` — the frontend collaborator's
+    rulebook, untracked, created 2026-08-25 — became the FIRST user
+    message of every local codex wake since (measured on the 2026-08-26
+    strategist + judge rollouts that minted fin10). Instructions come
+    from the framework's prompt alone: the project-doc reader is off,
+    at the top level (a key after a [table] header silently belongs to
+    that table)."""
+    cfg = codex_cli._render_config(_req(tmp_path), "m", "xhigh")
+    assert "project_doc_max_bytes = 0" in cfg
+    assert cfg.index("project_doc_max_bytes = 0") < cfg.index("[features]")
