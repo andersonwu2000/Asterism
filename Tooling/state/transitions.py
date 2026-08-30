@@ -248,6 +248,8 @@ EVENTS: frozenset[str] = frozenset({
     # verify housekeeping + axiom-probe rollback
     "verify_proved", "verify_dead", "verify_reopen", "assembly_sorry_gate",
     "rollback_culprit", "rollback_upstream", "rollback_unsupersede",
+    # promotion cold-build gate + catalog cold-build audit (2026-08-30, #231)
+    "promotion_build_failed", "catalog_verify_unbuildable",
     # startup recovery — interrupted-cascade repair (task #11:
     # consistency.repair_unambiguous finishes the sibling sweep a crashed
     # cascade owed its live `proposed` strategies)

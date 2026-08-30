@@ -1879,6 +1879,18 @@ def _backward_parse_and_commit(
         # predicts them in-session via `split_visibility_issues`).
         _stub_texts = {s: p.read_text(encoding="utf-8")
                        for s, p in sub_meta}
+        # One brick, one declaration (owner ruling 2026-08-30, task #231):
+        # a stub's helper defs/instances vanish at promotion and every
+        # consumer that cited them breaks (seven at one promotion,
+        # 2026-08-28). Reject pre-placement, naming the way out.
+        for _slug, _text in _stub_texts.items():
+            _extras = assemble.extra_decls(_text, _slug)
+            if _extras:
+                return _abort(
+                    "stub_extra_decls",
+                    assemble.extra_decls_message(_slug, _extras),
+                    leading,
+                )
         _batch_edges = assemble.batch_reference_edges(_stub_texts)
         _batch_cycles = assemble.batch_reference_cycles(_batch_edges)
         if _batch_cycles:

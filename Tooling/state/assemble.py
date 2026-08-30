@@ -68,6 +68,47 @@ DECL_HEAD_RE = re.compile(
 # protects structured patches from false hits).
 SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
+
+# ── one brick, one declaration (owner ruling 2026-08-30, task #231) ──
+#
+# A sub-goal stub carries the parent's preamble (imports / opens /
+# variables) so its statement elaborates standalone — deliberate. Helper
+# `def`s and `instance`s the agent wrote to STATE the sub-goal rode along
+# the same way, and the promotion to `def <slug> := @s<N>` keeps only the
+# imports: the helper vanished and every strategy that cited it broke
+# (seven consumers at one promotion, 2026-08-28: `fin5_weight`; `Fintype
+# fin4_family`; `six_point_row_zero_encode`). Anonymous instances count
+# as `<instance>`.
+
+_ANON_INSTANCE_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + DECL_MODIFIERS + r"[ \t]+)*"
+    r"instance[ \t]*(?::|\[|\{|\()", re.MULTILINE)
+
+
+def extra_decls(stub_text: str, slug: str) -> list[str]:
+    """Names of every top-level declaration in `stub_text` other than
+    the stub's own `slug`, in file order; anonymous instances appear as
+    `<instance>`. Comments are stripped first. Empty = a clean stub."""
+    text = strip_comments(stub_text)
+    found: list[tuple[int, str]] = []
+    for m in DECL_HEAD_RE.finditer(text):
+        name = m.group(2)
+        if name != slug:
+            found.append((m.start(), name))
+    for m in _ANON_INSTANCE_RE.finditer(text):
+        found.append((m.start(), "<instance>"))
+    return [name for _, name in sorted(found)]
+
+
+def extra_decls_message(slug: str, extras: list[str]) -> str:
+    names = ", ".join(f"`{n}`" for n in extras)
+    return (f"sub-goal `{slug}` declares more than itself ({names}). One "
+            f"brick, one declaration: when `{slug}` is proved its file becomes "
+            f"a one-line alias and everything else in it disappears — any "
+            f"strategy that cited those names breaks. Make each helper its own "
+            f"brick (a `def` sub-goal of its own, cited by import) or put a "
+            f"shared definition in Defs.lean, then restate `{slug}` against it.")
+
 # The strategy skeleton's annotation placeholder (2026-08-24, the
 # annotation-autopsy fix): seeded above the theorem so writing the
 # annotation is a FILL, not an instruction remembered from the prompt's

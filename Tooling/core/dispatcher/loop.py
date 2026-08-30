@@ -205,21 +205,23 @@ def run(workspace: Path, *, once: bool = False,
             budget_gb=ledger.budget_gb, nl_demand=0)
         + ledger.nl_hard_cap())
     pool = ThreadPoolExecutor(max_workers=_executor_cap)
-    # Background .olean warmer (#103): after verify_housekeeping promotes
-    # a strategy (parent → alias rewrite), the alias spine needs a fresh
-    # .olean so the later root integrity probe doesn't pay a cold closure
-    # build on this main thread. The warmer runs that `lake build` on its
-    # own daemon thread — off the main thread AND off this LLM worker pool
-    # (which is gateway-bound, #118). Kill switch: `verify.olean_warm`.
-    from ...pipeline._olean_warm import OleanWarmer
+    # Promotion cold-build gate (owner ruling 2026-08-30, task #231; was
+    # the #103 best-effort .olean warmer): verify_housekeeping promotes a
+    # strategy (parent → alias rewrite) and the status flip waits for a
+    # cold `lake build` of the alias plus every strategy that imports it,
+    # run on the gate's own daemon thread — off the main thread AND off
+    # this LLM worker pool (#118) — through the build lease. Disabled
+    # (`verify.olean_warm=false`) the gate answers "built" at once: the
+    # pre-2026-08-30 shape, for debugging only.
+    from ...pipeline._olean_warm import PromotionGate
     _olean_warm_raw = config.get(
         "verify.olean_warm", default=True,
         env_var="ASTERISM_OLEAN_WARM", workspace=workspace)
     olean_warm_enabled = (
         _olean_warm_raw if isinstance(_olean_warm_raw, bool)
         else str(_olean_warm_raw).strip().lower() in ("true", "1", "yes", "on"))
-    olean_warmer = OleanWarmer(workspace, enabled=olean_warm_enabled)
-    atexit.register(lambda: olean_warmer.shutdown(wait=False))
+    promotion_gate = PromotionGate(workspace, enabled=olean_warm_enabled)
+    atexit.register(lambda: promotion_gate.shutdown(wait=False))
     futures: dict[Future, tuple[str, str, str, str]] = {}
     # In-memory live set of (target_id, kind) pairs currently executing in
     # this daemon. Passive trigger means at most one of each kind per
@@ -803,7 +805,7 @@ def run(workspace: Path, *, once: bool = False,
         # for multi-layer strategies in one tick).
         verify.verify_housekeeping(conn, workspace=workspace,
                                    intents=intents,
-                                   olean_warmer=olean_warmer)
+                                   promotion_gate=promotion_gate)
 
         # Per-problem post-proved gate. Only problems whose root just
         # flipped to 'proved' AND haven't yet passed integrity_gate
@@ -944,7 +946,8 @@ def run(workspace: Path, *, once: bool = False,
         # Defaults to 120-min routine (`strategist.interval_min`).
         strategist_triggers(conn, running, scope=scope,
                             interval_min=strategist_interval_min,
-                            daemon_start_iso=daemon_start_iso)
+                            daemon_start_iso=daemon_start_iso,
+                            suppress_stall=promotion_gate.has_pending())
 
         # Per-tick stuck-state reconciler: the safety net for the two
         # mid-run-reachable stuck states the cascade fast paths can drop —
@@ -1188,6 +1191,12 @@ def run(workspace: Path, *, once: bool = False,
         # silently DISCARDED a row whenever every popped row above had
         # been skipped (all-skips leaves `futures` empty with rows still
         # queued).
+        # A promotion in the cold-build gate is work in flight (2026-08-30):
+        # its flip lands on a later tick, so neither exit may fire before
+        # the gate has answered.
+        if promotion_gate.has_pending():
+            time.sleep(0.2)
+            continue
         if once and not futures and db.queue_size(
                 conn, scope=scope, claimable_only=True) == 0:
             print("[dispatcher] --once and queue empty, exit")

@@ -193,8 +193,14 @@ def strategist_triggers(conn: sqlite3.Connection,
                         scope: str | None = None,
                         interval_min: float = 120.0,
                         daemon_start_iso: str | None = None,
+                        suppress_stall: bool = False,
                         ) -> None:
     """T1 (routine) + T4 (stall) enqueues for the Strategist pipeline.
+
+    `suppress_stall` (2026-08-30): a promotion is in the cold-build gate
+    — its goal will flip on the next tick or roll back — so the state IS
+    moving; the structural stall backstop must not read that pause as a
+    deadlock and wake a Strategist for it.
     T2 (pending_review) is handled by `_enqueue_strategist_review` at
     cascade-time, not here.
 
@@ -289,6 +295,8 @@ def strategist_triggers(conn: sqlite3.Connection,
     # see a child that ran out of moves while a sibling is busy (the
     # problem is not stalled, so nobody wakes), and when it does fire it
     # wakes the top group rather than the one that is actually stuck.
+    if suppress_stall:
+        return
     for _row in db.groups_stalled(conn, scope=scope, running=running):
         prob = str(_row["problem"])
         gid = int(_row["id"])

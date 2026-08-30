@@ -25,10 +25,23 @@ strategies, deepest first, running `#print axioms` on each scratch
 theorem) followed by `rollback_cascade_chain` which walks from culprit
 to root, restoring each alias from its backup and reverting DB state.
 
-Empirical justification: 0 cascade-level verify failures observed
-across the collapse-design rollout's 26 runs + SG #19 (10 strategies)
-+ PN run after refactor (5 strategies). The single-point gate matches
-the actual failure rate without paying per-level Lean elaboration cost.
+Empirical justification (as of the rollout): 0 cascade-level verify
+failures observed across the collapse-design rollout's 26 runs + SG #19
+(10 strategies) + PN run after refactor (5 strategies).
+
+2026-08-30 (owner ruling, task #231): that justification did not
+survive union_closed's first full cold build — 4,828 proved bricks, of
+which an alias's own elaboration blew maxRecDepth and several
+strategies cited helper decls a promotion had dropped from a sub-goal
+stub (seven consumers at one promotion), plus one import cycle a
+promotion closed. Per-level promotion is therefore a GATE now: the
+alias module and every live strategy importing the promoted goal are
+cold-built (`PromotionGate`, off the main thread, through the lake
+build lease) before the status flips; the failing module names the
+culprit (alias → this promotion is undone; consumer → that consumer
+rolls back via `rollback_cascade_chain`). `asterism catalog-verify`
+is the standing full cold build; `assemble.extra_decls` keeps helper
+decls out of stubs at Backward commit.
 """
 from __future__ import annotations
 
@@ -131,10 +144,152 @@ def verify_strategy(
     return "proved"
 
 
+# ── the promotion cold-build gate (owner ruling 2026-08-30, task #231) ──
+#
+# `verify_strategy` is a string rewrite; nothing elaborates the alias or
+# the strategies that import the promoted goal. The 2026-08-30 full cold
+# build found both failing: an alias whose own elaboration blows
+# maxRecDepth, and consumers of a sub-goal whose stub helpers the rewrite
+# dropped (seven at one promotion). The status flip now waits for a cold
+# `lake build` of the alias module plus every live consumer strategy —
+# run off the main thread by `PromotionGate` — and the failing MODULE
+# names the culprit: the alias → this promotion is undone; a consumer →
+# that consumer is rolled back and the promotion retried without it.
+
+_BUILD_ERROR_PATH_RE = re.compile(r"^error:\s+(\S+?\.lean)(?::\d+:\d+)?:", re.MULTILINE)
+
+
+def failing_modules_from_build_output(output: str) -> list[str]:
+    """Module names of every `error: <path>.lean…` line in lake output,
+    in first-seen order (an import-cycle line names the module too)."""
+    seen: list[str] = []
+    for m in _BUILD_ERROR_PATH_RE.finditer(output or ""):
+        rel = m.group(1).replace("\\", "/")
+        mod = rel[:-len(".lean")].replace("/", ".")
+        if mod not in seen:
+            seen.append(mod)
+    return seen
+
+
+def promotion_modules(conn: sqlite3.Connection, workspace: Path, *,
+                      strategy_id: int) -> list[str]:
+    """What the gate builds for a promotion: the promoted goal's own
+    module (the alias) and the scratch module of every LIVE strategy that
+    lists that goal as a sub-goal — those files import it."""
+    s = conn.execute(
+        "SELECT s.goal_id, s.lean_path FROM strategies s WHERE s.id = ?",
+        (int(strategy_id),)).fetchone()
+    if s is None:
+        return []
+    mods = [lean_path_to_module(workspace, workspace / s["lean_path"])]
+    for r in conn.execute(
+            "SELECT c.scratch_path FROM strategy_subgoals ss"
+            " JOIN strategies c ON c.id = ss.strategy_id"
+            " WHERE ss.subgoal_id = ? AND c.scratch_path IS NOT NULL"
+            "   AND c.status IN ('proposed', 'ready_for_verify', 'succeeded')"
+            " ORDER BY c.id", (int(s["goal_id"]),)):
+        mod = lean_path_to_module(workspace, workspace / r["scratch_path"])
+        if mod not in mods:
+            mods.append(mod)
+    return mods
+
+
+def _strategy_for_module(conn: sqlite3.Connection, module: str) -> "int | None":
+    rel = module.replace(".", "/") + ".lean"
+    r = conn.execute("SELECT id FROM strategies WHERE scratch_path = ?"
+                     " ORDER BY id DESC LIMIT 1", (rel,)).fetchone()
+    return int(r["id"]) if r else None
+
+
+def _flip_proved(conn: sqlite3.Connection, *, sid: int, goal_id: int,
+                 counts: dict, touched_goals: set) -> None:
+    from ..core import dispatcher
+    transitions.apply_strategy_transition(
+        conn, sid, "succeeded", event="verify_proved")
+    dispatcher._set_goal_terminal_and_propagate(
+        conn, goal_id, "proved",
+        receipt=transitions.ProvedReceipt(
+            "verify_collapse", f"strategy s{sid} all-subs-proved"))
+    db.mark_other_strategies_superseded(conn, goal_id=goal_id, winner_id=sid)
+    conn.commit()
+    counts["proved"] += 1
+    touched_goals.add(goal_id)
+    print(f"[verify] Strategy={sid} → proved", flush=True)
+
+
+def _strategy_dead(conn: sqlite3.Connection, *, sid: int, goal_id: int,
+                   counts: dict, touched_goals: set,
+                   promotion: bool = False) -> None:
+    """The `dead` outcome: strategy dead; the goal reopens unless a live
+    sibling still runs or the attempt threshold hands it to review.
+    `promotion=True` is the cold-build gate's verdict (its own event
+    labels — the literal calls below are what the taxonomy scan reads)."""
+    from ..core import dispatcher
+    if promotion:
+        transitions.apply_strategy_transition(
+            conn, sid, "dead", event="promotion_build_failed")
+    else:
+        transitions.apply_strategy_transition(
+            conn, sid, "dead", event="verify_dead")
+    n = db.increment_goal_attempts(conn, goal_id)
+    if transitions.has_live_sibling(conn, goal_id):
+        pass
+    elif n >= thresholds.SHELVE_THRESHOLD:
+        dispatcher._enqueue_strategist_review(conn, goal_id)
+    elif promotion:
+        transitions.apply_goal_transition(
+            conn, goal_id, "open", event="promotion_build_failed")
+    else:
+        transitions.apply_goal_transition(
+            conn, goal_id, "open", event="verify_reopen")
+    conn.commit()
+    counts["dead"] += 1
+    touched_goals.add(goal_id)
+
+
+def _settle_promotion(conn: sqlite3.Connection, workspace: Path, res,
+                      *, counts: dict, touched_goals: set) -> None:
+    """Consume one gate result on the main thread."""
+    s = conn.execute(
+        "SELECT s.id, s.goal_id, s.lean_path, s.status FROM strategies s"
+        " WHERE s.id = ?", (int(res.strategy_id),)).fetchone()
+    # Readiness is DERIVED (`db.strategies_ready_for_verify`: all subs
+    # proved, parent alive) — the row itself still says 'proposed'.
+    if s is None or s["status"] not in ("proposed", "ready_for_verify"):
+        return  # settled by another path meanwhile (superseded / rolled back)
+    sid, goal_id = int(s["id"]), int(s["goal_id"])
+    if res.ok:
+        _flip_proved(conn, sid=sid, goal_id=goal_id, counts=counts,
+                     touched_goals=touched_goals)
+        return
+    alias_mod = lean_path_to_module(workspace, workspace / s["lean_path"])
+    culprits = list(res.failing_modules or [])
+    consumer_culprits = [m for m in culprits if m != alias_mod]
+    for mod in consumer_culprits:
+        cid = _strategy_for_module(conn, mod)
+        if cid is not None and cid != sid:
+            print(f"[verify] promotion gate: consumer {mod} no longer builds "
+                  f"→ rollback_cascade_chain(s{cid})", flush=True)
+            rollback_cascade_chain(conn, workspace, cid)
+            touched_goals.add(goal_id)
+    if alias_mod in culprits or not culprits:
+        parent_abs = workspace / s["lean_path"]
+        backup = verify_backup_path(parent_abs, f"s{sid}")
+        if backup.exists():
+            rollback_promote(parent_abs, backup)
+        print(f"[verify] Strategy={sid} → dead (promotion gate: "
+              f"{alias_mod} does not build)", flush=True)
+        _strategy_dead(conn, sid=sid, goal_id=goal_id, counts=counts,
+                       touched_goals=touched_goals, promotion=True)
+    # consumers-only failure: this promotion stands and is re-verified
+    # (re-submitted) by the loop below without the rolled-back consumer
+
+
 def verify_housekeeping(
     conn: sqlite3.Connection, *, workspace: Path, max_iters: int = 8,
     intents: dict[str, intent_mod.ProblemIntent] | None = None,
     olean_warmer: "OleanWarmer | None" = None,
+    promotion_gate=None,
 ) -> dict[str, int]:
     """Run inline at the end of each dispatcher tick. Polls strategies
     in `ready_for_verify` state, runs `verify_strategy` on each, and
@@ -159,11 +314,19 @@ def verify_housekeeping(
     """
     from ..core import dispatcher
     transitions.assert_main_thread("verify_housekeeping")
+    gate = promotion_gate if promotion_gate is not None else olean_warmer
     counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0,
-              "revived": 0}
+              "revived": 0, "pending": 0}
     touched_goals: set[int] = set()
+    # Gate results first (2026-08-30): a promotion submitted on an earlier
+    # tick flips or rolls back here, on the main thread.
+    if gate is not None:
+        for res in gate.drain_results():
+            _settle_promotion(conn, workspace, res, counts=counts,
+                              touched_goals=touched_goals)
     for _ in range(max_iters):
-        ready = db.strategies_ready_for_verify(conn)
+        ready = [s for s in db.strategies_ready_for_verify(conn)
+                 if gate is None or not gate.pending(int(s["id"]))]
         revivals = _pending_shelved_revivals(conn)
         if not ready and not revivals:
             break
@@ -184,55 +347,29 @@ def verify_housekeeping(
                 _refresh_trees(conn, workspace, touched_goals)
                 return counts
             if outcome == "proved":
-                transitions.apply_strategy_transition(
-                    conn, sid, "succeeded", event="verify_proved")
-                dispatcher._set_goal_terminal_and_propagate(
-                    conn, goal_id, "proved",
-                    receipt=transitions.ProvedReceipt(
-                        "verify_collapse", f"strategy s{sid} all-subs-proved"))
-                db.mark_other_strategies_superseded(
-                    conn, goal_id=goal_id, winner_id=sid,
-                )
-                conn.commit()
-                counts["proved"] += 1
-                touched_goals.add(goal_id)
-                print(f"[verify] Strategy={sid} → proved", flush=True)
-                # .olean materialization for the just-rewritten parent
-                # alias spine is handed to the background warmer (#103).
-                # Inlining lake build here previously stalled the
-                # dispatcher main thread (Jordan 2026-05-25: 10-strategy
-                # cascade × 30-60s lake build = ~10 min blocked, worker
-                # pool 0/4 — fixed by 4128212). The critical-path
-                # contract for verify_housekeeping stays microsecond-level
-                # (db + string rewrites + a non-blocking submit); the
-                # warmer's daemon thread runs a cold `lake build` of the
-                # alias module off both the main thread and the LLM pool,
-                # so the later root integrity probe finds the spine warm
-                # instead of paying a cold closure build. Best-effort: a
-                # missing/late olean only slows dedupe + the probe.
-                if olean_warmer is not None:
-                    olean_warmer.submit(workspace / s["lean_path"])
-            elif outcome == "dead":
-                transitions.apply_strategy_transition(
-                    conn, sid, "dead", event="verify_dead")
-                n = db.increment_goal_attempts(conn, goal_id)
-                if transitions.has_live_sibling(conn, goal_id):
-                    # Sibling strategy still in flight (e.g. Strategist
-                    # parallel inject): defer terminal so we don't kill
-                    # working work mid-flight. The deferred shelve
-                    # eventually fires when the surviving sibling's own
-                    # cascade arrives with no live siblings remaining
-                    # — mirrors `_kill_upward_chain`'s deferred-terminal
-                    # branch.
-                    pass
-                elif n >= thresholds.SHELVE_THRESHOLD:
-                    dispatcher._enqueue_strategist_review(conn, goal_id)
+                if gate is None:
+                    # No gate (unit tests / in-process callers): the
+                    # pre-2026-08-30 immediate flip.
+                    _flip_proved(conn, sid=sid, goal_id=goal_id,
+                                 counts=counts, touched_goals=touched_goals)
                 else:
-                    transitions.apply_goal_transition(
-                        conn, goal_id, "open", event="verify_reopen")
-                conn.commit()
-                counts["dead"] += 1
-                touched_goals.add(goal_id)
+                    # The alias is on disk; the status waits for the cold
+                    # build of it and its consumers. Off the main thread
+                    # (the #64 lesson: a 10-strategy cascade × 30-60 s
+                    # inline build blocked the dispatcher for ~10 min);
+                    # the result lands on a later tick via drain_results.
+                    mods = promotion_modules(conn, workspace, strategy_id=sid)
+                    gate.submit(sid, mods)
+                    counts["pending"] += 1
+                    print(f"[verify] Strategy={sid} → promotion gate "
+                          f"({len(mods)} module(s))", flush=True)
+            elif outcome == "dead":
+                # Sibling strategy still in flight (e.g. Strategist
+                # parallel inject): `_strategy_dead` defers the terminal
+                # so we don't kill working work mid-flight — mirrors
+                # `_kill_upward_chain`'s deferred-terminal branch.
+                _strategy_dead(conn, sid=sid, goal_id=goal_id,
+                               counts=counts, touched_goals=touched_goals)
                 print(f"[verify] Strategy={sid} → dead", flush=True)
             else:  # "superseded"
                 counts["superseded"] += 1

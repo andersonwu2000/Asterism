@@ -255,6 +255,10 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # Batch stubs referencing each other in a cycle — no module import
     # order exists (task #84 intra-batch import injection, 2026-07-10).
     "batch_reference_cycle": _T(),
+    # One brick, one declaration (2026-08-30, task #231): a sub-goal stub
+    # carrying helper defs/instances loses them at promotion and breaks
+    # every consumer that cited them.
+    "stub_extra_decls": _T(),
     "circular_decomposition": _T(),
     "cite_unproved_sibling": _T(),
     "forbidden_lemma": _T(),

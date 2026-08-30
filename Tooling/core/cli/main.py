@@ -125,6 +125,20 @@ def main(argv: list[str] | None = None) -> int:
         help="timeout (seconds) for `lake build Library` (default 1800)")
     p_libverify.set_defaults(func=cmd_library_verify)
 
+    p_catverify = sub.add_parser(
+        "catalog-verify",
+        help="cold-build every proof module of a problem through the build "
+             "lease; map failing modules to strategies/goals; --rollback "
+             "hands culprits to rollback_cascade_chain (daemon must be stopped)",
+    )
+    p_catverify.add_argument("--scope", default=None, metavar="PROBLEM",
+                             help="one problem (default: every problem)")
+    p_catverify.add_argument("--rollback", action="store_true",
+                             help="roll back every failing brick (refuses "
+                                  "while a daemon owns the DB)")
+    from .catalog_verify import cmd_catalog_verify
+    p_catverify.set_defaults(func=cmd_catalog_verify)
+
     p_review = sub.add_parser(
         "review",
         help="anchor+claim review: kernel anchor closure of each "
