@@ -283,7 +283,7 @@ _WATERMARKS = {
     # fresh locks per module — the monolith never grows back.
     "Tooling/core/dispatcher/__init__.py": 250,
     "Tooling/core/dispatcher/refill.py": 300,
-    "Tooling/core/dispatcher/triggers.py": 600,
+    "Tooling/core/dispatcher/triggers.py": 610,  # +suppress_stall (promotion gate) 2026-08-30
     "Tooling/core/dispatcher/worker.py": 650,
     "Tooling/core/dispatcher/lock.py": 300,
     "Tooling/core/dispatcher/loop.py": 1300,
@@ -643,7 +643,7 @@ _WATERMARKS = {
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 550,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/main.py": 350,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 360,  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision

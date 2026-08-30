@@ -529,7 +529,7 @@ def test_housekeeping_no_op_when_nothing_ready(
     """No strategies ready → return zero counts, no DB mutations."""
     counts = verify.verify_housekeeping(conn, workspace=tmp_path)
     assert counts == {"proved": 0, "dead": 0, "superseded": 0,
-                       "retry": 0, "revived": 0}
+                       "retry": 0, "revived": 0, "pending": 0}
 
 
 def test_housekeeping_caps_iterations(
