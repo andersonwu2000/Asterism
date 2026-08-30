@@ -714,6 +714,12 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # with apply_edit no longer targeting goal_lean, neither snapshot
     # nor restore is needed.
 
+    # The intake turn's counterexample, if it found one: every context
+    # compile of this pipeline (chain delivery and cold re-prep alike)
+    # renders it, so the work turn — and a cold retry after a dead
+    # session — sees the finding and the disproof road.
+    _intake_hint: dict = {"note": None}
+
     def backward_cold_prep(ctx: SpawnCtx) -> None:
         # Cold start (and fresh-rescue, which is also cold-with-fresh-
         # sid): agent has no session memory to resume. Compile
@@ -737,7 +743,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                               attempts_dir=ctx.attempts_dir,
                               strategy_id=strategy_id,
                               kind="backward",
-                              decision_id=decision_id)
+                              decision_id=decision_id,
+                              intake_counterexample=_intake_hint["note"])
         (ctx.attempts_dir / "patch.lean").write_text(
             skeleton, encoding="utf-8")
 
@@ -855,7 +862,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                                 attempts_dir=attempts_dir,
                                 strategy_id=strategy_id,
                                 kind="backward",
-                                decision_id=decision_id)
+                                decision_id=decision_id,
+                                intake_counterexample=_intake_hint["note"])
 
     def _moot_guard() -> "PipelineResult | None":
         # Mirror the retry helper's pre-loop budget check so an
@@ -888,6 +896,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 failure_reason=DECLINE_TO_FAILURE_REASON.get(reason, reason),
                 failure_detail=f"intake decline: {note}"),
             pre_intake_guard=_moot_guard,
+            on_counterexample=lambda note: _intake_hint.__setitem__("note", note),
         ),
         prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
         problem_dir=problem_dir, workspace=workspace)

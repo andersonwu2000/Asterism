@@ -714,7 +714,7 @@ _WATERMARKS = {
     "Tooling/quality/dedupe.py": 1950,
     "Tooling/llm/zen_shim.py": 1950,
     "Tooling/llm/claude_cli.py": 1900,
-    "Tooling/agent/context.py": 1800,
+    "Tooling/agent/context.py": 1804,  # +4 2026-08-30 intake counterexample section (the disproof turn)
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's
     # judge verdict. app.py IS the route table, so an endpoint costs it

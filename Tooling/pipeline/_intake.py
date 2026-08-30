@@ -150,7 +150,9 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
             print(f"[intake] {label}: unprovable without a counterexample "
                   f"note — proceeding", flush=True)
             return IntakeOutcome(sid=sid)
-        return IntakeOutcome(declined=(reason, note or "(no note)"))
+        # The sid rides along: an `unprovable` decline with a counterexample
+        # is the start of a disproof turn on this same session (2026-08-30).
+        return IntakeOutcome(sid=sid, declined=(reason, note or "(no note)"))
     if verdict != "proceed":
         print(f"[intake] {label}: unknown verdict {verdict!r} — "
               f"proceeding (economy gate, fail-open)", flush=True)

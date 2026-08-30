@@ -399,3 +399,33 @@ def test_the_whole_proof_rides_only_when_nothing_answered(
     assert "just my part" in text
     assert "SECTION TWO" not in text
     assert "Full Programme" in text                    # …but reachable
+
+
+def test_intake_counterexample_section_names_the_disproof_road(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """The work turn that follows an `unprovable` intake must see the
+    finding and the one action that settles it (2026-08-30: five intakes
+    repeated the same counterexample; none was told to prove the negation)."""
+    gid = _insert_root(conn)
+    goal = db.get_goal(conn, gid)
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(
+        conn, goal=goal, intent=_fake_intent(),
+        attempts_dir=attempts_dir, kind="backward",
+        intake_counterexample="α = Fin 4, H = {{0,1},{2},{3}}, K = {{0,1}}, X = {0}",
+    )
+    text = _read_context(attempts_dir)
+    assert "## Intake finding" in text
+    assert "H = {{0,1},{2},{3}}" in text
+    assert "-- decline: disprove" in text
+    assert "return_to_parent" in text, "a dropped hypothesis has its own road"
+
+
+def test_no_intake_counterexample_no_section(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    gid = _insert_root(conn)
+    goal = db.get_goal(conn, gid)
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(conn, goal=goal, intent=_fake_intent(),
+                    attempts_dir=attempts_dir, kind="backward")
+    assert "## Intake finding" not in _read_context(attempts_dir)

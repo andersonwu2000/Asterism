@@ -1623,11 +1623,41 @@ def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:
     return [text, ""] if text else []
 
 
+def _section_intake_counterexample(note: "str | None") -> list[str]:
+    """The intake turn's candidate counterexample, with the one action
+    that settles it. Conditional on purpose (2026-08-30): the claim is
+    non-terminal by design and the road to `disproved` is the work
+    turn's `-- decline: disprove`; five intakes in a row repeated the
+    same counterexample because none of them was ever in the turn that
+    could walk it."""
+    if not note:
+        return []
+    return [
+        "## Intake finding — candidate counterexample",
+        "",
+        "The intake turn of this session judged the statement FALSE:",
+        "",
+        *[f"> {line}" for line in note.strip().splitlines()],
+        "",
+        "Check it against the locked signature. If it holds, this turn is a "
+        "DISPROOF turn: rewrite the statement in `patch.lean` to its negation, "
+        "prove it, and mark the leading block `-- decline: disprove` — the "
+        "framework certifies the negation in the kernel; the claim alone "
+        "terminates nothing (see `## Decline`). If the statement is false only "
+        "because the parent's decomposition dropped a hypothesis, "
+        "`-- decline: return_to_parent` names the missing piece instead. If "
+        "the counterexample does not survive scrutiny, prove the goal as "
+        "assigned.",
+        "",
+    ]
+
+
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                     intent: intent_mod.ProblemIntent, attempts_dir: Path,
                     strategy_id: int | None = None,
                     kind: str | None = None,
-                    decision_id: int | None = None) -> Path:
+                    decision_id: int | None = None,
+                    intake_counterexample: "str | None" = None) -> Path:
     """Write Context.md into attempts_dir. Pulls from DB + intent.
 
     `strategy_id`: when set (Backward worker), write a 'Strategy
@@ -1703,7 +1733,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     section_names = [
         "brief", "kb_lessons", "paper_index", "programme", "directive",
         "inject_brief",
-        "goal", "library_available", "strategy_naming", "parent_strategy",
+        "goal", "intake_finding", "library_available", "strategy_naming",
+        "parent_strategy",
         "mathlib_lemmas", "presearch", "proved_goals", "catalog",
         "prior_partial", "prior_patch", "goal_history",
     ]
@@ -1726,6 +1757,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                       goal_id=int(goal["id"])),
         _section_strategist_brief(conn, decision_id, int(goal["id"])),
         _section_header(goal, workspace),
+        _section_intake_counterexample(intake_counterexample),
         _section_library_available(conn, intent),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal, workspace),

@@ -131,3 +131,43 @@ def test_both_arms_walk_this_chain(tmp_path):
     for src, name in ((fwd, "forward.py"), (bwd, "backward.py")):
         assert "_stages.run_prework(" in src, f"{name} bypasses the chain"
         assert "run_intake(" not in src, f"{name} re-implements the chain"
+
+
+# ─── A counterexample at intake walks into the disproof road (2026-08-30)
+#
+# Flagship 06:52–06:55Z: five Formalizers in a row found the same Fin 4
+# counterexample at intake and declined `unprovable`; each decline is
+# non-terminal by design (a claim is not a disproof — the 2026-08-25
+# ruling), the goal was redispatched within the second, and nobody ever
+# reached the work turn where `-- decline: disprove` lives. Five
+# attempts burned in three minutes, the goal shelved on the cap. The
+# counterexample in hand IS the moment to walk that road.
+
+def test_a_counterexample_at_intake_becomes_a_disproof_turn(trace, tmp_path):
+    seen, box = trace
+    box["intake"] = _Intake(sid="sid-1",
+                            declined=("unprovable", "α = Fin 4, H = {{0,1},{2},{3}}"))
+    got: dict = {}
+    arm = _arm(seen, on_counterexample=lambda note: got.setdefault("note", note))
+    result, sid = _run(arm, tmp_path)
+    assert result is None and sid == "sid-1", "same session, into the work turn"
+    assert got["note"].startswith("α = Fin 4")
+    assert seen[-2:] == ["presearch", "compile"], \
+        "the finding reaches the work turn through the delivery recompile"
+
+
+def test_a_counterexample_still_declines_an_arm_without_a_disproof_road(trace, tmp_path):
+    """The mint arm has no goal to negate — its decline shape stands."""
+    seen, box = trace
+    box["intake"] = _Intake(sid="sid-1", declined=("unprovable", "…"))
+    result, sid = _run(_arm(seen), tmp_path)
+    assert result is not None and result.failure_reason == "unprovable"
+    assert "presearch" not in seen
+
+
+def test_return_to_nl_still_declines_even_with_a_disproof_road(trace, tmp_path):
+    seen, box = trace
+    box["intake"] = _Intake(sid="sid-1", declined=("return_to_nl", "argument covers nothing here"))
+    result, sid = _run(_arm(seen, on_counterexample=lambda n: None), tmp_path)
+    assert result is not None and result.failure_reason == "return_to_nl"
+    assert "presearch" not in seen

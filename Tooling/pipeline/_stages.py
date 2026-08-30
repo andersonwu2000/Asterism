@@ -68,6 +68,16 @@ class Arm:
     #: dispatched by BFS and can race an over-budget goal, mints are
     #: dispatched by an Inject that carries a fresh budget by design.
     pre_intake_guard: Optional[Callable[[], "Optional[PipelineResult]"]] = None
+    #: optional: hand an intake `unprovable` counterexample to the work
+    #: turn instead of declining. Goal-arm only — it has a statement to
+    #: negate; the mint arm has none and keeps its decline shape.
+    #: Flagship 2026-08-30 06:52–06:55Z: five Formalizers found the same
+    #: Fin 4 counterexample at intake, each decline was non-terminal by
+    #: design (a claim is not a disproof), the goal was redispatched
+    #: within the second, and nobody reached the work turn where
+    #: `-- decline: disprove` lives. The counterexample in hand IS the
+    #: moment to walk that road.
+    on_counterexample: Optional[Callable[[str], None]] = None
 
 
 def run_prework(arm: Arm, *, prompt_dir: Path, attempts_dir: Path,
@@ -119,9 +129,15 @@ def run_prework(arm: Arm, *, prompt_dir: Path, attempts_dir: Path,
 
     if intake.declined is not None:
         reason, note = intake.declined
-        print(f"[intake] {arm.label}: declined ({reason}) — {note[:160]}",
-              flush=True)
-        return arm.decline_result(reason, note), None
+        if (reason == "unprovable" and arm.on_counterexample is not None
+                and intake.sid is not None):
+            print(f"[intake] {arm.label}: counterexample — the work turn "
+                  f"is a disproof turn: {note[:160]}", flush=True)
+            arm.on_counterexample(note)
+        else:
+            print(f"[intake] {arm.label}: declined ({reason}) — {note[:160]}",
+                  flush=True)
+            return arm.decline_result(reason, note), None
 
     # `proceed` — the search runs, then the context is rebuilt so the
     # work turn actually receives it (see the module docstring: the

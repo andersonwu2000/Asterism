@@ -241,3 +241,16 @@ def test_backward_intake_sid_threads_to_work_loop(
         intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-intake-sid")
     assert seen.get("initial_sid") == "intake-sid-42"
+
+
+def test_intake_decline_keeps_the_session(tmp_path, monkeypatch) -> None:
+    """An `unprovable` decline with a counterexample is the start of a
+    disproof turn on the SAME session (2026-08-30) — the outcome must
+    carry the sid alongside the decline, not drop it."""
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
+        "verdict": "decline", "reason": "unprovable",
+        "note": "α = Fin 4, H = {{0,1},{2},{3}}, K = {{0,1}}, X = {0}"})))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.declined is not None and out.declined[0] == "unprovable"
+    assert out.sid is not None
