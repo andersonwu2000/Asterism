@@ -528,6 +528,69 @@ _INFRA_DISCARD_CHANNELS = frozenset({
 })
 
 
+def rejection_cycle(conn: sqlite3.Connection, problem: str,
+                    group_id: "int | None" = None) -> "list[sqlite3.Row]":
+    """The discarded cycle the successor wake inherits: every `rejected`
+    rev since the last row that was not one, oldest first. Empty when
+    the latest row is not a rejection (a pass closes the cycle). Same
+    row selection as `rejection_notice` — problem-wide when `group_id`
+    is None, else this group's chain."""
+    if group_id is None:
+        rows = conn.execute(
+            "SELECT * FROM programme_revisions WHERE problem = ?"
+            " ORDER BY id DESC", (problem,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM programme_revisions WHERE problem = ?"
+            "   AND group_id = ? ORDER BY id DESC",
+            (problem, int(group_id))).fetchall()
+    cycle: list = []
+    for r in rows:
+        if r["status"] != "rejected":
+            break
+        cycle.append(r)
+    cycle.reverse()
+    return cycle
+
+
+def last_rebuttal(row: sqlite3.Row) -> "tuple[Optional[int], list[str]]":
+    """(round, criticisms) of the judge's LAST rebuttal in a rejected
+    rev's dialogue — the round that killed it. (None, []) when the
+    dialogue carries no adversary criticisms."""
+    try:
+        rounds = json.loads(row["dialogue"] or "[]")
+    except (ValueError, TypeError):
+        return None, []
+    found: "tuple[Optional[int], list[str]]" = (None, [])
+    for t in rounds if isinstance(rounds, list) else []:
+        if not isinstance(t, dict) or t.get("role") != "adversary":
+            continue
+        crits = [str(c) for c in (t.get("criticisms") or [])]
+        if crits:
+            found = (t.get("round"), crits)
+    return found
+
+
+def rejection_history_md(cycle: "list[sqlite3.Row]") -> str:
+    """The companion the successor lazy-loads: every rejected rev of the
+    cycle, every round's criticisms, and NOT ONE draft (design §3 — the
+    rebuttal is the judge's text and invites no re-skin; the draft is
+    the author's and does)."""
+    parts = ["# Rejected proposals — the judge's rebuttals (no drafts)", ""]
+    any_round = False
+    for row in cycle:
+        why = row["discard_reason"] or "adversary rebuttal"
+        parts += [f"## rev {row['rev']} — {why} after {row['rounds']} "
+                  f"round(s), {str(row['created_at'])[:10]}", ""]
+        transcript = _dialogue_transcript(row["dialogue"])
+        if transcript:
+            any_round = True
+            parts += [transcript, ""]
+        else:
+            parts += ["(no adversary criticisms recorded)", ""]
+    return "\n".join(parts) if any_round else ""
+
+
 def _dialogue_transcript(dialogue_json: Optional[str]) -> str:
     """The judge's criticisms from the discarded rounds, oldest first.
 

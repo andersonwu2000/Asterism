@@ -826,7 +826,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_disproof_guidance(conn, problem),
         _section_your_group(conn, problem, group_id),
         _section_groups_in_flight(conn, problem, group_id),
-        _section_programme_strategist(conn, problem, group_id),
+        _section_programme_strategist(conn, problem, group_id,
+                                      attempts_dir=attempts_dir),
         _section_current_directive(conn, problem),
         _section_plan_note(conn, workspace, problem, group_id,
                            attempts_dir=attempts_dir),
@@ -1012,15 +1013,25 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     ]
 
 
+REJECTED_COMPANION = "REJECTED.md"
+
+
 def _section_programme_strategist(conn: sqlite3.Connection,
                                   problem: str,
-                                  group_id: "int | None" = None
+                                  group_id: "int | None" = None,
+                                  attempts_dir: "Path | None" = None,
                                   ) -> list[str]:
     """Research mode (research_mode_design.md §2): the current
     Programme rev inline — it is the commitment object your proposal
     revises (route/planning lives HERE, not in the plan note) — plus
     the Adversary's reservations on it, and, after a discarded cycle,
-    the one-line rejection record (never the failed draft)."""
+    the one-line rejection record (never the failed draft) followed by
+    the judge's LAST rebuttal inline and every round's rebuttal in the
+    `REJECTED.md` companion (owner ruling 2026-08-30: group 504's
+    successor saw one line plus its own plan note — its belief, not the
+    refutation — and re-argued the refuted route for five more rounds).
+    The draft stays withheld: the rebuttal is the judge's text and
+    invites no re-skin; the draft is the author's and does."""
     import json as _json
     from ...state import programme as _programme
     try:
@@ -1051,12 +1062,48 @@ def _section_programme_strategist(conn: sqlite3.Connection,
         reservations = [str(r) for r in (verdict.get("reservations") or [])]
     if notice:
         out += ["### Previous proposal rejected", "", notice, ""]
+        # An infra discard already hands the draft and its transcript
+        # over inside the notice; the adversarial one gets the rebuttal.
+        if "### Uncommitted draft" not in notice:
+            out += _rebuttal_surface(conn, problem, group_id, attempts_dir)
     if reservations:
         out += [f"## Adversary reservations on rev {row['rev']}", "",
                 "Advisory notes from the judge that passed it — not part"
                 " of the Programme text above.", ""]
         out += [f"- {r}" for r in reservations]
         out.append("")
+    return out
+
+
+def _rebuttal_surface(conn: sqlite3.Connection, problem: str,
+                      group_id: "int | None",
+                      attempts_dir: "Path | None") -> list[str]:
+    """Inline: the round that killed the latest discarded rev. Lazy:
+    every round of the whole discarded cycle, written as the
+    `REJECTED.md` companion beside Context.md. Never a draft."""
+    from ...state import programme as _programme
+    cycle = _programme.rejection_cycle(conn, problem, group_id)
+    if not cycle:
+        return []
+    out: list[str] = []
+    last = cycle[-1]
+    rnd, crits = _programme.last_rebuttal(last)
+    if crits:
+        out += [f"**Why it died — the judge's last rebuttal (round {rnd} "
+                f"of rev {last['rev']}):**", ""]
+        out += [f"- {c}" for c in crits]
+        out.append("")
+    if attempts_dir is not None:
+        md = _programme.rejection_history_md(cycle)
+        if md:
+            (attempts_dir / REJECTED_COMPANION).write_text(
+                md, encoding="utf-8")
+            span = (f"rev {cycle[0]['rev']}" if len(cycle) == 1
+                    else f"revs {cycle[0]['rev']}–{last['rev']}")
+            out += [f"Every round's rebuttal of this discarded cycle "
+                    f"({span}; no drafts): `{REJECTED_COMPANION}` beside "
+                    f"this file. Read it before you argue a route those "
+                    f"rounds already refuted.", ""]
     return out
 
 

@@ -677,7 +677,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1165,  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
+    "Tooling/agent/phase2_context/compile.py": 1206,  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section

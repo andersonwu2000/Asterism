@@ -1959,3 +1959,70 @@ def test_active_goals_roster_is_bounded_with_catalog_pointer(
     assert "`g039`" not in tree
 
 
+
+
+# ─── After a discarded cycle: the judge's rebuttal, never the draft ───
+#
+# 2026-08-30, group 504: the successor of an 11-round discard saw one
+# line ("draft not shown") plus its own plan note — its belief, not the
+# judge's refutation — and re-argued the same route for five more rounds
+# (75 min, 830k tokens) before landing the two ConfirmShelves the audit
+# asked for. Owner ruling: the rebuttals may be shown; the draft stays
+# withheld (design §3). Last round inline, every round lazy-loaded.
+
+def _reject_after_pass(conn):
+    from Tooling.state import programme
+    programme.record_pass(conn, "p", "# Pass\n\n## Argument\n\nfine\n",
+                          {"verdict": "pass"}, [], 0, "b1")
+    programme.record_rejection(
+        conn, "p", "# Dead draft\n\n## Argument\n\nSECRET-DRAFT-TEXT\n",
+        [{"round": 1, "role": "adversary", "verdict": "rebut",
+          "criticisms": ["[criterion 1] first-round objection"]},
+         {"round": 3, "role": "adversary", "verdict": "rebut",
+          "criticisms": ["[criterion 2] the fatal objection"]}],
+        3, discard_reason="adversary rebuttal",
+        discard_channel="strategist_proposal_rejected")
+    conn.commit()
+
+
+def test_discarded_cycle_shows_the_judges_last_rebuttal_and_a_lazy_history(
+        workspace: Path, mfst, tmp_path: Path) -> None:
+    conn = db.connect()
+    db.init_schema(conn)
+    _insert_problem(conn)
+    _insert_root(conn)
+    _reject_after_pass(conn)
+    attempts_dir = tmp_path / "_attempts_rej"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst)
+    text = out.read_text(encoding="utf-8")
+    assert "### Previous proposal rejected" in text
+    assert "the fatal objection" in text, "the round that killed it is inline"
+    assert "first-round objection" not in text, "earlier rounds are lazy-loaded"
+    assert "SECRET-DRAFT-TEXT" not in text, "never the draft (design §3)"
+    assert "REJECTED.md" in text, "the pointer to the full history"
+    comp = (attempts_dir / "REJECTED.md").read_text(encoding="utf-8")
+    assert "first-round objection" in comp and "the fatal objection" in comp
+    assert "SECRET-DRAFT-TEXT" not in comp
+
+
+def test_no_discard_no_rebuttal_surface(workspace: Path, mfst,
+                                        tmp_path: Path) -> None:
+    from Tooling.state import programme
+    conn = db.connect()
+    db.init_schema(conn)
+    _insert_problem(conn)
+    _insert_root(conn)
+    programme.record_pass(conn, "p", "# Pass\n\n## Argument\n\nfine\n",
+                          {"verdict": "pass"}, [], 0, "b1")
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_ok"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst)
+    text = out.read_text(encoding="utf-8")
+    assert "Previous proposal rejected" not in text
+    assert not (attempts_dir / "REJECTED.md").exists()

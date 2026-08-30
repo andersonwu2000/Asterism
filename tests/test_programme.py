@@ -568,3 +568,42 @@ def test_infra_channels_are_registry_reasons(tmp_path):
     # And every provider-infra reason must be on the show-the-draft
     # side: none of them is an argument the judge refuted.
     assert failures.PROVIDER_INFRA_REASONS <= programme._INFRA_DISCARD_CHANNELS
+
+
+# ---------------------------------------------- the discarded cycle's rebuttals
+
+def test_rejection_cycle_is_the_consecutive_discards_since_the_last_pass(tmp_path):
+    """The successor of a discarded cycle needs the judge's rebuttals of
+    THAT cycle — every rejected rev since the last pass, oldest first —
+    and, of the latest one, the round that killed it. 2026-08-30: a
+    successor that saw one line ('draft not shown') and its own plan
+    note re-argued the refuted route for five more rounds."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(proof="Pass 1."),
+                          {"verdict": "pass"}, [], 0, "b1")
+    programme.record_rejection(
+        c, "p", _body(proof="Dead draft A."),
+        [{"round": 1, "role": "adversary", "verdict": "rebut",
+          "criticisms": ["[criterion 1] A dies"]}],
+        1, discard_reason="adversary rebuttal",
+        discard_channel="strategist_proposal_rejected")
+    programme.record_rejection(
+        c, "p", _body(proof="Dead draft B."),
+        [{"round": 1, "role": "adversary", "verdict": "rebut",
+          "criticisms": ["[criterion 2] B dies"]},
+         {"round": 2, "role": "adversary", "verdict": "rebut",
+          "criticisms": ["[criterion 1] B still dies"]}],
+        2, discard_reason="adversary rebuttal",
+        discard_channel="strategist_proposal_rejected")
+    c.commit()
+    cyc = programme.rejection_cycle(c, "p")
+    # rejected rows do not consume a rev number (both sit at 'rev 2');
+    # the cycle is ordered by id, oldest first
+    assert len(cyc) == 2, "both discards"
+    assert "Dead draft A." in cyc[0]["body"] and "Dead draft B." in cyc[1]["body"], "oldest first"
+    rnd, crits = programme.last_rebuttal(cyc[-1])
+    assert rnd == 2 and crits == ["[criterion 1] B still dies"]
+    programme.record_pass(c, "p", _body(proof="Pass 2."),
+                          {"verdict": "pass"}, [], 0, "b2")
+    c.commit()
+    assert programme.rejection_cycle(c, "p") == [], "a pass closes the cycle"
