@@ -754,9 +754,13 @@ def test_return_flavours_carry_their_own_evidence(tmp_path):
                          payload={"flavour": "refuted"}), p, sub)
     conn.execute("UPDATE goals SET status = 'proved' WHERE id = ?",
                  (open_g,))
-    assert _verify(
+    # 2026-08-30: proved is necessary, not sufficient — the node must be
+    # the brick the disproof gate minted (`<slug>_disproof` beside a
+    # `disproved` <slug>); a hand-minted negation has no kernel link to
+    # the claim it says it refutes (test_disproof_road pins the pair).
+    assert "gate" in _verify(
         conn, S.Decision(kind="ReturnToParent", reason="r", target_id=open_g,
-                         payload={"flavour": "refuted"}), p, sub) == ""
+                         payload={"flavour": "refuted"}), p, sub)
     # amend must actually propose a change
     assert "proposed_charter" in _verify(
         conn, S.Decision(kind="ReturnToParent", reason="r",
@@ -1943,7 +1947,7 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
               for t in ("strategist_decisions", "queue", "pipelines",
                         "programme_revisions")}
     db_migrations.apply(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 45
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 46
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
              for t in before}
     assert before == after
@@ -1967,7 +1971,7 @@ def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
     """
     conn = _v34_db(tmp_path)
     db.init_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 45
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 46
     cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     assert {"group_id", "produced_group_id"} <= cols

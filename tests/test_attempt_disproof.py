@@ -38,9 +38,10 @@ def test_attempt_disproof_is_retired(tmp_path: Path) -> None:
     err = strategist.verify_decision(
         ds[0], conn, problem="Test.px", workspace=tmp_path)
     assert "retired" in err
-    # The teaching message names every way out.
-    assert "Inject" in err and "ReturnToParent" in err \
-        and "RequestUserAmend" in err
+    # The teaching message names the one road (2026-08-30): Inject the
+    # node with the counterexample, the worker certifies the negation,
+    # `<slug>_disproof` lands, then refuted / Ingest.
+    assert "Inject" in err and "_disproof" in err and "ReturnToParent" in err
 
 
 def test_attempt_disproof_gone_from_experiment_and_math_kinds() -> None:
