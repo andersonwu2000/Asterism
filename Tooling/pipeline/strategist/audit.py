@@ -42,11 +42,20 @@ TALLY_STATUSES = ("proved", "attempting", "open", "dead", "shelved",
 
 # ------------------------------------------------------------ the lines
 
+#: A root is in flight only while it is live. Experiment 1 (2026-08-30):
+#: roots already `shelved` were listed as lines in flight, the audit
+#: fired on them (correctly: no consumer), and the action wake was then
+#: required to ConfirmShelve goals that were shelved already.
+LIVE_ROOT_STATUSES = frozenset({"open", "attempting",
+                                "pending_strategist_review"})
+
+
 def in_flight_lines(conn: sqlite3.Connection, problem: str,
                     group_id: "int | None") -> "list[dict]":
     """One entry per root this group has in flight: an Inject whose
-    outcome is still NULL and whose produced goal exists. Tallies count
-    the root's descendants by status (`db.descendant_ids`)."""
+    outcome is still NULL, whose produced goal exists AND is still live
+    (`LIVE_ROOT_STATUSES`). Tallies count the root's descendants by
+    status (`db.descendant_ids`)."""
     sql = ("SELECT d.id AS decision_id, d.batch_id, d.created_at,"
            " d.produced_goal_id, d.target_id, g.slug, g.status"
            " FROM strategist_decisions d"
@@ -63,7 +72,7 @@ def in_flight_lines(conn: sqlite3.Connection, problem: str,
     now = datetime.now(timezone.utc)
     for r in conn.execute(sql, args):
         gid = int(r["produced_goal_id"] or r["target_id"])
-        if gid in seen:
+        if gid in seen or str(r["status"]) not in LIVE_ROOT_STATUSES:
             continue
         seen.add(gid)
         kids = db.descendant_ids(conn, gid)
@@ -315,10 +324,28 @@ def mark_acted(conn: sqlite3.Connection, verdict_id: int) -> None:
     conn.commit()
 
 
-def render_verdict_section(row: sqlite3.Row) -> "list[str]":
+def render_verdict_section(row: sqlite3.Row,
+                           conn: "sqlite3.Connection | None" = None
+                           ) -> "list[str]":
     """`## Routine audit verdict` — the fired findings, verbatim, on
-    top of the action wake's Context."""
+    top of the action wake's Context. With `conn`, a fired root that has
+    since left the live set (`LIVE_ROOT_STATUSES`) is not shown: it is
+    not a line this batch can act on, and showing it invites a
+    ConfirmShelve on a goal already shelved (experiment 1, 2026-08-30).
+    Roadmap-level findings (no goal) always show."""
     fired = json.loads(str(row["fired_json"] or "[]"))
+    if conn is not None:
+        kept = []
+        for f in fired:
+            gid = f.get("goal_id")
+            if gid is None:
+                kept.append(f)
+                continue
+            cur = conn.execute("SELECT status FROM goals WHERE id = ?",
+                               (int(gid),)).fetchone()
+            if cur is not None and str(cur["status"]) in LIVE_ROOT_STATUSES:
+                kept.append(f)
+        fired = kept
     out = [f"## Routine audit verdict (audit {int(row['id'])}, "
            f"{str(row['created_at'])[:16]}Z)", "",
            "Your routine audit FIRED on the lines below. This batch must "

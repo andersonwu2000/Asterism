@@ -910,7 +910,11 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             fired = json.loads(str(pending["fired_json"] or "[]"))
             targets: set[int] = set()
             for d in decisions:
-                t = getattr(d, "target_goal_id", None)
+                # The model's field is `target_id` (decision.json says
+                # `target_goal_id`; the parser folds both). Reading the
+                # JSON key name here made this gate reject EVERY correct
+                # batch in the field (experiment 1, 2026-08-30).
+                t = getattr(d, "target_id", None)
                 if t is None:
                     continue
                 try:
@@ -926,8 +930,16 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             untouched = []
             for f in fired:
                 gid_f = f.get("goal_id")
-                if gid_f is not None and int(gid_f) not in targets:
-                    untouched.append(f)
+                if gid_f is None or int(gid_f) in targets:
+                    continue
+                # A fired root that has since left the live set (shelved /
+                # proved / dead by another path) is not a line this batch
+                # can act on — only live roots are required.
+                cur = conn.execute("SELECT status FROM goals WHERE id = ?",
+                                   (int(gid_f),)).fetchone()
+                if cur is None or str(cur["status"]) not in _audit.LIVE_ROOT_STATUSES:
+                    continue
+                untouched.append(f)
             if untouched:
                 lines = "\n".join(
                     f"  - `{f.get('slug')}` (goal_id {f.get('goal_id')}): "

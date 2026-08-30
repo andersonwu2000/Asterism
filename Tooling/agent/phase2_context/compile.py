@@ -764,7 +764,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         pending = _audit.pending_fired_verdict(conn, int(group_id))
         if pending is not None:
             section_names.append("routine_verdict")
-            sections.append(_audit.render_verdict_section(pending))
+            sections.append(_audit.render_verdict_section(pending, conn))
     # T2 review_context (Phase 2 §2.2) — failure brief + existing
     # strategies + ancestor chain. Un-gated from the pending_review
     # trigger (owner design 2026-08-26, wake merge): the
