@@ -132,7 +132,7 @@ def test_run_strategist_inject_enqueues_forward(
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({
                 "kind": "Inject", "pipeline": "Forward",
-                "proof": "Roadmap: contour lemma\n## Need\nA contour lemma.",
+                "proof": "Theorem. Roadmap: contour lemma\n## Need\nA contour lemma.\nProof. as argued.",
             }),
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
@@ -323,7 +323,7 @@ def test_run_strategist_verify_retry_recovers(
             (attempts_dir / "decision.json").write_text(
                 json.dumps({
                     "kind": "Inject", "pipeline": "Backward",
-                    "target_goal_id": 9999, "proof": "stale id",
+                    "target_goal_id": 9999, "proof": "Theorem. stale id\nProof. as argued.",
                 }),
                 encoding="utf-8")
         else:
@@ -362,7 +362,7 @@ def test_run_strategist_verify_retry_both_fail(
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Backward",
-                        "target_goal_id": 9999, "proof": "stale"}),
+                        "target_goal_id": 9999, "proof": "Theorem. stale\nProof. as argued."}),
             encoding="utf-8")
         return 0
 
@@ -421,7 +421,7 @@ def test_run_strategist_verify_retry_disabled_via_env(
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Backward",
-                        "target_goal_id": 9999, "proof": "stale"}),
+                        "target_goal_id": 9999, "proof": "Theorem. stale\nProof. as argued."}),
             encoding="utf-8")
         return 0
 

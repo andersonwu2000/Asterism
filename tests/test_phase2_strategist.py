@@ -52,14 +52,14 @@ def _insert_root(conn: sqlite3.Connection) -> int:
 def test_parse_inject_decision() -> None:
     text = json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nFoo",
+        "proof": "Theorem. ## Need\nFoo\nProof. as argued.",
     })
     d, err = strategist.parse_decision(text)
     assert err == ""
     assert d is not None
     assert d.kind == "Inject"
     assert d.payload.get("pipeline") == "Forward"
-    assert d.brief == "## Need\nFoo"
+    assert d.brief == "Theorem. ## Need\nFoo\nProof. as argued."
 
 
 def test_parse_confirmshelve_decision() -> None:
@@ -128,7 +128,7 @@ def test_verify_inject_ignores_legacy_pipeline_field(
     `pipeline` payload value is ignored — any value, even garbage,
     verifies fine when the SHAPE is valid (no target = mint)."""
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Reflection", "proof": "mint X",
+        "kind": "Inject", "pipeline": "Reflection", "proof": "Theorem. mint X\nProof. as argued.",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -175,7 +175,7 @@ def test_verify_inject_ok_single_brief(
     multiple decisions in the future multi-decision schema)."""
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nfoo",
+        "proof": "Theorem. ## Need\nfoo\nProof. as argued.",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -200,7 +200,7 @@ def test_parse_target_id_accepts_slug_string(
     root = _insert_root(conn)
     d, err = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": "main", "proof": "ready",
+        "target_goal_id": "main", "proof": "Theorem. ready\nProof. as argued.",
     }))
     assert err == ""
     assert d.target_id == "main"  # not yet normalized
@@ -214,7 +214,7 @@ def test_verify_unknown_slug_rejected(
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": "nonexistent", "proof": "x",
+        "target_goal_id": "nonexistent", "proof": "Theorem. x\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "slug" in err.lower() and "not found" in err.lower()
@@ -227,7 +227,7 @@ def test_parse_target_id_int_string_coerces(
     doesn't hit the slug-lookup path unnecessarily."""
     d, err = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": "2019", "proof": "x",
+        "target_goal_id": "2019", "proof": "Theorem. x\nProof. as argued.",
     }))
     assert err == ""
     assert d.target_id == 2019  # coerced to int
@@ -238,7 +238,7 @@ def test_parse_target_id_rejects_non_str_non_int(
 ) -> None:
     d, err = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": [1, 2], "proof": "x",
+        "target_goal_id": [1, 2], "proof": "Theorem. x\nProof. as argued.",
     }))
     assert d is None
     assert "int, slug" in err.lower() or "list" in err.lower()
@@ -268,7 +268,7 @@ def test_verify_inject_rejected_when_ancestor_disproved(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": sub, "proof": "retry",
+        "target_goal_id": sub, "proof": "Theorem. retry\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "disproved" in err.lower()
@@ -299,7 +299,7 @@ def test_verify_inject_rejected_when_ancestor_dead(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": sub, "proof": "salvage",
+        "target_goal_id": sub, "proof": "Theorem. salvage\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "dead" in err.lower()
@@ -331,7 +331,7 @@ def test_verify_inject_ok_with_shelved_ancestor(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": sub, "proof": "x",
+        "target_goal_id": sub, "proof": "Theorem. x\nProof. as argued.",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -389,7 +389,7 @@ def test_verify_inject_without_target_is_mint_shape(
     regardless of any legacy pipeline word in the payload."""
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "proof": "try angle X", "reason": "retry",
+        "proof": "Theorem. try angle X\nProof. as argued.", "reason": "retry",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -401,7 +401,7 @@ def test_verify_inject_backward_rejects_terminal_target(
     db.update_goal_status(conn, root, "proved")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "try again",
+        "target_goal_id": root, "proof": "Theorem. try again\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "terminal" in err.lower() or "proved" in err.lower()
@@ -417,7 +417,7 @@ def test_verify_inject_backward_rejects_dead_target(
     db.update_goal_status(conn, root, "dead")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "try again",
+        "target_goal_id": root, "proof": "Theorem. try again\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "dead" in err.lower() or "terminal" in err.lower()
@@ -432,7 +432,7 @@ def test_verify_inject_with_target_is_goal_shape(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "target_goal_id": root, "proof": "## Need foo",
+        "target_goal_id": root, "proof": "Theorem. ## Need foo\nProof. as argued.",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -445,7 +445,7 @@ def test_verify_inject_rejects_legacy_briefs_or_directive_on_backward(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "try X", "briefs": ["x"],
+        "target_goal_id": root, "proof": "Theorem. try X\nProof. as argued.", "briefs": ["x"],
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "proof" in err.lower()
@@ -457,7 +457,7 @@ def test_verify_inject_backward_accepts_slug_target(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": "main", "proof": "switch angle",
+        "target_goal_id": "main", "proof": "Theorem. switch angle\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert err == ""
@@ -482,7 +482,7 @@ def test_commit_inject_backward_enqueues_with_directive(
     db.update_goal_status(conn, root, "shelved")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "try the contour deformation angle",
+        "target_goal_id": root, "proof": "Theorem. try the contour deformation angle\nProof. as argued.",
         "reason": "previous decomp went through wrong primitive existence",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
@@ -547,7 +547,7 @@ def test_commit_inject_backward_unstalls_parent_strategy(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward", "target_goal_id": g,
-        "proof": "retry sub via a different primitive",
+        "proof": "Theorem. retry sub via a different primitive\nProof. as argued.",
         "reason": "the prior decomposition stalled",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
@@ -570,7 +570,7 @@ def test_commit_inject_builder_works_similarly(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Builder",
-        "target_goal_id": root, "proof": "try linarith + Mathlib.Algebra.foo",
+        "target_goal_id": root, "proof": "Theorem. try linarith + Mathlib.Algebra.foo\nProof. as argued.",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
     outcome = strategist.commit_decision(
@@ -596,7 +596,7 @@ def test_commit_inject_goal_shape_single_queue_kind(
     for tick, legacy in ((1, "Builder"), (2, "Backward")):
         d, _ = strategist.parse_decision(json.dumps({
             "kind": "Inject", "pipeline": legacy,
-            "target_goal_id": root, "proof": f"angle {tick}",
+            "target_goal_id": root, "proof": f"Theorem. angle {tick}\nProof. as argued.",
         }))
         strategist.commit_decision(
             d, conn, problem="p", tick=tick, trigger_kind="pending_review",
@@ -648,7 +648,7 @@ def test_pure_inject_routine_batch_bumps_routine_clock(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "re-attack with new plan",
+        "target_goal_id": root, "proof": "Theorem. re-attack with new plan\nProof. as argued.",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -669,7 +669,7 @@ def test_event_trigger_never_bumps_routine_clock(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "batch-done follow-up",
+        "target_goal_id": root, "proof": "Theorem. batch-done follow-up\nProof. as argued.",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="inject_batch_done",
@@ -716,7 +716,7 @@ def test_commit_inject_forward_enqueues_with_decision_id(
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nfoo",
+        "proof": "Theorem. ## Need\nfoo\nProof. as argued.",
     }))
     outcome = strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -738,7 +738,7 @@ def test_commit_inject_forward_enqueues_with_decision_id(
         (outcome.decision_row_id,),
     ).fetchone()
     assert row["batch_id"] == outcome.batch_id
-    assert row["brief"] == "## Need\nfoo"
+    assert row["brief"] == "Theorem. ## Need\nfoo\nProof. as argued."
 
 
 def test_commit_confirmshelve_cascades_shelved_to_descendants(
@@ -874,7 +874,7 @@ def test_commit_paired_confirmshelve_shares_inject_batch_id(
     }))
     ij, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nFollow-up brick to unblock sub",
+        "proof": "Theorem. ## Need\nFollow-up brick to unblock sub\nProof. as argued.",
     }))
     outcomes = strategist.commit_decisions(
         [cs, ij], conn, problem="p", tick=1,
@@ -916,7 +916,7 @@ def test_commit_inject_with_broken_chain_sets_detached(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": sub, "proof": "try again",
+        "target_goal_id": sub, "proof": "Theorem. try again\nProof. as argued.",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -949,7 +949,7 @@ def test_commit_inject_makes_goal_dispatchable_via_bfs(
 
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "proof": "retry root",
+        "target_goal_id": root, "proof": "Theorem. retry root\nProof. as argued.",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -1104,7 +1104,7 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     }))
     ij, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nbridge lemma",
+        "proof": "Theorem. ## Need\nbridge lemma\nProof. as argued.",
     }))
     # Two batches: (CS, Inject) exercises CS's commit-time outcome, then
     # (EmitDirective, Noop, Inject) exercises ED/Noop's commit-time
@@ -1116,7 +1116,7 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     )
     ij2, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "proof": "## Need\nsecond bridge",
+        "proof": "Theorem. ## Need\nsecond bridge\nProof. as argued.",
     }))
     out_b = strategist.commit_decisions(
         [ed, noop, ij2], conn, problem="p", tick=2,
@@ -1745,7 +1745,7 @@ def test_parse_decisions_accepts_dict_wraps_to_list() -> None:
 def test_parse_decisions_accepts_array_of_two() -> None:
     text = json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nbridge lemma"},
+         "proof": "Theorem. ## Need\nbridge lemma\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": 7, "reason": "drop"},
     ])
     ds, err = strategist.parse_decisions(text)
@@ -1901,7 +1901,7 @@ def test_verify_decisions_accepts_inject_root_when_root_shelved(
     db.update_goal_status(conn, root, "shelved")
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Backward", "target_goal_id": root,
-         "proof": "homotopy lemma proved; re-engage BFS on root"},
+         "proof": "Theorem. homotopy lemma proved; re-engage BFS on root\nProof. as argued."},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
@@ -2056,7 +2056,7 @@ def test_verify_decisions_accepts_confirmshelve_paired_with_inject(
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nthe missing bridge lemma"},
+         "proof": "Theorem. ## Need\nthe missing bridge lemma\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "shelve while Forward builds the lemma"},
     ]))
@@ -2162,7 +2162,7 @@ def test_verify_decisions_rejects_confirmshelve_plus_inject_bb_same_target(
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Backward",
-         "target_goal_id": root, "proof": "try angle X"},
+         "target_goal_id": root, "proof": "Theorem. try angle X\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "give up"},
     ]))
@@ -2206,7 +2206,7 @@ def test_verify_decisions_rejects_confirmshelve_ancestor_plus_inject_descendant(
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Builder",
          "target_goal_id": sub,
-         "proof": "rescue this sub now that brick X landed"},
+         "proof": "Theorem. rescue this sub now that brick X landed\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "current decomposition exhausted"},
     ]))
@@ -2231,7 +2231,7 @@ def test_verify_decisions_allows_confirmshelve_with_inject_bb_different_target(
     db.update_goal_status(conn, root, "pending_strategist_review")
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Backward",
-         "target_goal_id": other, "proof": "attack parent instead"},
+         "target_goal_id": other, "proof": "Theorem. attack parent instead\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "shelve pending; parent retry is the way"},
     ]))
@@ -2262,9 +2262,9 @@ def test_commit_decisions_multi_forward_share_one_batch_id(
     _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nlemma A"},
+         "proof": "Theorem. ## Need\nlemma A\nProof. as argued."},
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nlemma B"},
+         "proof": "Theorem. ## Need\nlemma B\nProof. as argued."},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
     outcomes = strategist.commit_decisions(
@@ -2302,9 +2302,9 @@ def test_commit_decisions_mixed_forward_and_backward_share_batch_id(
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nbridge lemma"},
+         "proof": "Theorem. ## Need\nbridge lemma\nProof. as argued."},
         {"kind": "Inject", "pipeline": "Backward",
-         "target_goal_id": root, "proof": "try a different angle"},
+         "target_goal_id": root, "proof": "Theorem. try a different angle\nProof. as argued."},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
     outcomes = strategist.commit_decisions(
@@ -2340,7 +2340,7 @@ def test_commit_decisions_inject_forward_plus_confirmshelve(
     db.update_goal_status(conn, root, "pending_strategist_review")
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nthe missing bridge lemma"},
+         "proof": "Theorem. ## Need\nthe missing bridge lemma\nProof. as argued."},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "shelve pending; rely on injected lemma later"},
     ]))

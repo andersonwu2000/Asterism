@@ -61,15 +61,16 @@ def test_an_inject_on_a_disproved_goal_is_the_revival_route(
     gid = _seed(conn, "claimed_false2", "disproved")
     assert verify_decision(
         Decision(kind="Inject", target_id=gid,
-                 brief="the claimed counterexample fails: row 40 checks "
-                       "out by the landed defs"),
+                 brief="Theorem. the claim holds after all.\nProof. the claimed "
+                       "counterexample fails: row 40 checks out by the "
+                       "landed defs."),
         conn, problem="P") == ""
     # proved / dead stay refused — those ARE kernel-settled (or
     # context-settled) and have no revival story here.
     for status, slug in (("proved", "really_done"), ("dead", "moot_ctx")):
         g2 = _seed(conn, slug, status)
         err = verify_decision(
-            Decision(kind="Inject", target_id=g2, brief="try again"),
+            Decision(kind="Inject", target_id=g2, brief="Theorem. T.\nProof. again."),
             conn, problem="P")
         assert "proved/dead are hard terminals" in err, (status, err)
 
