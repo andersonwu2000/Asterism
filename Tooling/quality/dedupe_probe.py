@@ -310,13 +310,18 @@ def _run_lean(workspace: Path, content: str) -> "tuple[int, str]":
 def _preflight_build(workspace: Path, modules: "list[str]") -> None:
     if not modules:
         return
-    from ..pipeline._lake import lake_build_modules as _lake_build_modules
+    from ..pipeline import _lake
     try:
-        _lake_build_modules(workspace, sorted(modules))
+        ok, out = _lake.lake_build_modules(workspace, sorted(modules))
     except Exception as exc:  # noqa: BLE001 — best-effort
-        print(f"[dedupe] pre-flight lake build failed (non-fatal): {exc}",
+        ok, out = False, str(exc)
+    if not ok:
+        # Best-effort, not silent (flagship 2026-08-30: builds past their
+        # 600 s limit left no trace because this result was discarded).
+        tail = (out or "").strip()[-300:]
+        print(f"[dedupe] pre-flight lake build failed (non-fatal): {tail}",
               flush=True)
-        _degraded.record(workspace, "dedupe_preflight_build", str(exc))
+        _degraded.record(workspace, "dedupe_preflight_build", tail)
 
 
 def _attribute(workspace: Path, output: str, rc: int,

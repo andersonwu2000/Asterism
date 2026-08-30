@@ -405,6 +405,24 @@ def cpu_load_ratio() -> "float | None":
     return load1 / cores
 
 
+#: RSS of one batch `lean` compile under `lake build` (flagship
+#: 2026-08-30, union_closed proof modules importing Mathlib: 6.5-7.1 GB
+#: each, 108 of them at once). Env override for other problem shapes.
+BUILD_GB_PER_THREAD = float(
+    _os.environ.get("ASTERISM_BUILD_GB_PER_THREAD") or 6.8)
+
+
+def build_headroom_ok(threads: int, *, machine_gb: "float | None" = None
+                      ) -> bool:
+    """RAM admission for a batch build: `threads` compiles fit under
+    available − the calm watermark, i.e. the machine would STAY calm
+    with them on board (owner ruling 2026-08-30). The CPU side of the
+    same admission is the gateway's build lease."""
+    machine = float(machine_gb) if machine_gb else total_gb()
+    headroom = available_gb() - pressure_high_gb(machine)
+    return headroom >= max(1, int(threads)) * BUILD_GB_PER_THREAD
+
+
 def elab_lanes() -> int:
     """The gateway's elaboration lane count (same formula as
     `lsp/gateway/elab.py`, env override included) — the ledger's OPENING

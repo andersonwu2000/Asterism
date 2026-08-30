@@ -162,6 +162,104 @@ def _elab_gate(slot_uri: "str | None" = None, meta=None):
 
 
 def elab_gate_stats() -> "dict":
+    sweep_build_leases()
     with _ELAB_CTR_LOCK:
-        return {"elab_cap": _ELAB_CONCURRENCY, "elab_busy": _ELAB_BUSY,
-                "elab_waiting": _ELAB_WAITING}
+        out = {"elab_cap": _ELAB_CONCURRENCY, "elab_busy": _ELAB_BUSY,
+               "elab_waiting": _ELAB_WAITING}
+    with _BUILD_LOCK:
+        now = time.monotonic()
+        out["build_busy"] = sum(int(l["threads"]) for l in _BUILD_LEASES.values())
+        out["build_leases"] = [
+            {"owner": l["owner"], "threads": int(l["threads"]),
+             "hint": l["hint"], "age_s": round(now - l["issued"], 1)}
+            for l in _BUILD_LEASES.values()]
+    return out
+
+
+# ─── Build leases: the second tenant on the same gate (owner 2026-08-30) ───
+#
+# One CPU budget, two consumers. Flagship 16 OCPU / 125 GB, 2026-08-30
+# 00:00Z: the daemon ran 13 `lake build`s at once, each fanning `lean`
+# compiles (6.8 GB apiece) across every core — beside the 14 lanes this
+# gate DID bound: load 217, 108 batch compiles, 4 GB left. A batch
+# build now BORROWS lanes from `_ELAB_SEM`: elaborations + builds never
+# exceed the lane count. A build takes what is free, down to one lane
+# (a build that waits for `k` free at once would starve behind a busy
+# fleet), never more than `_BUILD_LANES_MAX` (elaboration stays alive
+# beside a long build), and the lease expires by TTL so a dead daemon's
+# lanes come back on their own. The daemon renews while it builds.
+
+_BUILD_LANES_MAX = int(os.environ.get("ASTERISM_BUILD_LANES") or 0) or max(
+    1, _ELAB_CONCURRENCY // 2)
+_BUILD_LEASE_TTL_SEC = float(
+    os.environ.get("ASTERISM_BUILD_LEASE_TTL_SEC") or 900)
+_BUILD_LOCK = threading.Lock()
+_BUILD_LEASES: "dict[str, dict]" = {}
+
+
+def _expired_locked(now: float) -> "list[str]":
+    return [tok for tok, l in _BUILD_LEASES.items()
+            if now - l["renewed"] > _BUILD_LEASE_TTL_SEC]
+
+
+def sweep_build_leases() -> int:
+    """Return the lanes of every lease past its TTL. Called from the
+    stats surface (every governor pass) and around each lease call."""
+    now = time.monotonic()
+    freed = 0
+    with _BUILD_LOCK:
+        for tok in _expired_locked(now):
+            l = _BUILD_LEASES.pop(tok)
+            for _ in range(int(l["threads"])):
+                _ELAB_SEM.release()
+            freed += int(l["threads"])
+            print(f"[gateway] build lease {tok[:8]} ({l['owner']}, "
+                  f"{l['threads']} lane(s), {l['hint']!r}) expired after "
+                  f"{_BUILD_LEASE_TTL_SEC:.0f}s without renewal — lanes "
+                  f"returned", file=sys.stderr, flush=True)
+    return freed
+
+
+def build_lease_acquire(threads: int, owner: str,
+                        hint: str = "") -> "dict | None":
+    """Borrow up to `threads` lanes (clamped to `_BUILD_LANES_MAX`).
+    Grants what is free right now — all-or-nothing would deadlock two
+    builds each holding half; partial grants down to one lane keep the
+    build moving. None when no lane is free (the caller retries)."""
+    sweep_build_leases()
+    want = max(1, min(int(threads), _BUILD_LANES_MAX))
+    got = 0
+    while got < want and _ELAB_SEM.acquire(blocking=False):
+        got += 1
+    if got == 0:
+        return None
+    import uuid as _uuid
+    now = time.monotonic()
+    tok = _uuid.uuid4().hex
+    lease = {"token": tok, "threads": got, "owner": str(owner),
+             "hint": str(hint or ""), "issued": now, "renewed": now}
+    with _BUILD_LOCK:
+        _BUILD_LEASES[tok] = lease
+    return {"token": tok, "threads": got, "ttl_s": _BUILD_LEASE_TTL_SEC}
+
+
+def build_lease_renew(token: str) -> bool:
+    sweep_build_leases()
+    with _BUILD_LOCK:
+        l = _BUILD_LEASES.get(token)
+        if l is None:
+            return False
+        l["renewed"] = time.monotonic()
+        return True
+
+
+def build_lease_release(token: str) -> bool:
+    """Return the lease's lanes. False (not an error) on an unknown or
+    already-expired token — release is idempotent."""
+    with _BUILD_LOCK:
+        l = _BUILD_LEASES.pop(token, None)
+    if l is None:
+        return False
+    for _ in range(int(l["threads"])):
+        _ELAB_SEM.release()
+    return True

@@ -123,6 +123,9 @@ from .elab import (
     ELAB_CREDIT_FILENAME,
     _elab_gate,
     elab_gate_stats,
+    build_lease_acquire,
+    build_lease_renew,
+    build_lease_release,
 )
 from .backend import (
     WARMING_MSG,
@@ -277,6 +280,52 @@ async def release(request: Request):
     """Drop session metadata. Idempotent on unknown tokens."""
     token = request.path_params["token"]
     _release_session_internal(token)
+    return JSONResponse({"ok": True}, status_code=200)
+
+
+# ─── Build leases (owner 2026-08-30): `lake build` borrows lanes ──────
+#
+# The daemon's batch builds are the second tenant on the elaboration
+# gate. Non-blocking by design: 200 with a token and the lanes granted,
+# 409 with a retry hint when none is free — the daemon polls, the way
+# `/register`'s "no free slot" contract already works. Renew while the
+# build runs; release when done; a dead daemon's lease expires by TTL.
+
+@mcp.custom_route("/build/lease", methods=["POST"])
+async def build_lease_route(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    try:
+        threads = int(data.get("threads") or 1)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "threads must be an int"},
+                            status_code=400)
+    owner = str(data.get("owner") or "unknown")
+    lease = build_lease_acquire(threads, owner, str(data.get("hint") or ""))
+    if lease is None:
+        st = elab_gate_stats()
+        return JSONResponse(
+            {"retry_after_s": 3.0, "elab_cap": st["elab_cap"],
+             "elab_busy": st["elab_busy"], "build_busy": st["build_busy"]},
+            status_code=409)
+    return JSONResponse(lease, status_code=200)
+
+
+@mcp.custom_route("/build/lease/{token}/renew", methods=["POST"])
+async def build_lease_renew_route(request: Request):
+    if build_lease_renew(request.path_params["token"]):
+        return JSONResponse({"ok": True}, status_code=200)
+    return JSONResponse({"error": "unknown or expired build lease"},
+                        status_code=404)
+
+
+@mcp.custom_route("/build/release/{token}", methods=["POST"])
+async def build_lease_release_route(request: Request):
+    """Idempotent: an already-expired lease answers 200 too."""
+    build_lease_release(request.path_params["token"])
     return JSONResponse({"ok": True}, status_code=200)
 
 

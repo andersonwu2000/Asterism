@@ -140,6 +140,19 @@ def run(workspace: Path, *, once: bool = False,
             print(f"[dispatcher] dispatch.ram_budget={_budget_spec!r} "
                   f"unparseable — staying on static dispatch.pool",
                   flush=True)
+    # Batch builds borrow lanes from the gateway (owner ruling
+    # 2026-08-30): every daemon-side `lake build` — dedupe pre-flight,
+    # Backward batch, commit verify, Librarian — asks /build/lease for
+    # threads and the ledger for RAM headroom before it runs. Installed
+    # lazily: the gate only talks to the gateway at build time and bounds
+    # the build locally while the gateway is unreachable.
+    from ...pipeline import _lake as _lake_gate
+    _machine_for_builds = ram_ledger.total_gb()
+    _lake_gate.install_build_gate(_lake_gate.GatewayBuildGate(
+        f"http://127.0.0.1:{_gwl._gateway_port(workspace)}",
+        owner=f"daemon-{os.getpid()}",
+        ram_ok=lambda n: ram_ledger.build_headroom_ok(
+            n, machine_gb=_machine_for_builds)))
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
