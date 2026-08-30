@@ -103,6 +103,10 @@ PROBLEM_STATES: frozenset[str] = frozenset({
     "ingest_signoff",
     "ingested",
     "revoked",
+    # 2026-08-30: the root was kernel-disproved and the Strategist
+    # Ingested — the conjecture is settled negatively. Terminal like
+    # `ingested`; the operator's `revive` is the only way back.
+    "refuted",
 })
 
 PROBLEM_EDGES: frozenset[tuple[str, str]] = frozenset({
@@ -117,6 +121,8 @@ PROBLEM_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("ingested", "revoked"),           # unprove_revoked
     ("ingest_signoff", "revoked"),     # unprove_revoked (during the pause)
     ("revoked", "active"),             # operator_revived (asterism revive)
+    ("active", "refuted"),             # ingest_refuted (root disproved)
+    ("refuted", "active"),             # operator_revived (asterism revive)
 })
 
 # ---------------------------------------------------------------------------
@@ -262,7 +268,7 @@ EVENTS: frozenset[str] = frozenset({
     "recovery_anchor_repark",
     # problem FSM (v29) — apply_problem_transition call sites
     "amend_requested", "amend_resolved",
-    "ingest_committed", "ingest_direct",
+    "ingest_committed", "ingest_direct", "ingest_refuted",
     "signoff_approved", "signoff_rejected",
     "unprove_revoked", "operator_revived",
 })
@@ -547,6 +553,7 @@ WAKE_LEGALITY: "dict[str, frozenset[str]]" = {
     "ingest_signoff": frozenset(),
     "ingested": frozenset(),
     "revoked": frozenset(),
+    "refuted": frozenset(),
 }
 
 

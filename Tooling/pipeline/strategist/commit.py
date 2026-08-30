@@ -671,6 +671,28 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # that window auto-started the harvest chain past the human gate
     # (observed 2026-07-06, Logic.toy_list_reverse: dedupe→migrate ran
     # before "paused for human sign-off" printed).
+    # A disproved root (owner ruling 2026-08-30): the terminal is
+    # `refuted`, stamped like any terminal (`ingested_at` is what the
+    # liveness predicates read), with nothing to harvest and no sign-off
+    # pause — a kernel disproof is a result, not a claim awaiting a
+    # human.
+    root = conn.execute(
+        "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
+        " LIMIT 1", (problem,)).fetchone()
+    if root is not None and str(root["status"]) == "disproved":
+        from ...state import transitions as _transitions
+        from ...state import regress as _regress
+        db.set_problem_ingested(conn, problem)
+        _transitions.apply_problem_transition(
+            conn, problem, "refuted", event="ingest_refuted")
+        conn.commit()
+        _regress.record_terminal(workspace, problem=problem,
+                                 terminal="refuted",
+                                 deliverables=len(db.deliverables(conn, problem)))
+        print(f"[strategist] Ingest({problem}): root disproved — the "
+              f"problem closes as refuted", flush=True)
+        return
+
     harvest = True
     signoff_optout = False
     harvest_skip_msg = ""

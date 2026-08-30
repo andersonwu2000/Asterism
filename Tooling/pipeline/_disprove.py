@@ -64,8 +64,12 @@ class DisproofVerdict:
     detail: str
 
 
+BRICK_SUFFIX = "_disproof"
+
+
 def _rename_claim_decl(patch_text: str, slug: str,
-                       claim_slug: "str | None" = None) -> "str | None":
+                       claim_slug: "str | None" = None,
+                       suffix: str = _CLAIM_SUFFIX) -> "str | None":
     """Rename the patch's claim head to `<slug>_disproof_claim` so it
     can coexist with the imported original. The head the pipeline
     actually seeds is the per-attempt strategy token (`theorem s<id>`,
@@ -82,9 +86,84 @@ def _rename_claim_decl(patch_text: str, slug: str,
             rf"{re.escape(head)}\b",
             re.MULTILINE)
         if pat.search(patch_text):
-            return pat.sub(rf"\g<1>\g<2>{slug}{_CLAIM_SUFFIX}",
+            return pat.sub(rf"\g<1>\g<2>{slug}{suffix}",
                            patch_text, count=1)
     return None
+
+
+def brick_text(patch_text: str, slug: str,
+               claim_slug: "str | None" = None) -> "str | None":
+    """The certified negation as a brick: the claim under the head
+    `<slug>_disproof`, the `-- decline:` directive dropped, no probe
+    bridge. None when the patch declares no claim head."""
+    renamed = _rename_claim_decl(patch_text, slug, claim_slug=claim_slug,
+                                 suffix=BRICK_SUFFIX)
+    if renamed is None:
+        return None
+    lines = [ln for ln in renamed.splitlines()
+             if not ln.lstrip().startswith("-- decline:")]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def persist_disproof_brick(conn, *, workspace: Path, attempts_dir: Path,
+                           patch_text: str, goal, problem: str,
+                           claim_slug: "str | None",
+                           axiom_whitelist: "list[str]") -> int:
+    """Land the certified negation as a proved brick `<slug>_disproof`
+    through the ordinary Forward commit (name gate, proof_store, axiom
+    gate with olean, goal row, proved transition) — owner ruling
+    2026-08-30: `ReturnToParent(refuted)` and a refuted root's `Ingest`
+    point at THIS node, so the refutation stays kernel-linked to the
+    claim instead of living in a hand-minted `¬claim` nobody checked.
+    Returns the brick's goal id; raises on a landing failure (name
+    collision, axiom gate) — the caller records it, the certification
+    itself stands."""
+    from . import forward as _forward
+    slug = str(goal["slug"])
+    text = brick_text(patch_text, slug, claim_slug=claim_slug)
+    if text is None:
+        raise ValueError(f"no claim head to land for {slug}")
+    brick_slug = f"{slug}{BRICK_SUFFIX}"
+    src = attempts_dir / f"new_{brick_slug}.lean"
+    src.write_text(text, encoding="utf-8")
+    out = _forward.commit_forward_lemma(
+        conn, problem=problem, workspace=workspace, attempts_dir=attempts_dir,
+        metadata=_forward.ForwardMetadata(slug=brick_slug, sorry_free=True,
+                                          kind="theorem"),
+        whitelist=list(axiom_whitelist), source_filename=src.name)
+    return int(out.goal_id)
+
+
+def disproof_brick_for(conn, goal_id: int) -> "int | None":
+    """The gate-born brick of a goal: `<slug>_disproof`, proved, same
+    problem. None when the goal was never refuted through the gate."""
+    g = conn.execute("SELECT problem, slug FROM goals WHERE id = ?",
+                     (int(goal_id),)).fetchone()
+    if g is None:
+        return None
+    row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND slug = ?"
+        " AND status = 'proved' AND origin = 'forward'",
+        (g["problem"], f"{g['slug']}{BRICK_SUFFIX}")).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def refuted_goal_for(conn, brick_id: int) -> "int | None":
+    """Inverse: the `disproved` goal a `<slug>_disproof` brick refutes.
+    The pair is machine-derived — only the gate flips a goal to
+    `disproved` and only the gate mints under that name — so a proved
+    brick without a disproved partner is a brick, not a refutation."""
+    b = conn.execute("SELECT problem, slug, status, origin FROM goals"
+                     " WHERE id = ?", (int(brick_id),)).fetchone()
+    if b is None or not str(b["slug"]).endswith(BRICK_SUFFIX):
+        return None
+    if str(b["status"]) != "proved" or str(b["origin"]) != "forward":
+        return None
+    row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND slug = ?"
+        " AND status = 'disproved'",
+        (b["problem"], str(b["slug"])[:-len(BRICK_SUFFIX)])).fetchone()
+    return int(row["id"]) if row is not None else None
 
 
 def _stub_module(goal_lean_path: str) -> str:

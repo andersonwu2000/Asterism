@@ -1147,6 +1147,30 @@ def _backward_parse_and_commit(
             if verdict.ok:
                 print(f"[backward] {goal['slug']}: {verdict.detail}",
                       flush=True)
+                # The certified negation becomes a proved brick
+                # `<slug>_disproof` (owner ruling 2026-08-30): the node
+                # `ReturnToParent(refuted)` and a refuted root's `Ingest`
+                # point at. A landing failure never un-certifies the
+                # disproof — it is recorded as degraded and the goal
+                # still flips.
+                from ._disprove import persist_disproof_brick
+                try:
+                    bid = persist_disproof_brick(
+                        conn, workspace=workspace, attempts_dir=attempts_dir,
+                        patch_text=main_patch_text, goal=goal,
+                        problem=str(goal["problem"]), claim_slug=sid_token,
+                        axiom_whitelist=intent_mod.effective_axioms(
+                            intent, problem=goal["problem"]))
+                    print(f"[disproof] {goal['slug']}: certified negation "
+                          f"landed as g{bid} {goal['slug']}_disproof",
+                          flush=True)
+                except Exception as exc:  # noqa: BLE001 — the certification stands
+                    from ..core import degraded as _degraded
+                    _degraded.record(workspace, "disproof_brick",
+                                     f"{goal['slug']}: {type(exc).__name__}: {exc}")
+                    print(f"[disproof] {goal['slug']}: certified, but the "
+                          f"brick did not land ({exc}) — recorded degraded",
+                          flush=True)
                 return _abort("agent_infeasible", verdict.detail, leading)
             return _abort("agent_declined", verdict.detail, leading)
         if decline == DECLINE_UNPROVABLE:

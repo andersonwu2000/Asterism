@@ -999,6 +999,13 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v45(conn)
         conn.execute("PRAGMA user_version = 45")
         conn.commit()
+    if v < 46:
+        # v46 — a kernel-disproved root closes the problem as `refuted`
+        # (owner ruling 2026-08-30): problems.state gains the value; the
+        # CHECK is widened by the same live-DDL rebuild as v45.
+        _migrate_to_v46(conn)
+        conn.execute("PRAGMA user_version = 46")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -2772,6 +2779,45 @@ def _migrate_to_v44(conn: sqlite3.Connection) -> None:
     if n:
         print(f"[v44] strategy_subgoals.link_kind backfilled: {n} cited"
               f" edge(s) reclassified (rest minted)", flush=True)
+
+
+def _migrate_to_v46(conn: sqlite3.Connection) -> None:
+    """Widen problems.state CHECK to accept 'refuted' — the v45 rebuild
+    on the problems table. Live-DDL derived, self-healing, FK off."""
+    conn.execute("DROP TABLE IF EXISTS _pr_v46")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'problems'").fetchone()
+        sql = (row["sql"] or "") if row else ""
+        if not sql or "'refuted'" in sql:
+            return  # fresh DB from current SCHEMA already carries it
+        if "'revoked'" not in sql:
+            raise RuntimeError(
+                "v46: problems.state CHECK has no 'revoked' — v29 did not"
+                " run; refusing to guess")
+        new_sql = re.sub(r"'revoked'(\s*\))", r"'revoked', 'refuted'\1",
+                         sql, count=1)
+        if new_sql == sql:
+            raise RuntimeError("v46: could not widen the state CHECK")
+        new_sql = re.sub(r"CREATE TABLE\s+\"?problems\"?",
+                         "CREATE TABLE _pr_v46", new_sql, count=1)
+        indexes = [r["sql"] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND tbl_name = 'problems' AND sql IS NOT NULL")]
+        conn.execute(new_sql)
+        n = conn.execute(
+            "INSERT INTO _pr_v46 SELECT * FROM problems").rowcount
+        conn.execute("DROP TABLE problems")
+        conn.execute("ALTER TABLE _pr_v46 RENAME TO problems")
+        for st in indexes:
+            conn.execute(st)
+        if n:
+            print(f"[v46] problems rebuilt with 'refuted' in the state "
+                  f"CHECK ({n} row(s) carried)", flush=True)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v45(conn: sqlite3.Connection) -> None:

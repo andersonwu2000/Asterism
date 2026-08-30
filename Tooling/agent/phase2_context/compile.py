@@ -1004,7 +1004,8 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
         "- `ReturnToParent` — `flavour ∈ "
         "{\"refuted\",\"amend\",\"exhausted\"}`, `reason` (what was "
         "tried, where it died, what was learned). `refuted` also takes "
-        "`target_goal_id`: the PROVED node carrying the negation. "
+        "`target_goal_id`: the `<slug>_disproof` brick the gate minted "
+        "for a node in your chain. "
         "`amend` also takes `proposed_charter`: the claim you believe "
         "is provable.",
         "- `RequestUserAmend` is not yours → "

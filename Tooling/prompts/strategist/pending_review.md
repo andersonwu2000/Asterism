@@ -60,9 +60,10 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof.
 
 ## Decision kinds
-- `Inject` — `proof`. The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
+- `Inject` — `proof`. The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Three shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
+  - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `charter`, `reason`, optional `brief`, optional `target_goal_id`. Dispatches sub-groups:
     `charter` — the kernel-checkable research item this group exists to settle.
@@ -72,7 +73,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Papers are fetched with your tools, not with a decision: `paper_search` resolves a citation to open copies, `paper_fetch` downloads, shelves and binds one to this problem — during this wake, before investing in an unknown or uncertain plan. Do not formalize literature except where necessary.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Root.lean", "charter"}`, `proposed_body`, `question`, `reason`. Only when a user file — or the problem's charter (the top group's goal) — is wrong. The user's word is never amendable.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the charter asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
-- `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the charter. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the charter — `RequestUserAmend` with the disproof instead.
+- `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the charter. With a root: the proved root — or the `disproved` root, which closes the problem as `refuted`. `RequestUserAmend` only for a claim the user wrote wrong.
 
 `target_goal_id` accepts integer id or slug.
 

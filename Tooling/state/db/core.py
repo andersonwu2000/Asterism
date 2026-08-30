@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS problems (
     state          TEXT NOT NULL DEFAULT 'active'
                     CHECK(state IN ('active', 'awaiting_human',
                                     'ingest_signoff', 'ingested',
-                                    'revoked'))
+                                    'revoked', 'refuted'))
 );
 
 -- v35 (discussion_group_design.md) — a DISCUSSION GROUP: one charter, one
@@ -764,7 +764,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 45
+_CURRENT_USER_VERSION = 46
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

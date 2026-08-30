@@ -341,6 +341,18 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 return (f"ReturnToParent(refuted) target g{g['id']} is "
                         f"{g['status']!r}, not 'proved' — settle it "
                         f"first, or return `exhausted` instead")
+            # Proved is necessary, not sufficient (2026-08-30): the node
+            # must be the brick the disproof gate minted — `<slug>_disproof`
+            # beside a `disproved` <slug>. A hand-minted negation has no
+            # kernel link to the claim it says it refutes.
+            from .._disprove import refuted_goal_for
+            if refuted_goal_for(conn, int(g["id"])) is None:
+                return (f"ReturnToParent(refuted) target g{g['id']} "
+                        f"`{g['slug']}` is not a disproof-gate brick. "
+                        f"Inject the node you hold false with the "
+                        f"counterexample in `proof`; the worker certifies "
+                        f"the negation and `<slug>_disproof` lands — name "
+                        f"that node here")
         if flavour == "amend":
             proposed = decision.payload.get("proposed_charter")
             if not isinstance(proposed, str) or not proposed.strip():
@@ -440,13 +452,13 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # Retired 2026-08-04 (one use all-time — its own acceptance
         # test; the real counterexample work always went through mints).
         # The general machinery expresses the same bet.
-        return ("AttemptDisproof is retired — bet against a claim with "
-                "the general machinery: `Inject` a Forward mint stating "
-                "the precise negation (or a counterexample construction) "
-                "and let the kernel settle it. A sub-group hands a "
-                "refuted charter back via `ReturnToParent(refuted)` "
-                "naming that proved node; a false USER claim goes to "
-                "`RequestUserAmend` with the disproof attached")
+        return ("AttemptDisproof is retired — `Inject` the node you hold "
+                "false with the counterexample in `proof`; the worker "
+                "certifies the negation in the kernel and `<slug>_disproof` "
+                "lands. A sub-group then hands its charter back via "
+                "`ReturnToParent(refuted)` naming that node; a disproved "
+                "root exits through `Ingest` (the problem closes as "
+                "`refuted`)")
 
     if k == "Ingest":
         # Phase 6 — Ingest is the ONLY terminal (Done fused into it).
@@ -496,11 +508,16 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         root = conn.execute(
             "SELECT status FROM goals WHERE problem = ? AND"
             " origin = 'root' LIMIT 1", (problem,)).fetchone()
-        root_proved = root is not None and str(root["status"]) == "proved"
+        # A root settled either way is a deliverable: proved closes the
+        # problem as ingested, disproved (the gate's `<slug>_disproof`
+        # beside it) as refuted — owner ruling 2026-08-30.
+        root_proved = root is not None and str(root["status"]) in (
+            "proved", "disproved")
         if root is not None and not root_proved:
             return ("Ingest is blocked: this problem has a root goal "
                     f"(status={root['status']!r}) that must be proved "
-                    "before the terminal judgment is valid")
+                    "— or kernel-disproved — before the terminal "
+                    "judgment is valid")
         # A proved root counts toward the >=1-deliverable requirement:
         # a pure-root problem (no Forward deliverables, e.g. a classic
         # single-theorem charter) must still be able to exit. Same-batch
