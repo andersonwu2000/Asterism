@@ -1602,6 +1602,7 @@ export default function Constellation({
       {hovered && hovered.goal.id !== selectedId && cam.view !== null && (
         <div
           className="pointer-events-none absolute z-10 max-w-sm rounded-lg border border-edge-strong bg-surface-3 px-3 py-2"
+          data-goal-hover={hovered.goal.id}
           style={{
             left: Math.min(
               tx + (shownPosRef.current.get(hovered.goal.id) ?? hovered).x * k + 14,

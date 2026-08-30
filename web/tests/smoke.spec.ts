@@ -465,3 +465,19 @@ test('engine console: the sky opens on its fit, and stays put', async ({ page })
   for (let i = 0; i < a.length; i++)
     expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
 })
+
+test('engine console: the first node hover needs no priming click', async ({ page }) => {
+  await page.goto('/#/run')
+  const star = page.locator('svg.constellation g.cursor-pointer[transform]').first()
+  const alive = await star
+    .waitFor({ timeout: 15000 })
+    .then(() => true)
+    .catch(() => false)
+  test.skip(!alive, 'no problem in focus on this console')
+
+  // Regression: the mount reset used to publish a null camera AFTER
+  // the layout fit. Hover state rendered, but its card was gated on a
+  // camera; clicking any node caused the second render that repaired it.
+  await star.hover()
+  await expect(page.locator('[data-goal-hover]')).toBeVisible()
+})

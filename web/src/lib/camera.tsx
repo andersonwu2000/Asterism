@@ -82,14 +82,13 @@ export function useSkyCamera(
     setView(v)
   }
 
-  // reset → forget the user's camera and re-fit
+  // reset → forget the user's camera and re-fit. The reset belongs to
+  // the SAME layout effect as the fit: a passive mount effect used to
+  // run after the first fit and publish `null`, so the first node hover
+  // had no camera until a click caused another render.
   const resetKey =
     opts?.resetKey !== undefined ? opts.resetKey : `${contentW}x${contentH}`
-  useEffect(() => {
-    userAdjusted.current = false
-    setView(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetKey])
+  const fittedResetKey = useRef(resetKey)
   // ONE owner for the fit. A camera is fitted when there is no view to
   // show, and RE-fitted when the PLATE changed size under a camera the
   // reader has not touched: the engine console's sky is live, so its
@@ -112,18 +111,31 @@ export function useSkyCamera(
   // Constellation.tsx already follows.
   const fittedFor = useRef<string | null>(null)
   useLayoutEffect(() => {
+    const reset = !Object.is(fittedResetKey.current, resetKey)
+    if (reset) {
+      fittedResetKey.current = resetKey
+      userAdjusted.current = false
+      viewRef.current = null
+      fittedFor.current = null
+    }
     const size = `${contentW}x${contentH}`
     const plateChanged = fittedFor.current !== size && !userAdjusted.current
     if (view !== null && !plateChanged) return
-    if (contentW <= 0 || contentH <= 0) return
+    if (contentW <= 0 || contentH <= 0) {
+      if (reset) setView(null)
+      return
+    }
     const fit = computeFitRef.current()
-    if (!fit) return
+    if (!fit) {
+      if (reset) setView(null)
+      return
+    }
     fittedFor.current = size
     fitKRef.current = fit.k
     viewRef.current = fit
     setFitK(fit.k)
     setView(fit)
-  }, [view, contentW, contentH])
+  }, [view, contentW, contentH, resetKey])
   // The listener effects key on "a fit has landed": a component that
   // mounts in its EMPTY state (the problem sky's "no goals yet") has
   // no container div yet, and mount-only effects would never attach —
