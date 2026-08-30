@@ -412,15 +412,19 @@ BUILD_GB_PER_THREAD = float(
     _os.environ.get("ASTERISM_BUILD_GB_PER_THREAD") or 6.8)
 
 
-def build_headroom_ok(threads: int, *, machine_gb: "float | None" = None
-                      ) -> bool:
-    """RAM admission for a batch build: `threads` compiles fit under
-    available − the calm watermark, i.e. the machine would STAY calm
-    with them on board (owner ruling 2026-08-30). The CPU side of the
-    same admission is the gateway's build lease."""
+def build_threads_fit(threads: int, *, machine_gb: "float | None" = None
+                      ) -> int:
+    """RAM side of build admission: how many of `threads` compiles fit
+    under available − the calm watermark, so the machine would STAY calm
+    with them on board (owner ruling 2026-08-30). SHRINKS, never blocks:
+    the floor is one thread — a single compile is what every build did
+    before the gate existed, and a 32 GB workstation (11 GB available,
+    7.5 GB watermark) would otherwise never build again. The CPU side is
+    the gateway's build lease."""
     machine = float(machine_gb) if machine_gb else total_gb()
     headroom = available_gb() - pressure_high_gb(machine)
-    return headroom >= max(1, int(threads)) * BUILD_GB_PER_THREAD
+    fit = int(headroom // BUILD_GB_PER_THREAD) if headroom > 0 else 0
+    return max(1, min(max(1, int(threads)), fit))
 
 
 def elab_lanes() -> int:

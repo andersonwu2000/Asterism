@@ -151,7 +151,7 @@ def run(workspace: Path, *, once: bool = False,
     _lake_gate.install_build_gate(_lake_gate.GatewayBuildGate(
         f"http://127.0.0.1:{_gwl._gateway_port(workspace)}",
         owner=f"daemon-{os.getpid()}",
-        ram_ok=lambda n: ram_ledger.build_headroom_ok(
+        ram_fit=lambda n: ram_ledger.build_threads_fit(
             n, machine_gb=_machine_for_builds)))
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,

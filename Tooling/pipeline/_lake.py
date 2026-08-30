@@ -86,9 +86,10 @@ def chunk_modules_for_cmdline(modules: list[str],
 #      pool the elaborations queue on (one CPU budget, two consumers),
 #   3. names queueing and building as different failures.
 # RAM admission for a build lives beside the CPU lease: the dispatcher
-# hands the gateway gate a `ram_ok(threads)` check (the ledger's
-# headroom against the calm watermark) that must pass before lanes are
-# even asked for.
+# hands the gateway gate a `ram_fit(threads)` reading (the ledger's
+# headroom against the calm watermark, in compiles) that SHRINKS the
+# lane request — never below one, never blocking: lanes are what a
+# build waits for, RAM only sizes it.
 
 
 def default_build_threads() -> int:
@@ -162,13 +163,16 @@ class GatewayBuildGate:
     daemon (the lease's TTL on the gateway side covers the reverse
     failure — a dead daemon)."""
 
-    def __init__(self, base_url: str, *, owner: str, ram_ok=None,
+    def __init__(self, base_url: str, *, owner: str, ram_fit=None,
                  poll_sec: float = 3.0, queue_timeout_sec: float = 900.0,
                  post=_http_post_json, local_threads: "int | None" = None,
                  http_timeout: float = 10.0):
         self.base_url = base_url.rstrip("/")
         self.owner = str(owner)
-        self.ram_ok = ram_ok
+        #: `ram_fit(threads) -> int`: how many of the wanted threads the
+        #: RAM ledger says fit right now (≥ 1). Shrinks the request; the
+        #: lanes are what a build waits for, never RAM.
+        self.ram_fit = ram_fit
         self.poll_sec = float(poll_sec)
         self.queue_timeout_sec = float(queue_timeout_sec)
         self._post = post
@@ -186,13 +190,16 @@ class GatewayBuildGate:
                     f"build queue saturated — waited {waited:.0f}s for a "
                     f"build lease ({want} thread(s), {hint!r}); the machine "
                     f"is over capacity, not this build")
-            if self.ram_ok is not None and not self.ram_ok(want):
-                time.sleep(self.poll_sec)
-                continue
+            ask = want
+            if self.ram_fit is not None:
+                try:
+                    ask = max(1, min(want, int(self.ram_fit(want))))
+                except Exception:  # noqa: BLE001 — a broken reading never blocks a build
+                    ask = want
             try:
                 status, data = self._post(
                     f"{self.base_url}/build/lease",
-                    {"threads": want, "owner": self.owner, "hint": hint},
+                    {"threads": ask, "owner": self.owner, "hint": hint},
                     self._http_timeout)
             except (OSError, ValueError) as e:
                 if not self._unreachable_logged:
