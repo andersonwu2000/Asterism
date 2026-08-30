@@ -492,6 +492,21 @@ def test_ramp_climbs_only_when_both_axes_are_calm(monkeypatch):
                              "step: one step (the ramp's own rule)")
 
 
+def test_build_headroom_is_measured_against_the_calm_watermark(monkeypatch):
+    """A batch build is admitted only while the machine would STAY calm
+    with its compiles on board: threads × per-compile GB must fit under
+    available − the calm watermark (flagship 2026-08-30: 6.8 GB per
+    `lean` compile, 108 of them, 4 GB left)."""
+    monkeypatch.setattr(rl, "BUILD_GB_PER_THREAD", 7.0)
+    monkeypatch.setattr(rl, "pressure_high_gb", lambda machine: 20.0)
+    monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    assert rl.build_headroom_ok(4, machine_gb=125.0) is True    # 28 ≤ 30
+    assert rl.build_headroom_ok(5, machine_gb=125.0) is False   # 35 > 30
+    monkeypatch.setattr(rl, "available_gb", lambda: 21.0)
+    assert rl.build_headroom_ok(1, machine_gb=125.0) is False, \
+        "one compile would cross the watermark"
+
+
 def test_cpu_axis_abstains_when_unmeasurable(monkeypatch):
     """No load average (the reading raised) → the CPU axis casts no
     vote: RAM's verdict stands alone, exactly the pre-2026-08-30 shape."""
