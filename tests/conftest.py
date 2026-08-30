@@ -340,6 +340,11 @@ def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
                         lambda names, workspace, **kw: {})
     monkeypatch.setattr(_lake, "lake_build_modules",
                         lambda workspace, modules: (True, ""))
+    # The dispatcher installs a process-wide GatewayBuildGate at boot
+    # (2026-08-30); a test that runs the loop must not leave it behind
+    # for a later test's real `lake_build_modules` to poll a gateway that
+    # is not there (first full-suite run: 900 s wait, one red test).
+    monkeypatch.setattr(_lake, "_GATE", None)
     # Clean "probe says no" verdict (rc=1, no output): dedupe defeq → not
     # equal → no drop; conservative in every consumer's failure direction.
     monkeypatch.setattr(

@@ -492,19 +492,24 @@ def test_ramp_climbs_only_when_both_axes_are_calm(monkeypatch):
                              "step: one step (the ramp's own rule)")
 
 
-def test_build_headroom_is_measured_against_the_calm_watermark(monkeypatch):
-    """A batch build is admitted only while the machine would STAY calm
-    with its compiles on board: threads × per-compile GB must fit under
-    available − the calm watermark (flagship 2026-08-30: 6.8 GB per
-    `lean` compile, 108 of them, 4 GB left)."""
+def test_build_threads_fit_shrinks_to_the_calm_watermark_never_below_one(
+        monkeypatch):
+    """RAM sizes a batch build, it never blocks one: the wanted threads
+    shrink to what fits under available − the calm watermark (flagship
+    2026-08-30: 6.8 GB per `lean` compile, 108 of them, 4 GB left) —
+    and the floor is ONE, because a 32 GB workstation (11 GB available,
+    7.5 GB watermark) would otherwise never build again (the first
+    full-suite run waited 900 s on exactly that)."""
     monkeypatch.setattr(rl, "BUILD_GB_PER_THREAD", 7.0)
     monkeypatch.setattr(rl, "pressure_high_gb", lambda machine: 20.0)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
-    assert rl.build_headroom_ok(4, machine_gb=125.0) is True    # 28 ≤ 30
-    assert rl.build_headroom_ok(5, machine_gb=125.0) is False   # 35 > 30
+    assert rl.build_threads_fit(4, machine_gb=125.0) == 4    # 28 ≤ 30
+    assert rl.build_threads_fit(7, machine_gb=125.0) == 4    # 30 // 7
     monkeypatch.setattr(rl, "available_gb", lambda: 21.0)
-    assert rl.build_headroom_ok(1, machine_gb=125.0) is False, \
-        "one compile would cross the watermark"
+    assert rl.build_threads_fit(3, machine_gb=125.0) == 1, \
+        "nothing fits: still one compile, never zero"
+    monkeypatch.setattr(rl, "available_gb", lambda: 11.2)
+    assert rl.build_threads_fit(7, machine_gb=32.0) == 1
 
 
 def test_cpu_axis_abstains_when_unmeasurable(monkeypatch):

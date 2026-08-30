@@ -126,28 +126,33 @@ def test_gateway_gate_polls_until_a_lease_is_granted(monkeypatch, tmp_path):
     assert posted[0][1]["owner"] == "daemon-9"
 
 
-def test_gateway_gate_waits_for_ram_headroom_before_asking_for_lanes(
+def test_gateway_gate_shrinks_the_lane_request_to_what_ram_fits(
         monkeypatch, tmp_path):
+    """RAM sizes the request, it never blocks it: the ledger says two
+    compiles fit, so two lanes are asked for (not the default share),
+    and the build starts at once."""
     fr = _FakeRun()
     monkeypatch.setattr(_lake.subprocess, "run", fr)
-    ram = {"ok": [False, False, True]}
     asked = []
 
     def fake_post(url, payload, timeout):
-        asked.append(url)
+        asked.append((url, payload))
         if url.endswith("/build/lease"):
-            return (200, {"token": "t", "threads": 1, "ttl_s": 900})
+            return (200, {"token": "t", "threads": payload["threads"],
+                          "ttl_s": 900})
         return (200, {})
+    monkeypatch.setattr(_lake, "default_build_threads", lambda: 7)
     gate = _lake.GatewayBuildGate(
         "http://h", owner="d", poll_sec=0.01, post=fake_post,
-        ram_ok=lambda n: ram["ok"].pop(0))
+        ram_fit=lambda n: 2)
     _lake.install_build_gate(gate)
     try:
         assert _lake.lake_build_modules(tmp_path, ["M"])[0]
     finally:
         _lake.install_build_gate(None)
-    assert ram["ok"] == [], "polled the RAM check until it said yes"
-    assert asked[0].endswith("/build/lease"), "lanes are asked only once RAM is fine"
+    assert asked[0][0].endswith("/build/lease") and asked[0][1]["threads"] == 2
+    (argv, env), = fr.calls
+    assert env["LEAN_NUM_THREADS"] == "2"
 
 
 def test_gateway_gate_queue_timeout_is_named_as_queueing_not_building(
