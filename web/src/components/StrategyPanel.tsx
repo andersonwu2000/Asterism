@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { usePoll } from '../lib/api'
-import { relTime } from '../lib/format'
+import { goalLabel, relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
 import { GOAL_STATUS_CLS, goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
@@ -77,7 +77,11 @@ export default function StrategyPanel({
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
         <span className="truncate font-mono text-sm text-ink">
           strategy s{strategyId}
-          {data && <span className="text-ink-faint"> on {data.goal_slug}</span>}
+          {data && (
+            <span className="text-ink-faint">
+              {' '}on {goalLabel(data.goal_id, data.goal_slug)}
+            </span>
+          )}
         </span>
         <button
           className="ml-2 rounded-md px-1.5 text-ink-faint hover:text-ink"
@@ -120,7 +124,7 @@ export default function StrategyPanel({
                   onClick={() => onSelectGoal(sg.id)}
                 >
                   <span className="min-w-0 truncate font-mono text-xs text-ink">
-                    {sg.slug}
+                    {goalLabel(sg.id, sg.slug)}
                     {sg.reused && (
                       <span className="text-ink-faint"> · reused</span>
                     )}

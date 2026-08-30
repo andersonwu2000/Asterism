@@ -10,6 +10,38 @@ export function leafOf(path: string): string {
   return moduleOf(path).split('.').pop() ?? path
 }
 
+/** Stable machine identities, written exactly as agents cite them. */
+export function goalCode(id: number): string {
+  return `g${id}`
+}
+
+export function groupCode(id: number): string {
+  return `G${id}`
+}
+
+/** A stable code stays visible beside the human-readable name. */
+export function goalLabel(id: number, slug: string): string {
+  return `${goalCode(id)} · ${slug}`
+}
+
+export function groupLabel(id: number, title: string): string {
+  return `${groupCode(id)} · ${title}`
+}
+
+/** Fit a sky label without ever clipping the stable goal code. */
+export function compactGoalLabel(id: number, slug: string, maxChars: number): string {
+  const code = goalCode(id)
+  if (maxChars <= code.length) return code
+  const prefix = `${code} · `
+  const room = maxChars - prefix.length
+  if (room <= 0) return code
+  if (slug.length <= room) return prefix + slug
+  if (room === 1) return prefix + '…'
+  const left = Math.ceil((room - 1) / 2)
+  const right = Math.floor((room - 1) / 2)
+  return `${prefix}${slug.slice(0, left)}…${slug.slice(-right)}`
+}
+
 /** "3m ago" style relative time from an ISO timestamp. */
 export function relTime(iso: string | null | undefined): string {
   if (!iso) return '—'

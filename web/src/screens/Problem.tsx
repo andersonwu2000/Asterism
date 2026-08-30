@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
-import { relTime } from '../lib/format'
+import { goalCode, goalLabel, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { onGoalHover, onGoalOpen, takePendingGoalOpen } from '../lib/goalFocus'
@@ -115,7 +115,9 @@ function GoalsList({
   const shown = sorted.filter(
     (g) =>
       (facet === null || g.status === facet) &&
-      (q === '' || g.slug.toLowerCase().includes(q.toLowerCase())),
+      (q === '' ||
+        g.slug.toLowerCase().includes(q.toLowerCase()) ||
+        goalCode(g.id).toLowerCase().includes(q.toLowerCase())),
   )
   return (
     <>
@@ -135,7 +137,7 @@ function GoalsList({
       ))}
       <input
         className="ml-2 w-48 rounded-lg border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
-        placeholder="filter by name…"
+        placeholder="filter by name or g…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
@@ -167,6 +169,7 @@ function GoalsList({
                   onSelect(g.id)
                 }}
               >
+                <span className="mr-2 text-ink-faint">{goalCode(g.id)}</span>
                 {g.slug}
               </button>
               {/* ◈ is the sign-off mark; a sub-group's delivery is not
@@ -188,7 +191,7 @@ function GoalsList({
               {g.disproof_of && (
                 <span
                   className="ml-1.5 text-[11px] text-warn"
-                  title={`this theorem is the negation of ${g.disproof_of.slug} — the kernel settled the original claim as false`}
+                  title={`this theorem is the negation of ${goalLabel(g.disproof_of.id, g.disproof_of.slug)} — the kernel settled the original claim as false`}
                 >
                   disproof
                 </span>

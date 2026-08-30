@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { relTime } from '../lib/format'
+import { goalCode, goalLabel, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
 import {
@@ -151,7 +151,13 @@ export default function GoalPanel({
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
-        <span className="truncate font-mono text-sm text-ink" title={data?.slug}>{data?.slug ?? `#${goalId}`}</span>
+        <span
+          className="flex min-w-0 items-baseline gap-2 font-mono text-sm"
+          title={data ? goalLabel(data.id, data.slug) : goalCode(goalId)}
+        >
+          <span className="shrink-0 text-ink-faint">{goalCode(goalId)}</span>
+          {data && <span className="truncate text-ink">{data.slug}</span>}
+        </span>
         <button
           className="ml-2 rounded-md px-1.5 text-ink-faint hover:text-ink"
           onClick={onClose}
@@ -197,9 +203,9 @@ export default function GoalPanel({
               {data.disproof_of && (
                 <span
                   className="text-warn"
-                  title={`this theorem is the negation of ${data.disproof_of.slug} — the kernel settled the original claim as false`}
+                  title={`this theorem is the negation of ${goalLabel(data.disproof_of.id, data.disproof_of.slug)} — the kernel settled the original claim as false`}
                 >
-                  disproof of {data.disproof_of.slug}
+                  disproof of {goalLabel(data.disproof_of.id, data.disproof_of.slug)}
                 </span>
               )}
               {data.detached && (
@@ -345,7 +351,7 @@ export default function GoalPanel({
                               <span className="text-ink-faint">s{s.id}</span>
                               {subs.length === 1 && (
                                 <span className="text-ink">
-                                  {' '}· {subs[0].slug}
+                                  {' '}· {goalLabel(subs[0].id, subs[0].slug)}
                                   {subs[0].reused && (
                                     <span className="text-ink-faint"> · reused</span>
                                   )}
@@ -389,7 +395,7 @@ export default function GoalPanel({
                                       : 'open this subgoal'
                                   }
                                 >
-                                  {x.slug}
+                                  {goalLabel(x.id, x.slug)}
                                   {x.reused && (
                                     <span className="text-ink-faint"> · reused</span>
                                   )}

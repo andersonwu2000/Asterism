@@ -6,7 +6,7 @@ import {
   onGoalOpen,
   takePendingGoalOpen,
 } from '../lib/goalFocus'
-import { duration, relTime } from '../lib/format'
+import { duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
@@ -95,6 +95,7 @@ interface Ghost {
   k: string
   kind: string
   slug: string
+  problem: string | null
   leased_at: string | null
   until: number
 }
@@ -190,23 +191,44 @@ function stableMdTail(tail: string, size: number): string {
  * lane on another problem navigates, and the problem screen selects
  * the node on arrival. It used to jump to the problem page and select
  * nothing, which is the worst of both (owner, 2026-08-02). */
-function GoalLink({ problem, slug }: { problem: string; slug: string }) {
+function GoalLink({
+  problem,
+  slug,
+  goalId,
+}: {
+  problem: string
+  slug: string
+  goalId?: number
+}) {
   return (
     <button
-      className="max-w-72 truncate text-left font-mono text-xs text-ink-dim transition-colors hover:text-ink"
-      title={`${slug} — open this node`}
+      className="flex max-w-72 min-w-0 items-baseline gap-2 text-left font-mono text-xs transition-colors hover:text-ink"
+      title={`${goalId === undefined ? slug : goalLabel(goalId, slug)} — open this node`}
       onClick={() => {
         if (!emitGoalOpen({ problem, slug }))
           navigate(`/problems/${encodeURIComponent(problem)}`)
       }}
     >
-      {slug}
+      {goalId !== undefined && (
+        <span className="shrink-0 text-ink-faint">{goalCode(goalId)}</span>
+      )}
+      <span className="truncate text-ink-dim">{slug}</span>
     </button>
   )
 }
 
 /** One agent, one lane: what it is, what it's on, what it's writing. */
-function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; multi?: boolean }) {
+function Lane({
+  w,
+  problem,
+  goalId,
+  multi,
+}: {
+  w: RunWorker
+  problem: string | null
+  goalId?: number
+  multi?: boolean
+}) {
   const quiet = w.file?.quiet_sec ?? null
   // the lane's OWN problem outranks the console's lens — a pattern
   // scope runs agents across several problems at once
@@ -220,7 +242,7 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
       <div className="flex items-baseline gap-2.5">
         <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
         {laneProblem ? (
-          <GoalLink problem={laneProblem} slug={w.slug} />
+          <GoalLink problem={laneProblem} slug={w.slug} goalId={goalId} />
         ) : (
           <span className="max-w-72 truncate font-mono text-xs text-ink-dim">{w.slug}</span>
         )}
@@ -232,15 +254,19 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
             {w.problem.split('.').pop()}
           </span>
         )}
-        {/* a sub-group argues a delegated claim, not the problem's own:
-            say so, or two strategists on one problem read identically.
-            The top group IS the problem and wears no tag. */}
-        {w.group && !w.group.is_top && (
+        {/* every group keeps its stable code; a delegated one also says
+            how it relates to the problem's own argument */}
+        {w.group && (
           <span
-            className="shrink-0 rounded-md border border-edge px-1 py-px text-[10px] text-ink-faint"
-            title={`this agent argues a delegated claim, not the problem's own — engine term: discussion group ${w.group.id}`}
+            className="shrink-0 font-mono text-[10.5px] text-ink-faint"
+            title={
+              w.group.is_top
+                ? `the problem's own argument — ${groupCode(w.group.id)}`
+                : `a delegated claim — discussion group ${groupCode(w.group.id)}`
+            }
           >
-            delegated
+            {groupCode(w.group.id)}
+            {!w.group.is_top && <span className="font-sans"> · delegated</span>}
           </span>
         )}
         <span
@@ -576,6 +602,7 @@ export default function Run({
             k,
             kind: p.kind,
             slug: p.slug,
+            problem: p.problem ?? data.problem,
             leased_at: p.leased_at,
             until: Date.now() + 30_000,
           })
@@ -918,7 +945,11 @@ export default function Run({
                 ) : (
                   <div className="grid gap-3 lg:grid-cols-2">
                     {workers.map((w, i) => {
-                      const gid = detail?.goals.find((g) => g.slug === w.slug)?.id
+                      const laneProblem = w.problem ?? data.problem
+                      const gid =
+                        laneProblem === focusProblem
+                          ? detail?.goals.find((g) => g.slug === w.slug)?.id
+                          : undefined
                       return (
                         <div
                           key={`${w.kind}:${w.slug}:${i}`}
@@ -930,6 +961,7 @@ export default function Run({
                           <Lane
                             w={w}
                             problem={data.problem}
+                            goalId={gid}
                             multi={(data.problems?.length ?? 0) > 1}
                           />
                         </div>
@@ -942,7 +974,11 @@ export default function Run({
                     ))
                       .slice(0, ghostsShown)
                       .map((g) => {
-                      const goal = detail?.goals.find((x) => x.slug === g.slug)
+                      const ghostProblem = g.problem ?? focusProblem
+                      const goal =
+                        ghostProblem === focusProblem
+                          ? detail?.goals.find((x) => x.slug === g.slug)
+                          : undefined
                       const held = g.leased_at
                         ? duration(
                             Math.max(
@@ -962,8 +998,8 @@ export default function Run({
                             </span>
                             {/* a receipt is the moment you most want to
                                 READ what landed — the name opens it */}
-                            {focusProblem ? (
-                              <GoalLink problem={focusProblem} slug={g.slug} />
+                            {ghostProblem ? (
+                              <GoalLink problem={ghostProblem} slug={g.slug} goalId={goal?.id} />
                             ) : (
                               <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
                                 {g.slug}

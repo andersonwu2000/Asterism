@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { CameraControls, useSkyCamera } from '../lib/camera'
 import { splitSignature } from '../lib/leanSig'
+import { compactGoalLabel, goalCode, goalLabel } from '../lib/format'
 import { layoutConstellation, liveWorkIds } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import {
@@ -78,7 +79,7 @@ function computeFit(el: HTMLElement, l: ConstellationLayout): View {
     // bounding box and got cropped (Run's trophy sky). Budget the
     // widest half-label; if that would push k below the label
     // threshold, sit just under it instead — no labels, no crop.
-    const maxChars = Math.max(...l.nodes.map((n) => n.goal.slug.length))
+    const maxChars = Math.max(...l.nodes.map((n) => goalLabel(n.goal.id, n.goal.slug).length))
     const halfLabel = Math.min((maxChars * 6.4) / 2, cw / 4)
     const k2 = Math.min(k, (cw - 48 - 2 * halfLabel) / l.width)
     k = k2 >= 1.05 ? k2 : Math.min(k, 1.049)
@@ -240,8 +241,8 @@ export default function Constellation({
         room.set(n.goal.id, {
           gapL: i > 0 ? n.x - ns[i - 1].x : Infinity,
           gapR: i < ns.length - 1 ? ns[i + 1].x - n.x : Infinity,
-          nbrL: i > 0 ? ns[i - 1].goal.slug.length : 0,
-          nbrR: i < ns.length - 1 ? ns[i + 1].goal.slug.length : 0,
+          nbrL: i > 0 ? goalLabel(ns[i - 1].goal.id, ns[i - 1].goal.slug).length : 0,
+          nbrR: i < ns.length - 1 ? goalLabel(ns[i + 1].goal.id, ns[i + 1].goal.slug).length : 0,
         })
       })
     }
@@ -1375,9 +1376,7 @@ export default function Constellation({
                     const budget = Number.isFinite(half)
                       ? Math.min(44, Math.max(12, Math.floor((half * 2) / 6.4)))
                       : 44
-                    return n.goal.slug.length <= budget
-                      ? n.goal.slug
-                      : `${n.goal.slug.slice(0, Math.floor(budget / 2) - 1)}…${n.goal.slug.slice(-(Math.floor(budget / 2) - 1))}`
+                    return compactGoalLabel(n.goal.id, n.goal.slug, budget)
                   })()}
                 </text>
               )}
@@ -1621,6 +1620,9 @@ export default function Constellation({
               "proved 也超出框") — the name may break, every word stays
               inside the card */}
           <div className="mb-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+              {goalCode(hovered.goal.id)}
+            </span>
             <span className="min-w-0 font-mono text-xs break-all text-ink">
               {hovered.goal.slug}
             </span>

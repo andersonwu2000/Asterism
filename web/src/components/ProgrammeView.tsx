@@ -9,6 +9,7 @@ import {
   stubBreakdown,
 } from '../lib/groupTree'
 import type { GroupTone } from '../lib/groupTree'
+import { goalLabel, groupCode, groupLabel } from '../lib/format'
 import { renderProse } from '../lib/prose'
 import { navigate } from '../lib/router'
 import type { Programme } from '../lib/types'
@@ -135,11 +136,11 @@ export function GroupTree({
               on ? 'bg-surface' : 'hover:bg-surface/60'
             }`}
             onClick={() => onPick(g.is_top ? null : g.id)}
-            title={
+            title={`${groupLabel(g.id, charterTitle(g))} — ${
               g.is_top
-                ? "the problem's own argument — what it did not hand out"
+                ? "the problem's own argument; what it did not hand out"
                 : 'a claim handed out as its own group'
-            }
+            }`}
           >
             <span
               className="block min-w-0"
@@ -153,6 +154,9 @@ export function GroupTree({
                   </span>
                 )}
                 <GroupGlyph tone={tone} />
+                <span className="shrink-0 font-mono text-[10.5px] leading-5 text-ink-faint">
+                  {groupCode(g.id)}
+                </span>
                 <span
                   className={`truncate text-[12px] ${
                     tone === 'live' || on
@@ -277,6 +281,7 @@ function ReturnedBricks({
       {delivered.map((g) => (
         <div key={g.id} className="mb-3">
           <div className="mb-1 flex items-baseline gap-1 text-[11px] text-ink-faint">
+            <span className="shrink-0 font-mono">{groupCode(g.id)}</span>
             <span className="min-w-0 truncate" title={g.charter}>
               {charterTitle(g)}
             </span>
@@ -291,7 +296,7 @@ function ReturnedBricks({
               <button
                 key={b.id}
                 className="rounded-md border border-edge px-1.5 py-0.5 font-mono text-[11px] text-ink-dim transition-colors hover:text-ink"
-                title={`${b.slug} — open this node`}
+                title={`${goalLabel(b.id, b.slug)} — open this node`}
                 onClick={() => {
                   // claimed in place (a mounted sky) → stay; otherwise
                   // go where a sky IS and let it consume the pending
@@ -300,7 +305,7 @@ function ReturnedBricks({
                     navigate(brickHome ?? `/problems/${encodeURIComponent(g.problem)}`)
                 }}
               >
-                {b.slug}
+                {goalLabel(b.id, b.slug)}
               </button>
             ))}
           </div>
@@ -332,7 +337,11 @@ export default function ProgrammeView({
    * reading fades, instead of the whole panel blinking out */
   stale?: boolean
 }) {
-  const picker = (
+  const hasDelegation = (data.groups ?? []).some((g) => !g.is_top)
+  const shownGroup =
+    (data.groups ?? []).find((g) => g.id === data.group_id) ??
+    (data.groups ?? []).find((g) => g.is_top)
+  const picker = hasDelegation ? (
     <GroupTree
       data={data}
       group={group}
@@ -340,7 +349,15 @@ export default function ProgrammeView({
       livePhase={livePhase}
       onPick={onPickGroup}
     />
-  )
+  ) : shownGroup ? (
+    <div
+      className="mb-5 flex min-w-0 items-baseline gap-2 text-[11px] text-ink-faint"
+      title={groupLabel(shownGroup.id, charterTitle(shownGroup))}
+    >
+      <span className="shrink-0 font-mono">{groupCode(shownGroup.id)}</span>
+      <span className="truncate">{charterTitle(shownGroup)}</span>
+    </div>
+  ) : null
   const reading = stale ? 'opacity-40 transition-opacity duration-150' : ''
   if (data.current === null)
     return (

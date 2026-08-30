@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
+import { goalCode, goalLabel, groupCode, groupLabel } from '../lib/format'
 import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
@@ -55,7 +56,7 @@ const DAY_FMT = new Intl.DateTimeFormat('en-US', {
  * (2026-08-07). A namespace belongs in the type, not in the bytes.
  */
 type Follow =
-  | { kind: 'goal'; label: string }
+  | { kind: 'goal'; id: number | null; label: string }
   | { kind: 'programme' }
   | { kind: 'group'; id: number | null; label: string }
 
@@ -63,7 +64,7 @@ function followFor(e: TimelineEvent): Follow {
   if (e.object_kind === 'programme') return { kind: 'programme' }
   if (e.object_kind === 'group')
     return { kind: 'group', id: e.object_group_id, label: e.label }
-  return { kind: 'goal', label: e.label }
+  return { kind: 'goal', id: e.goal_id, label: e.label }
 }
 
 function followMatches(f: Follow, e: TimelineEvent): boolean {
@@ -78,7 +79,10 @@ function followMatches(f: Follow, e: TimelineEvent): boolean {
 }
 
 function followName(f: Follow): string {
-  return f.kind === 'programme' ? 'the Programme' : f.label
+  if (f.kind === 'programme') return 'the Programme'
+  if (f.kind === 'group' && f.id !== null) return groupLabel(f.id, f.label)
+  if (f.kind === 'goal' && f.id !== null) return goalLabel(f.id, f.label)
+  return f.label
 }
 
 function Row({
@@ -201,6 +205,14 @@ function Row({
             {e.object_kind === 'programme' && prefix && (
               <span className="text-ink-faint">Programme: </span>
             )}
+            {e.object_kind === 'goal' && e.goal_id !== null && (
+              <span className="mr-1.5 text-ink-faint">{goalCode(e.goal_id)}</span>
+            )}
+            {e.object_kind === 'group' && e.object_group_id !== null && (
+              <span className="mr-1.5 font-mono text-ink-faint">
+                {groupCode(e.object_group_id)}
+              </span>
+            )}
             {e.label}
           </span>
           )}
@@ -318,7 +330,7 @@ export default function Timeline({
   const argOf = useMemo(() => {
     const gs = data?.groups ?? []
     if (gs.length < 2) return () => null
-    const by = new Map(gs.map((g) => [g.id, g.label]))
+    const by = new Map(gs.map((g) => [g.id, groupLabel(g.id, g.label)]))
     return (id: number | null) => (id === null ? null : (by.get(id) ?? null))
   }, [data])
 
