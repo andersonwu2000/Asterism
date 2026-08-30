@@ -36,6 +36,7 @@ from .worker import (WorkerDone, FutureMeta, SchedulerState, _run_pipeline,  # n
                      CONSEC_UNCLASSIFIED_LIMIT, GATEWAY_DOWN_GRACE_SEC,
                      QUOTA_BACKOFF_BASE_SEC, QUOTA_BACKOFF_CAP_SEC)
 from .refill import (bfs_refill, _verify_problem, _problem_of_target,  # noqa: E402
+                     env_blocked_kinds,
                      _dispatch_is_duplicate)
 from .triggers import reconcile_stuck_states, strategist_triggers, _row_is_stale  # noqa: E402
 from .lock import stop_file_path, _acquire_singleton_lock, _spawn_handoff_successor  # noqa: E402
@@ -928,6 +929,7 @@ def run(workspace: Path, *, once: bool = False,
         _blocks = quota.blocked_dispatch_kinds(
             _quota_ledger, _pipeline_seats())
         blocked_kinds = set(_blocks)
+        blocked_kinds |= env_blocked_kinds()
         _prev_blocked = quota.report_block_changes(_prev_blocked, _blocks)
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until

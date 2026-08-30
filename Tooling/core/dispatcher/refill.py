@@ -59,6 +59,25 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
     return g["problem"] if g else None
 
 
+def env_blocked_kinds() -> "set[str]":
+    """Operator hold on dispatch kinds (2026-08-30): `ASTERISM_BLOCKED_KINDS`
+    is a comma list of queue kinds (`Formalizer`, `Strategist`,
+    `Librarian`, case-insensitive) the daemon must not dispatch — the
+    same lever the quota ledger pulls when a seat is out of quota, by
+    hand. Lets an experiment run one kind alone on a live tree (a
+    routine audit without a formalizer quota burn). Unknown names are
+    ignored, so a typo holds nothing rather than everything."""
+    from ..quota import DISPATCH_KIND
+    raw = os.environ.get("ASTERISM_BLOCKED_KINDS") or ""
+    canon = {v.lower(): v for v in DISPATCH_KIND.values()}
+    out: "set[str]" = set()
+    for tok in raw.split(","):
+        k = canon.get(tok.strip().lower())
+        if k:
+            out.add(k)
+    return out
+
+
 def _verify_problem(workspace: Path, problem: str) -> bool:
     """Lake-build the problem's Defs.lean + Root.lean — whichever exist.
     Present files must type-check cleanly. Phase 6: both files are
