@@ -157,6 +157,9 @@ def _quiet_pressure(monkeypatch):
     # pin lanes out of the way so model tests see the RAM formula
     # (the ramp has its own tests below)
     monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
+    # the CPU axis (2026-08-30) reads the live load average — under an
+    # xdist run that can read hot; pin it to "unmeasurable" (abstains)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
 
 
 def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
@@ -357,6 +360,7 @@ def test_pressure_pauses_dispatch_but_leaves_the_target(monkeypatch):
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 105.0)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
     t1 = _tick(led)
     assert led.dispatch_paused is True
     assert led.nl_admissible(0) is False, "paused must stop NL too"
@@ -372,6 +376,7 @@ def test_pressure_available_axis_trips_alone(monkeypatch):
     monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
     monkeypatch.setattr(rl, "available_gb",
                         lambda: rl.pressure_low_gb(125.0) - 1.0)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
     _tick(led)
     assert led.dispatch_paused is True
 
@@ -382,6 +387,7 @@ def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
     cur = {"v": 105.0}
     monkeypatch.setattr(rl, "framework_current_gb", lambda: cur["v"])
     _tick(led)
@@ -392,6 +398,109 @@ def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     cur["v"] = 90.0             # calm: below 110 - 8 - 4
     _tick(led)
     assert led.dispatch_paused is False
+
+
+# ───────────── CPU axis (owner ruling 2026-08-30) ─────────────
+#
+# Flagship 16 OCPU / 125 GB, 2026-08-30 00:00Z: the RAM axis read calm
+# all night (the box has 125 GB), the ramp climbed to 31 slots, and the
+# cores ran a queue of 69 (load 48-58 on 16). The pool's height is still
+# RAM's to PLAN — but a second measured axis, the machine's run queue,
+# now VETOES it exactly like RAM pressure does: hot pauses dispatch,
+# calm resumes, the band between holds, and the ramp climbs only when
+# BOTH axes are calm. Slots per core stay many-to-one: a thinking agent
+# adds nothing to the load average, so only the slots that are actually
+# elaborating count.
+
+def _ram_calm(monkeypatch):
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
+    monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+
+
+def test_cpu_load_ratio_is_loadavg_over_cores_and_abstains_when_unreadable(
+        monkeypatch):
+    import psutil
+    monkeypatch.setattr(psutil, "getloadavg", lambda: (32.0, 20.0, 10.0))
+    monkeypatch.setattr(rl._os, "cpu_count", lambda: 16)
+    assert rl.cpu_load_ratio() == 2.0
+
+    def boom():
+        raise OSError("no loadavg here")
+    monkeypatch.setattr(psutil, "getloadavg", boom)
+    assert rl.cpu_load_ratio() is None
+
+
+@pytest.mark.parametrize("ratio,paused", [
+    (14 / 16, False),   # every elab lane busy, nothing queued: healthy
+    (31 / 16, True),    # flagship 23:58Z
+    (53 / 4, True),     # flagship 2026-08-29 (4 OCPU)
+])
+def test_cpu_axis_hot_pauses_dispatch_while_ram_is_calm(
+        monkeypatch, ratio, paused):
+    led = rl.DispatcherLedger(110.0, 125.0)
+    _ram_calm(monkeypatch)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: ratio)
+    t1 = _tick(led)
+    assert led.dispatch_paused is paused
+    if paused:
+        assert led.nl_admissible(0) is False, "paused must stop NL too"
+        assert _tick(led) == t1, "the CPU axis stops reinforcements; it never cuts"
+
+
+def test_cpu_axis_holds_between_bands_then_releases(monkeypatch):
+    led = rl.DispatcherLedger(110.0, 125.0)
+    _ram_calm(monkeypatch)
+    ratio = {"v": 2.0}
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: ratio["v"])
+    _tick(led)
+    assert led.dispatch_paused is True
+    ratio["v"] = 1.1            # inside the band: 1.0 < 1.1 < 1.25
+    _tick(led)
+    assert led.dispatch_paused is True, "the band holds the pause"
+    ratio["v"] = 0.9            # calm
+    _tick(led)
+    assert led.dispatch_paused is False
+
+
+def test_ramp_climbs_only_when_both_axes_are_calm(monkeypatch):
+    """RAM calm and CPU merely not-hot is NOT calm: the ramp holds.
+    (The 2026-08-30 climb to 31 slots happened on RAM's verdict alone.)"""
+    _ram_calm(monkeypatch)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 2)
+    now = {"t": 100.0}
+    monkeypatch.setattr(rl.time, "monotonic", lambda: now["t"])
+    ratio = {"v": 1.1}
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: ratio["v"])
+    led = rl.DispatcherLedger(110.0, 125.0)
+    pushed = []
+    push = lambda t, f: pushed.append(t) or None  # noqa: E731
+
+    def tick_at(t):
+        now["t"] = t
+        led._last_push = -1e9
+        led.tick(nl_demand=0, push=push)
+    tick_at(100.0)
+    assert pushed[-1] == 2, "opening bid"
+    assert led.last_calm is False
+    tick_at(170.0)
+    assert pushed[-1] == 2, "CPU between bands: RAM's calm alone must not climb"
+    ratio["v"] = 0.8
+    tick_at(240.0)
+    assert led.last_calm is True
+    assert pushed[-1] == 3, ("both axes calm, a minute past the last "
+                             "step: one step (the ramp's own rule)")
+
+
+def test_cpu_axis_abstains_when_unmeasurable(monkeypatch):
+    """No load average (the reading raised) → the CPU axis casts no
+    vote: RAM's verdict stands alone, exactly the pre-2026-08-30 shape."""
+    led = rl.DispatcherLedger(110.0, 125.0)
+    _ram_calm(monkeypatch)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
+    _tick(led)
+    assert led.dispatch_paused is False
+    assert led.last_calm is True
 
 
 def test_nl_yield_demand_driven_priority(monkeypatch):
