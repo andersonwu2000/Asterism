@@ -284,6 +284,13 @@ def _render_config(req: LLMRequest, model: str, effort: str,
         'approval_policy = "never"',
         # The agent must write patch.lean / PROPOSAL.md / decision.json.
         'sandbox_mode = "workspace-write"',
+        # codex reads every AGENTS.md from the cwd up to the git root as
+        # instructions; our cwd is `.attempts/<pid>/` inside the repo, so
+        # a stray root AGENTS.md (the frontend collaborator's rulebook,
+        # 2026-08-25) became the first user message of every local codex
+        # wake — measured on the 2026-08-26 strategist + judge rollouts.
+        # Instructions come from the framework's prompt alone.
+        "project_doc_max_bytes = 0",
         # TOML: top-level keys MUST precede the first [table] header —
         # appended after [windows] they silently become [windows].* keys
         # and codex ignores them (measured 2026-08-22: the first zen
