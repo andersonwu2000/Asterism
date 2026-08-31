@@ -1879,7 +1879,7 @@ def test_shutdown_refuses_while_the_engine_is_running(
         tmp_path: Path, monkeypatch) -> None:
     import Tooling.core.cli as _cli
     monkeypatch.setattr(_cli, "daemon_status", lambda ws: {
-        "running": True, "pid": 111, "scope": "Cmp.a", "in_flight_leases": 3})
+        "running": True, "pid": 111, "scope": "Cmp.a", "in_flight": 3})
     r = TestClient(create_app(tmp_path)).post("/api/shutdown", json={})
     assert r.status_code == 409
     # the refusal has to say what it is protecting, or it is just a wall
@@ -1891,7 +1891,7 @@ def test_shutdown_preview_names_all_three(tmp_path: Path, monkeypatch) -> None:
     import Tooling.core.cli as _cli
     monkeypatch.setattr(_cli, "daemon_status", lambda ws: {
         "running": True, "pid": 111, "scope": "Cmp.a",
-        "in_flight_leases": 2, "gateway": "ready"})
+        "in_flight": 2, "gateway": "ready"})
     d = TestClient(create_app(tmp_path)).get("/api/shutdown/preview").json()
     assert d["daemon"] == {"running": True, "scope": "Cmp.a", "in_flight": 2}
     assert d["gateway"]["phase"] == "ready"
