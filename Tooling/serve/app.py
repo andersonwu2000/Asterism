@@ -1578,7 +1578,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         return {
             "daemon": {"running": bool(d.get("running")),
                        "scope": d.get("scope"),
-                       "in_flight": int(d.get("in_flight_leases") or 0)},
+                       "in_flight": int(d.get("in_flight") or 0)},
             "gateway": {"phase": d.get("gateway")},
             "console": {"pid": os.getpid()},
         }
@@ -1614,7 +1614,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                     status_code=409,
                     detail=(f"the engine is still running"
                             f"{' on ' + str(d.get('scope')) if d.get('scope') else ''}"
-                            f" with {int(d.get('in_flight_leases') or 0)} agent(s)"
+                            f" with {int(d.get('in_flight') or 0)} agent(s)"
                             f" in flight — stop the run first, or force"))
             code, msg = daemon_stop(workspace, force=True)
             if code != 0:

@@ -66,7 +66,19 @@ def _enqueue_strategist(conn: sqlite3.Connection, group_id: int,
 
     Every trigger goes through here so the row shape stays in one place:
     the seat belongs to a GROUP (`target_kind='Group'`), while `problem`
-    keeps the row scope-safe for pop / flush / recovery."""
+    keeps the row scope-safe for pop / flush / recovery.
+
+    Active groups only (2026-08-31): a seat for a closed/retired group
+    is dead on arrival — the pop loop's settled-target skip deletes it
+    and the trigger re-enqueues next tick (group 717: 5,393 skip lines
+    in three hours). The chokepoint refuses instead."""
+    row = conn.execute("SELECT status FROM groups WHERE id = ?",
+                       (int(group_id),)).fetchone()
+    if row is None or str(row["status"]) != "active":
+        st = "gone" if row is None else str(row["status"])
+        print(f"[trigger] no seat for group {group_id} ({problem}) — "
+              f"group is {st}", flush=True)
+        return
     db.enqueue(conn, kind="Strategist", target_id=str(group_id),
                target_kind="Group", priority=priority, problem=problem)
 
@@ -267,6 +279,21 @@ def strategist_triggers(conn: sqlite3.Connection,
             _scope_args).fetchall():
         prob = str(row["problem"])
         gid = int(row["group_id"])
+        _g = conn.execute("SELECT status FROM groups WHERE id = ?",
+                          (gid,)).fetchone()
+        if _g is None or str(_g["status"]) != "active":
+            # The audited group died after the audit (closed/retired):
+            # the findings have no seat to land on — stamp the verdict
+            # acted so this source extinguishes instead of re-seating
+            # every tick forever (2026-08-31, group 717).
+            conn.execute(
+                "UPDATE routine_verdicts SET acted_at = ?"
+                " WHERE group_id = ? AND fired = 1 AND acted_at IS NULL",
+                (db.now(), gid))
+            conn.commit()
+            print(f"[trigger] fired verdict for group {gid} ({prob}) "
+                  f"extinguished — group no longer active", flush=True)
+            continue
         if not _transitions.problem_accepts_wake(conn, prob,
                                                  "inject_batch_done"):
             continue

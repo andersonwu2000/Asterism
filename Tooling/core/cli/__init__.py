@@ -23,7 +23,7 @@ from .run import (
     LOG_DIR,
     LOG_RETENTION_KEEP,
     _Tee,
-    _daemon_in_flight,
+    _daemon_counts,
     _daemon_live_pid,
     _daemon_start_lock,
     _force_utf8_io,

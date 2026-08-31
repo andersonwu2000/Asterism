@@ -283,7 +283,7 @@ _WATERMARKS = {
     # fresh locks per module — the monolith never grows back.
     "Tooling/core/dispatcher/__init__.py": 250,
     "Tooling/core/dispatcher/refill.py": 300,
-    "Tooling/core/dispatcher/triggers.py": 610,  # +suppress_stall (promotion gate) 2026-08-30
+    "Tooling/core/dispatcher/triggers.py": 628,  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     "Tooling/core/dispatcher/worker.py": 650,
     "Tooling/core/dispatcher/lock.py": 300,
     "Tooling/core/dispatcher/loop.py": 1300,
@@ -639,7 +639,7 @@ _WATERMARKS = {
     # systemd unit, installer/launch.ps1).
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/run.py": 750,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/run.py": 758,  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 550,  # born 2026-08-28 from the cli.py split (A3)

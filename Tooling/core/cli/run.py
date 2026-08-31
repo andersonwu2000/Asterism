@@ -322,21 +322,30 @@ def _daemon_live_pid(workspace: Path) -> "int | None":
     return pid if _disp._lock_held_by_live_daemon(pid, start) else None
 
 
-def _daemon_in_flight(workspace: Path) -> int:
+def _daemon_counts(workspace: Path) -> "tuple[int, int]":
+    """(running pipelines, leased queue rows).
+
+    2026-08-31: the old single number counted LEASED QUEUE ROWS and was
+    displayed as "agents" — a stop-window read said 34 while 9 pipelines
+    ran. `in_flight` now means running pipelines (what a human calls
+    agents); the lease count stays as a separate diagnostic."""
     path = workspace / "asterism.db"
     if not path.exists():
-        return 0
+        return 0, 0
     try:
         # Read-only on purpose: db.connect() CREATES a missing file (a
         # write), and this runs from the serve API's status poll too.
         conn = db.connect_readonly(path)
-        n = conn.execute(
+        running = conn.execute(
+            "SELECT count(*) FROM pipelines WHERE finished_at IS NULL"
+        ).fetchone()[0]
+        leases = conn.execute(
             "SELECT count(*) FROM queue WHERE owner_pid IS NOT NULL"
         ).fetchone()[0]
         conn.close()
-        return int(n)
+        return int(running), int(leases)
     except Exception:  # noqa: BLE001 — status must not crash
-        return -1
+        return -1, -1
 
 
 def daemon_status(workspace: Path) -> dict:
@@ -407,7 +416,10 @@ def daemon_status(workspace: Path) -> dict:
         # state — "stopping" is only meaningful while something runs
         "stopping": pid is not None
         and _disp.stop_file_path(workspace).exists(),
-        "in_flight_leases": _daemon_in_flight(workspace),
+        # `in_flight` = running pipelines (the "agents" number);
+        # `in_flight_leases` = leased queue rows (diagnostic).
+        "in_flight": _daemon_counts(workspace)[0],
+        "in_flight_leases": _daemon_counts(workspace)[1],
         # silent-degradation ledger (core/degraded.py): best-effort steps
         # that failed and logged one line — dedupe pre-flight / probe
         # refusals etc. Per run (reset at daemon boot); {} = nothing
@@ -615,7 +627,7 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
         fsutil.unlink_tolerant(stop_file)
         return 0, "no daemon running"
     if force:
-        n = _daemon_in_flight(workspace)
+        n = _daemon_counts(workspace)[0]
         try:
             import psutil
             p = psutil.Process(pid)
