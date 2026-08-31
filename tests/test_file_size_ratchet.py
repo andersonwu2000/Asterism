@@ -621,7 +621,7 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/rpc.py": 950,  # 2026-08-29 wall (CPU-second meter) + native_decide gate; SPLIT before the next bump (gates/wall -> own module)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/gates.py": 500,  # 2026-08-30 ancestor-cycle refusal at the editing tools
-    "Tooling/lsp/gateway/verify.py": 850,  # born 2026-08-29 from the gateway split (A1-4b)
+    "Tooling/lsp/gateway/verify.py": 880,  # +30 2026-08-31: #5 conditional headline hoist
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
     # `Tooling/core/cli.py` (3,307 lines, no prior watermark here) split
     # move-only into `Tooling/core/cli/` by command domain (task A3): the

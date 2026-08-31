@@ -75,6 +75,46 @@ from .sessions import _acquire_slot, _current_session
 from .state import SessionMetadata, _log_for, _state, _ts_now
 
 
+def _hoist_conditional(response: dict) -> dict:
+    """#5 (owner approval 2026-08-31): a green whose truth depends on
+    unproved sub-goals must SAY so at the headline. The facts already
+    lived in this response — `parity.state == "conditional"` and the
+    warn-severity `submission.citation` issues (shelved siblings
+    included) — but workers key on `ok`/`diagnostic_count` and read a
+    decomposition patch's clean probe as a finished proof (21 reports;
+    4 on 2026-08-31 alone). Rebuild the dict so `conditional_on` sits
+    DIRECTLY after `ok`. `unresolved` parity is left alone: that is a
+    framework defect with its own loud note, not legitimate waiting."""
+    deps: "set[str]" = set()
+    parity = response.get("parity")
+    if isinstance(parity, dict) and parity.get("state") == "conditional":
+        deps.update(str(x) for x in (parity.get("depends_on") or ()))
+    sub = response.get("submission")
+    cite = sub.get("citation") if isinstance(sub, dict) else None
+    if isinstance(cite, dict):
+        for issue in cite.get("issues") or ():
+            if (isinstance(issue, dict)
+                    and issue.get("severity") == "warn"
+                    and issue.get("slug")):
+                deps.add(str(issue["slug"]))
+    if not deps:
+        return response
+    note = ("`ok` is CONDITIONAL on these unproved sub-goals: this "
+            "deliverable is a decomposition step, not a finished proof "
+            "— each listed goal still needs its own proof (details: "
+            "`parity`, `submission.citation`)")
+    out: dict = {}
+    for k, v in response.items():
+        out[k] = v
+        if k == "ok":
+            out["conditional_on"] = sorted(deps)
+            out["conditional_note"] = note
+    if "conditional_on" not in out:  # no `ok` key — still say it
+        out["conditional_on"] = sorted(deps)
+        out["conditional_note"] = note
+    return out
+
+
 @mcp.tool(structured_output=False)
 @_offload_to_thread
 def validate_file(content: str = "", file: str = "") -> str:
@@ -137,7 +177,8 @@ def validate_file(content: str = "", file: str = "") -> str:
             target (patch.lean), or a `new_<slug>.lean` beside it.
 
     Returns: { ok, file, content_sha256, diagnostics, diagnostic_count
-               [, inlined_siblings], commit_header, submission }.
+               [, inlined_siblings]
+               [, conditional_on, conditional_note], commit_header, submission }.
     """
     _recv_ts = _ts_now()
     if (content or "").strip():
@@ -429,6 +470,7 @@ def validate_file(content: str = "", file: str = "") -> str:
     if _failing:
         response["commit_will_reject"] = _failing
     response["submission"] = submission
+    response = _hoist_conditional(response)
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,
