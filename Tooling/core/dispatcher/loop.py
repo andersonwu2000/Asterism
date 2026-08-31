@@ -132,7 +132,12 @@ def run(workspace: Path, *, once: bool = False,
         _machine_gb = ram_ledger.total_gb()
         _budget_gb = ram_ledger.parse_budget(_budget_spec, _machine_gb)
         if _budget_gb:
-            ledger = ram_ledger.DispatcherLedger(_budget_gb, _machine_gb)
+            _idle_spares = config.get(
+                "ledger.idle_spares", default=ram_ledger.IDLE_SPARES_DEFAULT,
+                env_var="ASTERISM_IDLE_SPARES", cast=int,
+                workspace=workspace)
+            ledger = ram_ledger.DispatcherLedger(
+                _budget_gb, _machine_gb, idle_spares=_idle_spares)
             print(f"[dispatcher] RAM ledger active — budget "
                   f"{_budget_gb:.1f} GB of {_machine_gb:.1f} GB; "
                   f"dispatch.pool yields to the ledger's target_slots",

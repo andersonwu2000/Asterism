@@ -46,6 +46,7 @@ _CONFIG_FILENAME = "Asterism.yaml"
 # kills). Removing a call? Delete the entry (reverse direction fails too).
 CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.pool": "worker pool == gateway workers, 1:1 #118 (ASTERISM_POOL; 4)",
+    "ledger.idle_spares": "warm-pool idle spares above in-use slots — the pool follows demand, not the calm clock (ASTERISM_IDLE_SPARES; 4)",
     "dispatch.ram_budget": "adaptive RAM ledger budget, '28G' or '85%' — splits the worker economy: Lean slots follow target_slots(budget - NL reserve), NL kinds admit on measured available RAM; unset = legacy static dispatch.pool semantics (ASTERISM_RAM_BUDGET; '')",
     "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
     "dispatch.intake_timeout_sec": "Formalizer intake turn spawn cap (ASTERISM_INTAKE_TIMEOUT_SEC; 300)",
@@ -316,6 +317,7 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "librarian.model": (str, "model that curates the Library"),
     "adversary.model": (str, "model that adversarially reviews the research programme"),
     "dispatch.pool": (int, "max agents working at once"),
+    "ledger.idle_spares": (int, "warm-pool idle spares above in-use slots"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
     # re-admitted (owner, 2026-07-18, reversing the 2026-07-14 hold):
@@ -378,6 +380,7 @@ def models_for(provider: "str | None") -> "list[str]":
 
 _INT_BOUNDS = {
     "dispatch.pool": (1, 32),
+    "ledger.idle_spares": (1, 32),
     "dispatch.budget_sec": (60, 604800),
     "dispatch.shelve_threshold": (1, 50),
 }

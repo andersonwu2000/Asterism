@@ -34,6 +34,7 @@ _PINNED = {
     "adversary.model",
     # dispatch knobs a mathematician tunes
     "dispatch.pool",
+    "ledger.idle_spares",   # 2026-08-31: warm-pool spares (owner ruling)
     "dispatch.budget_sec",
     "dispatch.shelve_threshold",
     "dispatch.quota_wait",

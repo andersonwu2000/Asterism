@@ -443,6 +443,16 @@ def elab_lanes() -> int:
     return max(2, (_os.cpu_count() or 4) - 2)
 
 
+#: Idle-spares cap (owner ruling 2026-08-31): the warm pool follows
+#: DEMAND — in-use slots plus this many warm spares — never the calm
+#: clock alone. Field (08-31): the calm ramp climbed the fleet's pool
+#: to 93 open workers with busy=0; Lean heap never deflates, so the
+#: idle pool parked the cgroup at ~100G inside the pressure hysteresis
+#: band (not hot enough to shed, never calm enough to resume) and
+#: dispatch stayed PAUSED for two hours with 15 Strategist wakes queued.
+IDLE_SPARES_DEFAULT = 4
+
+
 class DispatcherLedger:
     """Dispatcher-side ledger state + the rate-limited tick.
 
@@ -486,9 +496,11 @@ class DispatcherLedger:
     #: band in pressure_low/high_gb).
     PRESSURE_RELEASE_SLACK_GB = 4.0
 
-    def __init__(self, budget_gb: float, machine_gb: float) -> None:
+    def __init__(self, budget_gb: float, machine_gb: float,
+                 idle_spares: int = IDLE_SPARES_DEFAULT) -> None:
         self.budget_gb = budget_gb
         self.machine_gb = machine_gb
+        self.idle_spares = max(1, int(idle_spares))
         # Pessimistic seed — the price only comes DOWN as measurements
         # arrive (see SLOT_GB_EMA_TAU_SEC).
         self.slot_gb = slot_recycle_gb()
@@ -707,6 +719,14 @@ class DispatcherLedger:
         # of the pool and must not reset the climb (its decay is one
         # slot per calm TICK, the ramp's step one per calm MINUTE)
         target = self._apply_ramp(target, now)
+        # Idle-spares cap (see IDLE_SPARES_DEFAULT): open slots the
+        # pipelines are not using are pure heap parked against the
+        # budget — cap the pool at demand plus a few warm spares. The
+        # counts are last push's reply; a claim surge raises the cap on
+        # the next tick (the ramp above keeps its own state, so the
+        # response is immediate, not one-per-calm-minute).
+        in_use = max(0, self.open_slots - self.free_slots)
+        target = min(target, in_use + self.idle_spares)
         target = self._apply_nl_yield(target)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)
