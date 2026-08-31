@@ -972,6 +972,13 @@ def _group_quiet(conn: sqlite3.Connection, goal_ids: "set[int]", *,
     return not any(str(g) in live for g in goal_ids)
 
 
+def problem_benched(conn: sqlite3.Connection, problem: str) -> bool:
+    """Operator bench flag (2026-08-31): True = no dispatch, no seats."""
+    row = conn.execute("SELECT benched FROM problems WHERE name = ?",
+                       (problem,)).fetchone()
+    return bool(row and row[0])
+
+
 def groups_stalled(conn: sqlite3.Connection, *,
                    scope: str | None = None,
                    running: "set[tuple] | None" = None

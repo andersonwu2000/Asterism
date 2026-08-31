@@ -369,6 +369,49 @@ def cmd_word(args: argparse.Namespace) -> int:
     return _cmd_intent_value(args, "word")
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Owner bench (2026-08-31): take a problem off the live path
+    WITHOUT touching its state — no refill dispatch, no Strategist
+    seats. Unleased queue rows are flushed so nothing already enqueued
+    fires; in-flight work finishes on its own. `unbench` reverses."""
+    conn = db.connect()
+    db.init_schema(conn)
+    problem = str(args.problem)
+    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                    (problem,)).fetchone() is None:
+        print(f"[bench] unknown problem {problem!r}")
+        return 1
+    conn.execute("UPDATE problems SET benched = 1 WHERE name = ?",
+                 (problem,))
+    cur = conn.execute(
+        "DELETE FROM queue WHERE problem = ? AND owner_pid IS NULL",
+        (problem,))
+    conn.commit()
+    print(f"[bench] {problem}: benched — no new dispatch or seats; "
+          f"flushed {cur.rowcount} queued row(s); state untouched "
+          f"(`asterism unbench` to resume).")
+    conn.close()
+    return 0
+
+
+def cmd_unbench(args: argparse.Namespace) -> int:
+    """Reverse of `bench` — the problem rejoins the live path on the
+    next daemon tick."""
+    conn = db.connect()
+    db.init_schema(conn)
+    problem = str(args.problem)
+    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                    (problem,)).fetchone() is None:
+        print(f"[unbench] unknown problem {problem!r}")
+        return 1
+    conn.execute("UPDATE problems SET benched = 0 WHERE name = ?",
+                 (problem,))
+    conn.commit()
+    print(f"[unbench] {problem}: back on the live path.")
+    conn.close()
+    return 0
+
+
 def cmd_revive(args: argparse.Namespace) -> int:
     """Problem FSM §2.1: re-enter a REVOKED problem (post-Ingest
     un-prove quarantine) into the live path. The incident announcement

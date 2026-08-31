@@ -1006,6 +1006,20 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v46(conn)
         conn.execute("PRAGMA user_version = 46")
         conn.commit()
+    if v < 47:
+        # v47 — operator bench (owner ruling 2026-08-31): a benched
+        # problem takes no refill dispatch and no Strategist seat,
+        # state untouched. Fresh DBs get the column from SCHEMA; this
+        # step backfills older disks (idempotent via duplicate-column
+        # tolerance, matching the additive-block precedent).
+        try:
+            conn.execute("ALTER TABLE problems ADD COLUMN benched"
+                         " INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+        conn.execute("PRAGMA user_version = 47")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the

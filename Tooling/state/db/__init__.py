@@ -86,6 +86,7 @@ from .problems import (
     problem_quiet,
     problems_stalled,
     problem_has_awaiting_human,
+    problem_benched,
     scoped_problem_names,
     dispatchable_open_goals,
     increment_goal_attempts,

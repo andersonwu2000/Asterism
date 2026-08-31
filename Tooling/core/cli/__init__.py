@@ -103,7 +103,9 @@ from .maint import (
     cmd_reject,
     cmd_reject_ingest,
     cmd_repin,
+    cmd_bench,
     cmd_revive,
+    cmd_unbench,
     cmd_word,
 )
 

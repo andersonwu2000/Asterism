@@ -72,6 +72,10 @@ def _enqueue_strategist(conn: sqlite3.Connection, group_id: int,
     is dead on arrival — the pop loop's settled-target skip deletes it
     and the trigger re-enqueues next tick (group 717: 5,393 skip lines
     in three hours). The chokepoint refuses instead."""
+    if db.problem_benched(conn, problem):
+        print(f"[trigger] no seat for group {group_id} ({problem}) — "
+              f"problem is benched", flush=True)
+        return
     row = conn.execute("SELECT status FROM groups WHERE id = ?",
                        (int(group_id),)).fetchone()
     if row is None or str(row["status"]) != "active":

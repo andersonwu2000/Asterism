@@ -230,8 +230,11 @@ def bfs_refill(conn: sqlite3.Connection,
 
     def problem_paused(problem: str) -> bool:
         if problem not in awaiting_cache:
-            awaiting_cache[problem] = db.problem_has_awaiting_human(
-                conn, problem)
+            # Bench (2026-08-31) rides the same skip: a benched problem
+            # takes no dispatch, no state touched.
+            awaiting_cache[problem] = (
+                db.problem_has_awaiting_human(conn, problem)
+                or db.problem_benched(conn, problem))
         return awaiting_cache[problem]
 
     # Open goals → enqueue if no in-flight or queued attempt exists.

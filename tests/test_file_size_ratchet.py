@@ -283,7 +283,7 @@ _WATERMARKS = {
     # fresh locks per module — the monolith never grows back.
     "Tooling/core/dispatcher/__init__.py": 250,
     "Tooling/core/dispatcher/refill.py": 300,
-    "Tooling/core/dispatcher/triggers.py": 628,  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
+    "Tooling/core/dispatcher/triggers.py": 632,  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     "Tooling/core/dispatcher/worker.py": 650,
     "Tooling/core/dispatcher/lock.py": 300,
     "Tooling/core/dispatcher/loop.py": 1300,
@@ -512,7 +512,7 @@ _WATERMARKS = {
     # self-heal (2026-08-24); +v43 stall rebuild.
     # 2750→2800: judge provenance columns (survey P1/P2,
     # 2026-08-29) — conscious bump.
-    "Tooling/state/db_migrations.py": 2860,  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 2874,  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
@@ -642,8 +642,8 @@ _WATERMARKS = {
     "Tooling/core/cli/run.py": 758,  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/maint.py": 550,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/main.py": 360,  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 371,  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision

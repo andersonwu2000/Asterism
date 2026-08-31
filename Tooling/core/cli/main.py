@@ -29,7 +29,9 @@ from .maint import (
     cmd_reject,
     cmd_reject_ingest,
     cmd_repin,
+    cmd_bench,
     cmd_revive,
+    cmd_unbench,
     cmd_word,
 )
 from .problems import cmd_init, cmd_init_batch, cmd_reset
@@ -275,6 +277,19 @@ def main(argv: list[str] | None = None) -> int:
     p_revive.add_argument("problem", type=str,
                           help="problem name in state 'revoked'")
     p_revive.set_defaults(func=cmd_revive)
+
+    p_bench = sub.add_parser(
+        "bench",
+        help="take a problem off the live path without touching its "
+             "state — no dispatch, no Strategist seats (owner's "
+             "'hopeless for now' lever; `unbench` reverses)")
+    p_bench.add_argument("problem", type=str, help="problem name")
+    p_bench.set_defaults(func=cmd_bench)
+
+    p_unbench = sub.add_parser(
+        "unbench", help="put a benched problem back on the live path")
+    p_unbench.add_argument("problem", type=str, help="problem name")
+    p_unbench.set_defaults(func=cmd_unbench)
 
     p_kstats = sub.add_parser(
         "knowledge-stats",

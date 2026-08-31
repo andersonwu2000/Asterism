@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS problems (
     -- judgment. Backfilled once for legacy root-proved problems (v16
     -- migration) so they are not re-triggered as stalled.
     ingested_at    TEXT NULL DEFAULT NULL,
+    -- Operator bench (2026-08-31): a benched problem takes no refill
+    -- dispatch and no Strategist seat, state untouched — the owner's
+    -- "hopeless for now, keep the assets" lever (`asterism bench`).
+    benched        INTEGER NOT NULL DEFAULT 0 CHECK(benched IN (0,1)),
     -- Problem FSM (v29, problem_fsm_design.md §2): the explicit
     -- lifecycle state; single sanctioned mutator =
     -- transitions.apply_problem_transition. 'revoked' = post-Ingest
@@ -764,7 +768,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 46
+_CURRENT_USER_VERSION = 47
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
