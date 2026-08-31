@@ -677,7 +677,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1212,  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
+    "Tooling/agent/phase2_context/compile.py": 1243,  # +31 2026-08-31 heading demotion + wake-time TREE refresh  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section
@@ -722,7 +722,7 @@ _WATERMARKS = {
     # (`serve/data/verdict.py`) rather than into `timeline.py`, which
     # this same run would otherwise have pushed over its watermark.
     "Tooling/serve/app.py": 1750,
-    "Tooling/knowledge/workspace_query.py": 1450,  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
+    "Tooling/knowledge/workspace_query.py": 1475,  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,
     "Tooling/pipeline/forward.py": 1200,

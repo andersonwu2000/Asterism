@@ -206,6 +206,15 @@ def _resolve(spec: str, cwd: Path) -> Path:
     here = cwd / spec
     if here.exists():
         return here
+    # `.lake` lives at the WORKSPACE root only — the tool taught
+    # ".lake/packages/mathlib/Mathlib" as a relative example while every
+    # spawn's cwd is its problem dir, so the literal example silently
+    # found nothing (37 fleet reports, 2026-08-31). Anchor it where it
+    # actually is.
+    if spec.replace("\\", "/").startswith(".lake/") or spec == ".lake":
+        ws = workspace_of(cwd)
+        if ws is not None and (ws / spec).exists():
+            return ws / spec
     own = _own_attempt_dir()
     if own is not None:
         # Inside `own`, and STILL inside it after `..` — the second
@@ -1005,15 +1014,40 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
     # near-misses is the same "answer is in there somewhere" failure the
     # CATALOG had.
     gid = re.fullmatch(r"g(\d+)", name)
+    # Scope to the caller's problem first (2026-08-31: 100 reports in a
+    # day — a common slug like `main` answered with a pile of unrelated
+    # problems' goals, burning the reply budget without resolving the
+    # one the caller meant). Nothing local → the old unscoped search,
+    # so cross-problem library lookups still answer.
+    prob = None
+    pdir = _problem_dir_of(cwd, ws)
+    if pdir is not None:
+        try:
+            prob = ".".join(pdir.relative_to(ws / "Problems").parts)
+        except (ValueError, OSError):
+            prob = None
     try:
-        rows = conn.execute(
-            "SELECT slug, lean_path, statement, status, problem, "
-            "alias_target_id FROM goals "
-            + ("WHERE id = ?" if gid else
-               "WHERE slug = ? OR slug LIKE ? "
-               "ORDER BY (slug = ?) DESC, slug LIMIT 6"),
-            (int(gid.group(1)),) if gid else (name, f"%{name}%", name)
-        ).fetchall()
+        rows = []
+        if gid:
+            rows = conn.execute(
+                "SELECT slug, lean_path, statement, status, problem, "
+                "alias_target_id FROM goals WHERE id = ?",
+                (int(gid.group(1)),)).fetchall()
+        else:
+            if prob:
+                rows = conn.execute(
+                    "SELECT slug, lean_path, statement, status, problem, "
+                    "alias_target_id FROM goals "
+                    "WHERE problem = ? AND (slug = ? OR slug LIKE ?) "
+                    "ORDER BY (slug = ?) DESC, slug LIMIT 6",
+                    (prob, name, f"%{name}%", name)).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    "SELECT slug, lean_path, statement, status, problem, "
+                    "alias_target_id FROM goals "
+                    "WHERE slug = ? OR slug LIKE ? "
+                    "ORDER BY (slug = ?) DESC, slug LIMIT 6",
+                    (name, f"%{name}%", name)).fetchall()
         # An alias row's own file is `def slug := @sNNN` — truthful and
         # useless (90 self-reports: "shows the full statement for
         # unproved goals but only the alias for proved ones"). The

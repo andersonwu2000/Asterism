@@ -216,10 +216,22 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # TREE.md joined 07-29 (judge feedback ×2): tree-shape and status
     # claims were uncheckable; names+statuses live here (ids do not —
     # decisions.md annotates its id targets with slug+status instead).
-    for fname in ("Root.lean", "Defs.lean", "TREE.md"):
+    for fname in ("Root.lean", "Defs.lean"):
         src = problem_dir / fname
         if src.exists():
             shutil.copyfile(src, proj / fname)
+    # TREE.md is rendered fresh from THIS round's connection (2026-08-31,
+    # 131 fleet reports: the dispatcher's copy could describe another
+    # moment than the projection judging it). Fallback to the on-disk
+    # copy only if the render itself fails.
+    from ..state import tree as _tree
+    try:
+        (proj / "TREE.md").write_text(_tree.render(conn, problem),
+                                      encoding="utf-8")
+    except Exception:  # noqa: BLE001 — degrade to the dispatcher's copy
+        src = problem_dir / "TREE.md"
+        if src.exists():
+            shutil.copyfile(src, proj / "TREE.md")
     # The decision-kind contract is reference material, not instruction:
     # 17 lines that were inlined into every judge spawn's prompt. It
     # rides the projection instead, next to the decisions it governs.

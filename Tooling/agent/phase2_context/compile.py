@@ -581,6 +581,18 @@ def _section_current_directive(conn: sqlite3.Connection,
     ]
 
 
+def _demote_headings(body: str) -> str:
+    """Shift every markdown heading down two levels (fence-aware), so a
+    document that opens with `# <Title>` can nest inside an H2 section
+    without terminating it."""
+    out, fenced = [], False
+    for ln in body.splitlines():
+        if ln.lstrip().startswith("```"):
+            fenced = not fenced
+        out.append(("##" + ln) if (not fenced and ln.startswith("#")) else ln)
+    return "\n".join(out)
+
+
 def _section_tree_inline(conn: sqlite3.Connection,
                          workspace: Path, problem: str) -> list[str]:
     """Tree SUMMARY header for the Strategist (2026-07-13, user call):
@@ -596,6 +608,20 @@ def _section_tree_inline(conn: sqlite3.Connection,
     rows = conn.execute(
         "SELECT slug, status, attempts FROM goals WHERE problem = ?"
         " ORDER BY id", (problem,)).fetchall()
+    if rows:
+        # This section POINTS at TREE.md; the dispatcher renders that
+        # file on its own clock, so the pointer could point at another
+        # moment (131 fleet reports, the #1 feedback theme). Re-render
+        # from THIS connection so file and Context describe one
+        # snapshot. Best-effort: a write failure must not kill a wake.
+        from ...state import tree as _tree
+        try:
+            tp = db.problem_dir(workspace, problem) / "TREE.md"
+            tp.parent.mkdir(parents=True, exist_ok=True)
+            tp.write_text(_tree.render(conn, problem), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[context] TREE.md refresh failed for {problem}: "
+                  f"{type(exc).__name__}", flush=True)
     if not rows:
         # Goal rows are written at COMMIT, so a brick in flight when
         # this snapshot compiles is invisible here yet answers a live
@@ -1053,9 +1079,14 @@ def _section_programme_strategist(conn: sqlite3.Connection,
                 "(none yet — the proposal you deliver this wake founds "
                 "rev 1)", ""]
     else:
+        # The body opens with its own `# <Title>` — embedded verbatim
+        # under this H2, that H1 CLOSED the section for every
+        # heading-aware reader (`inspect` sections read `## Programme`
+        # as empty; 13 reports). Demote the body's headings two levels
+        # so the whole rev nests under this section.
         out += [f"## Programme (rev {row['rev']}, passed "
                 f"{str(row['created_at'])[:10]})", "",
-                str(row["body"]).strip(), ""]
+                _demote_headings(str(row["body"]).strip()), ""]
         try:
             verdict = _json.loads(row["verdict"] or "{}")
         except ValueError:
