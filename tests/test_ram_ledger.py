@@ -166,6 +166,10 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     _quiet_pressure(monkeypatch)
+    # idle-spares contract (2026-08-31): the cap reads last push's
+    # open/free — seed a fully-busy pool so this test stays about the
+    # RAM formula and the reply ingest
+    led.open_slots, led.free_slots = 10_000, 0
     pushed = {}
 
     def push(target, min_avail):
@@ -268,10 +272,11 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
     # this test is about the REPLY's elab stats not clamping the target
     monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
     _quiet_pressure(monkeypatch)
-    for reply in ({"open": 0, "free": 0, "elab_cap": 6,
+    led.open_slots, led.free_slots = 10_000, 0
+    for reply in ({"open": 10_000, "free": 0, "elab_cap": 6,
                    "elab_waiting": 0},
-                  {"elab_cap": 6, "elab_waiting": 9},
-                  {"elab_cap": 6, "elab_waiting": 9}):
+                  {"open": 10_000, "free": 0, "elab_cap": 6, "elab_waiting": 9},
+                  {"open": 10_000, "free": 0, "elab_cap": 6, "elab_waiting": 9}):
         led._last_push = 0.0
         pushed = {}
         led.tick(nl_demand=0,
@@ -684,3 +689,46 @@ def test_headroom_clamp_never_starves_below_the_floor(monkeypatch):
     now["t"] += 60.0
     led.tick(nl_demand=0, push=push)
     assert pushed[-1] >= 1, "the one-slot floor holds even when the slots overflow the budget"
+
+
+# ─── the idle-spares cap (owner ruling 2026-08-31) ───────────────────
+#
+# The calm-clock ramp alone let the fleet's warm pool climb to 93 open
+# workers with busy=0: Lean heap never deflates, so the pool parked the
+# cgroup at ~100G inside the pressure hysteresis band (not hot enough
+# to shed, never calm enough to resume) and dispatch stayed PAUSED for
+# two hours with 15 Strategist wakes queued. The pool follows DEMAND:
+# in-use slots plus a few warm spares.
+
+def test_warm_target_caps_at_in_use_plus_spares(monkeypatch):
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
+    _quiet_pressure(monkeypatch)
+    led.open_slots, led.free_slots = 90, 89      # one worker working
+    pushed = {}
+    led.tick(nl_demand=9, push=lambda t, f: (pushed.setdefault("t", t), None)[1])
+    assert pushed["t"] == 1 + rl.IDLE_SPARES_DEFAULT
+
+
+def test_the_cap_follows_demand_up(monkeypatch):
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
+    _quiet_pressure(monkeypatch)
+    led.open_slots, led.free_slots = 20, 6       # 14 in use
+    pushed = {}
+    led.tick(nl_demand=0, push=lambda t, f: (pushed.setdefault("t", t), None)[1])
+    assert pushed["t"] == 14 + rl.IDLE_SPARES_DEFAULT
+
+
+def test_idle_spares_is_configurable(monkeypatch):
+    led = rl.DispatcherLedger(110.0, 125.0, idle_spares=2)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
+    _quiet_pressure(monkeypatch)
+    led.open_slots, led.free_slots = 10, 10      # all idle
+    pushed = {}
+    led.tick(nl_demand=0, push=lambda t, f: (pushed.setdefault("t", t), None)[1])
+    assert pushed["t"] == 2
+
