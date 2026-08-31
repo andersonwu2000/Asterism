@@ -137,7 +137,17 @@ def run(workspace: Path, *, once: bool = False,
                 env_var="ASTERISM_IDLE_SPARES", cast=int,
                 workspace=workspace)
             ledger = ram_ledger.DispatcherLedger(
-                _budget_gb, _machine_gb, idle_spares=_idle_spares)
+                _budget_gb, _machine_gb, idle_spares=_idle_spares,
+                pressure_headroom_gb=config.get(
+                    "ledger.pressure_headroom_gb",
+                    default=ram_ledger.DispatcherLedger.PRESSURE_HEADROOM_GB,
+                    env_var="ASTERISM_PRESSURE_HEADROOM_GB",
+                    cast=float, workspace=workspace),
+                pressure_release_slack_gb=config.get(
+                    "ledger.pressure_release_slack_gb",
+                    default=ram_ledger.DispatcherLedger.PRESSURE_RELEASE_SLACK_GB,
+                    env_var="ASTERISM_PRESSURE_RELEASE_SLACK_GB",
+                    cast=float, workspace=workspace))
             print(f"[dispatcher] RAM ledger active — budget "
                   f"{_budget_gb:.1f} GB of {_machine_gb:.1f} GB; "
                   f"dispatch.pool yields to the ledger's target_slots",

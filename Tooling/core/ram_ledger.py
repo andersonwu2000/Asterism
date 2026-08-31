@@ -497,10 +497,22 @@ class DispatcherLedger:
     PRESSURE_RELEASE_SLACK_GB = 4.0
 
     def __init__(self, budget_gb: float, machine_gb: float,
-                 idle_spares: int = IDLE_SPARES_DEFAULT) -> None:
+                 idle_spares: int = IDLE_SPARES_DEFAULT,
+                 pressure_headroom_gb: "float | None" = None,
+                 pressure_release_slack_gb: "float | None" = None) -> None:
         self.budget_gb = budget_gb
         self.machine_gb = machine_gb
         self.idle_spares = max(1, int(idle_spares))
+        # Per-machine pressure band (2026-09-01, Surface 6.8G node): the
+        # class constants assume budget >> 12G; a small-budget rig must
+        # scale them down or it reads permanently hot and never
+        # dispatches anything, NL debates included.
+        self.pressure_headroom_gb = float(
+            self.PRESSURE_HEADROOM_GB if pressure_headroom_gb is None
+            else pressure_headroom_gb)
+        self.pressure_release_slack_gb = float(
+            self.PRESSURE_RELEASE_SLACK_GB if pressure_release_slack_gb is None
+            else pressure_release_slack_gb)
         # Pessimistic seed — the price only comes DOWN as measurements
         # arrive (see SLOT_GB_EMA_TAU_SEC).
         self.slot_gb = slot_recycle_gb()
@@ -599,11 +611,11 @@ class DispatcherLedger:
         cur = framework_current_gb()
         avail = available_gb()
         ram_hot = ((cur is not None
-                    and cur > self.budget_gb - self.PRESSURE_HEADROOM_GB)
+                    and cur > self.budget_gb - self.pressure_headroom_gb)
                    or avail < pressure_low_gb(self.machine_gb))
         ram_calm = ((cur is None
-                     or cur < (self.budget_gb - self.PRESSURE_HEADROOM_GB
-                               - self.PRESSURE_RELEASE_SLACK_GB))
+                     or cur < (self.budget_gb - self.pressure_headroom_gb
+                               - self.pressure_release_slack_gb))
                     and avail > pressure_high_gb(self.machine_gb))
         # CPU axis (owner 2026-08-30): the run queue votes exactly like
         # RAM — hot / calm / hold — and abstains when unreadable.

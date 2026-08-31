@@ -732,3 +732,29 @@ def test_idle_spares_is_configurable(monkeypatch):
     led.tick(nl_demand=0, push=lambda t, f: (pushed.setdefault("t", t), None)[1])
     assert pushed["t"] == 2
 
+
+
+def test_pressure_band_is_configurable_for_small_budgets(monkeypatch):
+    """Surface node, 2026-09-01: budget 5G on a 6.8G machine. The class
+    constants (headroom 8G, release slack 4G) were tuned for 110G/32G
+    rigs; at 5G the hot line sits at 5-8 = -3G, so any measured
+    footprint reads hot, dispatch pauses, and `nl_admissible` refuses
+    every NL wake FOREVER -- the node cannot even run debates. The band
+    must be a per-machine config (defaults unchanged), not a class
+    constant."""
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: 2.0)
+    monkeypatch.setattr(rl, "available_gb", lambda: 3.5)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
+    monkeypatch.setattr(rl, "pressure_low_gb", lambda m: 1.0)
+    monkeypatch.setattr(rl, "pressure_high_gb", lambda m: 1.5)
+    # Default constants: the same readings are permanently hot.
+    led = rl.DispatcherLedger(5.0, 6.8)
+    led._apply_pressure(2)
+    assert led.dispatch_paused, "default 8G headroom must read hot at 5G"
+    # Scaled band: 2.0G footprint sits under 5 - 1.5 - 0.75 = 2.75G calm
+    # line -- the node breathes.
+    led2 = rl.DispatcherLedger(5.0, 6.8, pressure_headroom_gb=1.5,
+                               pressure_release_slack_gb=0.75)
+    led2._apply_pressure(2)
+    assert not led2.dispatch_paused
+    assert led2.last_calm, "2.0G under the scaled calm line must read calm"
