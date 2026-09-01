@@ -611,7 +611,7 @@ _WATERMARKS = {
     # number stops falling here.
     "Tooling/lsp/gateway/__init__.py": 1113,  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
-    "Tooling/lsp/gateway/elab.py": 280,  # born 2026-08-29 from the gateway split (A1-1); +65 2026-08-30 build leases — the second tenant lives beside the semaphore it borrows from
+    "Tooling/lsp/gateway/elab.py": 320,  # born 2026-08-29 from the gateway split (A1-1); +65 2026-08-30 build leases — the second tenant lives beside the semaphore it borrows from
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/weigh.py": 150,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/governor.py": 1100,  # born 2026-08-29 from the gateway split (A1-2)

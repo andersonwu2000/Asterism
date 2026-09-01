@@ -231,6 +231,22 @@ def sweep_build_leases() -> int:
     return freed
 
 
+_BUILD_HELD_LOGGED = False
+
+
+def _poke_idle_recycle() -> None:
+    """Ask the governor to shed idle-fat slots NOW instead of at the
+    next release boundary — a RAM-held build lease is exactly the
+    moment their heap is worth more than their warmth (#234). The
+    recycle helper self-filters busy/claimed/lean slots."""
+    try:
+        from .governor import _recycle_slot_if_heavy
+        for slot in list(_state.workers):
+            _recycle_slot_if_heavy(slot)
+    except Exception as e:  # noqa: BLE001 — best-effort nudge, never fatal
+        print(f"[gateway] idle-recycle poke failed: {e}", flush=True)
+
+
 def build_lease_acquire(threads: int, owner: str,
                         hint: str = "") -> "dict | None":
     """Borrow up to `threads` lanes (clamped to `_BUILD_LANES_MAX`).
@@ -238,6 +254,26 @@ def build_lease_acquire(threads: int, owner: str,
     builds each holding half; partial grants down to one lane keep the
     build moving. None when no lane is free (the caller retries)."""
     sweep_build_leases()
+    # RAM side (#234): thread shrinking cannot cap a module-level peak
+    # (3.7G on one thread, SP7 autopsy 2026-09-01), so the lease waits
+    # for measured room. The client's 409/poll loop absorbs the wait;
+    # its 900s queue timeout stays the loud over-capacity failure.
+    global _BUILD_HELD_LOGGED
+    from ...core import ram_ledger as _rl
+    try:
+        _avail, _need = _rl.available_gb(), _rl.build_need_gb()
+    except Exception:  # noqa: BLE001 — a broken reading never blocks a build
+        _avail, _need = None, 0.0
+    if _avail is not None and _avail < _need:
+        if not _BUILD_HELD_LOGGED:
+            print(f"[gateway] build lease HELD — available {_avail:.1f}G "
+                  f"< build need {_need:.1f}G; shedding idle-fat slots "
+                  f"and holding the build until the room exists",
+                  flush=True)
+            _BUILD_HELD_LOGGED = True
+        _poke_idle_recycle()
+        return None
+    _BUILD_HELD_LOGGED = False
     want = max(1, min(int(threads), _BUILD_LANES_MAX))
     got = 0
     while got < want and _ELAB_SEM.acquire(blocking=False):
