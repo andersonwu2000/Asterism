@@ -92,8 +92,19 @@ def test_the_os_enforces_the_fence(tmp_path):
     script.write_text(_ALLOC, encoding="utf-8")
     over = mf.run_fenced([sys.executable, str(script), "400"],
                          fence_gb=0.2, cwd=str(tmp_path), timeout=120)
-    assert over.capped is True, (over.returncode, over.stdout, over.stderr)
-    assert over.returncode != 0
+    # Two legal fates for 400M inside a 0.2G fence. A Job Object caps
+    # COMMIT, so Windows kills it (capped). A cgroup caps RAM and leaves
+    # swap open as the valve (owner ruling: the fence bounds what the
+    # build takes from RAM, the OS may page the rest), so a host with
+    # swap — the SP7 runs zram — lets it finish with its RAM peak pinned
+    # at the fence; only RAM+swap exhaustion is an OOM kill there.
+    if over.capped:
+        assert over.returncode != 0
+    else:
+        assert over.returncode == 0 and "held 400" in over.stdout, (
+            over.returncode, over.stdout, over.stderr)
+        assert over.peak_gb is not None and 0.18 <= over.peak_gb <= 0.2, (
+            "an unkilled over-allocation must have been pinned at the fence")
     under = mf.run_fenced([sys.executable, str(script), "20"],
                           fence_gb=0.5, cwd=str(tmp_path), timeout=120)
     assert under.capped is False and under.returncode == 0
