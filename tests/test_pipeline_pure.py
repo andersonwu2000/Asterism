@@ -264,8 +264,24 @@ def test_ensure_imports_subgoal_anchored_to_line_start(
 # ---------------------------------------------------------------------
 # F23 — _lake_build_batch / _lake_build_modules: single subprocess for
 # multiple targets so lake's internal scheduler can parallelize. Mocks
-# subprocess; real-lake exercise is the existing _lake_build coverage.
+# the door's one subprocess seam (`_lake.run_fenced`, the OS memory
+# fence since 2026-09-02); real-lake exercise is the existing
+# _lake_build coverage.
 # ---------------------------------------------------------------------
+
+def _mock_lake_run(monkeypatch, fake_run):
+    """Route `run_fenced` through a `subprocess.run`-shaped fake and pin
+    the fence so the live machine's RAM never enters these tests."""
+    from types import SimpleNamespace
+    from Tooling.pipeline import _lake
+
+    def run_fenced(argv, fence_gb, **kw):
+        r = fake_run(argv, **kw)
+        return SimpleNamespace(returncode=r.returncode, stdout=r.stdout,
+                               stderr=r.stderr, capped=False, peak_gb=None,
+                               fence_gb=fence_gb)
+    monkeypatch.setattr(_lake, "run_fenced", run_fenced)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
 
 def test_lake_build_modules_passes_all_targets_in_one_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -276,7 +292,7 @@ def test_lake_build_modules_passes_all_targets_in_one_call(
     from Tooling import pipeline
     fake_run = MagicMock(return_value=subprocess.CompletedProcess(
         args=[], returncode=0, stdout="ok", stderr=""))
-    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    _mock_lake_run(monkeypatch, fake_run)
 
     ok, _ = pipeline._lake_build_modules(tmp_path, ["m1", "m2", "m3"])
     assert ok is True
@@ -295,7 +311,7 @@ def test_lake_build_modules_returns_failure_on_nonzero_rc(
     fake_run = MagicMock(return_value=subprocess.CompletedProcess(
         args=[], returncode=1,
         stdout="", stderr="error: build failed"))
-    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    _mock_lake_run(monkeypatch, fake_run)
 
     ok, err = pipeline._lake_build_modules(tmp_path, ["m1", "m2"])
     assert ok is False
@@ -314,7 +330,7 @@ def test_lake_build_modules_treats_error_in_output_as_failure(
     fake_run = MagicMock(return_value=subprocess.CompletedProcess(
         args=[], returncode=0,
         stdout="", stderr="error: Type mismatch ..."))
-    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    _mock_lake_run(monkeypatch, fake_run)
 
     ok, _ = pipeline._lake_build_modules(tmp_path, ["m1"])
     assert ok is False
@@ -328,7 +344,7 @@ def test_lake_build_modules_returns_timeout_message(
 
     def _timeout(*a, **kw):
         raise subprocess.TimeoutExpired(cmd=a[0], timeout=600)
-    monkeypatch.setattr(pipeline.subprocess, "run", _timeout)
+    _mock_lake_run(monkeypatch, _timeout)
 
     ok, err = pipeline._lake_build_modules(tmp_path, ["m1", "m2"])
     assert ok is False
@@ -354,7 +370,7 @@ def test_lake_build_batch_resolves_paths_to_modules(
 
     fake_run = MagicMock(return_value=subprocess.CompletedProcess(
         args=[], returncode=0, stdout="", stderr=""))
-    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    _mock_lake_run(monkeypatch, fake_run)
 
     ok, _ = pipeline._lake_build_batch(tmp_path, [p1, p2])
     assert ok is True
@@ -380,7 +396,7 @@ def test_lake_build_single_target_uses_modules_helper(
 
     fake_run = MagicMock(return_value=subprocess.CompletedProcess(
         args=[], returncode=0, stdout="", stderr=""))
-    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    _mock_lake_run(monkeypatch, fake_run)
 
     ok, _ = pipeline._lake_build(tmp_path, p)
     assert ok is True

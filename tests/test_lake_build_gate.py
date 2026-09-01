@@ -31,7 +31,8 @@ def _real_door(monkeypatch):
 
 
 class _FakeRun:
-    """Stand-in for subprocess.run: records argv/env, sleeps, succeeds."""
+    """Stand-in for `mem_fence.run_fenced` (the door's one subprocess
+    seam since 2026-09-02): records argv/env, sleeps, succeeds."""
 
     def __init__(self, sleep=0.0):
         self.calls = []
@@ -40,7 +41,7 @@ class _FakeRun:
         self.max_live = 0
         self._lock = threading.Lock()
 
-    def __call__(self, argv, **kw):
+    def __call__(self, argv, fence_gb=None, **kw):
         with self._lock:
             self.live += 1
             self.max_live = max(self.max_live, self.live)
@@ -50,13 +51,16 @@ class _FakeRun:
         finally:
             with self._lock:
                 self.live -= 1
-        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="",
+                                     capped=False, peak_gb=None,
+                                     fence_gb=fence_gb)
 
 
 @pytest.fixture
 def fake_run(monkeypatch):
     fr = _FakeRun(sleep=0.15)
-    monkeypatch.setattr(_lake.subprocess, "run", fr)
+    monkeypatch.setattr(_lake, "run_fenced", fr)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
     _lake.install_build_gate(_lake.LocalBuildGate(threads=3))
     yield fr
     _lake.install_build_gate(None)
@@ -99,7 +103,8 @@ def test_lake_runs_with_the_leased_thread_count(tmp_path, fake_run):
 
 def test_gateway_gate_polls_until_a_lease_is_granted(monkeypatch, tmp_path):
     fr = _FakeRun()
-    monkeypatch.setattr(_lake.subprocess, "run", fr)
+    monkeypatch.setattr(_lake, "run_fenced", fr)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
     replies = [(409, {"retry_after_s": 0.01, "build_busy": 2}),
                (200, {"token": "t1", "threads": 2, "ttl_s": 900})]
     posted = []
@@ -132,7 +137,8 @@ def test_gateway_gate_shrinks_the_lane_request_to_what_ram_fits(
     compiles fit, so two lanes are asked for (not the default share),
     and the build starts at once."""
     fr = _FakeRun()
-    monkeypatch.setattr(_lake.subprocess, "run", fr)
+    monkeypatch.setattr(_lake, "run_fenced", fr)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
     asked = []
 
     def fake_post(url, payload, timeout):
@@ -158,7 +164,8 @@ def test_gateway_gate_shrinks_the_lane_request_to_what_ram_fits(
 def test_gateway_gate_queue_timeout_is_named_as_queueing_not_building(
         monkeypatch, tmp_path):
     fr = _FakeRun()
-    monkeypatch.setattr(_lake.subprocess, "run", fr)
+    monkeypatch.setattr(_lake, "run_fenced", fr)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
     gate = _lake.GatewayBuildGate(
         "http://h", owner="d", poll_sec=0.01, queue_timeout_sec=0.05,
         post=lambda u, p, t: (409, {"retry_after_s": 0.01}))
@@ -175,7 +182,8 @@ def test_gateway_gate_queue_timeout_is_named_as_queueing_not_building(
 
 def test_gateway_unreachable_falls_back_to_the_local_gate(monkeypatch, tmp_path):
     fr = _FakeRun()
-    monkeypatch.setattr(_lake.subprocess, "run", fr)
+    monkeypatch.setattr(_lake, "run_fenced", fr)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 4.0)
 
     def dead(url, payload, timeout):
         raise OSError("connection refused")
