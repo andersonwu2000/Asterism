@@ -488,3 +488,25 @@ def test_daemon_start_refuses_on_unparseable_config(tmp_path):
         assert code == 1 and "unparseable" in msg
     finally:
         cfg._reset_cache()
+
+
+def test_dotenv_reload_on_file_change(tmp_path, monkeypatch):
+    """SP7 autopsy 2026-09-02: the gateway survives daemon handoffs, so
+    its process-lifetime dotenv cache froze ASTERISM_BUILD_NEED_GB at
+    birth — a .env retune never reached the build gate and every lease
+    saturated at 900s against a stale threshold. The cache must follow
+    the file's mtime; a real process env var still wins."""
+    import os
+    import time as _t
+    from Tooling.core import config as cfg
+    monkeypatch.delenv("PROBE_DOTENV_KEY", raising=False)
+    p = tmp_path / ".env"
+    p.write_text("PROBE_DOTENV_KEY=first\n", encoding="utf-8")
+    monkeypatch.setattr(cfg, "_dotenv", None)
+    monkeypatch.setattr(cfg, "_dotenv_workspace", None)
+    assert cfg._env("PROBE_DOTENV_KEY", tmp_path) == "first"
+    _t.sleep(0.02)
+    p.write_text("PROBE_DOTENV_KEY=second\n", encoding="utf-8")
+    os.utime(p, (_t.time() + 5, _t.time() + 5))  # force a visible mtime step
+    assert cfg._env("PROBE_DOTENV_KEY", tmp_path) == "second", \
+        "a .env edit must reach a long-lived process without a restart"

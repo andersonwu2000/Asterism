@@ -159,14 +159,24 @@ def load_error(workspace: Path | None = None) -> "str | None":
 # test monkeypatching of the environment stays isolated.
 _dotenv: "dict[str, str] | None" = None
 _dotenv_workspace: Path | None = None
+_dotenv_mtime: "float | None" = None
 
 
 def _load_dotenv(workspace: Path) -> "dict[str, str]":
-    global _dotenv, _dotenv_workspace
-    if _dotenv is not None and _dotenv_workspace == workspace:
-        return _dotenv
-    out: "dict[str, str]" = {}
+    global _dotenv, _dotenv_workspace, _dotenv_mtime
     path = workspace / ".env"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    # Cache follows the FILE, not the process (SP7 autopsy 2026-09-02:
+    # the gateway outlives daemon handoffs, so a birth-time cache froze
+    # a .env retune out of the build gate until every lease saturated).
+    if (_dotenv is not None and _dotenv_workspace == workspace
+            and _dotenv_mtime == mtime):
+        return _dotenv
+    _dotenv_mtime = mtime
+    out: "dict[str, str]" = {}
     try:
         for ln in path.read_text(encoding="utf-8").splitlines():
             s = ln.strip()
