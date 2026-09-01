@@ -137,13 +137,9 @@ def base_reserve_gb(machine_gb: "float | None" = None) -> float:
 def cache_reserve_gb(machine_gb: "float | None" = None) -> float:
     """The budget's page-cache seat (env `ASTERISM_RAM_CACHE_RESERVE_GB`
     overrides with an absolute value)."""
-    import os
-    try:
-        v = float(os.environ.get("ASTERISM_RAM_CACHE_RESERVE_GB", ""))
-        if v >= 0:
-            return v
-    except ValueError:
-        pass
+    v = _env_override_gb("ASTERISM_RAM_CACHE_RESERVE_GB")
+    if v is not None:
+        return v
     m = total_gb() if machine_gb is None else machine_gb
     return max(_CACHE_FLOOR_GB, _CACHE_FRACTION * m)
 
@@ -229,6 +225,23 @@ def available_gb() -> float:
 ABS_AVAILABLE_FLOOR_GB = 1.5
 
 
+def _env_override_gb(name: str) -> "float | None":
+    """Absolute-GB override: process env first, then the workspace .env
+    via the config layer. Direct `os.environ` reads silently miss on a
+    host where nothing exports .env into the process (Surface autopsy
+    2026-09-01 — the overrides sat in .env while the defaults ran)."""
+    import os
+    v = os.environ.get(name)
+    if not v:
+        from . import config as _config
+        v = _config._env(name, None)
+    try:
+        f = float(v) if v else None
+    except (TypeError, ValueError):
+        return None
+    return f if f is not None and f > 0 else None
+
+
 def pressure_low_gb(machine_gb: float) -> float:
     """Below this measured available-RAM line the fleet is squeezing
     the machine — dispatch pauses and the gateway's pressure outlet
@@ -236,13 +249,9 @@ def pressure_low_gb(machine_gb: float) -> float:
     2026-08-26): the old absolute 1.5 GB floor was sized for a 32 GB
     co-tenant box; on 125 GB the page cache thrashes long before it,
     so strategists kept dispatching straight into the crush."""
-    import os
-    try:
-        v = float(os.environ.get("ASTERISM_RAM_PRESSURE_LOW_GB", ""))
-        if v > 0:
-            return v
-    except ValueError:
-        pass
+    v = _env_override_gb("ASTERISM_RAM_PRESSURE_LOW_GB")
+    if v is not None:
+        return v
     return max(ABS_AVAILABLE_FLOOR_GB + 2.0, 0.06 * machine_gb)
 
 
@@ -251,13 +260,9 @@ def pressure_high_gb(machine_gb: float) -> float:
     one measured step at a time — the gap to `pressure_low_gb` is the
     hysteresis band that keeps a 5 GB/min inflation wave (measured)
     from oscillating the feedback."""
-    import os
-    try:
-        v = float(os.environ.get("ASTERISM_RAM_PRESSURE_HIGH_GB", ""))
-        if v > 0:
-            return v
-    except ValueError:
-        pass
+    v = _env_override_gb("ASTERISM_RAM_PRESSURE_HIGH_GB")
+    if v is not None:
+        return v
     return pressure_low_gb(machine_gb) + 4.0
 
 

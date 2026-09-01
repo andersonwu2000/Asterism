@@ -776,3 +776,16 @@ def test_pressure_watermarks_take_env_overrides(monkeypatch):
     monkeypatch.delenv("ASTERISM_RAM_PRESSURE_HIGH_GB")
     assert rl.pressure_low_gb(6.8) == pytest.approx(3.5)
     assert rl.pressure_high_gb(6.8) == pytest.approx(7.5)
+    # The .env FILE path (first field deployment, 2026-09-01): nothing
+    # exports .env into the process on a non-systemd host, so a direct
+    # os.environ read silently missed and the Surface ran the default
+    # watermarks with the overrides sitting in .env. The hooks must
+    # fall back to the config layer's dotenv view.
+    from pathlib import Path as _P
+    import Tooling.core.config as _cfg
+    monkeypatch.setattr(_cfg, "_dotenv", {
+        "ASTERISM_RAM_PRESSURE_LOW_GB": "1.0",
+        "ASTERISM_RAM_PRESSURE_HIGH_GB": "2.0"})
+    monkeypatch.setattr(_cfg, "_dotenv_workspace", _P.cwd())
+    assert rl.pressure_low_gb(6.8) == pytest.approx(1.0)
+    assert rl.pressure_high_gb(6.8) == pytest.approx(2.0)
