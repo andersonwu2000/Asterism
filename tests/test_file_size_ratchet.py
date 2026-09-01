@@ -643,7 +643,7 @@ _WATERMARKS = {
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/main.py": 371,  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 375,  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision

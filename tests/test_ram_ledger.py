@@ -758,3 +758,21 @@ def test_pressure_band_is_configurable_for_small_budgets(monkeypatch):
     led2._apply_pressure(2)
     assert not led2.dispatch_paused
     assert led2.last_calm, "2.0G under the scaled calm line must read calm"
+
+
+def test_pressure_watermarks_take_env_overrides(monkeypatch):
+    """Surface, 2026-09-01, second small-machine instance: on a 6.8G
+    box pressure_low = max(1.5+2, 0.06m) = 3.5G tripped at a routine
+    3.5G-available reading, and pressure_high = low+4 = 7.5G exceeds
+    the MACHINE — calm was unreachable, the pause permanent, and the
+    node sat silent with queued work for two hours. Same class as the
+    budget-axis band: absolute floors sized for 32G+ rigs. Override
+    hooks mirror cache_reserve_gb's ASTERISM_RAM_CACHE_RESERVE_GB."""
+    monkeypatch.setenv("ASTERISM_RAM_PRESSURE_LOW_GB", "1.2")
+    monkeypatch.setenv("ASTERISM_RAM_PRESSURE_HIGH_GB", "2.2")
+    assert rl.pressure_low_gb(6.8) == pytest.approx(1.2)
+    assert rl.pressure_high_gb(6.8) == pytest.approx(2.2)
+    monkeypatch.delenv("ASTERISM_RAM_PRESSURE_LOW_GB")
+    monkeypatch.delenv("ASTERISM_RAM_PRESSURE_HIGH_GB")
+    assert rl.pressure_low_gb(6.8) == pytest.approx(3.5)
+    assert rl.pressure_high_gb(6.8) == pytest.approx(7.5)

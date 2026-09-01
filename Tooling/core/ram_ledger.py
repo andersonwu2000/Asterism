@@ -236,6 +236,13 @@ def pressure_low_gb(machine_gb: float) -> float:
     2026-08-26): the old absolute 1.5 GB floor was sized for a 32 GB
     co-tenant box; on 125 GB the page cache thrashes long before it,
     so strategists kept dispatching straight into the crush."""
+    import os
+    try:
+        v = float(os.environ.get("ASTERISM_RAM_PRESSURE_LOW_GB", ""))
+        if v > 0:
+            return v
+    except ValueError:
+        pass
     return max(ABS_AVAILABLE_FLOOR_GB + 2.0, 0.06 * machine_gb)
 
 
@@ -244,6 +251,13 @@ def pressure_high_gb(machine_gb: float) -> float:
     one measured step at a time — the gap to `pressure_low_gb` is the
     hysteresis band that keeps a 5 GB/min inflation wave (measured)
     from oscillating the feedback."""
+    import os
+    try:
+        v = float(os.environ.get("ASTERISM_RAM_PRESSURE_HIGH_GB", ""))
+        if v > 0:
+            return v
+    except ValueError:
+        pass
     return pressure_low_gb(machine_gb) + 4.0
 
 
