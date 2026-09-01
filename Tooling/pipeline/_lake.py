@@ -41,9 +41,14 @@ def lean_path_to_module(workspace: Path, lean_path: Path) -> str:
 #: ARG_MAX is much larger, but one shape everywhere keeps the test honest.
 LAKE_CMDLINE_BUDGET = 8000
 
-#: Per-invocation build wall (the subprocess only — queueing for the
-#: gate is NOT counted; a saturated queue fails with its own message).
-LAKE_BUILD_TIMEOUT_SEC = 600
+#: Per-invocation build wall, in CPU SECONDS of the fenced build tree —
+#: not wall-clock (owner design 2026-09-02, the elaboration wall's shape:
+#: `core/mem_fence.run_fenced`). A build that is merely slow because the
+#: machine is crowded or paging into zram still gets its compute; only a
+#: tree that never runs is caught, by the loose wall-clock net
+#: (`mem_fence.BUILD_WALL_CLOCK_FACTOR` × this). Queueing for the gate is
+#: NOT counted; a saturated queue fails with its own message.
+LAKE_BUILD_CPU_BUDGET_SEC = 600
 
 #: How long a build waits for ROOM after the OS fence stopped it (the
 #: same wall the lane queue has: `GatewayBuildGate.queue_timeout_sec`).
@@ -357,6 +362,11 @@ def _capped_outcome(outs: "list[str]", waited: float, last_fence: "float | None"
     return res
 
 
+def _one(v: "float | None") -> str:
+    """One decimal, or `?` when the meter had nothing to say."""
+    return f"{v:.1f}" if isinstance(v, (int, float)) else "?"
+
+
 def _run_chunks(workspace: Path, chunks: "list[list[str]]",
                 hint: str) -> BuildOutcome:
     gate = _gate()
@@ -387,14 +397,20 @@ def _run_chunks(workspace: Path, chunks: "list[list[str]]",
                 queued = time.monotonic() - t0
                 env = {**os.environ, "LEAN_NUM_THREADS": str(lease.threads)}
                 try:
-                    r = run_fenced(["lake", "build", *chunk], fence,
-                                   cwd=str(workspace), env=env,
-                                   timeout=LAKE_BUILD_TIMEOUT_SEC)
-                except subprocess.TimeoutExpired:
+                    r = run_fenced(
+                        ["lake", "build", *chunk], fence,
+                        cwd=str(workspace), env=env,
+                        cpu_budget_sec=LAKE_BUILD_CPU_BUDGET_SEC,
+                        # the room the machine has at launch is not the
+                        # room it has ten minutes later — the fence
+                        # follows it upward while the build runs
+                        grow_to=lambda: fence_gb_now(_inflight_builds()))
+                except subprocess.TimeoutExpired as e:
+                    why = getattr(e, "reason", None) or (
+                        f"{LAKE_BUILD_CPU_BUDGET_SEC}s, unfenced wall-clock")
                     return BuildOutcome(
                         False, f"lake build {' '.join(chunk)} timed out "
-                               f"({LAKE_BUILD_TIMEOUT_SEC}s) at "
-                               f"{lease.threads} thread(s)"
+                               f"({why}) at {lease.threads} thread(s)"
                                + (f" after queueing {queued:.0f}s"
                                   if queued >= 1 else ""))
                 finally:
@@ -402,18 +418,25 @@ def _run_chunks(workspace: Path, chunks: "list[list[str]]",
                 if queued >= 1:
                     print(f"[lake] build {hint!r} queued {queued:.0f}s for its "
                           f"lease ({lease.threads} thread(s))", flush=True)
+                print(f"[lake] build {hint!r} fence {_one(fence)}→"
+                      f"{_one(getattr(r, 'fence_final_gb', None))}G peak "
+                      f"{_one(r.peak_gb)}G cpu {_one(getattr(r, 'cpu_sec', None))}s "
+                      f"wall {_one(getattr(r, 'wall_sec', None))}s", flush=True)
                 if r.peak_gb is not None:
                     peak_max = max(peak_max or 0.0, r.peak_gb)
                 if r.capped:
-                    last_fence = r.fence_gb
+                    # the fence GREW while the build ran: what stopped it
+                    # is the fence it ended with, and "more room" must
+                    # mean more than THAT
+                    last_fence = getattr(r, "fence_final_gb", None) or r.fence_gb
                     print(f"[lake] build {hint!r} capped at "
-                          f"{(r.fence_gb or 0.0):.1f}G by the OS fence — "
+                          f"{(last_fence or 0.0):.1f}G by the OS fence — "
                           f"waiting for more room, then resuming", flush=True)
                     try:
                         from ..core import degraded
                         degraded.record(
                             workspace, "build_capped",
-                            f"{hint}: fence {(r.fence_gb or 0.0):.1f}G")
+                            f"{hint}: fence {(last_fence or 0.0):.1f}G")
                     except Exception:  # noqa: BLE001 — the ledger is best-effort
                         pass
                     continue

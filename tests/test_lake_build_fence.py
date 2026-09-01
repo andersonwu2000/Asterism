@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from Tooling.core import degraded
 from Tooling.core import mem_fence as mf
 from Tooling.pipeline import _lake
@@ -146,3 +148,80 @@ def test_the_fence_is_shared_by_concurrent_builds(monkeypatch, tmp_path):
     with _lake._inflight_build():
         _lake._run_chunks(tmp_path, [["Problems.p.proofs.L_b"]], "t")
     assert seen[-1] == 2
+
+
+# ─── the fence follows the room, the wall counts CPU (2026-09-02) ───
+#
+# First real fenced build, SP7 6.8 GB, 2026-09-01 23:04Z: sized at 1.23G
+# with the operator's Chrome open, around a module whose working set is
+# 3.2G. lean ran at 31% CPU paging into zram. Chrome closed, available
+# rose to 3.8G — the fence stayed at 1.23G, and the 600s WALL-CLOCK wall
+# was about to fail the build for being slow.
+
+def test_the_fence_follows_the_room_while_the_build_runs(monkeypatch, tmp_path):
+    seen: dict = {}
+    _wire(monkeypatch, tmp_path, runs=[_res()], fences=[1.2])
+
+    def record(args, fence_gb, **kw):
+        seen["fence"] = fence_gb
+        seen["grow_to"] = kw.get("grow_to")
+        seen["budget"] = kw.get("cpu_budget_sec")
+        return _res()
+    monkeypatch.setattr(_lake, "run_fenced", record)
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 1.2)
+    _lake._run_chunks(tmp_path, [["Problems.p.proofs.L_a"]], "t")
+    assert seen["fence"] == 1.2
+    assert seen["budget"] == _lake.LAKE_BUILD_CPU_BUDGET_SEC, \
+        "the build's budget is CPU seconds, handed to the fence"
+    assert callable(seen["grow_to"]), "the fence must be re-sizable mid-build"
+    # the machine frees room: the same callable now offers the new fence
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 3.8)
+    assert seen["grow_to"]() == 3.8
+    # and it is the SHARED room, not a per-build number
+    monkeypatch.setattr(_lake, "fence_gb_now", lambda inflight=1: 3.8 / inflight)
+    with _lake._inflight_build(), _lake._inflight_build():
+        assert seen["grow_to"]() == pytest.approx(1.9)
+
+
+def test_a_timed_out_build_names_the_clock_that_fired(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, runs=[_res()], fences=[2.0])
+
+    def walled(args, fence_gb, **kw):
+        raise mf.FenceTimeout(list(args), 600.0,
+                              "600 CPU-s of the 600 CPU-s budget")
+    monkeypatch.setattr(_lake, "run_fenced", walled)
+    res = _lake._run_chunks(tmp_path, [["Problems.p.proofs.L_a"]], "t")
+    assert res[0] is False and res.capped is False
+    assert "timed out" in res[1] and "600 CPU-s" in res[1], res[1]
+
+
+def test_every_finished_build_reports_its_fence_and_its_clocks(
+        monkeypatch, tmp_path, capsys):
+    r = mf.FenceResult(returncode=0, stdout="Build completed", stderr="",
+                       capped=False, peak_gb=3.2, fence_gb=None,
+                       fence_final_gb=3.8, cpu_sec=512.4, wall_sec=690.2)
+    _wire(monkeypatch, tmp_path, runs=[r], fences=[1.2])
+    _lake._run_chunks(tmp_path, [["Problems.p.proofs.L_a"]], "t")
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "fence" in ln]
+    assert lines, "a finished build must say what room it got and what it used"
+    assert "fence 1.2→3.8G" in lines[0], lines[0]
+    assert "peak 3.2G" in lines[0] and "cpu 512.4s" in lines[0] \
+        and "wall 690.2s" in lines[0], lines[0]
+
+
+def test_a_capped_build_waits_for_room_above_the_fence_it_actually_had(
+        monkeypatch, tmp_path):
+    """The fence GROWS while the build runs, so the number the OS
+    stopped it at is the final one, not the one it launched with.
+    Waiting for 'more than the launch fence' would relaunch straight
+    back into the wall it just hit."""
+    capped = mf.FenceResult(returncode=137, stdout="", stderr="", capped=True,
+                            peak_gb=3.0, fence_gb=None, fence_final_gb=3.0)
+    clock, gate, calls = _wire(
+        monkeypatch, tmp_path,
+        runs=[capped, _res(rc=0, out="Build completed")],
+        fences=[1.2, 2.0])
+    res = _lake._run_chunks(tmp_path, [["Problems.p.proofs.L_a"]], "t")
+    assert res.capped is True, "2.0G is not more room than the 3.0G it had"
+    assert calls["run"] == 1
+    assert "3.0" in res[1], res[1]
