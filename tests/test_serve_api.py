@@ -2182,3 +2182,18 @@ def test_provider_login_is_declared_not_named(
     assert spawned and spawned[0][1] == ("login",)
     assert c.post("/api/providers/zen/login").status_code == 409
     assert c.post("/api/providers/nope/login").status_code == 404
+
+
+def test_serve_cli_accepts_a_host_override(monkeypatch):
+    """Fleet era (2026-09-01): the cockpit's localhost-only binding made
+    a remote node's UI unreachable over the tailnet. `--host` is an
+    explicit opt-in; the default stays loopback."""
+    import importlib
+    m = importlib.import_module("Tooling.core.cli.main")
+    seen = {}
+    monkeypatch.setattr(m, "cmd_serve", lambda a: seen.update(vars(a)) or 0)
+    m.main(["serve", "--host", "100.114.139.65"])
+    assert seen["host"] == "100.114.139.65"
+    seen.clear()
+    m.main(["serve"])
+    assert seen["host"] == "127.0.0.1"

@@ -722,7 +722,7 @@ def cmd_serve(args) -> int:
 
     workspace = _config.resolve_workspace(getattr(args, "workspace", None))
     os.chdir(workspace)
-    host = "127.0.0.1"
+    host = getattr(args, "host", None) or "127.0.0.1"
     port = int(getattr(args, "port", None) or 8642)
     app = create_app(workspace, prewarm=True)
     print(f"Asterism UI: http://{host}:{port}/  (workspace: {workspace})")

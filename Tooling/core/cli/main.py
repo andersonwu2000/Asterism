@@ -178,7 +178,10 @@ def main(argv: list[str] | None = None) -> int:
         "serve",
         help="run the localhost web UI (FastAPI; frontend charter §0)")
     p_serve.add_argument("--port", type=int, default=8642,
-                         help="bind port (default 8642; host is 127.0.0.1)")
+                         help="bind port (default 8642)")
+    p_serve.add_argument("--host", default="127.0.0.1",
+                         help="bind address (default 127.0.0.1; set a "
+                              "tailnet IP to reach a remote node's cockpit)")
     p_serve.add_argument("--workspace", default=None,
                          help="workspace root (default: resolve_workspace)")
     p_serve.set_defaults(func=cmd_serve)
