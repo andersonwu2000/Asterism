@@ -1142,8 +1142,13 @@ def run(workspace: Path, *, once: bool = False,
                 db.complete_queue_row(conn, qid)
                 continue
             if problem_name not in st.verified_problems:
-                st.verified_problems[problem_name] = _verify_problem(
-                    workspace, problem_name)
+                verdict = _verify_problem(workspace, problem_name)
+                if verdict is None:
+                    # fenced out for lack of room: no verdict, no cache —
+                    # PUT BACK like a cooled target (only the room is wrong)
+                    deferred_rows.append(qid)
+                    continue
+                st.verified_problems[problem_name] = verdict
             if not st.verified_problems[problem_name]:
                 db.complete_queue_row(conn, qid)
                 continue

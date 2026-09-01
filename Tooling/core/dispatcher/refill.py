@@ -78,7 +78,7 @@ def env_blocked_kinds() -> "set[str]":
     return out
 
 
-def _verify_problem(workspace: Path, problem: str) -> bool:
+def _verify_problem(workspace: Path, problem: str) -> "bool | None":
     """Lake-build the problem's Defs.lean + Root.lean — whichever exist.
     Present files must type-check cleanly. Phase 6: both files are
     OPTIONAL (pure-NL problems ship neither; Root-only and Defs-only
@@ -91,7 +91,9 @@ def _verify_problem(workspace: Path, problem: str) -> bool:
     problems) would pay 30-60min upfront. Lazy pays only for problems
     that actually get dispatched (BFS may never touch a problem whose
     parent is dead/shelved). Per-problem ~5-15s amortizes over a long
-    run.
+    run. None = no verdict: the OS memory fence stopped the build for
+    lack of room (`BuildOutcome.capped`, 2026-09-02) — not cached, the
+    problem is asked again on its next dispatch.
     """
     pdir = db.problem_dir(workspace, problem)
     defs_path = pdir / "Defs.lean"
@@ -103,7 +105,11 @@ def _verify_problem(workspace: Path, problem: str) -> bool:
         return True
     from ...pipeline._lake import lake_build_modules, lean_path_to_module
     modules = [lean_path_to_module(workspace, p) for p in present]
-    ok, msg = lake_build_modules(workspace, modules)
+    res = lake_build_modules(workspace, modules)
+    ok, msg = res
+    if getattr(res, "capped", False):
+        print(f"[verify] {problem}: no room to build yet — asked again next dispatch", flush=True)
+        return None
     if not ok:
         snippet = (msg or "")[:500]
         print(f"[verify] {problem}: FAILED\n{snippet}", flush=True)

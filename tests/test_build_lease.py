@@ -175,3 +175,25 @@ def test_client_heartbeat_survives_two_missed_renews():
     for ttl in (60.0, 120.0, 900.0):
         period = _lake.lease_heartbeat_period(ttl)
         assert 5.0 <= period <= ttl / 3.0, (ttl, period)
+
+
+# ───────────────────────── no RAM admission at the lease (2026-09-02) ─────────────────────────
+
+def test_the_lease_is_granted_whatever_the_ram_reading(gate, monkeypatch):
+    """The #234 RAM gate at the lease ("available < need → hold") is
+    gone: the build's RAM is fenced by the OS at launch, so the lease
+    answers only the CPU question."""
+    import Tooling.core.ram_ledger as rl
+    monkeypatch.setattr(rl, "available_gb", lambda: 0.3)
+    lease = elab.build_lease_acquire(threads=2, owner="d")
+    assert lease is not None and lease["threads"] >= 1
+    assert not hasattr(rl, "build_need_gb"), "the number is gone, not just unused"
+
+
+def test_a_lease_asked_after_a_capped_build_pokes_the_idle_fat_recycle(gate, monkeypatch):
+    poked = []
+    monkeypatch.setattr(elab, "_poke_idle_recycle", lambda: poked.append(1))
+    elab.build_lease_acquire(threads=1, owner="d", hint="x", after_capped=False)
+    assert not poked
+    elab.build_lease_acquire(threads=1, owner="d", hint="x", after_capped=True)
+    assert poked == [1], "room is made where it is cheapest — idle heap"

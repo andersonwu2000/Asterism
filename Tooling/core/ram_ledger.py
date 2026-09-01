@@ -431,22 +431,6 @@ BUILD_GB_PER_THREAD = float(
     _os.environ.get("ASTERISM_BUILD_GB_PER_THREAD") or 6.8)
 
 
-#: A cold `lake build`'s working peak (GB) — what must be AVAILABLE
-#: before a build lease is granted. 3.7G measured on the SP7 autopsy
-#: (2026-09-01, single heavy module, one thread); the default carries
-#: headroom over that. Override per machine with ASTERISM_BUILD_NEED_GB
-#: (process env or workspace .env).
-BUILD_NEED_GB_DEFAULT = 4.0
-
-
-def build_need_gb() -> float:
-    """Available-RAM floor for granting a build lease (#234): thread
-    shrinking cannot cap a module-level elaboration peak, so the lease
-    itself must wait for room."""
-    v = _env_override_gb("ASTERISM_BUILD_NEED_GB")
-    return v if v is not None else BUILD_NEED_GB_DEFAULT
-
-
 def build_threads_fit(threads: int, *, machine_gb: "float | None" = None
                       ) -> int:
     """RAM side of build admission: how many of `threads` compiles fit

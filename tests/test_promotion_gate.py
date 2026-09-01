@@ -265,3 +265,30 @@ def test_consumer_build_failure_rolls_back_the_consumer_not_the_promotion(
                         (sid,)).fetchone()["status"] != "dead"
     # retried: a second submission goes out (the consumer set is recomputed)
     assert len(gate.submitted) == 2
+
+
+# ───────────────────────── capped ≠ failed (2026-09-02) ─────────────────────────
+
+def test_a_capped_promotion_build_is_requeued_not_delivered_as_failure(
+        tmp_path, gate, monkeypatch):
+    """`capped` = the OS fence stopped the build for lack of room. The
+    promotion is neither flipped nor rolled back: the gate queues the
+    same job again and housekeeping keeps seeing it as pending."""
+    calls = []
+
+    def fake_build(ws, mods):
+        calls.append(list(mods))
+        if len(calls) == 1:
+            r = _lake.BuildOutcome(False, "build capped — waited 100s for room above 1.5G")
+            r.capped = True
+            return r
+        return _lake.BuildOutcome(True, "Build completed")
+    monkeypatch.setattr(_lake, "lake_build_modules", fake_build)
+    monkeypatch.setattr(warm, "REQUEUE_PAUSE_SEC", 0.01)
+    gate._workspace = tmp_path
+    gate.submit(11, ["Problems.p.proofs.L_a"])
+    res = gate.wait_result(11, timeout=10)
+    assert res.ok is True
+    assert calls == [["Problems.p.proofs.L_a"]] * 2, "the same job ran again"
+    log = tmp_path / ".asterism" / "logs" / "promotion_gate" / "s11.txt"
+    assert not log.exists(), "a capped build is not a failure record"

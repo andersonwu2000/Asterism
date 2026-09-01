@@ -310,7 +310,7 @@ async def build_lease_route(request: Request):
         return JSONResponse({"error": "threads must be an int"},
                             status_code=400)
     owner = str(data.get("owner") or "unknown")
-    lease = build_lease_acquire(threads, owner, str(data.get("hint") or ""))
+    lease = build_lease_acquire(threads, owner, str(data.get("hint") or ""), after_capped=bool(data.get("after_capped")))
     if lease is None:
         st = elab_gate_stats()
         return JSONResponse(

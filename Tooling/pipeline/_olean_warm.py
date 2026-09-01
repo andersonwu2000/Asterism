@@ -43,6 +43,12 @@ class BuildResult:
 
 LOG_DIR = Path(".asterism") / "logs" / "promotion_gate"
 
+#: Pause before a fenced-out (`capped`) promotion build goes back on the
+#: queue — the build itself already waited `_lake.ROOM_WAIT_SEC` for
+#: room; this only keeps the serial worker from spinning on a machine
+#: that stays full.
+REQUEUE_PAUSE_SEC = 30.0
+
 
 class PromotionGate:
     """Serial background cold build for promotions.
@@ -154,9 +160,20 @@ class PromotionGate:
                     return
                 sid, modules = item
                 try:
-                    ok, detail = _lake.lake_build_modules(self._workspace, modules)
+                    res = _lake.lake_build_modules(self._workspace, modules)
+                    ok, detail = res
                 except Exception as e:  # noqa: BLE001 — a crash is a failure
-                    ok, detail = False, f"promotion gate error: {e}"
+                    res, ok, detail = None, False, f"promotion gate error: {e}"
+                if getattr(res, "capped", False):
+                    # The OS fence stopped the build for lack of room
+                    # (2026-09-02). Not a verdict on the promotion: the
+                    # same job goes back on the queue, still pending to
+                    # housekeeping, and runs again when there is room.
+                    print(f"[promotion-gate] s{sid} capped — no room on the "
+                          f"machine; requeued", flush=True)
+                    time.sleep(REQUEUE_PAUSE_SEC)
+                    self._queue.put((sid, list(modules)))
+                    continue
                 failing: list[str] = []
                 if not ok:
                     from ..quality.verify import failing_modules_from_build_output

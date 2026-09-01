@@ -17,7 +17,7 @@ import urllib.request
 from concurrent.futures import Future
 from pathlib import Path
 
-from ..core.process_group import no_window_creationflags
+from ..core.mem_fence import run_fenced, fence_gb_now  # noqa: F401 — patched in tests
 
 
 def lean_path_to_module(workspace: Path, lean_path: Path) -> str:
@@ -44,6 +44,34 @@ LAKE_CMDLINE_BUDGET = 8000
 #: Per-invocation build wall (the subprocess only — queueing for the
 #: gate is NOT counted; a saturated queue fails with its own message).
 LAKE_BUILD_TIMEOUT_SEC = 600
+
+#: How long a build waits for ROOM after the OS fence stopped it (the
+#: same wall the lane queue has: `GatewayBuildGate.queue_timeout_sec`).
+#: Beyond it the outcome is `capped` — still not a build error.
+ROOM_WAIT_SEC = 900.0
+#: Poll cadence while waiting for room.
+ROOM_POLL_SEC = 3.0
+
+
+class BuildOutcome(tuple):
+    """`(ok, detail)` — the historical pair every caller unpacks — plus
+    the fence's verdict: `capped` (the OS stopped the build for lack of
+    room; nobody's fault, retry when there is room), `fence_gb` (the
+    room it was given) and `peak_gb` (what it took; observation only)."""
+    capped: bool = False
+    fence_gb: "float | None" = None
+    peak_gb: "float | None" = None
+
+    def __new__(cls, ok: bool, detail: str):
+        return super().__new__(cls, (bool(ok), detail))
+
+    @property
+    def ok(self) -> bool:
+        return self[0]
+
+    @property
+    def detail(self) -> str:
+        return self[1]
 
 
 def chunk_modules_for_cmdline(modules: list[str],
@@ -132,7 +160,8 @@ class LocalBuildGate:
         self.threads = int(threads) if threads else default_build_threads()
         self._lock = threading.Lock()
 
-    def acquire(self, threads: int, hint: str = "") -> BuildLease:
+    def acquire(self, threads: int, hint: str = "", *,
+                after_capped: bool = False) -> BuildLease:
         self._lock.acquire()
         return BuildLease(min(self.threads, max(1, int(threads))),
                           release=self._lock.release)
@@ -188,7 +217,8 @@ class GatewayBuildGate:
         self._local = LocalBuildGate(local_threads)
         self._unreachable_logged = False
 
-    def acquire(self, threads: int, hint: str = "") -> BuildLease:
+    def acquire(self, threads: int, hint: str = "", *,
+                after_capped: bool = False) -> BuildLease:
         t0 = time.monotonic()
         want = max(1, int(threads))
         while True:
@@ -207,7 +237,8 @@ class GatewayBuildGate:
             try:
                 status, data = self._post(
                     f"{self.base_url}/build/lease",
-                    {"threads": ask, "owner": self.owner, "hint": hint},
+                    {"threads": ask, "owner": self.owner, "hint": hint,
+                     "after_capped": bool(after_capped)},
                     self._http_timeout)
             except (OSError, ValueError) as e:
                 if not self._unreachable_logged:
@@ -216,7 +247,7 @@ class GatewayBuildGate:
                           f"{self._local.threads} thread(s) until it "
                           f"answers", flush=True)
                     self._unreachable_logged = True
-                return self._local.acquire(want, hint)
+                return self._local.acquire(want, hint, after_capped=after_capped)
             self._unreachable_logged = False
             if status == 200 and data.get("token"):
                 return self._leased(str(data["token"]), int(data.get("threads") or 1),
@@ -273,50 +304,132 @@ def _gate():
         return _GATE
 
 
+_INFLIGHT_BUILDS = 0
+_INFLIGHT_BUILDS_LOCK = threading.Lock()
+
+
+class _inflight_build:
+    """Counts the builds running right now — the fence is the machine's
+    room split among them (`mem_fence.fence_gb_now`)."""
+
+    def __enter__(self):
+        global _INFLIGHT_BUILDS
+        with _INFLIGHT_BUILDS_LOCK:
+            _INFLIGHT_BUILDS += 1
+            return _INFLIGHT_BUILDS
+
+    def __exit__(self, *exc):
+        global _INFLIGHT_BUILDS
+        with _INFLIGHT_BUILDS_LOCK:
+            _INFLIGHT_BUILDS -= 1
+
+
+def _inflight_builds() -> int:
+    with _INFLIGHT_BUILDS_LOCK:
+        return _INFLIGHT_BUILDS
+
+
+def _wait_for_room(above: "float | None", deadline: float) -> "float | None":
+    """Poll until the fence the machine can offer is strictly more than
+    `above` (None = any room at all); None when `deadline` passes first."""
+    while True:
+        fence = fence_gb_now(_inflight_builds())
+        if fence is not None and (above is None or fence > above):
+            return fence
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(ROOM_POLL_SEC)
+
+
+def _capped_outcome(outs: "list[str]", waited: float, last_fence: "float | None",
+                    hint: str, peak: "float | None") -> BuildOutcome:
+    if last_fence is not None:
+        msg = (f"build capped — waited {waited:.0f}s for room above "
+               f"{last_fence:.1f}G ({hint!r}); the machine has no room for "
+               f"this build right now, nothing is wrong with the build")
+    else:
+        msg = (f"build capped — waited {waited:.0f}s for any room ({hint!r}); "
+               f"the machine is at its pressure line, nothing is wrong with "
+               f"the build")
+    print(f"[lake] {msg}", flush=True)
+    res = BuildOutcome(False, "\n".join(outs + [msg]))
+    res.capped, res.fence_gb, res.peak_gb = True, last_fence, peak
+    return res
+
+
 def _run_chunks(workspace: Path, chunks: "list[list[str]]",
-                hint: str) -> tuple[bool, str]:
+                hint: str) -> BuildOutcome:
     gate = _gate()
-    t0 = time.monotonic()
-    try:
-        lease = gate.acquire(default_build_threads(), hint)
-    except BuildQueueSaturated as e:
-        return False, str(e)
-    queued = time.monotonic() - t0
-    env = {**os.environ, "LEAN_NUM_THREADS": str(lease.threads)}
-    ok_all = True
     outs: list[str] = []
-    try:
+    ok_all = True
+    peak_max: "float | None" = None
+    room_deadline = time.monotonic() + ROOM_WAIT_SEC
+    waited_room = 0.0
+    with _inflight_build():
         for chunk in chunks:
-            try:
-                r = subprocess.run(
-                    ["lake", "build", *chunk],
-                    cwd=str(workspace),
-                    capture_output=True, text=True,
-                    encoding="utf-8", errors="replace",
-                    timeout=LAKE_BUILD_TIMEOUT_SEC, env=env,
-                    creationflags=no_window_creationflags(),
-                )
-            except subprocess.TimeoutExpired:
-                return False, (f"lake build {' '.join(chunk)} timed out "
+            # a chunk the fence stopped runs again once there is MORE room
+            # than it had (lake resumes at the failed module); a lane is
+            # held only while lean actually runs, never during the wait
+            last_fence: "float | None" = None
+            while True:
+                t_room = time.monotonic()
+                fence = _wait_for_room(last_fence, room_deadline)
+                waited_room += time.monotonic() - t_room
+                if fence is None:
+                    return _capped_outcome(outs, waited_room, last_fence,
+                                           hint, peak_max)
+                t0 = time.monotonic()
+                try:
+                    lease = gate.acquire(default_build_threads(), hint,
+                                         after_capped=last_fence is not None)
+                except BuildQueueSaturated as e:
+                    return BuildOutcome(False, str(e))
+                queued = time.monotonic() - t0
+                env = {**os.environ, "LEAN_NUM_THREADS": str(lease.threads)}
+                try:
+                    r = run_fenced(["lake", "build", *chunk], fence,
+                                   cwd=str(workspace), env=env,
+                                   timeout=LAKE_BUILD_TIMEOUT_SEC)
+                except subprocess.TimeoutExpired:
+                    return BuildOutcome(
+                        False, f"lake build {' '.join(chunk)} timed out "
                                f"({LAKE_BUILD_TIMEOUT_SEC}s) at "
                                f"{lease.threads} thread(s)"
                                + (f" after queueing {queued:.0f}s"
                                   if queued >= 1 else ""))
-            out = (r.stdout + r.stderr).strip()
-            if out:
-                outs.append(out)
-            if not (r.returncode == 0 and "error:" not in out.lower()):
-                ok_all = False
-    finally:
-        lease.release()
-    if queued >= 1:
-        print(f"[lake] build {hint!r} queued {queued:.0f}s for its lease "
-              f"({lease.threads} thread(s))", flush=True)
-    return ok_all, "\n".join(outs)
+                finally:
+                    lease.release()
+                if queued >= 1:
+                    print(f"[lake] build {hint!r} queued {queued:.0f}s for its "
+                          f"lease ({lease.threads} thread(s))", flush=True)
+                if r.peak_gb is not None:
+                    peak_max = max(peak_max or 0.0, r.peak_gb)
+                if r.capped:
+                    last_fence = r.fence_gb
+                    print(f"[lake] build {hint!r} capped at "
+                          f"{(r.fence_gb or 0.0):.1f}G by the OS fence — "
+                          f"waiting for more room, then resuming", flush=True)
+                    try:
+                        from ..core import degraded
+                        degraded.record(
+                            workspace, "build_capped",
+                            f"{hint}: fence {(r.fence_gb or 0.0):.1f}G")
+                    except Exception:  # noqa: BLE001 — the ledger is best-effort
+                        pass
+                    continue
+                out = (r.stdout + r.stderr).strip()
+                if out:
+                    outs.append(out)
+                if not (r.returncode == 0 and "error:" not in out.lower()):
+                    ok_all = False
+                break
+    res = BuildOutcome(ok_all, "\n".join(outs))
+    res.peak_gb = peak_max
+    return res
 
 
 def lake_build_modules(workspace: Path,
-                       modules: list[str]) -> tuple[bool, str]:
+                       modules: list[str]) -> BuildOutcome:
     """Run `lake build <m1> <m2> ...` for one or many module names.
 
     Lake's internal scheduler resolves the dependency DAG and builds
@@ -336,6 +449,10 @@ def lake_build_modules(workspace: Path,
 
     Gate (2026-08-30): identical module lists in flight share one
     build; every build runs under a lease (see the gate section).
+    Fence (2026-09-02): every build runs inside an OS memory fence sized
+    to the machine's room now (`core/mem_fence.py`); a fenced-out build
+    waits for room and resumes, and past `ROOM_WAIT_SEC` comes back as
+    `BuildOutcome.capped` — never as a build error.
     """
     key = (str(workspace),) + tuple(modules)
     with _INFLIGHT_LOCK:
