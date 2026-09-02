@@ -156,6 +156,22 @@ def project_of(conn: sqlite3.Connection, problem: str) -> "str | None":
     return None if row is None or row[0] is None else str(row[0])
 
 
+def file_under(conn: sqlite3.Connection, problem: str,
+               project: str) -> str:
+    """File `problem` on a shelf the author NAMED, overruling the
+    default its prefix picked (§3.1: the prefix is only the default).
+    KeyError when the Project does not exist — filing onto a shelf that
+    is not there would either invent one nobody described or strand the
+    problem off every board. The directory does not move: `Problems/
+    <first segment>/…` is the problem's physical home whatever it is
+    filed under, which is what makes the shelf renameable at all."""
+    require(conn, project)
+    conn.execute("UPDATE problems SET project = ? WHERE name = ?",
+                 (project, problem))
+    conn.commit()
+    return project
+
+
 def ensure_for_problem(conn: sqlite3.Connection, problem: str) -> str:
     """Registration's half of §3.1: file `problem` under the Project its
     name defaults to (first dotted segment, else the whole name),

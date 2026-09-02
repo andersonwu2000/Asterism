@@ -746,7 +746,12 @@ _WATERMARKS = {
     # ~20 lines by construction; the read itself went to its own module
     # (`serve/data/verdict.py`) rather than into `timeline.py`, which
     # this same run would otherwise have pushed over its watermark.
-    "Tooling/serve/app.py": 1750,
+    # 1750→1700 (2026-09-03) — TIGHTEN, not a bump: `POST /api/problems/
+    # create` moved to `serve/authoring_api.py` (the projects_api /
+    # docs_api pattern) when it gained its `project` field, because
+    # app.py had one line of headroom left. The freed ~90 lines are not
+    # a budget for silent regrowth.
+    "Tooling/serve/app.py": 1700,
     "Tooling/knowledge/workspace_query.py": 1475,  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,

@@ -2803,3 +2803,55 @@ def test_project_events_of_an_unknown_project_are_404(
     _open_db(workspace).close()
     assert _client(workspace).get(
         "/api/projects/ghost/events").status_code == 404
+
+
+def test_create_problem_files_under_an_explicit_project(
+        workspace: Path) -> None:
+    """§3.1: the name's first segment is only the DEFAULT shelf. An
+    author who picks a Project gets it — and the DIRECTORY still lives
+    at Problems/<first segment>/…, because a problem's physical home
+    and the shelf it is filed on are two different facts."""
+    _open_db(workspace).close()
+    c = _client(workspace)
+    assert c.post("/api/projects", json={"name": "Physics"}
+                  ).status_code == 200
+    r = c.post("/api/problems/create",
+               json={"name": "Erdos.p1", "charter": _CHARTER,
+                     "project": "Physics"})
+    assert r.status_code == 200, r.text
+    assert (workspace / "Problems" / "Erdos" / "p1").is_dir()
+    conn = db.connect(workspace / "asterism.db")
+    shelf = conn.execute("SELECT project FROM problems WHERE name = ?",
+                         ("Erdos.p1",)).fetchone()[0]
+    conn.close()
+    assert shelf == "Physics"
+    counts = {p["name"]: p["problems"]
+              for p in c.get("/api/projects").json()["projects"]}
+    assert counts["Physics"] == 1
+
+
+def test_create_problem_without_a_project_still_takes_the_prefix(
+        workspace: Path) -> None:
+    _open_db(workspace).close()
+    c = _client(workspace)
+    assert c.post("/api/problems/create",
+                  json={"name": "Erdos.p2", "charter": _CHARTER}
+                  ).status_code == 200
+    conn = db.connect(workspace / "asterism.db")
+    shelf = conn.execute("SELECT project FROM problems WHERE name = ?",
+                         ("Erdos.p2",)).fetchone()[0]
+    conn.close()
+    assert shelf == "Erdos"
+
+
+def test_create_problem_on_a_missing_project_is_404_and_makes_nothing(
+        workspace: Path) -> None:
+    """The shelf is checked BEFORE the directory is made: a 404 raised
+    after `mkdir` would leave the half-built problem behind, and the
+    author's retry would then hit `already exists`."""
+    _open_db(workspace).close()
+    r = _client(workspace).post(
+        "/api/problems/create",
+        json={"name": "Erdos.p3", "charter": _CHARTER, "project": "ghost"})
+    assert r.status_code == 404, r.text
+    assert not (workspace / "Problems" / "Erdos" / "p3").exists()
