@@ -392,3 +392,24 @@ def test_init_batch_missing_root_returns_error(
     rc = cmd_init_batch(argparse.Namespace(root="does/not/exist"))
     assert rc == 1
     assert "not a directory" in capsys.readouterr().err
+
+
+def test_init_batch_skips_the_project_docs_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mock_lake_pass,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `problem.json` a person parked in their own document tree is a
+    file, not a problem (HID §3.6). The batch walks `Problems/` for
+    seeds, so `_docs/` has to be skipped by the WALK — reaching
+    `cmd_init` with the slug `wilson._docs.user` fails the batch on
+    something the person did nothing wrong to cause."""
+    _setup_problem_named(tmp_path, "alpha")
+    docs = tmp_path / "Problems" / "alpha" / "_docs" / "user"
+    docs.mkdir(parents=True)
+    (docs / "problem.json").write_text('{"note": "a draft I saved"}',
+                                       encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_init_batch(argparse.Namespace(root="Problems"))
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "_docs" not in captured.out + captured.err

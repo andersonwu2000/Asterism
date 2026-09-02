@@ -46,6 +46,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import project_docs
+
 # ─────────────────────────────── file side ───────────────────────────────
 
 #: Where an entry's pattern is rooted.
@@ -143,6 +145,14 @@ FILE_SATELLITES: "tuple[FileSatellite, ...]" = (
     FileSatellite(SCOPE_PROBLEM_ROOT, "proofs", KEPT, True,
                   "the directory itself; its RUN-owned contents are the "
                   "proofs-scope swept entries above"),
+    FileSatellite(SCOPE_PROBLEM_ROOT, project_docs.ROOT_DIRNAME, KEPT, True,
+                  "the Project's document root (HID §3.6) — the person's "
+                  "own writing and the Assistant's, never a run artifact. "
+                  "A single-segment Project's docs root sits inside the "
+                  "problem directory, so the registry has to claim it: "
+                  "unclaimed it would be reported as a stray on every "
+                  "reset, and the next widening of the sweep would be "
+                  "aimed at the one directory the framework never wrote"),
     # — workspace-level artifacts a reset also clears —
     FileSatellite(SCOPE_RUNTIME_SLOTS, "_gateway_slot_*.lean", SWEPT, False,
                   "per-worker gateway didOpen surface"),

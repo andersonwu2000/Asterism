@@ -387,3 +387,31 @@ def test_reset_sweeps_exactly_the_registry_and_reports_the_rest(
     assert stray.exists(), "complement audit must REPORT, never delete"
     assert "mystery_artifact.txt" in out
     assert "no satellite-registry entry claims" in out
+
+
+def test_reset_keeps_the_project_docs_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """`_docs/` is the person's own writing (HID §3.6), and for a
+    single-segment Project the docs root sits INSIDE a problem
+    directory. A reset that swept it — or an audit that reported it as
+    an unclaimed artifact every time — would be the reset-leak family
+    pointed the wrong way: at the one directory the framework does not
+    generate."""
+    monkeypatch.chdir(tmp_path)
+    pdir = tmp_path / "Problems" / "wilson"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "problem.json").write_text(
+        '{"problem": "wilson", "charter": "True"}\n', encoding="utf-8")
+    docs = pdir / "_docs" / "user"
+    docs.mkdir(parents=True)
+    (docs / "notes.md").write_text("the professor's notes\n",
+                                   encoding="utf-8")
+
+    rc = cli.cmd_reset(argparse.Namespace(problem="wilson"))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert (docs / "notes.md").read_text(encoding="utf-8") == \
+        "the professor's notes\n"
+    assert "_docs" not in out
+    assert satellites.file_complement(pdir) == []

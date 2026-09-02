@@ -81,3 +81,16 @@ def test_problem_dir_slug_roundtrip(tmp_path: Path) -> None:
         pdir = db.problem_dir(tmp_path, slug)
         pdir.mkdir(parents=True, exist_ok=True)
         assert db.slug_from_problem_dir(tmp_path, pdir) == slug
+
+
+def test_slug_from_problem_dir_rejects_the_project_docs_root(
+    tmp_path: Path,
+) -> None:
+    """`Problems/<project>/_docs/` is a document tree, not a problem
+    (HID §3.6). Nothing that walks `Problems/` may turn a folder under
+    it into a problem slug — `_docs` is not a legal name segment, so a
+    slug carrying it names a problem that can never exist."""
+    docs = tmp_path / "Problems" / "Erdos" / "_docs" / "user"
+    docs.mkdir(parents=True)
+    with pytest.raises(ValueError):
+        db.slug_from_problem_dir(tmp_path, docs)

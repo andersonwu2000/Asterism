@@ -43,11 +43,24 @@ def problem_dir(workspace: Path, problem: str) -> Path:
 def slug_from_problem_dir(workspace: Path, pdir: Path) -> str:
     """Inverse of `problem_dir`. Given a problem's filesystem
     directory, return the dot-separated slug. Raises ValueError if
-    `pdir` is not under `workspace/Problems/`.
+    `pdir` is not under `workspace/Problems/`, or if it lies inside a
+    Project's document root.
+
+    `_docs/` (HID §3.6) is a document tree, not a problem: `projects
+    .NAME_RE` refuses a leading underscore, so a slug carrying that
+    component names a problem no registration could ever create. Every
+    walk of `Problems/` reaches this function, which makes it the place
+    to say so once — a caller that skips `_docs` itself is a caller the
+    next walk will not copy.
     """
+    from ..project_docs import ROOT_DIRNAME as _DOCS
     rel = pdir.resolve().relative_to((workspace / "Problems").resolve())
     if not rel.parts:
         raise ValueError(f"{pdir} resolves to Problems/ root, not a problem dir")
+    if _DOCS in rel.parts:
+        raise ValueError(
+            f"{pdir} is inside a Project's document root ({_DOCS}/), "
+            f"which holds documents, not problems")
     return ".".join(rel.parts)
 
 

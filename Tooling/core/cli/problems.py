@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from .. import fsutil
-from ...state import brief, db, satellites, tree
+from ...state import brief, db, project_docs, satellites, tree
 from ...state import intent as intent_mod
 from .run import daemon_status
 
@@ -376,7 +376,9 @@ def cmd_init_batch(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
 
-    seeds = sorted(root.rglob(intent_mod.SEED_FILENAME))
+    # `_docs/` is the Project's document tree (HID §3.6), not a problem.
+    seeds = [p for p in sorted(root.rglob(intent_mod.SEED_FILENAME))
+             if project_docs.ROOT_DIRNAME not in p.parts]
     if not seeds:
         print(f"OK: init-batch {root}: no {intent_mod.SEED_FILENAME} "
               f"found", flush=True)

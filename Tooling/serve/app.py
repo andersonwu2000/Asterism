@@ -369,6 +369,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     from .commands_api import register as _register_commands
     _register_commands(app, workspace, _ro)
 
+    # the Project's document root (/api/projects/{p}/docs, HID §3.6)
+    from .docs_api import register as _register_docs
+    _register_docs(app, workspace, _ro)
+
     # -- meta ---------------------------------------------------------
 
     # The release stamp this PROCESS started from (VERSION rides in the

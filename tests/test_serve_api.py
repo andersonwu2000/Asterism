@@ -2495,3 +2495,78 @@ def test_a_command_missing_its_own_field_is_422_at_the_post(
     conn2 = _open_db(workspace)
     assert conn2.execute(
         "SELECT COUNT(*) FROM human_commands").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------
+# Project documents (human_interface_design.md §3.6)
+# ---------------------------------------------------------------------
+
+
+def _with_project(workspace: Path, name: str = "Erdos") -> None:
+    conn = _open_db(workspace)
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES (?, '', ?)", (name, db.now()))
+    conn.commit()
+    conn.close()
+
+
+def test_docs_round_trip_through_the_endpoints(workspace: Path) -> None:
+    """The file surface a person edits: list, write, read back, remove.
+    The tree is what the left rail renders, so a folder is an entry in
+    its own right (§1.2-3)."""
+    _with_project(workspace)
+    c = _client(workspace)
+    assert c.get("/api/projects/Erdos/docs").json()["entries"] == []
+    assert c.put("/api/projects/Erdos/docs/user/notes.md",
+                 json={"content": "# hello\n"}).status_code == 200
+    entries = c.get("/api/projects/Erdos/docs").json()["entries"]
+    assert [(e["path"], e["kind"]) for e in entries] == [
+        ("user", "dir"), ("user/notes.md", "file")]
+    r = c.get("/api/projects/Erdos/docs/user/notes.md")
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "# hello\n"
+    assert c.delete("/api/projects/Erdos/docs/user/notes.md"
+                    ).status_code == 200
+    assert c.get("/api/projects/Erdos/docs/user/notes.md"
+                 ).status_code == 404
+
+
+def test_docs_put_writes_only_the_user_area(workspace: Path) -> None:
+    """§3.6: this door writes `user/`. `agent/` is the Assistant's
+    shelf and reaching it from here would make the two areas one."""
+    _with_project(workspace)
+    c = _client(workspace)
+    r = c.put("/api/projects/Erdos/docs/agent/summary.md",
+              json={"content": "x"})
+    assert r.status_code == 422, r.text
+    assert "user/" in r.json()["detail"]
+    assert not (workspace / "Problems" / "Erdos" / "_docs" / "agent"
+                ).exists()
+
+
+def test_docs_put_creates_a_folder(workspace: Path) -> None:
+    _with_project(workspace)
+    c = _client(workspace)
+    assert c.put("/api/projects/Erdos/docs/user/chapter",
+                 json={"kind": "dir"}).status_code == 200
+    assert c.get("/api/projects/Erdos/docs").json()["entries"] == [
+        {"path": "user", "kind": "dir"},
+        {"path": "user/chapter", "kind": "dir"}]
+
+
+def test_docs_refuse_a_path_that_leaves_the_root(workspace: Path) -> None:
+    """Percent-encoded, because a plain `..` never survives the trip: an
+    HTTP client normalises it away before the request is sent, so the
+    form that actually ARRIVES at the endpoint is the escaped one."""
+    _with_project(workspace)
+    r = _client(workspace).put(
+        "/api/projects/Erdos/docs/user/%2e%2e/%2e%2e/%2e%2e/escape.md",
+        json={"content": "x"})
+    assert r.status_code == 422, r.text
+    assert not (workspace / "Problems" / "escape.md").exists()
+
+
+def test_docs_of_an_unknown_project_are_404(workspace: Path) -> None:
+    _with_project(workspace)
+    assert _client(workspace).get(
+        "/api/projects/ghost/docs").status_code == 404
