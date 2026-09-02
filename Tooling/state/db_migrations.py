@@ -190,13 +190,6 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         ("outcome_detail",
          "ALTER TABLE strategist_decisions ADD COLUMN outcome_detail TEXT"
          " NULL DEFAULT NULL"),
-        # The batch-report carry-over mark (see the SCHEMA comment).
-        # Additive nullable, no user_version bump: NULL everywhere is
-        # exactly the pre-2026-09-03 behaviour, so an unmigrated read and
-        # a migrated one answer the same on every existing row.
-        ("report_carried_at",
-         "ALTER TABLE strategist_decisions ADD COLUMN report_carried_at"
-         " TEXT NULL DEFAULT NULL"),
         # anchor+claim architecture — top-level deliverable marker set by
         # the Strategist. Additive defaulted (CHECK only enforced for
         # fresh DBs; `mark_deliverable` is the sole writer and passes
@@ -1056,6 +1049,23 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # the v45/v48 channel, one value further.
         _migrate_to_v49(conn)
         conn.execute("PRAGMA user_version = 49")
+        conn.commit()
+    if v < 50:
+        # v50 — the batch-report carry-over mark (2026-09-03): a batch
+        # that finished mid-debate and was neither delivered to nor acted
+        # on by the wake in flight is owed its report, and the clock
+        # ratchet cannot say so. See the SCHEMA comment on
+        # `strategist_decisions.report_carried_at`. Additive column with
+        # no backfill: NULL means "the ratchet decides", which is what
+        # every pre-v50 row means. Same channel as v47 — duplicate-column
+        # tolerance covers a disk whose SCHEMA already minted it.
+        try:
+            conn.execute("ALTER TABLE strategist_decisions ADD COLUMN"
+                         " report_carried_at TEXT NULL DEFAULT NULL")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+        conn.execute("PRAGMA user_version = 50")
         conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).

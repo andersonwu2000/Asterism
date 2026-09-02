@@ -529,7 +529,7 @@ _WATERMARKS = {
     # for the `Signal` kind, + the ladder-level FK re-arm its constraint
     # test exposed (every rebuild's own `finally` re-arm is a no-op
     # inside the rebuild's transaction) — conscious bump.
-    "Tooling/state/db_migrations.py": 3147,  # +7 2026-09-03 report_carried_at ALTER (additive nullable, no user_version bump)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 3157,  # +13 2026-09-03 v50 report_carried_at (an additive column, but since v15 those ship as a version step)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
