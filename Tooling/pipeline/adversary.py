@@ -270,10 +270,10 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         # Label it, same move as the PROGRAMME weld below and for the
         # same reason: judged against the wrong referent it manufactures
         # defects. This file is the author's snapshot, frozen when the
-        # wake spawned; `CATALOG.md` beside it is regenerated every
-        # round and `TREE.md` is a COPY of a file the dispatcher writes
-        # on cascades, so it can trail the record too — the label says
-        # so rather than calling either of them live (08-15: the label
+        # wake spawned; the four companions beside it are re-rendered
+        # from the DB every round by `round_materials.refresh`, so they
+        # are the NEWER bytes — the label says so rather than calling
+        # either side live (08-15: the label
         # pointed the judge at the staler of two renders and called it
         # authoritative). A long debate (7 and 10 rounds, 60-90min,
         # 2026-08-06) widens that gap monotonically while sibling groups
@@ -308,11 +308,9 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         (proj / "Context.md").write_text(
             "_(Framework label — not part of the file. This is the"
             f" author's context SNAPSHOT, taken {_taken} when the wake"
-            " spawned; it is what the author saw. `CATALOG.md` is"
-            " regenerated for this round; `TREE.md` is a COPY of the"
-            " problem's tree file as it stood when this round"
-            " started, and that file is itself written by the"
-            " dispatcher on cascades, so it can trail the record."
+            " spawned; it is what the author saw. `TREE.md`,"
+            " `CATALOG.md`, `BATCHES.md`, `ADJUDICATIONS.md` beside it"
+            " are refreshed for this round."
             " Where they disagree about what has landed, later is"
             " closer to the truth and the difference is this"
             " packet's timing, not a defect in the proposal. When a"

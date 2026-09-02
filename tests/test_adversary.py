@@ -1197,6 +1197,16 @@ def test_projection_ships_the_strategists_context_verbatim(
     assert "Framework label" in label
     assert "SNAPSHOT" in label
     assert "live files are authoritative" not in label
+    # …and the age it states for the OTHER files must be true. Since
+    # `round_materials.refresh` (2026-09-03) all four companions are
+    # re-rendered from the DB every round, so the old clause — TREE.md
+    # "a COPY … written by the dispatcher on cascades" — described a
+    # mechanism that no longer exists and aged the freshest render in
+    # the packet as the stalest. Requirement change: the label now
+    # names the four and calls them refreshed.
+    assert ("`TREE.md`, `CATALOG.md`, `BATCHES.md`, `ADJUDICATIONS.md`"
+            " beside it are refreshed for this round." in label)
+    assert "COPY of the problem" not in label
 
 
 def test_projection_without_a_context_file_is_not_an_error(

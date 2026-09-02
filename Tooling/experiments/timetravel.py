@@ -225,8 +225,9 @@ def refresh_derived_files(conn: sqlite3.Connection, *, workspace: Path,
                           problem: str) -> "list[Path]":
     """Re-derive the rendered files the DB owns — `TREE.md` and every
     group's `PROGRAMME.md` — so the scratch workspace shows the rewound
-    scene, not the snapshot's. The judge's projection copies TREE.md
-    verbatim and the agents grep both in place: the first experiment-3
+    scene, not the snapshot's. Both sides' round companions are re-rendered
+    from this DB every round and the agents grep them in place: the
+    first experiment-3
     run (2026-08-30) was judged against a TREE that still listed the
     goal the proposal was about to mint."""
     from Tooling.state import programme, tree
