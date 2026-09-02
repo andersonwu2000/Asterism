@@ -395,7 +395,15 @@ def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
                 " GROUP BY problem ORDER BY m DESC", (live_pid,)):
             candidates.append(str(r["problem"]))
     if scope:
-        if "%" in scope:
+        # A scope names several problems in two ways now: a LIKE pattern,
+        # or the explicit `a,b,c` list a multi-problem run starts with
+        # (HID §1.4). Both expand to the lens's candidate list.
+        _names = db.scope_names(scope)
+        if _names is not None:
+            for name in _names:
+                if name not in candidates:
+                    candidates.append(name)
+        elif "%" in scope:
             for r in conn.execute(
                     "SELECT name FROM problems WHERE name LIKE ?"
                     " ORDER BY last_strategist_at IS NULL,"

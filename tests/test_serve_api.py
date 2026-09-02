@@ -2330,3 +2330,114 @@ def test_delete_project_refuses_while_a_problem_names_it(
     conn.close()
     assert c.delete("/api/projects/Erdos").status_code == 200
     assert c.get("/api/projects").json()["projects"] == []
+
+
+# ---------------------------------------------------------------------
+# Human commands (human_interface_design.md §3.3)
+# ---------------------------------------------------------------------
+
+
+def _goal_row(conn: sqlite3.Connection, problem: str, slug: str = "main",
+              origin: str = "root") -> int:
+    return db.insert_goal(
+        conn, problem=problem, slug=slug,
+        lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
+        statement="T", origin=origin, depth=0)
+
+
+def test_post_command_returns_a_queued_receipt(workspace: Path) -> None:
+    """§3.3: serve INSERTs the queue row and nothing else — the receipt
+    is the id, the outcome is looked up later. 202, because the work has
+    not happened yet."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = _goal_row(conn, "p")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    r = c.post("/api/commands", json={
+        "problem": "p", "kind": "ConfirmShelve",
+        "payload": {"target_goal_id": gid, "reason": "stop"},
+        "idempotency_key": "k1"})
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "queued"
+    cid = r.json()["id"]
+    got = c.get(f"/api/commands/{cid}")
+    assert got.status_code == 200
+    assert got.json()["kind"] == "ConfirmShelve"
+    assert got.json()["status"] == "queued"
+    # the retry is the same command, not a second one
+    again = c.post("/api/commands", json={
+        "problem": "p", "kind": "ConfirmShelve",
+        "payload": {"target_goal_id": gid, "reason": "stop"},
+        "idempotency_key": "k1"})
+    assert again.json()["id"] == cid
+
+
+def test_command_refusals_are_404_and_422(workspace: Path) -> None:
+    """The `resolve_amend` shape the Project endpoints already use:
+    KeyError = the named thing is not there (404), a malformed request
+    is 422 — and a ghost receipt is a 404, not an empty 200."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    conn.close()
+    c = _client(workspace)
+    assert c.post("/api/commands", json={
+        "problem": "ghost", "kind": "ConfirmShelve", "payload": {},
+        "idempotency_key": "k"}).status_code == 404
+    assert c.post("/api/commands", json={
+        "problem": "p", "kind": "Ingest", "payload": {},
+        "idempotency_key": "k2"}).status_code == 422
+    assert c.get("/api/commands/999").status_code == 404
+
+
+def test_command_preview_names_the_cascade(workspace: Path) -> None:
+    """The confirm window's data (§1.3): read-only, no queue row."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    root = _goal_row(conn, "p")
+    sid = db.insert_strategy(conn, goal_id=root,
+                             lean_path="Problems/p/proofs/S_x.lean",
+                             created_by="test")
+    kid = _goal_row(conn, "p", "kid", origin="backward")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=kid, position=0)
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    r = c.post("/api/commands/preview", json={
+        "problem": "p", "kind": "ConfirmShelve",
+        "payload": {"target_goal_id": root}})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cascade"] is True
+    assert [a["id"] for a in body["affected"]] == [root, kid]
+    conn2 = _open_db(workspace)
+    assert conn2.execute(
+        "SELECT COUNT(*) FROM human_commands").fetchone()[0] == 0
+
+
+def test_start_many_requires_every_problem_to_exist(
+        workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§1.4: the multi-problem run takes an explicit list and refuses
+    patterns — the same post-incident defence `/api/daemon/start` has.
+    A missing name is a 404 that says WHICH."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "a")
+    _add_problem(conn, "b")
+    conn.close()
+    seen = {}
+    from Tooling.core import cli as _cli
+    monkeypatch.setattr(
+        _cli, "daemon_start",
+        lambda ws, *, scope=None, once=False, **kw: (
+            seen.update(scope=scope, once=once) or (0, "started")))
+    c = _client(workspace)
+    missing = c.post("/api/daemon/start-many",
+                     json={"problems": ["a", "ghost"]})
+    assert missing.status_code == 404
+    assert "ghost" in missing.json()["detail"]
+    assert c.post("/api/daemon/start-many",
+                  json={"problems": ["a", "b%"]}).status_code == 404
+    ok = c.post("/api/daemon/start-many", json={"problems": ["a", "b"]})
+    assert ok.status_code == 200, ok.text
+    assert db.scope_names(seen["scope"]) == ["a", "b"]

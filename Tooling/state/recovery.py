@@ -163,8 +163,8 @@ def recover_at_startup(conn: sqlite3.Connection,
     if fossils:
         print(f"[dispatcher] recovery: swept {fossils} fossil queue "
               f"row(s) whose problem no longer exists", flush=True)
-    _scope_sql = "" if scope is None else " AND problem LIKE ?"
-    _scope_args: tuple = () if scope is None else (scope,)
+    _sc, _scope_args = db.scope_sql(scope)
+    _scope_sql = f" AND {_sc}" if _sc else ""
     queue_cleared = conn.execute(
         "DELETE FROM queue WHERE owner_pid IS NULL" + _scope_sql,
         _scope_args).rowcount
@@ -297,8 +297,7 @@ def recover_at_startup(conn: sqlite3.Connection,
         problem = _pipeline_problem(
             conn, str(r["target_id"]), str(r["target_kind"]))
         if scope is not None:
-            if problem is None or conn.execute(
-                    "SELECT ? LIKE ?", (problem, scope)).fetchone()[0] != 1:
+            if problem is None or not db.scope_matches(conn, scope, problem):
                 continue
         if workspace is not None and _attempt_owner_alive(
                 workspace / ".attempts" / str(r["id"])):
@@ -571,10 +570,10 @@ def sweep_orphan_proof_files(conn: sqlite3.Connection, workspace: Path, *,
     """
     deleted = 0
     kept_cited = 0
+    _sc, _sa = db.scope_sql(scope if scope else None)
     problems = [r["problem"] for r in conn.execute(
         "SELECT DISTINCT problem FROM goals"
-        + (" WHERE problem LIKE ?" if scope else ""),
-        ((scope,) if scope else ()))]
+        + (f" WHERE {_sc}" if _sc else ""), _sa)]
     for problem in problems:
         proofs_dir = db.problem_dir(workspace, problem) / "proofs"
         if not proofs_dir.exists():

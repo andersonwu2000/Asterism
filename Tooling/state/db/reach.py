@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .core import now
+from .core import now, scope_sql
 
 
 # ---------------------------------------------------------------------
@@ -134,10 +134,9 @@ def open_goals(conn: sqlite3.Connection,
         # this filter cleanly maps to the legacy bootstrap_done=1 gate
         # without ambiguity.)
     )
-    params: tuple = ()
-    if scope is not None:
-        sql += "AND g.problem LIKE ? "
-        params = (scope,)
+    _sc, params = scope_sql(scope, "g.problem")   # pattern OR list
+    if _sc:
+        sql += f"AND {_sc} "
     sql += "ORDER BY g.id"
     return list(conn.execute(sql, params))
 
@@ -162,8 +161,8 @@ def root_proved(conn: sqlite3.Connection, problem: str | None = None,
         sql += " AND problem = ?"
         args = (problem,)
     elif scope is not None:
-        sql += " AND problem LIKE ?"
-        args = (scope,)
+        _sc, args = scope_sql(scope)
+        sql += f" AND {_sc}"
     row = conn.execute(sql, args).fetchone()
     return row is not None and int(row["c"]) == 0
 

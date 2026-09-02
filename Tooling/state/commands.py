@@ -188,6 +188,108 @@ def enqueue(conn: sqlite3.Connection, *, problem: str, kind: str,
 
 
 # ---------------------------------------------------------------------
+# preview (§1.3: a cascading command pops a confirm window first)
+# ---------------------------------------------------------------------
+
+def _goal_entry(conn: sqlite3.Connection, goal_id: int,
+                effect: str) -> "dict | None":
+    g = db.get_goal(conn, int(goal_id))
+    if g is None:
+        return None
+    return {"id": int(g["id"]), "kind": "goal", "slug": str(g["slug"]),
+            "status": str(g["status"]), "effect": effect}
+
+
+def _group_entry(row, effect: str) -> dict:
+    charter = str(row["charter"] or "").strip().splitlines()
+    return {"id": int(row["id"]), "kind": "group",
+            "slug": (charter[0][:120] if charter else f"group {row['id']}"),
+            "status": str(row["status"]), "effect": effect}
+
+
+def preview(conn: sqlite3.Connection, *, problem: str, kind: str,
+            payload: dict) -> dict:
+    """What this command would close, without closing anything.
+
+    §1.3: a command that CASCADES must pop a confirm window first, and a
+    window can only be honest if it names the nodes. The sets come from
+    the cascade's own reasoning — `transitions.shelve_cascade_targets`
+    (the read half of `_cascade_shelve_descendants`) and
+    `groups.children` (the walk `groups.set_status` takes) — so preview
+    and apply cannot drift apart. Nothing here writes, and nothing runs
+    inside a transaction that would have to be rolled back: the two
+    cascades were split into a read half and a write half instead, which
+    is the only version that stays true when the appliers commit
+    mid-cascade (they do).
+
+    `revision` rides along so the confirm window can hand it straight
+    back as the command's `expected_revision` — the read the person acted
+    on and the command they issued then name the same state.
+    """
+    from . import groups as _groups
+
+    out: "dict" = {"affected": [], "cascade": False,
+                   "revision": revision(conn, kind=kind, payload=payload)}
+    tid = target_of(kind, payload)
+    if tid is None:
+        return out
+    if kind == "ConfirmShelve":
+        head = _goal_entry(conn, tid, "shelved")
+        if head is None:
+            return out
+        from . import transitions as _transitions
+        rest = [_goal_entry(conn, g, "shelved")
+                for g in _transitions.shelve_cascade_targets(conn, tid)]
+        out["affected"] = [head] + [r for r in rest if r is not None]
+        out["cascade"] = len(out["affected"]) > 1
+        return out
+    if kind == "ReturnToParent":
+        me = _groups.get(conn, tid)
+        if me is None or str(me["problem"]) != problem:
+            return out
+        rows = [_group_entry(me, "returned")]
+        # A retired charter retires the work it delegated: every ACTIVE
+        # descendant group is closed under it, and each closed group
+        # parks its anchor (`groups.set_status` → `park_group_anchor`).
+        frontier = [int(me["id"])]
+        seen: "set[int]" = set()
+        anchors: "list[int]" = [] if me["anchor_goal_id"] is None \
+            else [int(me["anchor_goal_id"])]
+        while frontier:
+            nxt: "list[int]" = []
+            for gid in frontier:
+                if gid in seen:
+                    continue
+                seen.add(gid)
+                for kid in _groups.children(conn, gid):
+                    if str(kid["status"]) != _groups.ACTIVE:
+                        continue
+                    rows.append(_group_entry(kid, "closed"))
+                    if kid["anchor_goal_id"] is not None:
+                        anchors.append(int(kid["anchor_goal_id"]))
+                    nxt.append(int(kid["id"]))
+            frontier = nxt
+        from . import transitions as _transitions
+        for anchor in anchors:
+            g = db.get_goal(conn, anchor)
+            if g is None or str(g["status"]) not in (
+                    "open", "attempting", "pending_strategist_review",
+                    "frozen"):
+                continue
+            entry = _goal_entry(conn, anchor, "shelved")
+            if entry is not None:
+                rows.append(entry)
+            rows += [e for e in
+                     (_goal_entry(conn, g2, "shelved") for g2 in
+                      _transitions.shelve_cascade_targets(conn, anchor))
+                     if e is not None]
+        out["affected"] = rows
+        out["cascade"] = len(rows) > 1
+        return out
+    return out
+
+
+# ---------------------------------------------------------------------
 # the applier (daemon side)
 # ---------------------------------------------------------------------
 

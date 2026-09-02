@@ -115,6 +115,24 @@ def test_scoped_pop_only_claims_own_problem():
     assert db.pop_queue(conn, scope="theirs")["target_id"] == "1"
 
 
+def test_a_scope_may_be_an_explicit_list_of_problems():
+    """human_interface_design.md §1.4 / §3.3 — the multi-problem run.
+    `/api/daemon/start-many` takes an explicit list and no patterns, so
+    a scope has to be able to SAY a set: a comma-joined list of exact
+    names (a comma cannot occur in a problem name) selects exactly those
+    problems, everywhere the daemon filters by scope."""
+    conn = _mem()
+    _seed(conn, "a", "b", "c")
+    for p in ("a", "b", "c"):
+        db.enqueue(conn, kind="Builder", target_id=p, problem=p)
+    assert db.queue_size(conn, scope="a,b") == 2
+    claimed = {db.pop_queue(conn, scope="a,b")["target_id"],
+               db.pop_queue(conn, scope="a,b")["target_id"]}
+    assert claimed == {"a", "b"}
+    assert db.pop_queue(conn, scope="a,b") is None
+    assert db.pop_queue(conn, scope="c")["target_id"] == "c"
+
+
 def test_unscoped_and_scoped_concurrency_no_double_dispatch():
     """Reminder #2: an unscoped daemon pops the whole table — it MAY take
     another scope's row, but the lease makes that visible: the scoped

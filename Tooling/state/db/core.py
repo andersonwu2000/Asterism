@@ -767,6 +767,68 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------
+# dispatch scope
+# ---------------------------------------------------------------------
+
+#: What joins the names of an EXPLICIT-LIST scope. A problem name is
+#: dot-separated identifiers (`state/projects.PROBLEM_NAME_RE`), so a
+#: comma can never occur in one and the two scope forms cannot collide.
+SCOPE_SEP = ","
+
+
+def scope_names(scope: "str | None") -> "list[str] | None":
+    """The exact problem names an explicit-list scope selects, or None
+    when the scope is the historical single LIKE pattern.
+
+    A scope has said one thing since the beginning — "restrict dispatch
+    to what this SQL LIKE matches" — and a pattern cannot say "these
+    three". `/api/daemon/start-many` (human_interface_design.md §1.4,
+    §3.3) must take an explicit list and no patterns, so the scope
+    language grows the one form it was missing: `a,b,c` = exactly those.
+    """
+    if scope is None or SCOPE_SEP not in scope:
+        return None
+    return [s for s in (part.strip() for part in scope.split(SCOPE_SEP)) if s]
+
+
+def scope_sql(scope: "str | None",
+              column: str = "problem") -> "tuple[str, tuple]":
+    """(predicate, params) for a dispatch scope — `('', ())` when the
+    scope is None (workspace-wide).
+
+    The ONE translation from a scope to SQL. Every filter used to write
+    `<col> LIKE ?` by hand, which is exactly why a second scope FORM
+    could not be added without a hole: whichever site was missed would
+    quietly run out-of-scope problems, the accident `/api/daemon/start`
+    exists to prevent. `column` is a caller-supplied SQL identifier, not
+    user input; the values always travel as parameters.
+    """
+    if scope is None:
+        return "", ()
+    names = scope_names(scope)
+    if names is None:
+        return f"{column} LIKE ?", (scope,)
+    if not names:
+        # `,` alone names nothing; match nothing rather than everything.
+        return "0", ()
+    marks = ",".join("?" for _ in names)
+    return f"{column} IN ({marks})", tuple(names)
+
+
+def scope_matches(conn: sqlite3.Connection, scope: "str | None",
+                  name: str) -> bool:
+    """Python-side mirror of `scope_sql` for the row-at-a-time readers.
+    Patterns go through SQLite so LIKE semantics stay SQLite's."""
+    if not scope:
+        return True
+    names = scope_names(scope)
+    if names is not None:
+        return name in names
+    row = conn.execute("SELECT ? LIKE ?", (name, scope)).fetchone()
+    return bool(row and row[0])
+
+
 # The schema version the current code expects. Every `init_schema` migration
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`

@@ -48,10 +48,9 @@ def _ensure_top_groups(conn: sqlite3.Connection, *,
            " WHERE p.ingested_at IS NULL AND NOT EXISTS ("
            "   SELECT 1 FROM groups g WHERE g.problem = p.name"
            "     AND g.parent_group_id IS NULL)")
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND p.name LIKE ?"
-        args = (scope,)
+    _sc, args = db.scope_sql(scope, "p.name")
+    if _sc:
+        sql += f" AND {_sc}"
     rows = conn.execute(sql, args).fetchall()
     if not rows:
         return
@@ -275,8 +274,8 @@ def strategist_triggers(conn: sqlite3.Connection,
     # T1.6 — a FIRED routine audit nobody has acted on (2026-08-30):
     # persistent state, seated like an unacknowledged batch. The
     # findings must not wait for the next routine clock.
-    _scope_sql = "" if scope is None else " AND problem LIKE ?"
-    _scope_args: tuple = () if scope is None else (scope,)
+    _sc, _scope_args = db.scope_sql(scope)
+    _scope_sql = f" AND {_sc}" if _sc else ""
     for row in conn.execute(
             "SELECT DISTINCT group_id, problem FROM routine_verdicts"
             " WHERE fired = 1 AND acted_at IS NULL" + _scope_sql,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from .core import now
+from .core import now, scope_sql
 from .reach import ALIVE_CTE_PER_PROBLEM, open_goals
 
 
@@ -56,11 +56,10 @@ def all_problems_ingested(conn: sqlite3.Connection,
     judgment itself (charter fully satisfied) is the Strategist's."""
     sql = "SELECT count(*) AS c FROM problems WHERE ingested_at IS NULL"
     tot = "SELECT count(*) AS t FROM problems"
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND name LIKE ?"
-        tot += " WHERE name LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope, "name")   # pattern OR explicit list
+    if _sc:
+        sql += f" AND {_sc}"
+        tot += f" WHERE {_sc}"
     remaining = int(conn.execute(sql, args).fetchone()["c"])
     total = int(conn.execute(tot, args).fetchone()["t"])
     return total > 0 and remaining == 0
@@ -212,9 +211,10 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
         " WHERE p.ingested_at IS NULL"
         f"   AND julianday('now') - {baseline_sql} > ?"
     )
-    if scope is not None:
-        sql += " AND p.name LIKE ?"
-        args.append(scope)
+    _sc, _sa = scope_sql(scope, "p.name")
+    if _sc:
+        sql += f" AND {_sc}"
+        args.extend(_sa)
     sql += " ORDER BY p.name"
     return [str(r["name"]) for r in conn.execute(sql, tuple(args))]
 
@@ -269,9 +269,10 @@ def groups_needing_t1(conn: sqlite3.Connection, *,
         "                     AND ch.status = 'active')"
         f"   AND julianday('now') - {baseline_sql} > ?"
     )
-    if scope is not None:
-        sql += " AND g.problem LIKE ?"
-        args.append(scope)
+    _sc, _sa = scope_sql(scope, "g.problem")
+    if _sc:
+        sql += f" AND {_sc}"
+        args.extend(_sa)
     sql += " ORDER BY g.problem, g.id"
     return list(conn.execute(sql, tuple(args)))
 
@@ -317,10 +318,9 @@ def problems_with_pending_review(conn: sqlite3.Connection, *,
         "   AND g_pend.status = 'pending_strategist_review'"
         " WHERE p.ingested_at IS NULL"
     )
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND p.name LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope, "p.name")
+    if _sc:
+        sql += f" AND {_sc}"
     sql += " ORDER BY p.name"
     return [str(r["name"]) for r in conn.execute(sql, args)]
 
@@ -369,10 +369,9 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
         " produced_strategy_id FROM strategist_decisions"
         " WHERE decision_kind = 'Inject' AND outcome IS NULL"
     )
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND problem LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope)
+    if _sc:
+        sql += f" AND {_sc}"
     specs: list[dict] = []
     for r in conn.execute(sql, args):
         try:
@@ -1006,10 +1005,9 @@ def groups_stalled(conn: sqlite3.Connection, *,
     sql = ("SELECT g.id, g.problem FROM groups g"
            " JOIN problems p ON p.name = g.problem"
            " WHERE g.status = 'active' AND p.ingested_at IS NULL")
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND g.problem LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope, "g.problem")
+    if _sc:
+        sql += f" AND {_sc}"
     return [r for r in conn.execute(sql + " ORDER BY g.problem, g.id", args)
             if is_group_stalled(conn, str(r["problem"]), int(r["id"]),
                                 running=running)]
@@ -1103,10 +1101,9 @@ def problems_stalled(conn: sqlite3.Connection, *,
         " FROM problems p"
         " WHERE p.ingested_at IS NULL"
     )
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND p.name LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope, "p.name")
+    if _sc:
+        sql += f" AND {_sc}"
     sql += " ORDER BY p.name"
     candidates = list(conn.execute(sql, args))
     if not candidates:
@@ -1146,9 +1143,10 @@ def scoped_problem_names(conn: sqlite3.Connection, scope: str) -> list[str]:
     in-scope trees each tick, instead of churning all ~281 problems'
     TREE.md — on Windows the rapid replace of unrelated trees raised
     transient WinError 5 sharing violations (caught, but noise)."""
+    _sc, _sa = scope_sql(scope)
     return [str(r[0]) for r in conn.execute(
-        "SELECT DISTINCT problem FROM goals WHERE problem LIKE ?"
-        " ORDER BY problem", (scope,))]
+        f"SELECT DISTINCT problem FROM goals WHERE {_sc or '1'}"
+        " ORDER BY problem", _sa)]
 
 
 def dispatchable_open_goals(conn: sqlite3.Connection,

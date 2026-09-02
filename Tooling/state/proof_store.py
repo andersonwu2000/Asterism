@@ -181,10 +181,10 @@ def inventory(conn: sqlite3.Connection, workspace: Path, *,
         in code — a silent fake proof.
     `scope` (a `problem LIKE` pattern) limits the sweep to the daemon's scope."""
     rep = DriftReport()
+    _sc, _sa = db.scope_sql(scope if scope else None)
     problems = [r["problem"] for r in conn.execute(
         "SELECT DISTINCT problem FROM goals"
-        + (" WHERE problem LIKE ?" if scope else ""),
-        ((scope,) if scope else ()))]
+        + (f" WHERE {_sc}" if _sc else ""), _sa)]
     for problem in problems:
         rows = list(conn.execute(
             "SELECT id, lean_path, status FROM goals WHERE problem = ?"

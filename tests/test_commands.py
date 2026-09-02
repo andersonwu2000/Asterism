@@ -278,3 +278,77 @@ def test_payload_round_trips_as_a_dict(conn: sqlite3.Connection) -> None:
     assert json.loads(conn.execute(
         "SELECT payload FROM human_commands WHERE id = ?",
         (cid,)).fetchone()["payload"])["reason"] == "x"
+
+
+# ---------------------------------------------------------------------
+# preview (§1.3: a cascading command pops a confirm window first)
+# ---------------------------------------------------------------------
+
+def _sub(conn: sqlite3.Connection, parent_goal: int, child_slug: str) -> int:
+    """A sub-goal of `parent_goal` through a proposed strategy — the edge
+    the shelve cascade walks."""
+    sid = db.insert_strategy(
+        conn, goal_id=parent_goal,
+        lean_path=f"Problems/p/proofs/S_{child_slug}.lean",
+        created_by="test")
+    kid = _goal(conn, child_slug, "K", origin="backward")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=kid, position=0)
+    conn.commit()
+    return kid
+
+
+def test_preview_names_every_goal_a_park_would_take(
+        conn: sqlite3.Connection) -> None:
+    """§1.3: a ConfirmShelve that cascades must pop a confirm window, and
+    a window can only name what it is about to close. The set comes from
+    the cascade's own walk, so preview and apply cannot disagree."""
+    root = _goal(conn)
+    kid = _sub(conn, root, "kid")
+    grand = _sub(conn, kid, "grand")
+    out = commands.preview(conn, problem="p", kind="ConfirmShelve",
+                           payload={"target_goal_id": root})
+    assert out["cascade"] is True
+    assert [(a["id"], a["effect"]) for a in out["affected"]] == [
+        (root, "shelved"), (kid, "shelved"), (grand, "shelved")]
+    assert {a["kind"] for a in out["affected"]} == {"goal"}
+
+
+def test_preview_does_not_move_anything(conn: sqlite3.Connection) -> None:
+    """Read-only is the whole contract: the person has not decided yet."""
+    root = _goal(conn)
+    kid = _sub(conn, root, "kid")
+    commands.preview(conn, problem="p", kind="ConfirmShelve",
+                     payload={"target_goal_id": root})
+    assert str(db.get_goal(conn, root)["status"]) == "open"
+    assert str(db.get_goal(conn, kid)["status"]) == "open"
+
+
+def test_preview_of_a_group_close_names_the_group_and_its_anchor(
+        conn: sqlite3.Connection) -> None:
+    """Closing a group is the other cascading verb: the group is handed
+    back, its anchor is parked, and every group it opened is closed under
+    it (`groups.set_status` cascades to descendants)."""
+    top = groups.ensure_top_group(conn, "p")
+    anchor = _goal(conn, "anchor", "A", origin="forward")
+    kid = groups.open_group(conn, problem="p", parent_group_id=top,
+                            charter="the sub-charter", anchor_goal_id=anchor)
+    grand = groups.open_group(conn, problem="p", parent_group_id=kid,
+                              charter="deeper still")
+    out = commands.preview(conn, problem="p", kind="ReturnToParent",
+                           payload={"group_id": kid})
+    got = {(a["kind"], a["id"]): a["effect"] for a in out["affected"]}
+    assert got[("group", kid)] == "returned"
+    assert got[("group", grand)] == "closed"
+    assert got[("goal", anchor)] == "shelved"
+    assert out["cascade"] is True
+
+
+def test_preview_of_a_non_cascading_kind_is_empty(
+        conn: sqlite3.Connection) -> None:
+    """`Inject` / `MarkDeliverable` / `Delegate` close nothing, so there
+    is nothing for a confirm window to warn about."""
+    gid = _goal(conn)
+    out = commands.preview(conn, problem="p", kind="MarkDeliverable",
+                           payload={"target_goal_id": gid})
+    assert out == {"affected": [], "cascade": False,
+                   "revision": out["revision"]}

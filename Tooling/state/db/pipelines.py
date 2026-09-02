@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .core import now
+from .core import now, scope_sql
 
 
 # ---------------------------------------------------------------------
@@ -150,9 +150,10 @@ def queue_size(conn: sqlite3.Connection, *,
     discarded a row when every popped row had been skipped)."""
     q = "SELECT count(*) AS n FROM queue WHERE 1=1"
     args: list = []
-    if scope is not None:
-        q += " AND problem LIKE ?"           # scope is a LIKE pattern
-        args.append(scope)
+    _scope_sql, _scope_args = scope_sql(scope)   # pattern OR explicit list
+    if _scope_sql:
+        q += f" AND {_scope_sql}"
+        args.extend(_scope_args)
     if claimable_only:
         q += " AND owner_pid IS NULL"
     if kinds is not None:

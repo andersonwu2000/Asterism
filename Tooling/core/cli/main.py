@@ -56,9 +56,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="exit when queue empties")
     p_run.add_argument(
         "--scope", type=str, default=None,
-        help="restrict dispatch to problems matching this SQL LIKE "
-             "pattern (e.g. 'minif2f_%%'). Other problems' goals stay "
-             "in their current state but are not dispatched this run.",
+        help="restrict dispatch to a SQL LIKE pattern (e.g. "
+             "'minif2f_%%') or an explicit comma-separated list of exact "
+             "problem names (e.g. 'Erdos.p1,Erdos.p10'). Other problems' "
+             "goals stay in their current state but are not dispatched "
+             "this run.",
     )
     p_run.add_argument(
         "--all-problems", action="store_true",
@@ -160,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     p_daemon.add_argument("daemon_action",
                           choices=("start", "stop", "status"))
     p_daemon.add_argument("--scope", default=None,
-                          help="start: restrict dispatch (SQL LIKE)")
+                          help="start: restrict dispatch (SQL LIKE "
+                               "pattern, or a comma-separated list of "
+                               "exact problem names)")
     p_daemon.add_argument("--once", action="store_true",
                           help="start: exit when queue empties")
     p_daemon.add_argument("--wait-lock", type=float, default=0.0,

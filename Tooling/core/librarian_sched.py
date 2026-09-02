@@ -197,10 +197,11 @@ def _librarian_selfstart_problems(
     `library: true` opt-in (default False), so this never
     auto-Library-izes an unmarked problem."""
     if scope:
+        _sc, _sa = db.scope_sql(scope, "name")
         ingested = conn.execute(
             "SELECT name AS problem FROM problems"
-            " WHERE ingested_at IS NOT NULL AND name LIKE ?",
-            (scope,)).fetchall()
+            f" WHERE ingested_at IS NOT NULL AND {_sc}",
+            _sa).fetchall()
     else:
         ingested = conn.execute(
             "SELECT name AS problem FROM problems"
@@ -254,13 +255,10 @@ def _librarian_refill(
     do NOT count as pending, so a fully-stalled chain lets the daemon exit for
     the operator to inspect)."""
     from ..pipeline import librarian
-    if scope:
-        prob_rows = conn.execute(
-            "SELECT DISTINCT problem FROM library_decls WHERE problem LIKE ?",
-            (scope,)).fetchall()
-    else:
-        prob_rows = conn.execute(
-            "SELECT DISTINCT problem FROM library_decls").fetchall()
+    _sc, _sa = db.scope_sql(scope if scope else None)
+    prob_rows = conn.execute(
+        "SELECT DISTINCT problem FROM library_decls"
+        + (f" WHERE {_sc}" if _sc else ""), _sa).fetchall()
     problems = [p for (p,) in prob_rows]
     seen = set(problems)
     for p in _librarian_selfstart_problems(
@@ -373,15 +371,11 @@ def _harvest_outstanding(
     outstanding, preserving the "stalled chain lets the daemon exit for the
     operator to inspect" contract (`_librarian_refill` docstring)."""
     from ..pipeline import librarian
-    if scope:
-        rows = conn.execute(
-            "SELECT name AS problem FROM problems"
-            " WHERE ingested_at IS NOT NULL AND name LIKE ?",
-            (scope,)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT name AS problem FROM problems"
-            " WHERE ingested_at IS NOT NULL").fetchall()
+    _sc, _sa = db.scope_sql(scope if scope else None, "name")
+    rows = conn.execute(
+        "SELECT name AS problem FROM problems"
+        " WHERE ingested_at IS NOT NULL"
+        + (f" AND {_sc}" if _sc else ""), _sa).fetchall()
     for (problem,) in rows:
         if problem not in intents or not intents[problem].library:
             continue

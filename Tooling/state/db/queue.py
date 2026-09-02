@@ -4,7 +4,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from .core import now
+from .core import now, scope_sql
 
 
 # ---------------------------------------------------------------------
@@ -70,19 +70,15 @@ def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
         excl_params = tuple(exclude_kinds)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if scope is None:
-            row = conn.execute(
-                "SELECT * FROM queue WHERE owner_pid IS NULL"
-                + excl_sql +
-                " ORDER BY priority DESC, id ASC LIMIT 1",
-                excl_params).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM queue WHERE owner_pid IS NULL"
-                " AND problem LIKE ?"        # scope is a LIKE pattern
-                + excl_sql +
-                " ORDER BY priority DESC, id ASC LIMIT 1",
-                (scope, *excl_params)).fetchone()
+        # `scope` is a LIKE pattern or an explicit list — one
+        # translation, `db.scope_sql` (core.py).
+        _scope_sql, _scope_args = scope_sql(scope)
+        row = conn.execute(
+            "SELECT * FROM queue WHERE owner_pid IS NULL"
+            + (f" AND {_scope_sql}" if _scope_sql else "")
+            + excl_sql +
+            " ORDER BY priority DESC, id ASC LIMIT 1",
+            (*_scope_args, *excl_params)).fetchone()
         if row is None:
             conn.commit()
             return None
@@ -145,11 +141,12 @@ def release_expired_leases(conn: sqlite3.Connection, *,
     reuses PIDs, so liveness alone can false-positive a recycled PID as
     'still ours'). Released rows become claimable again; returns count."""
     released = 0
+    _scope_sql, _scope_args = scope_sql(scope)
     rows = list(conn.execute(
         "SELECT id, owner_pid, leased_at FROM queue"
         " WHERE owner_pid IS NOT NULL"
-        + ("" if scope is None else " AND problem LIKE ?"),
-        () if scope is None else (scope,)))
+        + (f" AND {_scope_sql}" if _scope_sql else ""),
+        _scope_args))
     for r in rows:
         expired = False
         try:
@@ -182,14 +179,11 @@ def flush_queue_kind(conn: sqlite3.Connection, *, kind: str,
     against an exhausted provider. bfs_refill repopulates after the
     cooldown clears. `scope` keeps a scoped daemon's cooldown from
     flushing a concurrent daemon's backlog (the #74 class)."""
-    if scope is None:
-        cur = conn.execute(
-            "DELETE FROM queue WHERE kind = ? AND owner_pid IS NULL",
-            (kind,))
-    else:
-        cur = conn.execute(
-            "DELETE FROM queue WHERE kind = ? AND owner_pid IS NULL"
-            " AND problem LIKE ?", (kind, scope))
+    _scope_sql, _scope_args = scope_sql(scope)
+    cur = conn.execute(
+        "DELETE FROM queue WHERE kind = ? AND owner_pid IS NULL"
+        + (f" AND {_scope_sql}" if _scope_sql else ""),
+        (kind, *_scope_args))
     conn.commit()
     return cur.rowcount or 0
 

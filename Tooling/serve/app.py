@@ -365,6 +365,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     from .projects_api import register as _register_projects
     _register_projects(app, workspace, _ro)
 
+    # the human command queue + the multi-problem run (HID §3.3, §1.4)
+    from .commands_api import register as _register_commands
+    _register_commands(app, workspace, _ro)
+
     # -- meta ---------------------------------------------------------
 
     # The release stamp this PROCESS started from (VERSION rides in the

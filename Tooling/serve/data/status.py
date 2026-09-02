@@ -48,8 +48,7 @@ def _working(conn: sqlite3.Connection, daemon: "dict | None",
     scope = daemon.get("scope") if daemon else None
     if not scope:
         return True
-    row = conn.execute("SELECT ? LIKE ?", (name, scope)).fetchone()
-    return bool(row and row[0])
+    return db.scope_matches(conn, scope, name)
 
 
 def _refine_chip(chip: str, *, working: bool, scoped: bool,

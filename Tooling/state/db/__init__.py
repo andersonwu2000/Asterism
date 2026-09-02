@@ -20,6 +20,10 @@ from .core import (
     SchemaBehind,
     connect_readonly,
     init_schema,
+    SCOPE_SEP,
+    scope_names,
+    scope_sql,
+    scope_matches,
 )
 
 # paths.py — problem slug <-> filesystem path mapping

@@ -57,7 +57,10 @@ def consistency_sweep(conn: sqlite3.Connection, *,
         after a pass = investigate; the revival itself is idempotent since
         task #11).
     """
-    like = scope or "%"
+    # `scope` is a LIKE pattern or an explicit `a,b` list — one
+    # translation (`db.scope_sql`); `1` when unscoped.
+    _sc, _sa = _db.scope_sql(scope or None, "g.problem")
+    _sc = _sc or "1"
 
     def q(sql: str, *params) -> "list[dict]":
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
@@ -67,37 +70,37 @@ def consistency_sweep(conn: sqlite3.Connection, *,
         "SELECT s.id AS strategy_id, s.goal_id, g.status AS goal_status,"
         "       g.problem FROM strategies s JOIN goals g ON g.id = s.goal_id"
         " WHERE s.status = 'succeeded' AND g.status != 'proved'"
-        "   AND g.problem LIKE ?", like)
+        f"   AND {_sc}", *_sa)
     out["live_strategy_terminal_goal"] = q(
         "SELECT s.id AS strategy_id, s.status AS strategy_status,"
         "       s.goal_id, g.status AS goal_status, g.problem"
         "  FROM strategies s JOIN goals g ON g.id = s.goal_id"
         " WHERE s.status IN ('proposed','stalled')"
-        "   AND g.status IN (?,?,?,?) AND g.problem LIKE ?",
-        *_TERMINAL_GOAL, like)
+        f"   AND g.status IN (?,?,?,?) AND {_sc}",
+        *_TERMINAL_GOAL, *_sa)
     out["open_with_proposed_strategy"] = q(
         "SELECT DISTINCT g.id AS goal_id, g.problem FROM goals g"
         "  JOIN strategies s ON s.goal_id = g.id"
         " WHERE g.status = 'open' AND s.status = 'proposed'"
-        "   AND g.problem LIKE ?", like)
+        f"   AND {_sc}", *_sa)
     out["attempting_without_live_strategy"] = q(
         "SELECT g.id AS goal_id, g.problem FROM goals g"
-        " WHERE g.status = 'attempting' AND g.problem LIKE ?"
+        f" WHERE g.status = 'attempting' AND {_sc}"
         "   AND NOT EXISTS (SELECT 1 FROM strategies s"
         "                    WHERE s.goal_id = g.id"
         "                      AND s.status IN ('proposed','succeeded'))",
-        like)
+        *_sa)
     out["unreachable_alive_goal"] = q(
         _ALIVE_CTE +
         "SELECT g.id AS goal_id, g.status, g.problem FROM goals g"
         " WHERE g.status IN ('open','attempting')"
         "   AND g.origin != 'root' AND g.detached = 0"
-        "   AND g.id NOT IN alive AND g.problem LIKE ?", like)
+        f"   AND g.id NOT IN alive AND {_sc}", *_sa)
     out["revival_pending"] = q(
         "SELECT g.id AS goal_id, g.alias_target_id, g.problem FROM goals g"
         "  JOIN goals x ON x.id = g.alias_target_id"
         " WHERE g.status = 'shelved' AND x.status = 'proved'"
-        "   AND g.problem LIKE ?", like)
+        f"   AND {_sc}", *_sa)
     return out
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .core import now
+from .core import now, scope_sql
 from .goals import (
     propagate_inject_outcome_from_goal,
     propagate_inject_outcome_from_strategy,
@@ -232,10 +232,9 @@ def reconcile_settled_inject_outcomes(
         " WHERE sd.decision_kind IN " + _BATCH_KINDS_SQL +
         "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
     )
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND sd.problem LIKE ?"
-        args = (scope,)
+    _sc, args = scope_sql(scope, "sd.problem")
+    if _sc:
+        sql += f" AND {_sc}"
     from .. import transitions
     rows = list(conn.execute(sql, args))
     resolved = 0

@@ -263,9 +263,10 @@ def run(workspace: Path, *, once: bool = False,
     # returning: the CLI's except-path records the message in
     # daemon-exit.txt, so `daemon status` names the cause.
     if scope:
+        _sc, _sa = db.scope_sql(scope, "name")
         _n_in_scope = conn.execute(
-            "SELECT COUNT(*) FROM problems WHERE name LIKE ?",
-            (scope,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM problems WHERE {_sc}",
+            _sa).fetchone()[0]
         if not _n_in_scope:
             raise RuntimeError(
                 f"--scope {scope!r} matches no registered problem — "
@@ -332,10 +333,9 @@ def run(workspace: Path, *, once: bool = False,
     # re-run. Cheap: idx_sd_outcome backs the filter.
     _paused_q = ("SELECT DISTINCT problem FROM strategist_decisions "
                  "WHERE outcome = 'awaiting_human'")
-    _paused_params: tuple = ()
-    if scope:
-        _paused_q += " AND problem LIKE ?"
-        _paused_params = (scope,)
+    _sc, _paused_params = db.scope_sql(scope)
+    if _sc:
+        _paused_q += f" AND {_sc}"
     _paused_startup = sorted(r[0] for r in conn.execute(_paused_q, _paused_params))
     if _paused_startup:
         print(f"[dispatcher] {len(_paused_startup)} problem(s) PAUSED on "

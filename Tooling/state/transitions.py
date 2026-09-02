@@ -611,6 +611,58 @@ def _shelve_threshold() -> int:
 # a sibling/parent strategy revives the chain).
 # ---------------------------------------------------------------------
 
+def shelve_cascade_targets(
+    conn: sqlite3.Connection, goal_id: int,
+) -> "list[int]":
+    """The descendants a shelve of `goal_id` would take with it, in walk
+    order. READ-ONLY: this is the cascade's own reasoning, extracted so
+    that the confirm-window preview (`state/commands.preview`, HID §1.3)
+    and the cascade itself cannot disagree about what is about to close.
+
+    See `_cascade_shelve_descendants` — its only caller — for why the
+    walk spares goals with an independent live path, walks PAST proved
+    descendants, and skips `pending_strategist_review`.
+    """
+    grow = conn.execute(
+        "SELECT problem FROM goals WHERE id = ?", (goal_id,)).fetchone()
+    saved = (
+        db.goals_reachable_excluding(
+            conn, problem=str(grow["problem"]), exclude_goal_id=goal_id)
+        if grow is not None else set()
+    )
+    targets: "list[int]" = []
+    picked: "set[int]" = set()
+    frontier = [goal_id]
+    seen: set[int] = set()
+    while frontier:
+        next_frontier: list[int] = []
+        for gid in frontier:
+            if gid in seen:
+                continue
+            seen.add(gid)
+            for r in conn.execute(
+                "SELECT g.id, g.status FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " JOIN goals g ON g.id = ss.subgoal_id"
+                " WHERE s.goal_id = ?",
+                (gid,),
+            ).fetchall():
+                sub_id = int(r["id"])
+                sub_status = str(r["status"])
+                if sub_id in saved or sub_id in picked:
+                    continue
+                if sub_status in ("proved", "shelved", "disproved", "dead",
+                                  "pending_strategist_review"):
+                    if sub_status == "proved":
+                        next_frontier.append(sub_id)
+                    continue
+                picked.add(sub_id)
+                targets.append(sub_id)
+                next_frontier.append(sub_id)
+        frontier = next_frontier
+    return targets
+
+
 def _cascade_shelve_descendants(
     conn: sqlite3.Connection, goal_id: int,
 ) -> int:
@@ -651,60 +703,32 @@ def _cascade_shelve_descendants(
     # strategy hung. Computed once: saving paths are external to
     # `goal_id`'s subtree, so this cascade never mutates them — the set
     # stays valid throughout. Maintains the invariant `open ⇒ reachable`.
-    grow = conn.execute(
-        "SELECT problem FROM goals WHERE id = ?", (goal_id,),
-    ).fetchone()
-    saved = (
-        db.goals_reachable_excluding(
-            conn, problem=str(grow["problem"]), exclude_goal_id=goal_id)
-        if grow is not None else set()
-    )
+    # The walk itself is `shelve_cascade_targets` (read-only, above);
+    # this is the write half. Splitting them is what lets the confirm
+    # window (`state/commands.preview`) name exactly what the apply will
+    # take, from the same reasoning rather than a second copy of it.
+    #
+    # Spared: a descendant with an independent live path to root — not
+    # orphaned by this death. Walked PAST: proved descendants, whose own
+    # subtrees may still hold active goals. Skipped:
+    # `pending_strategist_review` (the Strategist decides its fate;
+    # cascading would race).
     transitioned = 0
-    frontier = [goal_id]
-    seen: set[int] = set()
-    while frontier:
-        next_frontier: list[int] = []
-        for gid in frontier:
-            if gid in seen:
-                continue
-            seen.add(gid)
-            for r in conn.execute(
-                "SELECT g.id, g.status FROM strategies s"
-                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-                " JOIN goals g ON g.id = ss.subgoal_id"
-                " WHERE s.goal_id = ?",
-                (gid,),
-            ).fetchall():
-                sub_id = int(r["id"])
-                sub_status = str(r["status"])
-                if sub_id in saved:
-                    # Independent live path exists — not orphaned by this
-                    # death. Leave it (and its subtree, alive via that
-                    # same path) untouched.
-                    continue
-                if sub_status in ("proved", "shelved", "disproved", "dead",
-                                  "pending_strategist_review"):
-                    # Walk past proved descendants (their own subtrees
-                    # may still contain active goals worth cascading).
-                    if sub_status == "proved":
-                        next_frontier.append(sub_id)
-                    continue
-                apply_goal_transition(
-                    conn, sub_id, "shelved", event="descendant_cascade")
-                # Symmetric with `_propagate_shelve`: a cascade-shelved
-                # descendant must also stop its own proposed strategies
-                # from trying to prove it. Without this, status='shelved'
-                # disagrees with the strategy table (proposed strategies
-                # still mapped to the just-shelved goal), the alive-DAG
-                # CTE keeps walking through them as if alive, and the
-                # subtree leaks "active" status into TREE.md / Strategist
-                # context. Inward-killing here keeps cascade's effect
-                # identical to "direct shelve of every transitioned
-                # descendant".
-                _inward_kill_strategies(conn, sub_id)
-                transitioned += 1
-                next_frontier.append(sub_id)
-        frontier = next_frontier
+    for sub_id in shelve_cascade_targets(conn, goal_id):
+        apply_goal_transition(
+            conn, sub_id, "shelved", event="descendant_cascade")
+        # Symmetric with `_propagate_shelve`: a cascade-shelved
+        # descendant must also stop its own proposed strategies
+        # from trying to prove it. Without this, status='shelved'
+        # disagrees with the strategy table (proposed strategies
+        # still mapped to the just-shelved goal), the alive-DAG
+        # CTE keeps walking through them as if alive, and the
+        # subtree leaks "active" status into TREE.md / Strategist
+        # context. Inward-killing here keeps cascade's effect
+        # identical to "direct shelve of every transitioned
+        # descendant".
+        _inward_kill_strategies(conn, sub_id)
+        transitioned += 1
     return transitioned
 
 

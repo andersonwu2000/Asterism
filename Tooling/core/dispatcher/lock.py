@@ -257,9 +257,10 @@ def scope_mismatch_reason(workspace: Path,
         conn = _sqlite3.connect(
             f"file:{db_file.as_posix()}?mode=ro", uri=True, timeout=5)
         try:
+            _sc, _sa = db.scope_sql(scope, "name")
             n = conn.execute(
-                "SELECT COUNT(*) FROM problems WHERE name LIKE ?",
-                (scope,)).fetchone()[0]
+                f"SELECT COUNT(*) FROM problems WHERE {_sc}",
+                _sa).fetchone()[0]
         finally:
             conn.close()
     except _sqlite3.OperationalError:

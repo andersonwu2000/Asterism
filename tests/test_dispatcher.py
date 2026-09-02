@@ -1935,6 +1935,25 @@ def test_open_goals_scope_filter(conn: sqlite3.Connection) -> None:
     assert minif2f_only[0]["problem"] == "minif2f_a"
 
 
+def test_open_goals_scope_accepts_an_explicit_list(
+        conn: sqlite3.Connection) -> None:
+    """The goal-side half of the multi-problem run (HID §1.4): the same
+    comma-joined explicit list the queue understands selects exactly the
+    named problems' goals — no pattern, so a run over `Erdos.p1` and
+    `Erdos.p10` cannot silently sweep in `Erdos.p1072`."""
+    _seed_goal(conn, problem="sg")
+    for name in ("mine", "theirs"):
+        conn.execute(
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)", (name, db.now()))
+        db.insert_goal(
+            conn, problem=name, slug="main",
+            lean_path=f"Problems/{name}/Root.lean",
+            statement="T", origin="root")
+    picked = db.open_goals(conn, scope="sg,mine")
+    assert sorted(g["problem"] for g in picked) == ["mine", "sg"]
+
+
 def _seed_ready_strategy(conn: sqlite3.Connection, *, goal_id: int,
                          slug: str = "s_x", lean_path: str | None = None) -> int:
     """Insert a strategy on `goal_id` with one already-proved sub-goal,

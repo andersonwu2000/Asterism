@@ -343,7 +343,7 @@ _WATERMARKS = {
     # consumers must not block Reopen on shared goals).
     # 08-25 +41: cited-wait conduction (`_review_cited_waiters` — a
     # shelve returns citing waiters to their group's review at once).
-    "Tooling/state/transitions.py": 1910,  # +5 2026-08-30 problem terminal `refuted`  # +7 2026-09-02 v48 HID §3.2: a human ConfirmShelve is never a live promise (_awaiting_promised_batch)
+    "Tooling/state/transitions.py": 1935,  # +21 2026-09-02 HID §1.3: the shelve cascade splits into a read half (`shelve_cascade_targets`, what the confirm window names) and a write half  # +5 2026-08-30 problem terminal `refuted`  # +7 2026-09-02 v48 HID §3.2: a human ConfirmShelve is never a live promise (_awaiting_promised_batch)
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -467,7 +467,7 @@ _WATERMARKS = {
     # every symbol so `db.X` call sites are unaffected. See the born-
     # 2026-08-29 entries below.
     "Tooling/state/db/__init__.py": 200,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/core.py": 900,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/core.py": 970,  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
     "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/goals.py": 650,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/problems.py": 1200,  # born 2026-08-29 from the db.py split
@@ -648,7 +648,7 @@ _WATERMARKS = {
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/main.py": 375,  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 380,  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision
