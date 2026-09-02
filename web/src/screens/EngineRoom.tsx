@@ -111,17 +111,6 @@ function useLogPulse(active: boolean) {
   return { last, alerts }
 }
 
-/** A departed agent's 30s receipt — completions used to simply
- * evaporate between polls (design round). */
-interface Ghost {
-  k: string
-  kind: string
-  slug: string
-  problem: string | null
-  leased_at: string | null
-  until: number
-}
-
 /** the Strategist's wake reason (trigger_kind) in human words — which
  * MODE this think is, not just "thinking" (owner, 2026-07-12) */
 const STRATEGIST_MODE: Record<string, string> = {
