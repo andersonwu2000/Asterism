@@ -44,6 +44,16 @@ export function apiPost<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+/** Replace a whole resource at its own path — the Project's documents
+ * are the only surface addressed that way. */
+export function apiPut<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PUT',
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
 export function apiDelete<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' })
 }

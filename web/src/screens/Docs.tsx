@@ -5,6 +5,7 @@ import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
 import { Select } from '../components/ui'
+import DocShelf from '../components/DocShelf'
 import { projectPath } from '../lib/projectRoute'
 import type { ProblemDetail } from '../lib/types'
 
@@ -19,17 +20,12 @@ import type { ProblemDetail } from '../lib/types'
  *   documents  the Project's own shelf (§3.6 `_docs/`), Assistant
  *              output under `agent/` and yours under `user/`
  *
- * Read-only. §1.2's editor — create, rename, delete, the .lean slot —
- * is its own package; what this one owes is that nothing that used to
- * be reachable stopped being reachable when the problem page's Files
- * tab went away.
+ * The proofs root is read-only — it is the engine's own writing, and
+ * the chokepoint that produces it is not an HTTP door. The documents
+ * root is the Project's own shelf and IS writable (§1.2, §3.6); it
+ * lives in `DocShelf`, which owns the two areas, the editor and the
+ * refusals.
  */
-
-interface DocEntry {
-  path: string
-  kind: 'file' | 'dir'
-  size?: number
-}
 
 function Body({ path, content }: { path: string; content: string }) {
   if (path.endsWith('.lean'))
@@ -131,70 +127,6 @@ function ProofsView({
   )
 }
 
-/** The Project's own shelf (§3.6). The engine creates the root on its
- * first write, so an untouched Project has an empty tree and says so
- * rather than drawing an empty frame. */
-function ShelfView({
-  project,
-  path,
-  onPick,
-}: {
-  project: string
-  path: string | null
-  onPick: (p: string) => void
-}) {
-  const { data: tree } = usePoll<{ entries: DocEntry[] }>(
-    `/api/projects/${encodeURIComponent(project)}/docs`,
-    30000,
-  )
-  const entries = (tree?.entries ?? []).filter((e) => e.kind === 'file')
-  const selected = path && entries.some((e) => e.path === path) ? path : (entries[0]?.path ?? null)
-  const { data } = usePoll<{ path: string; content?: string; content_base64?: string }>(
-    selected
-      ? `/api/projects/${encodeURIComponent(project)}/docs/${selected
-          .split('/')
-          .map(encodeURIComponent)
-          .join('/')}`
-      : null,
-    30000,
-  )
-  return (
-    <>
-      <div className="w-72 shrink-0 overflow-y-auto border-r border-edge py-2">
-        {entries.length === 0 ? (
-          <p className="px-4 py-3 text-[11px] leading-relaxed text-ink-faint">
-            Nothing on this shelf yet. It fills when the Assistant writes a note here,
-            or when you do — editing arrives with the documents package.
-          </p>
-        ) : (
-          entries.map((e) => (
-            <button
-              key={e.path}
-              className={`block w-full truncate px-4 py-1.5 text-left font-mono text-xs ${
-                e.path === selected ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
-              }`}
-              onClick={() => onPick(e.path)}
-              title={e.path}
-            >
-              {e.path}
-            </button>
-          ))
-        )}
-      </div>
-      <div className="min-w-0 flex-1 overflow-auto p-4">
-        {data?.content !== undefined && selected && (
-          <Body path={selected} content={data.content} />
-        )}
-        {data?.content_base64 !== undefined && (
-          <div className="text-xs text-ink-faint">
-            {selected} — a binary document; this console does not render it yet.
-          </div>
-        )}
-      </div>
-    </>
-  )
-}
-
 export default function Docs({
   project,
   problem,
@@ -280,7 +212,7 @@ export default function Docs({
             </p>
           )
         ) : (
-          <ShelfView project={project} path={sel} onPick={setSel} />
+          <DocShelf project={project} />
         )}
       </div>
     </div>

@@ -1,0 +1,583 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { ApiError, apiDelete, apiGet, apiPut, usePoll } from '../lib/api'
+import { Lean } from '../lib/lean'
+import { renderInline, renderProse } from '../lib/prose'
+import { frameClass } from '../lib/textFrame'
+import { Button } from './ui'
+
+/*
+ * The Project's own shelf, writable (human_interface_design.md §1.2,
+ * §3.6). Two sub-roots under `Problems/<project>/_docs/`, and the split
+ * is the capability matrix made visible:
+ *
+ *   user/    the person's. The console writes here and nowhere else.
+ *   agent/   what the Assistant produced. Read-only from this side —
+ *            a PUT into it would merge two areas whose separation is
+ *            the point, and the engine refuses it anyway.
+ *
+ * The fence lives in `state/project_docs`, so this file never decides
+ * what a legal path is: it sends what the person typed and shows the
+ * refusal, which names the way out. Every 422 here is a sentence
+ * written for the person about the path they wrote.
+ */
+
+export interface DocEntry {
+  path: string
+  kind: 'file' | 'dir'
+  size?: number
+}
+
+const TEXT_EXT = ['.md', '.tex', '.txt']
+const IMAGE_EXT = ['.png', '.jpg', '.svg']
+
+const ext = (p: string): string => {
+  const i = p.lastIndexOf('.')
+  return i < 0 ? '' : p.slice(i).toLowerCase()
+}
+const isText = (p: string) => TEXT_EXT.includes(ext(p))
+const isImage = (p: string) => IMAGE_EXT.includes(ext(p))
+const isUser = (p: string) => p === 'user' || p.startsWith('user/')
+
+const MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+}
+
+/** A `.tex` file, read. There is no LaTeX engine here and there will
+ * not be one: the file is shown as its own text, line for line, with
+ * `$…$` typeset — which is the half a mathematician actually reads. */
+function TexBody({ content }: { content: string }) {
+  return (
+    <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
+      {content.split('\n').map((line, i) =>
+        line.trim() === '' ? (
+          <div key={i} className="h-3" />
+        ) : (
+          <div key={i}>{renderInline(line, `t${i}`)}</div>
+        ),
+      )}
+    </div>
+  )
+}
+
+function Body({
+  path,
+  content,
+  base64,
+}: {
+  path: string
+  content?: string
+  base64?: string
+}) {
+  const e = ext(path)
+  if (base64 !== undefined)
+    return e === '.pdf' ? (
+      <div className="text-xs text-ink-faint">
+        {path} — a pdf. The console does not render one; it is on disk under the
+        Project's <span className="font-mono">_docs/</span>.
+      </div>
+    ) : (
+      <img
+        src={`data:${MIME[e] ?? 'application/octet-stream'};base64,${base64}`}
+        alt={path}
+        className="max-w-full rounded-xl border border-edge"
+      />
+    )
+  if (content === undefined) return null
+  if (e === '.svg')
+    return (
+      <img
+        src={`data:image/svg+xml;utf8,${encodeURIComponent(content)}`}
+        alt={path}
+        className="max-w-full rounded-xl border border-edge"
+      />
+    )
+  if (e === '.lean')
+    return (
+      <>
+        <pre className={frameClass({ frame: false, size: 'md', wrap: false })}>
+          <Lean code={content} />
+        </pre>
+        {/* the one thing this viewer cannot do, said once and quietly */}
+        <div className="mt-2 text-[11px] text-ink-faint">
+          read-only here — importing this file and checking it through the reader's Lean
+          slot is a later package.
+        </div>
+      </>
+    )
+  if (e === '.tex') return <TexBody content={content} />
+  if (e === '.md')
+    return (
+      <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
+        {renderProse(content, { mode: 'document', frontmatter: true })}
+      </div>
+    )
+  return <pre className={frameClass({ frame: false, size: 'md' })}>{content}</pre>
+}
+
+/** Irreversible, so it floats (DESIGN.md). The typed-name ceremony
+ * belongs to deleting a whole task; a document names itself and asks
+ * once. */
+function DeleteDoc({
+  path,
+  onConfirm,
+  onCancel,
+  busy,
+  error,
+}: {
+  path: string
+  onConfirm: () => void
+  onCancel: () => void
+  busy: boolean
+  error: string | null
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
+      onClick={onCancel}
+    >
+      <div
+        className="w-[26rem] max-w-full rounded-xl border border-edge bg-surface p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-sm font-medium text-ink">Delete this document?</div>
+        <p className="mt-2 font-mono text-xs break-all text-ink-dim">{path}</p>
+        <p className="mt-2 text-xs leading-relaxed text-ink-faint">
+          It is removed from disk. Nothing here keeps a copy.
+        </p>
+        {error && <div className="mt-2 text-xs text-danger">{error}</div>}
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Button variant="outline" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <button
+            className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/** One area's rows, indented by their own path depth. The API returns
+ * the tree flat and root-relative on purpose — the nesting is in the
+ * string, so "which file is open" stays a comparison. */
+function AreaRows({
+  entries,
+  area,
+  selected,
+  dirty,
+  onPick,
+}: {
+  entries: DocEntry[]
+  area: string
+  selected: string | null
+  dirty: Set<string>
+  onPick: (p: string) => void
+}) {
+  const rows = entries.filter((e) => e.path === area || e.path.startsWith(`${area}/`))
+  if (rows.length === 0)
+    return (
+      <p className="px-4 py-1.5 text-[11px] leading-relaxed text-ink-faint">
+        {area === 'user'
+          ? 'nothing here yet — “new file” starts one.'
+          : 'nothing here yet — the Assistant writes into this one.'}
+      </p>
+    )
+  return (
+    <>
+      {rows
+        .filter((e) => e.path !== area)
+        .map((e) => {
+          const depth = e.path.split('/').length - 2
+          const name = e.path.split('/').pop() ?? e.path
+          const on = e.path === selected
+          return (
+            <button
+              key={e.path}
+              className={`flex w-full items-baseline gap-1.5 px-4 py-1 text-left font-mono text-xs ${
+                on ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
+              }`}
+              style={{ paddingLeft: `${16 + depth * 12}px` }}
+              onClick={() => onPick(e.path)}
+              title={e.path}
+            >
+              {e.kind === 'dir' && (
+                <span className="shrink-0 text-ink-faint" aria-hidden>
+                  /
+                </span>
+              )}
+              <span className="min-w-0 flex-1 truncate">{name}</span>
+              {dirty.has(e.path) && (
+                <span
+                  className="shrink-0 text-star"
+                  title="unsaved changes on this document"
+                >
+                  ·
+                </span>
+              )}
+            </button>
+          )
+        })}
+    </>
+  )
+}
+
+export default function DocShelf({ project }: { project: string }) {
+  const { data: tree, refresh } = usePoll<{ entries: DocEntry[] }>(
+    `/api/projects/${encodeURIComponent(project)}/docs`,
+    30000,
+  )
+  const entries = useMemo(() => tree?.entries ?? [], [tree])
+  const [selected, setSelected] = useState<string | null>(null)
+  const [doc, setDoc] = useState<{
+    path: string
+    content?: string
+    content_base64?: string
+  } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  /** per-path edits, so walking the column does not throw work away */
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
+  const [newName, setNewName] = useState('')
+  /** a refusal about the NAME belongs under the name box, not in the
+   * header of a document it is not about */
+  const [createNote, setCreateNote] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  const files = useMemo(() => entries.filter((e) => e.kind === 'file'), [entries])
+  // the column opens on something rather than an empty frame
+  const open = selected ?? files[0]?.path ?? null
+  const openIsDir = entries.some((e) => e.path === open && e.kind === 'dir')
+  const writable = open !== null && isUser(open) && isText(open)
+
+  useEffect(() => {
+    if (open === null || openIsDir) {
+      setDoc(null)
+      return
+    }
+    let gone = false
+    setLoadError(null)
+    apiGet<{ path: string; content?: string; content_base64?: string }>(
+      `/api/projects/${encodeURIComponent(project)}/docs/${open
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')}`,
+    )
+      .then((d) => !gone && setDoc(d))
+      .catch((e) => {
+        if (gone) return
+        setDoc(null)
+        setLoadError(e instanceof ApiError ? e.detail : String((e as Error).message))
+      })
+    return () => {
+      gone = true
+    }
+  }, [project, open, openIsDir])
+
+  useEffect(() => {
+    setEditing(false)
+    setNote(null)
+  }, [open])
+  useEffect(() => {
+    if (creating !== null) inputRef.current?.focus()
+  }, [creating])
+
+  // a draft is dirty unless it is exactly what is on disk — typing and
+  // then undoing must not leave the column claiming unsaved work
+  const dirty = useMemo(() => {
+    const out = new Set<string>()
+    for (const [p, v] of Object.entries(drafts)) {
+      if (doc !== null && doc.path === p && v === (doc.content ?? '')) continue
+      out.add(p)
+    }
+    return out
+  }, [drafts, doc])
+
+  const body = open !== null && drafts[open] !== undefined ? drafts[open] : doc?.content
+
+  const save = useCallback(async () => {
+    if (open === null || body === undefined) return
+    setSaving(true)
+    setNote(null)
+    try {
+      await docPut(project, open, { content: body })
+      setDrafts((d) => {
+        const next = { ...d }
+        delete next[open]
+        return next
+      })
+      setDoc((x) => (x === null ? x : { ...x, content: body }))
+      setEditing(false)
+      setNote('saved')
+      refresh()
+    } catch (e) {
+      setNote(e instanceof ApiError ? e.detail : String((e as Error).message))
+    } finally {
+      setSaving(false)
+    }
+  }, [project, open, body, refresh])
+
+  const create = async () => {
+    const name = newName.trim()
+    if (name === '') return
+    // a new thing goes inside the folder you are standing in, and
+    // under `user/` — the only area this door writes
+    const base = open === null ? 'user' : openIsDir ? open : open.split('/').slice(0, -1).join('/')
+    const path = `${isUser(base) ? base : 'user'}/${name}`.replace(/\/+/g, '/')
+    setCreateNote(null)
+    // A dot segment cannot be SENT, whatever the engine would say about
+    // it: the URL parser collapses `user/../x` (and `%2e%2e`, which it
+    // treats the same) before the request leaves the browser, so the
+    // fence would judge a path the person never wrote. This is the
+    // console reporting an address it cannot carry — not a second
+    // opinion about what the tree accepts.
+    if (path.split('/').some((seg) => seg === '.' || seg === '..')) {
+      setCreateNote(
+        'a name cannot be “.” or “..” — those are folder steps, and the address this ' +
+          'console sends cannot carry them. Pick the folder on the left instead.',
+      )
+      return
+    }
+    try {
+      await docPut(project, path, creating === 'dir' ? { kind: 'dir' } : { content: '' })
+      setNewName('')
+      setCreating(null)
+      setCreateNote(null)
+      refresh()
+      if (creating === 'file') {
+        setSelected(path)
+        setEditing(true)
+      }
+    } catch (e) {
+      setCreateNote(e instanceof ApiError ? e.detail : String((e as Error).message))
+    }
+  }
+
+  const doDelete = async () => {
+    if (open === null) return
+    setDeleting(true)
+    setNote(null)
+    try {
+      await apiDelete(
+        `/api/projects/${encodeURIComponent(project)}/docs/${open
+          .split('/')
+          .map(encodeURIComponent)
+          .join('/')}`,
+      )
+      setConfirmDelete(false)
+      setSelected(null)
+      refresh()
+    } catch (e) {
+      setNote(e instanceof ApiError ? e.detail : String((e as Error).message))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-edge py-2">
+        <div className="flex items-baseline gap-2 px-4 pt-1 pb-1">
+          <span className="text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase">
+            user
+          </span>
+          <span className="ml-auto flex gap-2">
+            <button
+              className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+              onClick={() => {
+                setCreating('file')
+                setNewName('')
+                setCreateNote(null)
+              }}
+              title="a new .md / .tex / .txt / .lean document under user/"
+            >
+              new file
+            </button>
+            <button
+              className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+              onClick={() => {
+                setCreating('dir')
+                setNewName('')
+                setCreateNote(null)
+              }}
+              title="a new folder under user/"
+            >
+              folder
+            </button>
+          </span>
+        </div>
+        {creating !== null && (
+          <div className="px-4 pb-1.5">
+            <input
+              ref={inputRef}
+              className="w-full rounded-md border border-edge bg-bg px-2 py-1 font-mono text-[11px] text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+              placeholder={creating === 'dir' ? 'folder name' : 'name.md'}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void create()
+                if (e.key === 'Escape') {
+                  setCreating(null)
+                  setCreateNote(null)
+                }
+              }}
+            />
+            {createNote && (
+              <div className="mt-1 text-[11px] leading-relaxed text-warn">{createNote}</div>
+            )}
+          </div>
+        )}
+        <AreaRows
+          entries={entries}
+          area="user"
+          selected={open}
+          dirty={dirty}
+          onPick={setSelected}
+        />
+        <div className="mt-3 flex items-baseline gap-2 px-4 pt-1 pb-1">
+          <span className="text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase">
+            agent
+          </span>
+          <span
+            className="text-[10px] text-ink-faint/70"
+            title="what the Assistant wrote; the console reads this area and never writes it"
+          >
+            read-only
+          </span>
+        </div>
+        <AreaRows
+          entries={entries}
+          area="agent"
+          selected={open}
+          dirty={dirty}
+          onPick={setSelected}
+        />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-edge px-4 py-1.5">
+          <span className="min-w-0 truncate font-mono text-[11px] text-ink-dim" title={open ?? ''}>
+            {open ?? 'nothing open'}
+          </span>
+          {open !== null && !isUser(open) && (
+            <span className="text-[11px] text-ink-faint">the Assistant's — read-only</span>
+          )}
+          {writable && (
+            <span className="ml-2 flex items-center gap-1">
+              {(['read', 'edit'] as const).map((m) => (
+                <button
+                  key={m}
+                  className={`cursor-pointer rounded-md px-2 py-0.5 text-[11px] transition-colors ${
+                    (m === 'edit') === editing
+                      ? 'bg-surface-2 text-ink'
+                      : 'text-ink-faint hover:text-ink-dim'
+                  }`}
+                  aria-pressed={(m === 'edit') === editing}
+                  onClick={() => setEditing(m === 'edit')}
+                >
+                  {m}
+                </button>
+              ))}
+            </span>
+          )}
+          {writable && dirty.has(open) && (
+            <Button variant="ok" size="xs" disabled={saving} onClick={() => void save()}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          )}
+          {note && (
+            <span
+              className={`min-w-0 flex-1 truncate text-[11px] ${
+                note === 'saved' ? 'text-ink-faint' : 'text-warn'
+              }`}
+            >
+              {note}
+            </span>
+          )}
+          {open !== null && isUser(open) && (
+            <button
+              className="ml-auto cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+              onClick={() => setConfirmDelete(true)}
+            >
+              delete…
+            </button>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 overflow-auto p-4">
+          {loadError && <div className="text-xs text-warn">{loadError}</div>}
+          {open === null && (
+            <p className="text-[11px] leading-relaxed text-ink-faint">
+              Nothing on this shelf yet. “new file” starts one under{' '}
+              <span className="font-mono">user/</span>; the Assistant writes into{' '}
+              <span className="font-mono">agent/</span>.
+            </p>
+          )}
+          {openIsDir && (
+            <p className="text-[11px] text-ink-faint">
+              a folder — a new file starts inside it.
+            </p>
+          )}
+          {!openIsDir && open !== null && editing && writable ? (
+            <textarea
+              className="h-full min-h-[24rem] w-full resize-none rounded-xl border border-edge bg-wash p-3 font-mono text-[12px] leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
+              value={body ?? ''}
+              spellCheck={false}
+              onChange={(e) => setDrafts((d) => ({ ...d, [open]: e.target.value }))}
+            />
+          ) : (
+            !openIsDir &&
+            doc !== null && (
+              <Body path={doc.path} content={body} base64={doc.content_base64} />
+            )
+          )}
+          {!openIsDir && open !== null && isImage(open) && doc === null && !loadError && (
+            <div className="late-fade text-xs text-ink-faint">loading…</div>
+          )}
+        </div>
+      </div>
+      {confirmDelete && open !== null && (
+        <DeleteDoc
+          path={open}
+          busy={deleting}
+          error={note !== null && note !== 'saved' ? note : null}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => void doDelete()}
+        />
+      )}
+    </>
+  )
+}
+
+/** One document's address. The path is encoded segment by segment —
+ * a folder separator is structure, not a character to escape. */
+function docPath(project: string, path: string): string {
+  return `/api/projects/${encodeURIComponent(project)}/docs/${path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`
+}
+
+function docPut(project: string, path: string, body: unknown): Promise<unknown> {
+  return apiPut(docPath(project, path), body)
+}
