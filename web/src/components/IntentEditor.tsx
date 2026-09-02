@@ -168,9 +168,13 @@ export default function IntentEditor({
   problem,
   onDirtyChange,
   bridged = false,
+  shelfHref,
 }: {
   problem: string
   onDirtyChange?: (dirty: boolean) => void
+  /** where the decisions waiting on the human are — the Project's own
+   * shelf, since the inbox is no longer a destination of its own */
+  shelfHref?: string
   /** work already in the Library — the `library` flag is settled */
   bridged?: boolean
 }) {
@@ -277,10 +281,13 @@ export default function IntentEditor({
         <div className="mb-4 rounded-lg border border-warn/50 bg-warn/10 px-3 py-2 text-xs text-warn">
           The strategist has proposed a change to this goal — editing it is locked so the two
           changes don't collide.{' '}
-          <Link to="/inbox" className="underline">
-            Resolve it in the Inbox
-          </Link>
-          .
+          {shelfHref ? (
+            <Link to={shelfHref} className="underline">
+              Resolve it at the top of this shelf
+            </Link>
+          ) : (
+            'Resolve it at the top of this shelf.'
+          )}
         </div>
       )}
       <div className="flex flex-col gap-5">

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { parseProjectRoute } from '../lib/projectRoute'
 import { useRoute } from '../lib/router'
 import { apiGet, apiPost } from '../lib/api'
 import { renderProse } from '../lib/prose'
@@ -43,23 +44,40 @@ interface ChatState {
 
 type Page = { kind: string; name?: string }
 
-/** What the user is looking at, from the route — frozen per send. */
-function pageFromRoute(segments: string[]): Page {
-  const s0 = segments[0] ?? ''
-  if (s0 === 'problems' && segments[1]) return { kind: 'problem', name: segments[1] }
-  if (s0 === 'library' && segments[1]) return { kind: 'library', name: segments[1] }
-  if (s0 === 'library') return { kind: 'board' }
-  if (s0 === 'engine' || s0 === 'run' || s0 === 'settings' || s0 === 'telemetry')
-    return { kind: 'engine' }
-  if (s0 === 'papers') return { kind: 'papers' }
-  if (s0 === 'inbox') return { kind: 'inbox' }
-  return { kind: 'board' }
+/** What the reader is looking at, from the address — frozen per send.
+ * Alongside it the drawer sends the Project (which binds the
+ * conversation, §1.1-2) and the focus (the task open on that screen),
+ * because a shell whose every page lives inside a Project would
+ * otherwise hand every question the same workspace-wide overview. */
+interface Where {
+  page: Page
+  project: string | null
+  focus: { problem?: string } | null
 }
 
-function pageLabel(p: Page): string {
-  if (p.kind === 'problem') return p.name ?? 'problem'
-  if (p.kind === 'library') return `library · ${p.name ?? ''}`
-  return p.kind
+function whereFromRoute(segments: string[]): Where {
+  const r = parseProjectRoute(segments)
+  if (r) {
+    const focus = r.problem ? { problem: r.problem } : null
+    if (r.section === 'engine')
+      return { page: { kind: 'engine' }, project: r.project, focus }
+    if (r.problem)
+      return { page: { kind: 'problem', name: r.problem }, project: r.project, focus }
+    return { page: { kind: 'board' }, project: r.project, focus: null }
+  }
+  const s0 = segments[0] ?? ''
+  // the addresses that are not inside a Project
+  if (s0 === 'problems' && segments[1])
+    return { page: { kind: 'problem', name: segments[1] }, project: null, focus: null }
+  if (s0 === 'papers') return { page: { kind: 'papers' }, project: null, focus: null }
+  if (s0 === 'settings') return { page: { kind: 'engine' }, project: null, focus: null }
+  return { page: { kind: 'board' }, project: null, focus: null }
+}
+
+function pageLabel(w: Where): string {
+  if (w.page.kind === 'problem') return w.page.name ?? 'task'
+  if (w.page.kind === 'board') return w.project ? `project · ${w.project}` : 'projects'
+  return w.page.kind
 }
 
 // -- stream plumbing ---------------------------------------------------------
@@ -237,7 +255,7 @@ export default function ChatDrawer({
     async (raw: string) => {
       const text = raw.trim()
       if (text === '' || streamingRef.current) return
-      const page = pageFromRoute(route.segments) // frozen at send
+      const { page, project, focus } = whereFromRoute(route.segments) // frozen at send
       setNote(null)
       setConfirmClear(false)
       setInput('')
@@ -265,7 +283,7 @@ export default function ChatDrawer({
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, page, model }),
+          body: JSON.stringify({ message: text, page, project, focus, model }),
           signal: ac.signal,
         })
         if (!res.ok) {
@@ -380,7 +398,7 @@ export default function ChatDrawer({
     }
   }, [])
 
-  const page = useMemo(() => pageFromRoute(route.segments), [route.segments])
+  const where = useMemo(() => whereFromRoute(route.segments), [route.segments])
 
   // What this backend can and cannot promise. Both notes are exceptions
   // — they appear only when the seated provider is weaker than the
@@ -426,7 +444,7 @@ export default function ChatDrawer({
             'questions are answered about this page; read-only, it explains, it never acts'
           }
         >
-          about {pageLabel(page)}
+          about {pageLabel(where)}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           <Select

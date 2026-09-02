@@ -1,112 +1,199 @@
 import { expect, test } from '@playwright/test'
+import type { APIRequestContext, Page } from '@playwright/test'
 
 /*
- * Read-only smoke over ANY workspace state — a fresh reset, an idle
+ * Read-only smoke over ANY workspace state - a fresh reset, an idle
  * engine, or a mid-run live one. Assertions never bind to specific
- * problems, counts, or engine state: they check structure (a row or
- * its empty state, a label that renders either way) and skip
+ * projects, tasks, counts or engine state: they check structure (a row
+ * or its empty state, a label that renders either way) and skip
  * gracefully where population is genuinely required.
+ *
+ * Every address here is the Project shell's (human_interface_design.md
+ * 1.4): #/ is the picker, #/p/<project>/<section>[/<task>] is inside
+ * one. The old top-level board, library, run and inbox routes are gone.
  */
 
-test('board renders problems with status chips', async ({ page }) => {
+interface Shelf {
+  project: string
+  task: string
+}
+
+/** A populated Project and one of its tasks. What the workspace holds
+ * is not this suite's business, so the address comes from the API — the
+ * SMALLEST shelf that meets the bar, so the pages under test stay light
+ * and the choice is deterministic across workspaces. */
+async function firstShelf(
+  request: APIRequestContext,
+  minTasks = 1,
+): Promise<Shelf | null> {
+  const r = await request.get('/api/projects')
+  if (!r.ok()) return null
+  const projects: { name: string; problems: number }[] = (await r.json()).projects ?? []
+  const fit = projects
+    .filter((p) => p.problems >= minTasks)
+    .sort((a, b) => a.problems - b.problems || a.name.localeCompare(b.name))[0]
+  if (!fit) return null
+  const t = await request.get(`/api/problems?project=${encodeURIComponent(fit.name)}`)
+  if (!t.ok()) return null
+  const rows: { name: string }[] = (await t.json()).problems ?? []
+  if (rows.length === 0) return null
+  return { project: fit.name, task: rows[0].name }
+}
+
+const at = (project: string, section: string, task?: string) =>
+  `/#/p/${encodeURIComponent(project)}/${section}` +
+  (task ? `/${encodeURIComponent(task)}` : '')
+
+/** Open a populated shelf, or skip. */
+async function openShelf(
+  page: Page,
+  request: APIRequestContext,
+  section: string,
+  withTask = true,
+  minTasks = 1,
+): Promise<Shelf> {
+  const shelf = await firstShelf(request, minTasks)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  await page.goto(at(s.project, section, withTask ? s.task : undefined))
+  return s
+}
+
+test('picker: project tiles, or the empty shelf', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Problems' })).toBeVisible()
-  // either rows exist or the explicit empty state shows — never a blank
-  const rows = page.locator('tbody tr')
-  const empty = page.getByText('Prove something')
-  await expect(rows.first().or(empty)).toBeVisible()
+  await expect(page.getByText('Asterism').first()).toBeVisible()
+  // a tile per Project, or the one affordance a workspace with none has
+  const tiles = page.locator('main a[href^="#/p/"]')
+  const mint = page.getByRole('button', { name: 'new project' })
+  await expect(tiles.first().or(mint)).toBeVisible()
+  // the picker has NO menu: the gear and the help glyph, and nothing
+  // else (1.4-1)
+  await expect(page.locator('main nav')).toHaveCount(0)
 })
 
-test('board filter narrows the list', async ({ page }) => {
-  await page.goto('/')
-  const rows = page.locator('tbody tr[data-kind="problem"]')
-  const populated = await rows
-    .first()
-    .waitFor({ timeout: 5000 })
-    .then(() => true)
-    .catch(() => false)
-  test.skip(!populated, 'needs a populated workspace')
+test('project shell: six sections, two corner glyphs', async ({ page, request }) => {
+  await openShelf(page, request, 'tasks', false, 2)
+  const menu = page.locator('[data-menu] a')
+  await expect(menu).toHaveCount(6)
+  expect(await menu.allInnerTexts()).toEqual([
+    'Tasks',
+    'Sky',
+    'Groups',
+    'Engine room',
+    'Timeline',
+    'Documents',
+  ])
+  // the owner's ruling is a NUMBER, so the test counts (1.4-2)
+  await expect(page.locator('[data-corner] > *')).toHaveCount(2)
+})
+
+test('shelf: tasks listed, and the filter narrows them', async ({ page, request }) => {
+  await openShelf(page, request, 'tasks', false, 2)
+  const rows = page.locator('tr[data-kind="task"]')
+  await expect(rows.first()).toBeVisible()
   const total = await rows.count()
-  test.skip(total < 2, 'needs a populated workspace')
-  // the name LINK is the cell's only name-only node: while the engine
-  // works, the same cell also carries an in-flight badge, and reading
-  // the whole cell filtered on two lines at once (zero matches)
-  const firstName = (await rows.first().locator('a').first().innerText()).trim()
-  await page.getByPlaceholder('filter problems…').fill(firstName)
-  await expect
-    .poll(async () => rows.count())
-    .toBeLessThanOrEqual(total)
-  await expect(rows.first()).toContainText(firstName)
+  const first = (await rows.first().locator('a').first().innerText()).trim()
+  await page.getByPlaceholder('filter tasks…').fill(first)
+  await expect.poll(async () => rows.count()).toBeLessThanOrEqual(total)
+  await expect(rows.first()).toContainText(first)
 })
 
-test('problem detail: four tabs, constellation svg has stars', async ({ page }) => {
-  await page.goto('/')
-  const firstRow = page.locator('tbody tr[data-kind="problem"]').first()
-  const populated = await firstRow
-    .waitFor({ timeout: 5000 })
+test('shelf: run control refuses to start with nothing ticked', async ({
+  page,
+  request,
+}) => {
+  // the multi-task run takes an EXPLICIT list (3.3) - an empty one is
+  // not a run over everything, so the button is closed until a task is
+  // chosen
+  await openShelf(page, request, 'tasks', false)
+  const run = page.getByRole('button', { name: /^Run/ })
+  const stop = page.getByRole('button', { name: /Stop/ })
+  const live = await stop
+    .waitFor({ timeout: 2000 })
     .then(() => true)
     .catch(() => false)
-  test.skip(!populated, 'empty workspace')
-  // click the name cell — the row's center can land on the status
-  // badge, which is its own link (needs-input → inbox)
-  await firstRow.locator('td').first().click()
-  await expect(page.getByRole('button', { name: 'Constellation' })).toBeVisible()
-  for (const tab of ['Goals', 'Timeline', 'Files']) {
-    await expect(page.getByRole('button', { name: new RegExp(tab) })).toBeVisible()
+  test.skip(live, 'the engine is running - Stop is showing, not Run')
+  await expect(run).toBeDisabled()
+})
+
+test('sky: the constellation renders, or says why it cannot', async ({
+  page,
+  request,
+}) => {
+  const s = await openShelf(page, request, 'sky')
+  await expect(page.getByRole('button', { name: 'map', exact: true })).toBeVisible()
+  const sky = page.locator('main svg.constellation')
+  const noGoals = page.getByText(/No goals yet|the engine is working/)
+  await expect(sky.or(noGoals).first()).toBeVisible({ timeout: 15000 })
+  // the list view is the same data, not another page
+  const proved = page.getByText(/\d+\/\d+ proved/)
+  if (await sky.count()) {
+    await expect(proved.first()).toBeVisible()
+    await page.getByRole('button', { name: 'list', exact: true }).click()
+    await expect(page.locator('table')).toBeVisible()
   }
-  // constellation stars = one <g> per goal under the transform group
-  const stars = page.locator('main svg g[transform] > g')
-  const goalsLabel = await page.getByRole('button', { name: /Goals \(\d+\)/ }).innerText()
-  const goalCount = Number(/\((\d+)\)/.exec(goalsLabel)?.[1] ?? 0)
-  if (goalCount > 0) {
-    expect(await stars.count()).toBeGreaterThan(0)
-  }
+  expect(page.url()).toContain(encodeURIComponent(s.task))
 })
 
-test('inbox renders sections or empty state', async ({ page }) => {
-  await page.goto('/#/inbox')
-  await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
-  // .first() AFTER the or(): a non-empty inbox renders both section
-  // labels, and first().or(...) tripped strict mode on exactly that
-  const anySection = page
-    .getByText(/amend requests|ingest sign-offs/i)
-    .or(page.getByText('Nothing needs you right now'))
-    .first()
-  await expect(anySection).toBeVisible()
+test('engine room: slots, plan usage, engine log', async ({ page, request }) => {
+  await openShelf(page, request, 'engine', false)
+  await expect(page.getByText('slots')).toBeVisible()
+  // idle or live, the room says which - never a blank panel
+  await expect(
+    page
+      .getByText(/the engine is not running|none this instant|none yet|busy/)
+      .first(),
+  ).toBeVisible()
+  await expect(page.getByText(/plan usage|engine log/).first()).toBeVisible()
 })
 
-test('library atlas renders constellations or empty state', async ({ page }) => {
-  await page.goto('/#/library')
-  await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible()
-  const sky = page.locator('main svg').first().or(page.getByText('The Library is empty'))
-  await expect(sky).toBeVisible()
+test('timeline and documents render inside the shell', async ({ page, request }) => {
+  const s = await openShelf(page, request, 'timeline')
+  await expect(page.locator('[data-menu] a').first()).toBeVisible()
+  await page.goto(at(s.project, 'docs'))
+  await expect(page.getByRole('button', { name: 'proofs' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'documents' })).toBeVisible()
 })
 
-test('settings screen renders', async ({ page }) => {
-  // the console's own settings (accounts, appearance) live here; the
-  // engine's knobs are #/engine/settings
+test('legacy problem address redirects into its Project', async ({ page, request }) => {
+  // links minted before the shell (a chat citation, a bookmark) must
+  // still open - and the shelf comes from the DB, never from splitting
+  // the name (3.1)
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  await page.goto(`/#/problems/${encodeURIComponent(s.task)}`)
+  await expect.poll(() => page.url(), { timeout: 10000 }).toContain('#/p/')
+  expect(page.url()).toContain(encodeURIComponent(s.project))
+})
+
+test('settings: accounts, machine, appearance, quit', async ({ page }) => {
   await page.goto('/#/settings')
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+  await expect(page.getByText('Machine', { exact: true })).toBeVisible()
+  await expect(page.getByText('Appearance', { exact: true })).toBeVisible()
+  await expect(page.getByText('Shut down', { exact: true })).toBeVisible()
+  // the RUN parameters are NOT here (owner: what changes every run is
+  // not hidden in settings)
+  await expect(page.getByText('formalizer.model')).toHaveCount(0)
 })
 
-test('telemetry legacy route lands on the usage ledger', async ({ page }) => {
-  await page.goto('/#/telemetry')
-  // the label is daemon-truthful and always renders: "this run" while
-  // one runs, "all time" otherwise — never bind to which one
-  await expect(page.getByText(/usage — (all time|this run)/)).toBeVisible()
+test('run parameters live beside Run, not in settings', async ({ page, request }) => {
+  await openShelf(page, request, 'tasks', false)
+  await page.getByRole('button', { name: /run parameters/ }).click()
+  await expect(page.getByText('formalizer.model')).toBeVisible()
+  await expect(page.getByText('dispatch.budget_sec')).toBeVisible()
+  // and the machine's own knobs are not
+  await expect(page.getByText('dispatch.pool')).toHaveCount(0)
 })
 
-test('run console: phase heading + guidance, idle or live', async ({ page }) => {
-  await page.goto('/#/run')
-  await expect(
-    page.getByRole('heading', {
-      name: /Idle|Starting|Proving|Planning|Warming up|Harvesting|Stopping/,
-    }),
-  ).toBeVisible()
-  // burn figures moved to the Usage tab (owner, 2026-07-18); the quota
-  // meter's caption is the console's stable floor — one of the two
-  // wordings renders whether or not a seat rides the meter right now
-  await expect(page.getByText(/claude plan|plan usage/)).toBeVisible()
+test('the Library is not reachable from anywhere', async ({ page }) => {
+  // 1.4-3: the Library's surfaces come down until the owner tests the
+  // wind. A dead route must not render a screen either.
+  await page.goto('/#/library')
+  await expect(page.getByRole('heading', { name: 'Library' })).toHaveCount(0)
+  await page.goto('/')
+  await expect(page.getByRole('link', { name: 'Library' })).toHaveCount(0)
 })
 
 test('papers shelf renders rows or empty state', async ({ page }) => {
@@ -129,14 +216,14 @@ test('api meta reachable and shaped', async ({ request }) => {
   expect(['ok', 'missing', 'behind', 'unavailable']).toContain(body.db)
 })
 
-test('new-problem form renders (read-only: no submit)', async ({ page }) => {
+test('new-task form renders (read-only: no submit)', async ({ page }) => {
   await page.goto('/#/new')
-  await expect(page.getByRole('heading', { name: 'New problem' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New task' })).toBeVisible()
   await expect(page.getByPlaceholder('Topology.my_theorem')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Create problem' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Create task' })).toBeDisabled()
 })
 
-test('new-problem: the shelf is a window, not a wall', async ({ page }) => {
+test('new-task: the paper shelf is a window, not a wall', async ({ page }) => {
   // The picker used to render one checkbox per shelved paper, which
   // buried the rest of the form (owner, 2026-08-27). It is a floating
   // window now: collapsed the field is one button, and choosing marks
@@ -185,7 +272,7 @@ test('new-problem: the shelf is a window, not a wall', async ({ page }) => {
   await expect(chip).toHaveCount(0)
 })
 
-test('new-problem: Defs and Root wear the shared Lean block', async ({ page }) => {
+test('new-task: Defs and Root wear the shared Lean block', async ({ page }) => {
   // They had grown their own arrangement — a bare editor per box and
   // ONE goal panel below both — and a first fix only imitated the
   // probe's shape instead of using it (68a344a3, reverted). Both now
@@ -261,8 +348,16 @@ test('timeline: a revision row opens onto the judge that ruled on it', async ({
     }
   }
 
-  await page.goto(`/#/problems/${encodeURIComponent(target as string)}`)
-  await page.getByRole('button', { name: /Timeline/ }).click()
+  const where = await request.get('/api/problems')
+  const shelfOf: { name: string; project: string | null }[] =
+    (await where.json()).problems ?? []
+  const project = shelfOf.find((r) => r.name === target)?.project
+  test.skip(!project, 'the task is on no shelf')
+  await page.goto(
+    `/#/p/${encodeURIComponent(project as string)}/timeline/${encodeURIComponent(
+      target as string,
+    )}`,
+  )
   const row =
     listy === null
       ? page.locator('[data-verdict-row]').first()
@@ -318,20 +413,16 @@ test('timeline: a revision row opens onto the judge that ruled on it', async ({
     await expect(cleared.first()).not.toContainText('cleared')
 })
 
-test('constellation: the first view IS the fit', async ({ page }) => {
+test('constellation: the first view IS the fit', async ({ page, request }) => {
   // The plate is laid out at a default aspect, measured against the
   // page, and re-laid out at the real one — and the camera went on
   // framing the first of those two until `fit` was pressed, so opening
   // a sky and pressing fit gave two different pictures (owner,
   // 2026-08-27).
-  await page.goto('/')
-  const firstRow = page.locator('tbody tr[data-kind="problem"]').first()
-  const populated = await firstRow
-    .waitFor({ timeout: 5000 })
-    .then(() => true)
-    .catch(() => false)
-  test.skip(!populated, 'empty workspace')
-  await firstRow.locator('td').first().click()
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'empty workspace')
+  const s = shelf as Shelf
+  await page.goto(at(s.project, 'sky', s.task))
   const cam = page.locator('main svg.constellation > g[transform]').first()
   await cam.waitFor({ timeout: 10000 })
 
@@ -427,53 +518,17 @@ test('constellation: a resize refits, and a drag never rescales', async ({ page,
   expect(dragged, 'the drag moved nothing').not.toBe(fitted)
 })
 
-test('engine console: the sky opens on its fit, and stays put', async ({ page }) => {
-  // The console is where "opened != fitted" actually bit: its sky is
-  // LIVE, so the plate is re-laid as goals land, and a camera fitted
-  // to the plate of ten seconds ago is not the fit any more. Measured
-  // there before the fix: the view sat at k=0.05801 for as long as you
-  // liked while `fit` gave 0.05932 (owner, 2026-08-27). The problem
-  // page's copy of this test passed throughout — its plate is static.
-  await page.goto('/#/run')
-  const cam = page.locator('svg.constellation > g[transform]').first()
-  const alive = await cam
-    .waitFor({ timeout: 15000 })
-    .then(() => true)
-    .catch(() => false)
-  test.skip(!alive, 'no problem in focus on this console')
-
-  const read = async () => (await cam.getAttribute('transform')) ?? ''
-  const settled = async () => {
-    let prev = ''
-    for (let i = 0; i < 25; i++) {
-      const t = await read()
-      if (t !== '' && t === prev) return t
-      prev = t
-      await page.waitForTimeout(150)
-    }
-    return prev
-  }
-  const opened = await settled()
-  expect(opened).not.toBe('')
-  await page.getByRole('button', { name: 'fit', exact: true }).click()
-  const fitted = await settled()
-
-  const nums = (t: string) => (t.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
-  const a = nums(opened)
-  const b = nums(fitted)
-  expect(b.length).toBe(a.length)
-  for (let i = 0; i < a.length; i++)
-    expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
-})
-
-test('engine console: the first node hover needs no priming click', async ({ page }) => {
-  await page.goto('/#/run')
+test('sky: the first node hover needs no priming click', async ({ page, request }) => {
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'empty workspace')
+  const s = shelf as Shelf
+  await page.goto(at(s.project, 'sky', s.task))
   const star = page.locator('svg.constellation g.cursor-pointer[transform]').first()
   const alive = await star
     .waitFor({ timeout: 15000 })
     .then(() => true)
     .catch(() => false)
-  test.skip(!alive, 'no problem in focus on this console')
+  test.skip(!alive, 'this task has no stars yet')
 
   // Regression: the mount reset used to publish a null camera AFTER
   // the layout fit. Hover state rendered, but its card was gated on a

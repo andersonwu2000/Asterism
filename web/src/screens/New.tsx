@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPost } from '../lib/api'
-import { navigate } from '../lib/router'
+import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
 import { DiagList, LeanBlock, countErrors } from '../components/LeanBlock'
@@ -13,7 +13,7 @@ import { frameClass } from '../lib/textFrame'
  * Problem authoring, mathematician-first: a name, a natural-language
  * description, and sensible defaults. The frontmatter is controls, not
  * yaml; pinned Lean files stay behind an "advanced" fold. Everything
- * here can be changed later on the problem's Intent tab.
+ * here can be changed later on the task's own page.
  */
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$/
@@ -33,7 +33,7 @@ const LEAN_BOXES = [
   {
     id: 'root' as const,
     caption:
-      'Root.lean — pins the exact statement that must be proved before the problem can finish (theorem main : <stmt> := by sorry).',
+      'Root.lean — pins the exact statement that must be proved before the task can finish (theorem main : <stmt> := by sorry).',
     placeholder: (n: string) =>
       `import Mathlib\nimport Problems.${n}.Defs\n\nnamespace Problems.${n}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${n}`,
   },
@@ -229,7 +229,12 @@ export default function New() {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">
-      <h1 className="font-display mb-1 text-[22px] font-medium text-ink">New problem</h1>
+      <div className="mb-1 flex items-baseline gap-3">
+        <Link to="/" className="text-[11px] text-ink-faint transition-colors hover:text-ink">
+          ‹ projects
+        </Link>
+        <h1 className="font-display text-[22px] font-medium text-ink">New task</h1>
+      </div>
       <p className="mb-5 max-w-[70ch] text-xs text-ink-faint">
         Say what you want proved, in your own words. The engine plans, defines, and proves
         from this description; you review its statements before anything is kept.
@@ -419,7 +424,7 @@ export default function New() {
             disabled={busy || !nameOk || desc.trim() === ''}
             onClick={() => void create()}
           >
-            {busy ? (hasLean ? 'Type-checking Lean files…' : 'Creating…') : 'Create problem'}
+            {busy ? (hasLean ? 'Type-checking Lean files…' : 'Creating…') : 'Create task'}
           </Button>
         </span>
         {busy && hasLean && (

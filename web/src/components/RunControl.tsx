@@ -12,7 +12,15 @@ import type { DaemonStatus } from '../lib/types'
  * per-problem runs are independent.
  */
 
-export default function RunControl({ problem }: { problem: string }) {
+export default function RunControl({
+  problem,
+  engineHref,
+}: {
+  problem: string
+  /** the engine room of the Project this control sits in — the busy
+   * message has to name a place the reader can actually reach */
+  engineHref?: string
+}) {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -89,10 +97,18 @@ export default function RunControl({ problem }: { problem: string }) {
         </>
       ) : busyElsewhere ? (
         <span className="text-[11px] text-ink-faint">
-          engine busy — <span className="font-mono">{d.scope ?? 'all problems'}</span> ·{' '}
-          <Link to="/engine" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
-            Engine
-          </Link>
+          engine busy — <span className="font-mono">{d.scope ?? 'all tasks'}</span>
+          {engineHref && (
+            <>
+              {' · '}
+              <Link
+                to={engineHref}
+                className="underline decoration-ink-faint underline-offset-2 hover:text-ink"
+              >
+                engine room
+              </Link>
+            </>
+          )}
         </span>
       ) : (
         <>
@@ -106,8 +122,8 @@ export default function RunControl({ problem }: { problem: string }) {
               <span className="max-w-96 text-[11px] leading-snug text-danger">
                 the last run crashed
                 {d.last_exit.error?.includes('gateway')
-                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, see the engine log on the Run page'
-                  : ` (${d.last_exit.error ?? 'unknown error'}) — see the engine log on the Run page`}
+                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, read the engine log in the engine room'
+                  : ` (${d.last_exit.error ?? 'unknown error'}) — read the engine log in the engine room`}
               </span>
             )}
           <button

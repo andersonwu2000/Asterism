@@ -3,7 +3,7 @@ import { apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
-import { Button, EmptyState, ErrorState, SectionLabel } from '../components/ui'
+import { Button, SectionLabel } from '../components/ui'
 import DiffView from '../components/DiffView'
 import ReviewTree from '../components/ReviewTree'
 import type { Amend, InboxResponse, Signoff } from '../lib/types'
@@ -300,31 +300,32 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
   )
 }
 
-export default function Inbox() {
-  const { data, error, loading, refresh } = usePoll<InboxResponse>('/api/inbox', 3000)
+/** The decisions waiting on the human, scoped to one Project (§1.4:
+ * a Project owns one inbox). It is not a destination of its own any
+ * more — it rides at the top of that Project's shelf, where the tasks
+ * it is about are, and it draws NOTHING when there is nothing to
+ * decide (an empty state on a page you did not open is furniture). */
+export default function Inbox({ project }: { project: string }) {
+  const { data, refresh } = usePoll<InboxResponse>(
+    `/api/inbox?project=${encodeURIComponent(project)}`,
+    3000,
+  )
 
-  if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
-  if (error && !data) return <ErrorState error={error} />
   if (!data) return null
-
   const empty = data.amends.length === 0 && data.signoffs.length === 0
+  if (empty) return null
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
-      <div className="mb-4 flex items-baseline gap-3">
-        <h1 className="font-display text-[22px] font-medium text-ink">Inbox</h1>
-        {!empty && (
-          <span className="tnum text-xs text-ink-faint">
-            {data.amends.length + data.signoffs.length} waiting on you
-          </span>
-        )}
+    <section className="mb-7">
+      <div className="mb-2 flex items-baseline gap-3">
+        <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+          needs you
+        </span>
+        <span className="tnum text-[11px] text-ink-faint">
+          {data.amends.length + data.signoffs.length} waiting
+        </span>
       </div>
-      {empty ? (
-        <EmptyState title="Nothing needs you right now">
-          Amend requests and ingest sign-offs land here when the engine needs a human decision.
-        </EmptyState>
-      ) : (
-        <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-6">
           {data.amends.length > 0 && (
             <section>
               <SectionLabel>amend requests ({data.amends.length})</SectionLabel>
@@ -345,8 +346,7 @@ export default function Inbox() {
               </div>
             </section>
           )}
-        </div>
-      )}
-    </div>
+      </div>
+    </section>
   )
 }

@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
+import { Link } from '../lib/router'
 import { signOut, switchAccount } from '../lib/providerAuth'
 import { relTime } from '../lib/format'
 import { currentTheme, setTheme } from '../lib/theme'
 import type { Theme } from '../lib/theme'
 import { Button } from '../components/ui'
-import { QuotaMeter } from './Run'
+import { MachineParameters } from '../components/RunParameters'
+import { QuotaMeter } from './EngineRoom'
 import { scopedRows } from '../lib/quota'
 import { PROVIDER_LABEL, windowLabel } from '../lib/vocab'
 import type { Meta, ProviderRow, RunStatus } from '../lib/types'
@@ -13,12 +15,16 @@ import type { ShutdownPreview } from '../lib/types'
 import { markStopped } from '../lib/shutdown'
 
 /*
- * Settings — everything that is NOT the engine's: the accounts it
- * spends, what is left of them, and how this console looks. The split
- * is by subject (owner, 2026-08-07): model choices and dispatch knobs
- * are the machine's business and stay on the Engine page; your login
- * and your theme are yours, and hunting for them inside the machine
- * room read wrong.
+ * The gear — the ONE settings page (human_interface_design.md §1.4:
+ * "全域、很少動的東西"), shared by the Project picker and every Project.
+ *
+ * What earns a place here is what you set once for the installation:
+ * the accounts the engine spends and what is left of them, the machine
+ * parameters (how many agents at once, the warm pool), how this console
+ * looks, and how to stop everything. What a RUN does — which model sits
+ * in which seat, the time budget — is not here on the owner's ruling:
+ * "每次 run 都可能改的東西不藏在設定", so it lives beside Run on the Tasks
+ * page.
  */
 
 function Row({ children }: { children: React.ReactNode }) {
@@ -421,20 +427,41 @@ function ShutDown() {
   )
 }
 
+/** The installation's own numbers: how many agents may work at once,
+ * and the warm pool above them. The RAM budget belongs in this card and
+ * is not here — `dispatch.ram_budget` is read from yaml/.env and is not
+ * one of the keys `/api/config` will write, so a control would be a
+ * control over nothing. Named, not silently missing. */
+function Machine() {
+  return (
+    <Row>
+      <Label>Machine</Label>
+      <MachineParameters />
+      <div className="mt-2 text-[11px] text-ink-faint">
+        the RAM budget (<span className="font-mono">dispatch.ram_budget</span>) is read
+        from <span className="font-mono">Asterism.yaml</span> or the environment — the
+        engine serves no endpoint for it, so this page can neither show nor change it.
+      </div>
+    </Row>
+  )
+}
+
 export default function Settings() {
   const { data: meta, refresh } = usePoll<Meta>('/api/meta', 5000)
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
-      <h1 className="font-display text-[22px] font-medium text-ink">Settings</h1>
-      <p className="mt-1 mb-5 text-xs text-ink-faint">
-        the accounts the engine spends, what is left of them, and how this console
-        looks — the knobs that steer the machine itself live on the Engine page.
-      </p>
+    <div className="mx-auto max-w-4xl px-6 py-8">
+      <div className="mb-5 flex items-baseline gap-3">
+        <Link to="/" className="text-[11px] text-ink-faint transition-colors hover:text-ink">
+          ‹ projects
+        </Link>
+        <h1 className="font-display text-[22px] font-medium text-ink">Settings</h1>
+      </div>
       <div className="flex flex-col gap-3">
         {(meta?.providers ?? []).map((p) => (
           <Account key={p.name} p={p} onChanged={refresh} />
         ))}
         <Allowance />
+        <Machine />
         <Appearance />
         <ShutDown />
       </div>

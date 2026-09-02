@@ -29,21 +29,24 @@ export default function LogTail() {
   // sentence (design review).
   if (lines.length === 0) {
     return (
-      <div className="rounded-xl border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
+      <div className={frameClass({ frame: true, mono: false, tone: 'faint' })}>
         No log output yet — the tail picks up when a daemon run starts.
       </div>
     )
   }
   return (
+    // ONE template for every block of text (DESIGN.md, 2026-08-27):
+    // this file hand-wrote its own chrome — an opaque `bg-bg` slab that
+    // assumes a host — while every other block recedes on `bg-wash`.
     <div
       ref={boxRef}
-      className="h-64 overflow-y-auto rounded-xl border border-edge bg-bg p-3"
+      className={frameClass({ frame: true, cap: 'lg', wrap: false, mono: false })}
       onScroll={(e) => {
         const el = e.currentTarget
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
       }}
     >
-      <pre className={frameClass({ frame: false })}>
+      <pre className={frameClass({ frame: false, wrap: false })}>
         {/* an error line in routine gray is invisible (cold-eye: a
             swallowed-error line hid in plain sight) — failures carry
             the warn ink, line by line */}

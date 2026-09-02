@@ -1,62 +1,33 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
-import { RouterProvider, useRoute, Link } from './lib/router'
+import { RouterProvider, useRoute, navigate } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
-import Board from './screens/Board'
-import Inbox from './screens/Inbox'
-import Library from './screens/Library'
-import LibraryChapterScreen from './screens/LibraryChapter'
+import { parseProjectRoute, projectPath } from './lib/projectRoute'
+import Projects from './screens/Projects'
+import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
-import Problem from './screens/Problem'
 import Settings from './screens/Settings'
-import Engine from './screens/Engine'
-import type { EngineTab } from './screens/Engine'
-import Proto from './screens/Proto'
 import ChatDrawer from './components/ChatDrawer'
-import type { Meta } from './lib/types'
+import type { BoardResponse, Meta } from './lib/types'
 import { isStopped, onStopped } from './lib/shutdown'
 
-/** The explainer's door — the one utility slot at the sidebar's foot
- * (owner, 2026-07-18: chat entry outranks the old engine-status chip;
- * run liveness lives on the Engine nav row now). Pulse = an answer is
- * streaming behind a closed drawer. */
-function AskChip({
-  open,
-  streaming,
-  onToggle,
-}: {
-  open: boolean
-  streaming: boolean
-  onToggle: () => void
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      className={`group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
-        open ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
-      }`}
-      title="ask the engine to explain progress, code or mechanics (Ctrl+/) — read-only, it never acts"
-    >
-      <span className={open ? 'text-star' : 'text-ink-faint group-hover:text-ink-dim'}>
-        {ICONS.ask}
-      </span>
-      <span className="flex-1 text-left">ask</span>
-      {streaming && !open && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
-    </button>
-  )
-}
+/*
+ * The shell (human_interface_design.md §1.4). Two frames, and only
+ * two: the Project picker, and the inside of one Project. There is no
+ * sidebar any more — a Project's sections are a horizontal menu in its
+ * own header, and the tasks are the column beside them.
+ *
+ * Everything global that is not a Project lives at one address each:
+ * #/settings is the gear, #/new mints a task, #/papers is the shelf a
+ * task binds its sources from. The banners below are the exception the
+ * old shell also made: a state that silently fails EVERY run has to
+ * speak wherever the reader is standing.
+ */
 
-/** Auth banner — the one condition that silently fails EVERY run.
- * The login flow itself is Claude Code's own wizard; the button just
- * opens it in a terminal window, and the 3s meta poll turns the
- * banner off the moment the credentials land. */
-/** An update was unzipped over a LIVE console: the pages now come
- * from the new release while this process still answers with the old
- * endpoints. Nothing else can say so — the stale process cannot know
- * on its own which of its answers are lies — so the banner names the
- * one way out. (The launcher recycles a stale console by itself; this
- * shows when the reader updated without relaunching.) */
+/** An update was unzipped over a LIVE console: the pages now come from
+ * the new release while this process still answers with the old
+ * endpoints. Nothing else can say so — the stale process cannot know on
+ * its own which of its answers are lies. */
 function UpdateBanner({ meta }: { meta: Meta | null }) {
   const v = meta?.version ?? null
   const disk = meta?.disk_version ?? null
@@ -75,6 +46,9 @@ function UpdateBanner({ meta }: { meta: Meta | null }) {
   )
 }
 
+/** Auth: the one condition that silently fails every run. The login
+ * flow is Claude Code's own wizard; the button opens it in a terminal,
+ * and the meta poll turns the banner off when the credentials land. */
 function ClaudeBanner({ meta }: { meta: Meta | null }) {
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -118,12 +92,9 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
   )
 }
 
-/** Lean-layer self-check banner — the OTHER silently-fatal state (a
- * missing toolchain or math library fails every run just like a
- * missing login), and it can break long after install: a moved .elan,
- * a cleaned disk. Rides the same meta poll (server memoizes the
- * check); the remedy is re-running the setup, which skips whatever is
- * still healthy. */
+/** The OTHER silently-fatal state: a missing toolchain or math library
+ * fails every run just like a missing login, and it can break long
+ * after install (a moved .elan, a cleaned disk). */
 function LeanBanner({ meta }: { meta: Meta | null }) {
   if (!meta?.lean_ready || (meta.lean_ready.lake && meta.lean_ready.mathlib)) return null
   return (
@@ -138,156 +109,50 @@ function LeanBanner({ meta }: { meta: Meta | null }) {
   )
 }
 
-const ICONS: Record<string, ReactNode> = {
-  board: (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <circle cx="4" cy="4" r="1.6" fill="currentColor" />
-      <circle cx="12" cy="5.5" r="1.2" fill="currentColor" opacity="0.7" />
-      <circle cx="7" cy="11.5" r="1.4" fill="currentColor" opacity="0.85" />
-      <path d="M4 4l8 1.5M12 5.5l-5 6" stroke="currentColor" strokeWidth="0.8" opacity="0.45" />
-    </svg>
-  ),
-  inbox: (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M2.5 9.5V12a1.5 1.5 0 001.5 1.5h8A1.5 1.5 0 0013.5 12V9.5M2.5 9.5L4.6 3.6A1.5 1.5 0 016 2.5h4a1.5 1.5 0 011.4 1.1l2.1 5.9M2.5 9.5H6l1 1.5h2l1-1.5h3.5"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
-  run: (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M1.5 8.5h3l2-5 3 9 2-4h3"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
-  settings: (
-    // two sliders — the things you set (three read as noise at 15px).
-    // Kept from the pre-merge sidebar: Settings is a destination again
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path d="M2 5.5h12M2 10.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
-      <circle cx="10" cy="5.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
-      <circle cx="6" cy="10.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
-    </svg>
-  ),
-  library: (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <rect x="5.7" y="5.7" width="4.6" height="4.6" transform="rotate(45 8 8)" fill="currentColor" opacity="0.9" />
-      <circle cx="3" cy="12.5" r="1.1" fill="currentColor" opacity="0.6" />
-      <circle cx="13" cy="3.5" r="1.1" fill="currentColor" opacity="0.6" />
-    </svg>
-  ),
-  papers: (
-    // a sheet with a folded corner — the shelf of source papers
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M4.5 1.8h5.2l3 3v8.4a1 1 0 01-1 1H4.5a1 1 0 01-1-1V2.8a1 1 0 011-1z"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinejoin="round"
-      />
-      <path d="M9.7 1.8v3h3" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
-      <path d="M5.8 8h4.4M5.8 10.5h3" stroke="currentColor" strokeWidth="0.9" strokeLinecap="round" opacity="0.55" />
-    </svg>
-  ),
-  ask: (
-    // a speech bubble with a star inside — conversation about the sky
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M2.5 3.5A1.5 1.5 0 014 2h8a1.5 1.5 0 011.5 1.5v6A1.5 1.5 0 0112 11H7.2L4.5 13.6V11H4a1.5 1.5 0 01-1.5-1.5v-6z"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinejoin="round"
-      />
-      <circle cx="8" cy="6.5" r="1.3" fill="currentColor" opacity="0.85" />
-    </svg>
-  ),
-}
-
-function NavItem({
-  to,
-  icon,
-  label,
-  active,
-  badge,
-  live = false,
-  warn = false,
-  title,
-}: {
-  to: string
-  icon: string
-  label: string
-  active: boolean
-  badge?: number
-  /** a pulsing dot: the machine is working behind this entry */
-  live?: boolean
-  /** a steady warn dot: something behind this entry ended badly */
-  warn?: boolean
-  title?: string
-}) {
-  return (
-    <Link
-      to={to}
-      title={title}
-      className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
-        active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
-      }`}
-    >
-      {active && (
-        <span className="absolute top-1.5 bottom-1.5 -left-2 w-0.5 rounded-full bg-star" />
-      )}
-      <span className={active ? 'text-star' : 'text-ink-faint group-hover:text-ink-dim'}>
-        {ICONS[icon]}
-      </span>
-      <span className="flex-1">{label}</span>
-      {live && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
-      {!live && warn && <span className="bg-warn h-1.5 w-1.5 rounded-full" />}
-      {badge !== undefined && badge > 0 && (
-        <span className="tnum rounded-full bg-warn/15 px-1.5 py-px text-[11px] font-medium text-warn">
-          {badge}
-        </span>
-      )}
-    </Link>
-  )
+/** The addresses the old app used, kept working. A problem's page is
+ * now inside its Project, and only the DB knows which shelf that is
+ * (§3.1: the name's first segment is a default, not the answer) — so
+ * the redirect asks, rather than splitting the name and guessing. */
+function LegacyProblem({ name, goal }: { name: string; goal: number | null }) {
+  const { data, error } = usePoll<BoardResponse>('/api/problems', 0)
+  useEffect(() => {
+    if (!data) return
+    const row = data.problems.find((p) => p.name === name)
+    if (!row?.project) {
+      navigate('/')
+      return
+    }
+    navigate(projectPath(row.project, 'sky', name, goal))
+  }, [data, name, goal])
+  if (error) {
+    navigate('/')
+    return null
+  }
+  return <div className="late-fade p-8 text-sm text-ink-faint">Opening {name}…</div>
 }
 
 function Shell() {
   const route = useRoute()
-  const { data: meta } = usePoll<Meta>('/api/meta', 3000)
   const section = route.segments[0] ?? ''
-  const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
-  // the tab title carries the inbox count — the one place a decision
-  // can wait on the human while they look at another tab — and names
-  // the route (first-time QA: five open tabs all read "Asterism")
+  const project = parseProjectRoute(route.segments)
+  const { data: meta } = usePoll<Meta>(
+    project ? `/api/meta?project=${encodeURIComponent(project.project)}` : '/api/meta',
+    3000,
+  )
+
+  // the tab title names where you are and carries the count of things
+  // waiting on you — the one fact that can change while you look at
+  // another tab
   const inboxCount = meta?.inbox_count ?? 0
   useEffect(() => {
-    const detail = route.segments[1]
-    const leaf =
-      (section === 'problems' || section === 'library') && detail
-        ? (detail.split('.').pop() ?? detail)
-        : {
-            engine: 'Engine',
-            run: 'Engine',
-            settings: 'Settings',
-            telemetry: 'Engine',
-            library: 'Library',
-            papers: 'Papers',
-            inbox: 'Inbox',
-            new: 'New problem',
-          }[section]
+    const leaf = project
+      ? (project.problem?.split('.').pop() ?? project.project)
+      : { settings: 'Settings', new: 'New task', papers: 'Papers' }[section]
     const base = leaf ? `${leaf} — Asterism` : 'Asterism'
     document.title = inboxCount > 0 ? `(${inboxCount}) ${base}` : base
-  }, [inboxCount, section, route.segments])
+  }, [inboxCount, section, project])
 
-  // explainer drawer: open state persists (QPaper shape), width doesn't
+  // the Assistant drawer: open state persists, width does not
   const [chatOpen, setChatOpen] = useState(
     () => localStorage.getItem('asterism.chatOpen') === '1',
   )
@@ -310,195 +175,70 @@ function Shell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [setChat])
 
-  const d = meta?.daemon
-  const engineCrashed =
-    d != null && !d.running && d.last_exit !== null &&
-    d.last_exit.rc !== null && d.last_exit.rc !== 0
+  // the task column's fold, remembered: it is a reading posture, not a
+  // per-page choice
+  const [railOpen, setRailOpen] = useState(
+    () => localStorage.getItem('asterism.railOpen') !== '0',
+  )
+  const toggleRail = useCallback(
+    () =>
+      setRailOpen((o) => {
+        localStorage.setItem('asterism.railOpen', o ? '0' : '1')
+        return !o
+      }),
+    [],
+  )
 
-  // NO beforeunload prompt for a live run (owner, 2026-07-18, same
-  // day it shipped): the browser's generic dialog says "changes may
-  // not be saved" — implying unsaved work that doesn't exist — and
-  // cannot carry the actual message. The truth ("closing this page
-  // does NOT stop the engine") lives as plain words on the surfaces
-  // where the run is watched: the console status line and the problem
-  // page's engine strip.
+  // NO beforeunload prompt for a live run (owner, 2026-07-18): the
+  // browser's generic dialog implies unsaved work that doesn't exist.
+  // The truth ("closing this page does NOT stop the engine") is plain
+  // words on the surfaces where the run is watched.
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-52 shrink-0 flex-col border-r border-edge bg-surface px-3 py-4">
-        <Link to="/" className="mb-1 flex items-center gap-2 px-2.5">
-          {/* the mark IS an asterism: three stars, one line of sky */}
-          <svg width="18" height="18" viewBox="0 0 20 20" className="text-star" aria-hidden>
-            <path
-              d="M4 14.5L10.5 5l5 6.5"
-              stroke="currentColor"
-              strokeWidth="0.9"
-              opacity="0.5"
-              fill="none"
+    <div className="flex h-full flex-col">
+      <UpdateBanner meta={meta} />
+      <ClaudeBanner meta={meta} />
+      <LeanBanner meta={meta} />
+      <div className="flex min-h-0 flex-1">
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+          {project ? (
+            <ProjectShell
+              route={project}
+              railOpen={railOpen}
+              onToggleRail={toggleRail}
+              chatOpen={chatOpen}
+              chatStreaming={chatStreaming}
+              onToggleChat={() => setChat((o) => !o)}
             />
-            <circle cx="4" cy="14.5" r="1.7" fill="currentColor" />
-            <circle cx="10.5" cy="5" r="2.1" fill="currentColor" />
-            <circle cx="15.5" cy="11.5" r="1.4" fill="currentColor" />
-          </svg>
-          <span className="font-display text-[17px] font-medium">Asterism</span>
-        </Link>
-        {/* workspace label only when it differs from the product name —
-            otherwise "Asterism" would render three times in one column */}
-        {workspaceName && workspaceName.toLowerCase() !== 'asterism' ? (
-          <div className="mb-5 truncate px-2.5 text-[11px] text-ink-faint" title={meta?.workspace}>
-            {workspaceName}
-          </div>
-        ) : (
-          <div className="mb-4" />
-        )}
-        <nav className="flex flex-col gap-0.5">
-          <NavItem
-            to="/"
-            icon="board"
-            label="Board"
-            active={section === '' || section === 'problems'}
-          />
-          {/* ONE door for the machine (owner, 2026-07-14): console,
-              intent steering, settings and the usage ledger are four
-              faces of the same engine — Run + Settings had begun
-              duplicating its cost surfaces across two pages */}
-          <NavItem
-            to="/engine"
-            icon="run"
-            label="Engine"
-            active={
-              section === 'engine' ||
-              section === 'run' ||
-              // NOT 'settings': that alias used to mean this page and
-              // now belongs to the console's own Settings, which lit
-              // two nav rows at once until this line caught up
-              section === 'telemetry'
-            }
-            live={(d?.running || d?.starting) ?? false}
-            warn={engineCrashed}
-            title={
-              engineCrashed
-                ? `the last run exited abnormally: ${d?.last_exit?.error ?? 'unknown error'} — open the console`
-                : undefined
-            }
-          />
-          <NavItem
-            to="/library"
-            icon="library"
-            label="Library"
-            active={section === 'library'}
-          />
-          <NavItem
-            to="/papers"
-            icon="papers"
-            label="Papers"
-            active={section === 'papers'}
-          />
-          <NavItem
-            to="/inbox"
-            icon="inbox"
-            label="Inbox"
-            active={section === 'inbox'}
-            badge={meta?.inbox_count}
-          />
-          {/* a destination like any other — the accounts and the
-              console's own look. Not a foot utility: the foot is for
-              things that ACT on the page you are on (owner) */}
-          <NavItem
-            to="/settings"
-            icon="settings"
-            label="Settings"
-            active={section === 'settings'}
-            warn={meta?.claude ? !meta.claude.logged_in : false}
-            title={
-              meta?.claude && !meta.claude.logged_in
-                ? 'not signed in — every run fails at its first spawn'
-                : undefined
-            }
-          />
-        </nav>
-        <div className="mt-auto flex flex-col gap-1">
-          <AskChip
-            open={chatOpen}
-            streaming={chatStreaming}
-            onToggle={() => setChat((o) => !o)}
-          />
-          {meta?.db === 'behind' && (
-            <span className="px-2.5 text-[11px] text-warn">db needs migration</span>
-          )}
-        </div>
-      </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* no top chrome — the sidebar carries "where am I", each screen
-            carries its own title, the constellation gets the sky. The
-            ONE exception: the auth banner (a silently-fatal state) */}
-        <UpdateBanner meta={meta} />
-        <ClaudeBanner meta={meta} />
-        <LeanBanner meta={meta} />
-        <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          {section === 'new' ? (
+          ) : section === 'settings' ? (
+            <Settings />
+          ) : section === 'new' ? (
             <New />
-          ) : section === 'inbox' ? (
-            <Inbox />
-          ) : section === 'library' ? (
-            route.segments[1] ? (
-              <LibraryChapterScreen problem={route.segments[1]} />
-            ) : (
-              <Library />
-            )
           ) : section === 'papers' ? (
             route.segments[1] ? (
               <PaperReader id={route.segments[1]} />
             ) : (
               <Papers />
             )
-          ) : section === 'engine' ? (
-            <Engine
-              tab={
-                (['intent', 'programme', 'timeline', 'settings', 'usage'].includes(
-                  route.segments[1] ?? '',
-                )
-                  ? route.segments[1]
-                  : 'console') as EngineTab
-              }
-            />
-          ) : section === 'run' ? (
-            // legacy routes keep working — same machine, new door
-            <Engine tab="console" />
-          ) : section === 'settings' ? (
-            // NOT the engine's knobs (those are #/engine/settings):
-            // this is the console's own — accounts, appearance
-            <Settings />
-          ) : section === 'telemetry' ? (
-            <Engine tab="usage" />
           ) : section === 'problems' && route.segments[1] ? (
-            // /g/<id> = deep link straight to a star (the run timeline's
-            // name clicks land here); key forces a fresh mount so the
-            // jump applies even arriving from another problem's page
-            <Problem
-              key={
-                route.segments[1] +
-                (route.segments[2] === 'g' && route.segments[3]
-                  ? `:${route.segments[3]}`
-                  : '')
-              }
+            <LegacyProblem
               name={route.segments[1]}
-              initialGoal={
+              goal={
                 route.segments[2] === 'g' && route.segments[3]
                   ? Number(route.segments[3])
                   : null
               }
             />
           ) : (
-            <Board />
+            <Projects />
           )}
         </main>
+        <ChatDrawer
+          open={chatOpen}
+          onClose={() => setChat(false)}
+          onStreamingChange={setChatStreaming}
+        />
       </div>
-      <ChatDrawer
-        open={chatOpen}
-        onClose={() => setChat(false)}
-        onStreamingChange={setChatStreaming}
-      />
     </div>
   )
 }
@@ -525,23 +265,13 @@ function Farewell() {
   )
 }
 
-/** THROWAWAY (human_interface_design.md §1.4, implementation step 3:
- * "先做資訊架構原型再實作"). The mock draws the shell that REPLACES
- * this sidebar, so it cannot be rendered inside it — it takes the whole
- * window. Delete the branch with `screens/Proto` when §1.4 lands. */
-function Root() {
-  const route = useRoute()
-  if (route.segments[0] === 'proto') return <Proto />
-  return <Shell />
-}
-
 export default function App() {
   const [gone, setGone] = useState(isStopped())
   useEffect(() => onStopped(() => setGone(true)), [])
   if (gone) return <Farewell />
   return (
     <RouterProvider>
-      <Root />
+      <Shell />
     </RouterProvider>
   )
 }

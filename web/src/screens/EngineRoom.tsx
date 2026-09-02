@@ -1,37 +1,44 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiPost, usePoll } from '../lib/api'
-import {
-  emitGoalOpen,
-  onGoalHover,
-  onGoalOpen,
-  takePendingGoalOpen,
-} from '../lib/goalFocus'
+import { usePoll } from '../lib/api'
 import { duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format'
-import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
-import { renderInline, renderProse } from '../lib/prose'
-import { scopedRows } from '../lib/quota'
+import { emitGoalHover, emitGoalOpen } from '../lib/goalFocus'
 import { providerLabel, windowLabel } from '../lib/vocab'
-import { Link, navigate } from '../lib/router'
-import { Button } from '../components/ui'
-import Constellation from '../components/Constellation'
-import GoalPanel from '../components/GoalPanel'
-import StrategyPanel from '../components/StrategyPanel'
-import LogTail from '../components/LogTail'
-import { LeanProbe } from '../components/LeanProbe'
-import type { Meta, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
+import { scopedRows } from '../lib/quota'
+import { projectPath } from '../lib/projectRoute'
+import { navigate } from '../lib/router'
 import { frameClass } from '../lib/textFrame'
+import { renderInline, renderProse } from '../lib/prose'
+import { LeanProbe } from '../components/LeanProbe'
+import LogTail from '../components/LogTail'
+import { SectionLabel } from '../components/ui'
+import { UsageLedger } from './Usage'
+import type { Meta, RunStatus, RunWorker } from '../lib/types'
 
 /*
- * Run — mission control. The one page that answers "what is the
- * machine doing RIGHT NOW" without reading logs: status light + phase
- * in plain words, the scoped problem's progress, one lane per live
- * agent (its unit, its statement, the tail of the file it is writing),
- * burn against the subscription window, and the recent decisions.
- * Idle, it keeps telling the last run's story. Settings live at
- * #/settings — this page is instruments, not knobs.
+ * The engine room (human_interface_design.md §1.4-2, fourth bullet):
+ * the SLOTS pulled out from under the sky, plus the engine log, the
+ * usage ledger and each provider's quota bar. Read-only observation —
+ * starting and stopping a run is the Tasks section's job, because that
+ * is where you choose what to run.
+ *
+ * Everything here is the old console's instrument panel, re-homed. The
+ * three things that left it: the constellation (its own section now),
+ * the goal tallies (the shelf states them per task), and the lens pills
+ * (the task column IS the lens).
  */
+
+/** A departed agent's 30s receipt — completions used to simply
+ * evaporate between polls (design round). */
+interface Ghost {
+  k: string
+  kind: string
+  slug: string
+  problem: string | null
+  leased_at: string | null
+  until: number
+}
 
 function useTick(ms: number) {
   const [, tick] = useState(0)
@@ -192,10 +199,12 @@ function stableMdTail(tail: string, size: number): string {
  * the node on arrival. It used to jump to the problem page and select
  * nothing, which is the worst of both (owner, 2026-08-02). */
 function GoalLink({
+  project,
   problem,
   slug,
   goalId,
 }: {
+  project: string
   problem: string
   slug: string
   goalId?: number
@@ -205,8 +214,10 @@ function GoalLink({
       className="flex max-w-72 min-w-0 items-baseline gap-2 text-left font-mono text-xs transition-colors hover:text-ink"
       title={`${goalId === undefined ? slug : goalLabel(goalId, slug)} — open this node`}
       onClick={() => {
+        // no sky is mounted in this room, so the click walks to the one
+        // that holds this node and lets it consume the pending open
         if (!emitGoalOpen({ problem, slug }))
-          navigate(`/problems/${encodeURIComponent(problem)}`)
+          navigate(projectPath(project, 'sky', problem))
       }}
     >
       {goalId !== undefined && (
@@ -221,12 +232,12 @@ function GoalLink({
 function Lane({
   w,
   problem,
-  goalId,
+  project,
   multi,
 }: {
   w: RunWorker
   problem: string | null
-  goalId?: number
+  project: string
   multi?: boolean
 }) {
   const quiet = w.file?.quiet_sec ?? null
@@ -242,7 +253,7 @@ function Lane({
       <div className="flex items-baseline gap-2.5">
         <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
         {laneProblem ? (
-          <GoalLink problem={laneProblem} slug={w.slug} goalId={goalId} />
+          <GoalLink project={project} problem={laneProblem} slug={w.slug} />
         ) : (
           <span className="max-w-72 truncate font-mono text-xs text-ink-dim">{w.slug}</span>
         )}
@@ -480,115 +491,29 @@ export interface SkyJump {
   seq: number
 }
 
-export default function Run({
-  focus = null,
+export default function EngineRoom({
+  project,
+  pin,
+  rows,
 }: {
-  /** a timeline name click asking the console's sky to select a node;
-   * a goal outside the focused problem deep-links to its own page */
-  focus?: SkyJump | null
+  project: string
+  /** the task column's pick, pinning the lanes to one task */
+  pin: string | null
+  rows: { name: string }[]
 }) {
-  // lens pick: a pattern scope runs several problems in one daemon —
-  // the raw scope ("PutnamCmp.%") used to reach the UI as a problem
-  // name, 404 the detail fetch and blank the sky (owner, 2026-07-19).
-  // The server resolves candidates; this picks among them.
-  const [lens, setLens] = useState<string | null>(null)
-  const { data, refresh } = usePoll<RunStatus>(
-    lens ? `/api/run?problem=${encodeURIComponent(lens)}` : '/api/run',
+  const { data } = usePoll<RunStatus>(
+    pin ? `/api/run?problem=${encodeURIComponent(pin)}` : '/api/run',
     2000,
   )
-  // which backend each seat rides — the quota strip must NAME whose
+  // which backend each seat rides - the quota strip must NAME whose
   // window it shows and stay silent about accounts nothing spends
-  // (owner 2026-08-22: a zen fleet ran under an unlabeled Claude meter)
   const { data: meta } = usePoll<Meta>('/api/meta', 15000)
-  // the sky rides along (owner: the console shows the constellation):
-  // full problem detail only when a problem is in focus
-  const focusProblem = data?.problem ?? null
-  const { data: detail } = usePoll<ProblemDetail>(
-    focusProblem ? `/api/problems/${encodeURIComponent(focusProblem)}` : null,
-    3000,
-  )
-  const [selGoal, setSelGoal] = useState<number | null>(null)
-  // routes open in the console too: reading a lane's goal and then its
-  // decomposition is one thought, and it used to cost a page change
-  const [selStrategy, setSelStrategy] = useState<number | null>(null)
-  const [routeHover, setRouteHover] = useState<number[] | null>(null)
-  const skyRef = useRef<HTMLElement | null>(null)
-  useEffect(() => {
-    setSelGoal(null)
-    setSelStrategy(null)
-  }, [focusProblem])
-  // timeline → sky umbilical: consume each jump once (seq guards the
-  // detail polls from re-scrolling every tick). A goal in THIS sky is
-  // selected in place; anything else lives on its problem's page.
-  const jumpedRef = useRef<number>(-1)
-  // a jump whose problem is under the run but not focused: the console
-  // re-lenses onto it, and the selection lands when that sky arrives
-  const [pendingJump, setPendingJump] = useState<number | null>(null)
-  useEffect(() => {
-    if (!focus || jumpedRef.current === focus.seq) return
-    // the run status itself may still be loading — deciding "not in
-    // this sky" before it lands threw every jump off the page
-    if (data === null) return
-    if (detail === null && focusProblem !== null) return // detail still loading
-    jumpedRef.current = focus.seq
-    const here = detail?.goals.some((g) => g.id === focus.id) ?? false
-    if (here) {
-      setSelGoal(focus.id)
-      setSelStrategy(null)
-      skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    } else if ((data.problems ?? []).includes(focus.problem)) {
-      setLens(focus.problem)
-      setPendingJump(focus.id)
-    } else {
-      navigate(`/problems/${encodeURIComponent(focus.problem)}/g/${focus.id}`)
-    }
-  }, [focus, detail, focusProblem, data])
-  useEffect(() => {
-    if (pendingJump === null || detail === null) return
-    if (!detail.goals.some((g) => g.id === pendingJump)) return
-    setSelGoal(pendingJump)
-    setPendingJump(null)
-    skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-  }, [pendingJump, detail])
-  // lane ↔ star umbilical: hovering an agent's lane lights the star
-  // it is working (design round — the lanes and the sky were two
-  // disconnected worlds)
-  const [laneHover, setLaneHover] = useState<number[] | null>(null)
-  // chat ↔ star: same law for the drawer's [goal:…] citations — when
-  // the console's sky IS that problem, hover lights the star and click
-  // selects it here (claimed open → the citation skips navigation)
-  const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)
-  useEffect(
-    () =>
-      onGoalHover((ref) =>
-        setChatHoverSlug(ref !== null && ref.problem === focusProblem ? ref.slug : null),
-      ),
-    [focusProblem],
-  )
-  useEffect(() => {
-    if (!detail || focusProblem === null) return
-    const claim = (ref: { problem: string; slug: string } | null): boolean => {
-      if (ref === null || ref.problem !== focusProblem) return false
-      const goal = detail.goals.find((x) => x.slug === ref.slug)
-      if (goal === undefined) return false
-      setSelGoal(goal.id)
-      setSelStrategy(null)
-      // the sky sits above the slots: opening a node from a lane
-      // must bring the thing it opened into view, or the click reads
-      // as having done nothing
-      skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      return true
-    }
-    // an open requested from ANOTHER Engine tab (a delivered brick on
-    // the Programme page) arrives before this screen exists — the
-    // console is a sky like any other and consumes it on mount
-    claim(takePendingGoalOpen(focusProblem))
-    return onGoalOpen(claim)
-  }, [detail, focusProblem])
   useTick(1000)
+  const [logOpen, setLogOpen] = useState(false)
   const logPulse = useLogPulse(Boolean(data?.daemon.running))
-  // landed receipts: an agent that vanishes between polls leaves a
-  // 30s ghost card naming what it was on
+
+  // landed receipts: an agent that vanishes between polls leaves a 30s
+  // ghost card naming what it was on
   const ghostsRef = useRef<Ghost[]>([])
   const prevWorkersRef = useRef<RunWorker[]>([])
   useEffect(() => {
@@ -613,429 +538,171 @@ export default function Run({
     prevWorkersRef.current = ws
   }, [data])
 
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
-  const [logOpen, setLogOpen] = useState(false)
-  const [confirmForce, setConfirmForce] = useState(false)
-  const forceTimer = useRef<number | null>(null)
-  useEffect(
-    () => () => {
-      if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
-    },
-    [],
-  )
-  const stop = async (force: boolean) => {
-    setBusy(true)
-    setMsg(null)
-    try {
-      const r = await apiPost<{ message: string }>('/api/daemon/stop', { force })
-      setMsg(r.message)
-    } catch (e) {
-      setMsg(String((e as Error).message))
-    } finally {
-      setBusy(false)
-      setConfirmForce(false)
-      refresh()
-    }
-  }
-  const start = async () => {
-    setBusy(true)
-    setMsg(null)
-    try {
-      await apiPost('/api/daemon/start', { scope: focusProblem })
-    } catch (e) {
-      setMsg(String((e as Error).message))
-    } finally {
-      setBusy(false)
-      refresh()
-    }
-  }
-
   if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
   const d = data.daemon
   const running = d.running
-  // boot window (Run pressed, lock not yet claimed): not running, but
-  // calling it Idle flashed the Run button back mid-start (owner)
   const starting = !running && d.starting
   const workers = data.workers
+  const builds = d.promotion_builds ?? []
   const phase = !running
     ? starting
-      ? 'Starting'
-      : 'Idle'
+      ? 'starting'
+      : 'idle'
     : d.stopping
-      ? 'Stopping'
+      ? 'stopping'
       : d.gateway === 'warming'
-        ? 'Warming up'
+        ? 'warming the Lean toolchain'
         : workers.length === 0 || workers.every((w) => w.kind === 'Strategist')
-          ? 'Planning'
+          ? 'planning'
           : workers.every((w) => w.kind === 'Librarian')
-            ? 'Harvesting'
-            : 'Proving'
-  const phaseHint: Record<string, string> = {
-    Idle: lastExitLine(d.last_exit),
-    Starting: 'the engine is booting — a few seconds, then it claims the run',
-    Stopping: 'finishing in-flight work, then a clean exit — Force stop skips the wait',
-    'Warming up': 'first start heats the Lean toolchain — a few minutes, then proving begins',
-    Planning: 'the Strategist is reading the state and deciding the next moves',
-    Proving: 'agents are attempting goals right now',
-    Harvesting: 'finished work is being curated into the Library',
-  }
-  const wall = running ? wallClock(d.started_at) : null
-  const crashed = !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
-
-  const g = data.goals
+            ? 'harvesting'
+            : 'proving'
+  const crashed =
+    !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
+  const st = d.slots
+  const target = st?.target ?? 0
+  const ghostsShown = st
+    ? Math.min(ghostsRef.current.length, Math.max(0, target - workers.length))
+    : 0
+  const free = st
+    ? Math.max(0, Math.min(st.free, target - workers.length - ghostsShown))
+    : 0
 
   return (
-    // no own container: the console renders inside the Engine page's
-    // (title → tabs → content, one anatomy across every tabbed screen)
-    <div className="pt-5">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <span className="flex items-center gap-3">
-          <span
-            className={`h-3 w-3 rounded-full ${
-              running || starting
-                ? d.stopping
-                  ? 'bg-warn'
-                  : 'bg-ok animate-pulse'
-                : crashed
-                  ? 'bg-warn'
-                  : 'bg-ink-faint'
-            }`}
-          />
-          <h1 className="font-display text-[26px] font-medium text-ink">{phase}</h1>
-        </span>
-        {data.problem && (
-          <Link
-            to={`/problems/${encodeURIComponent(data.problem)}`}
-            className="font-mono text-sm text-ink-dim underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
-            title="open the problem — its sky, goals, intent"
-          >
-            {data.problem}
-          </Link>
-        )}
-        {wall && (
-          <span
-            className="tnum font-mono text-sm text-ink-dim"
-            title="how long this run has been going (wall clock)"
-          >
-            {wall}
+    <div className="mx-auto max-w-4xl px-6 py-6">
+      {/* one status line, no page title: the menu already said which
+          room this is, and drawing that twice is the law the shell
+          exists to keep */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${
+            running || starting
+              ? d.stopping
+                ? 'bg-warn'
+                : 'bg-accent animate-pulse'
+              : crashed
+                ? 'bg-warn'
+                : 'bg-ink-faint'
+          }`}
+        />
+        <span className="text-ink">{phase}</span>
+        {data.problem && <span className="font-mono text-ink-dim">{data.problem}</span>}
+        {running && d.started_at && (
+          <span className="tnum text-ink-faint" title="how long this run has been going">
+            {wallClock(d.started_at)}
           </span>
         )}
-        {running && (
-          <span className="ml-auto flex items-center gap-2">
-            {confirmForce ? (
-              <Button
-                variant="danger"
-                disabled={busy}
-                onClick={() => void stop(true)}
-                title="kill the engine now; stranded leases are reclaimed"
-              >
-                Confirm force stop
-              </Button>
-            ) : (
-              <Button
-                disabled={busy}
-                onClick={() => {
-                  if (d.stopping) {
-                    setConfirmForce(true)
-                    if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
-                    forceTimer.current = window.setTimeout(() => setConfirmForce(false), 3000)
-                  } else {
-                    void stop(false)
-                  }
-                }}
-                title={
-                  d.stopping
-                    ? 'already stopping — press again to force'
-                    : 'finish in-flight work, then exit'
-                }
-              >
-                {d.stopping ? 'Force stop…' : 'Stop'}
-              </Button>
-            )}
-          </span>
+        {!running && (
+          <span className="text-ink-faint">{lastExitLine(d.last_exit)}</span>
         )}
-        {/* idle with a problem in focus: Run lives where Stop lives —
-            the console can restart the last story without a detour
-            through the problem page (owner, 2026-07-11). Not during
-            the boot window: that Run would only bounce off the
-            anti-double-spawn guard */}
-        {!running && !starting && focusProblem && (
-          <span className="ml-auto">
-            <Button
-              variant="ok"
-              disabled={busy}
-              onClick={() => void start()}
-              title={`run the engine on ${focusProblem} — one problem at a time`}
-            >
-              {busy ? 'Starting…' : 'Run'}
-            </Button>
-          </span>
-        )}
-      </div>
-      <div className="mt-1 text-xs text-ink-faint">
-        {phaseHint[phase]}
         {running && !d.stopping && (
-          // users assumed closing the tab stops the run (owner) — say
-          // the truth where the run is watched
-          <span> · closing this page does NOT stop it — only Stop does</span>
+          <span className="text-ink-faint">
+            closing this page does NOT stop it — Stop lives on the task
+          </span>
         )}
       </div>
 
-      {/* lens pills: a pattern scope works several problems at once —
-          the tallies, sky and recent feed below follow the picked one */}
-      {(data.problems?.length ?? 0) > 1 && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          {data.problems!.map((p) => {
-            const leaf = p.split('.').pop() ?? p
-            const active = p === data.problem
-            return (
-              <button
-                key={p}
-                className={`cursor-pointer rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors ${
-                  active
-                    ? 'border-star/60 bg-star/10 text-star'
-                    : 'border-edge text-ink-faint hover:text-ink'
-                }`}
-                onClick={() => setLens(p)}
-                title={`${p} — focus the console on it`}
-              >
-                {leaf}
-              </button>
-            )
-          })}
-        </div>
-      )}
-
-      {/* figures, no meter: the bar that led this line drew proved/total
-          a second time, three words to its right (owner, 2026-08-26 —
-          same call as the board and the problem header) */}
-      {g && g.total > 0 && (
-        <div className="mt-4 flex items-center gap-3">
-          <span className="tnum text-xs text-ink-dim">
-            {g.proved}/{g.total} proved
-          </span>
-          {(g.open > 0 || g.attempting > 0) && (
-            <span className="tnum text-xs text-ink-faint">
-              {g.attempting > 0 && `${g.attempting} attempting · `}
-              {g.open} open
+      <section className="mt-7">
+        <SectionLabel>
+          slots
+          {(workers.length > 0 || st) && (
+            <span className="tnum ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
+              {st ? `${workers.length}/${target} busy · ${free} free` : `${workers.length} busy`}
             </span>
           )}
-          {/* the arithmetic must close on screen: "161/164 · 1 open"
-              left two goals unaccounted for and the reader asking
-              (cold-eye) — name the shelved/dead remainder */}
-          {g.total - g.proved - g.open - g.attempting > 0 && (
-            <span
-              className="tnum text-xs text-ink-faint"
-              title="shelved or dead — set aside by the strategist, not part of the live count"
-            >
-              {g.total - g.proved - g.open - g.attempting} set aside
-            </span>
-          )}
-        </div>
-      )}
-
-      {msg && <div className="mt-3 text-xs text-ink-dim">{msg}</div>}
-
-      {detail && focusProblem && detail.goals.length > 0 && (
-        <section className="mt-6" ref={skyRef}>
-          <div className="flex h-[52vh] overflow-hidden rounded-xl border border-edge bg-bg">
-            <div className="relative min-w-0 flex-1">
-              <Constellation
-                goals={detail.goals}
-                strategies={detail.strategies}
-                strategyEdges={detail.strategy_edges}
-                anchorEdges={detail.anchor_edges}
-                citationEdges={detail.citation_edges}
-                selectedId={selGoal}
-                onSelect={setSelGoal}
-                shelveThreshold={detail.shelve_threshold}
-                engineWorking={detail.engine_working}
-                highlightIds={
-                  laneHover ??
-                  routeHover ??
-                  (chatHoverSlug !== null
-                    ? (() => {
-                        const ids = detail.goals
-                          .filter((x) => x.slug === chatHoverSlug)
-                          .map((x) => x.id)
-                        return ids.length > 0 ? ids : null
-                      })()
-                    : null)
-                }
-              />
-            </div>
-            {/* the same panels the problem page opens — a node's
-                routes, its subgoals and its dead attempts are all
-                readable HERE; leaving the console to read them was
-                the console's own link audit (owner, 2026-08-02) */}
-            {selGoal !== null && (
-              <GoalPanel
-                problem={focusProblem}
-                goalId={selGoal}
-                onClose={() => {
-                  setSelGoal(null)
-                  setRouteHover(null)
-                }}
-                onSelectStrategy={(id) => {
-                  setSelStrategy(id)
-                  setSelGoal(null)
-                }}
-                onSelectGoal={setSelGoal}
-                onHoverGoals={setRouteHover}
-              />
-            )}
-            {selGoal === null && selStrategy !== null && (
-              <StrategyPanel
-                problem={focusProblem}
-                strategyId={selStrategy}
-                onClose={() => setSelStrategy(null)}
-                onSelectGoal={(id) => {
-                  setSelGoal(id)
-                  setSelStrategy(null)
-                }}
-              />
-            )}
+        </SectionLabel>
+        {workers.length === 0 && free === 0 && builds.length === 0 ? (
+          <div className="text-xs text-ink-faint">
+            {!running
+              ? 'the engine is not running — Run lives on a task'
+              : d.gateway === 'warming'
+                ? 'none yet — agents spawn once the toolchain is hot'
+                : 'none this instant — between batches'}
           </div>
-        </section>
-      )}
-
-      {running && (
-        <section className="mt-7">
-          {/* the pool follows the RAM ledger (dispatch.ram_budget):
-              target_slots moves with the NL reserve, so the yaml
-              `dispatch.pool` number is a fallback, not the truth. The
-              daemon reads the gateway's live counts into d.slots —
-              with it the strip shows the real berths again (lanes,
-              receipts, free vacancies ≤ target); without it (gateway
-              not answering) only the busy lanes are claimed. */}
-          {(() => {
-            const st = d.slots
-            const target = st?.target ?? 0
-            // receipts borrow berths first; vacancies fill what's left.
-            // max(0) everywhere: the two polls can momentarily disagree
-            const ghostsShown = st
-              ? Math.min(
-                  ghostsRef.current.length,
-                  Math.max(0, target - workers.length),
-                )
-              : 0
-            const free = st
-              ? Math.max(0, Math.min(st.free, target - workers.length - ghostsShown))
-              : 0
-            return (
-              <>
-                <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-                  slots
-                  {(workers.length > 0 || st) && (
-                    <span className="tnum ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
-                      {st
-                        ? `${workers.length}/${target} busy · ${free} free`
-                        : `${workers.length} busy`}
-                    </span>
-                  )}
+        ) : (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {workers.map((w, i) => {
+              const laneProblem = w.problem ?? data.problem
+              return (
+                <div
+                  key={`${w.kind}:${w.slug}:${i}`}
+                  onMouseEnter={() =>
+                    laneProblem && emitGoalHover({ problem: laneProblem, slug: w.slug })
+                  }
+                  onMouseLeave={() => emitGoalHover(null)}
+                >
+                  <Lane
+                    w={w}
+                    problem={data.problem}
+                    project={project}
+                    multi={(data.problems?.length ?? 0) > 1 || rows.length > 1}
+                  />
                 </div>
-                {workers.length === 0 && free === 0 ? (
-                  <div className="text-xs text-ink-faint">
-                    {d.gateway === 'warming'
-                      ? 'none yet — agents spawn once the toolchain is hot'
-                      : 'none this instant — between batches'}
+              )
+            })}
+            {/* promotion cold builds (§1.5-2): the gate is a background
+                thread, not a pipeline, so `in_flight` says 0 while it
+                holds the machine for ten minutes — the operator read
+                that as "nobody on the field" */}
+            {builds.map((b) => (
+              <div
+                key={b.strategy_id}
+                className="flex min-h-24 flex-col justify-center rounded-xl border border-edge bg-surface p-3"
+              >
+                <div className="flex items-baseline gap-2.5">
+                  <span className="text-xs text-ink-dim">cold-building</span>
+                  <span className="font-mono text-xs text-ink-faint">s{b.strategy_id}</span>
+                  <span className="tnum ml-auto text-[11px] text-ink-faint">
+                    {b.started_at ? relTime(b.started_at) : ''}
+                  </span>
+                </div>
+                <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">
+                  {(b.modules ?? []).join(' ')}
+                </div>
+                <div className="mt-1 text-[11px] text-ink-faint">
+                  a proved route is compiling from cold before it is promoted
+                </div>
+              </div>
+            ))}
+            {(ghostsRef.current = ghostsRef.current.filter((g) => g.until > Date.now()))
+              .slice(0, ghostsShown)
+              .map((g) => {
+                const held = g.leased_at
+                  ? duration(Math.max(0, (g.until - 30_000 - Date.parse(g.leased_at)) / 1000))
+                  : null
+                return (
+                  <div
+                    key={`${g.k}:${g.until}`}
+                    className="min-h-24 rounded-xl border border-edge/60 bg-surface/50 p-3 opacity-70"
+                  >
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="text-xs text-ink-dim">{g.kind.toLowerCase()}</span>
+                      <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
+                        {g.slug}
+                      </span>
+                      <span className="tnum ml-auto text-[11px] text-ink-faint">
+                        landed{held ? ` · ${held} on it` : ''}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-[11px] text-ink-faint">
+                      finished — the result lands on the task's sky
+                    </div>
                   </div>
-                ) : (
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    {workers.map((w, i) => {
-                      const laneProblem = w.problem ?? data.problem
-                      const gid =
-                        laneProblem === focusProblem
-                          ? detail?.goals.find((g) => g.slug === w.slug)?.id
-                          : undefined
-                      return (
-                        <div
-                          key={`${w.kind}:${w.slug}:${i}`}
-                          onMouseEnter={() =>
-                            gid !== undefined && setLaneHover([gid])
-                          }
-                          onMouseLeave={() => setLaneHover(null)}
-                        >
-                          <Lane
-                            w={w}
-                            problem={data.problem}
-                            goalId={gid}
-                            multi={(data.problems?.length ?? 0) > 1}
-                          />
-                        </div>
-                      )
-                    })}
-                    {/* receipts: what just landed, for half a minute —
-                        they borrow the berths their lanes vacated */}
-                    {(ghostsRef.current = ghostsRef.current.filter(
-                      (g) => g.until > Date.now(),
-                    ))
-                      .slice(0, ghostsShown)
-                      .map((g) => {
-                      const ghostProblem = g.problem ?? focusProblem
-                      const goal =
-                        ghostProblem === focusProblem
-                          ? detail?.goals.find((x) => x.slug === g.slug)
-                          : undefined
-                      const held = g.leased_at
-                        ? duration(
-                            Math.max(
-                              0,
-                              (g.until - 30_000 - Date.parse(g.leased_at)) / 1000,
-                            ),
-                          )
-                        : null
-                      return (
-                        <div
-                          key={`${g.k}:${g.until}`}
-                          className="min-h-24 rounded-xl border border-edge/60 bg-surface/50 p-3 opacity-70"
-                        >
-                          <div className="flex items-baseline gap-2.5">
-                            <span className="text-xs text-ink-dim">
-                              {g.kind.toLowerCase()}
-                            </span>
-                            {/* a receipt is the moment you most want to
-                                READ what landed — the name opens it */}
-                            {ghostProblem ? (
-                              <GoalLink problem={ghostProblem} slug={g.slug} goalId={goal?.id} />
-                            ) : (
-                              <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
-                                {g.slug}
-                              </span>
-                            )}
-                            <span className="tnum ml-auto text-[11px] text-ink-faint">
-                              landed{held ? ` · ${held} on it` : ''}
-                            </span>
-                          </div>
-                          <div className="mt-2 text-[11px] text-ink-faint">
-                            {goal
-                              ? `the goal is now ${goalStatusLabel(goal.status)}`
-                              : 'finished — the result lands on the problem page'}
-                          </div>
-                        </div>
-                      )
-                    })}
-                    {/* free berths — quieter ink than the working lanes
-                        so the vacancies never compete; a berth is a real
-                        count again (the gateway's own free figure) */}
-                    {Array.from({ length: free }).map((_, i) => (
-                      <div
-                        key={`free${i}`}
-                        className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
-                        title="an open berth — the RAM ledger's current target has room for one more agent"
-                      >
-                        free — waiting for work
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )
-          })()}
-        </section>
-      )}
+                )
+              })}
+            {Array.from({ length: free }).map((_, i) => (
+              <div
+                key={`free${i}`}
+                className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
+                title="an open berth — the RAM ledger's current target has room for one more agent"
+              >
+                free — waiting for work
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {(() => {
         // seats per backend, from the declaration-driven rows. Until
@@ -1248,20 +915,9 @@ export default function Run({
         </details>
       </section>
 
-      {/* a fresh workspace has nothing to (re)run from here — point at
-          the Board instead of describing a button that isn't on screen */}
-      {!running && !focusProblem && (
-        <p className="mt-8 text-xs text-ink-faint">
-          Nothing has run yet — pick a problem on the{' '}
-          <Link
-            to="/"
-            className="underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
-          >
-            Board
-          </Link>
-          ; its page has the Run button.
-        </p>
-      )}
+      <section className="mt-7">
+        <UsageLedger />
+      </section>
     </div>
   )
 }

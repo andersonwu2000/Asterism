@@ -10,6 +10,10 @@ export type ProblemStatus =
 
 export interface BoardProblem {
   name: string
+  /** the shelf it is FILED on (§3.1) — the `problems.project` FK, never
+   * the name's first segment: a rename makes the two diverge. Null only
+   * for a row registered before the v48 backfill. */
+  project: string | null
   status: ProblemStatus
   goals: { open: number; proved: number; shelved: number; total: number }
   in_flight: number
@@ -20,6 +24,20 @@ export interface BoardProblem {
 
 export interface BoardResponse {
   problems: BoardProblem[]
+}
+
+/** One shelf on the picker (`/api/projects`, HID §3.1 + the card's
+ * three live numbers). An empty Project is legal and reads 0/0/null. */
+export interface ProjectCard {
+  name: string
+  description: string
+  /** how many tasks are filed here */
+  problems: number
+  /** tasks the CURRENT daemon run has an agent on */
+  running: number
+  /** tasks blocked on the human — an amend or a sign-off */
+  attention: number
+  last_event: string | null
 }
 
 export type GoalStatus =
@@ -577,7 +595,18 @@ export interface ProblemPaperBinding {
   missing: boolean
 }
 
+export interface PromotionBuild {
+  strategy_id: number
+  modules: string[]
+  started_at: string | null
+}
+
 export interface DaemonStatus {
+  /** promotion cold builds in flight (`pipeline/_olean_warm.py`). The
+   * gate is a background thread, not a pipeline, so `in_flight` reads 0
+   * while it holds the machine for ten minutes — the engine room draws
+   * these as their own slot rows (HID §1.5-2). */
+  promotion_builds?: PromotionBuild[]
   running: boolean
   /** the boot window: Run was pressed but the engine hasn't claimed its
    * lock yet (seconds) — running is still false, idle it is NOT */
