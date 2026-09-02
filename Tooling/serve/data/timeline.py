@@ -85,7 +85,7 @@ def programme(conn: sqlite3.Connection, problem: str,
         group_id = _top_group_id(conn, problem)
     clause, args = _group_clause(group_id)
     rows = conn.execute(
-        "SELECT id, rev, status, verdict, rounds, created_at, summary"
+        "SELECT id, rev, status, verdict, rounds, created_at"
         " FROM programme_revisions WHERE problem = ?" + clause +
         " ORDER BY id DESC", (problem,) + args).fetchall()
     history = [{
@@ -93,12 +93,9 @@ def programme(conn: sqlite3.Connection, problem: str,
         "status": str(r["status"]),
         "rounds": int(r["rounds"]),
         "created_at": str(r["created_at"]),
-        # §3.4 — the human-readable summary of THIS revision, or null.
-        # On the history rows too: the list is where a reader picks one.
-        "summary": r["summary"],
     } for r in rows]
     cur = conn.execute(
-        "SELECT rev, body, verdict, rounds, created_at, summary"
+        "SELECT rev, body, verdict, rounds, created_at"
         " FROM programme_revisions"
         " WHERE problem = ? AND status = 'passed'" + clause +
         " ORDER BY rev DESC LIMIT 1", (problem,) + args).fetchone()
@@ -116,7 +113,6 @@ def programme(conn: sqlite3.Connection, problem: str,
             "rounds": int(cur["rounds"]),
             "created_at": str(cur["created_at"]),
             "reservations": reservations,
-            "summary": cur["summary"],
         }
     # (The previous passed body rode along here for a rev-to-rev diff.
     # The owner reads only the standing argument — 2026-08-07 — and a

@@ -1160,6 +1160,10 @@ def _migrate_to_v48(conn: sqlite3.Connection) -> None:
     prcols = {r[1] for r in conn.execute(
         "PRAGMA table_info(programme_revisions)")}
     if "summary" not in prcols:
+        # UNUSED (owner ruling 2026-09-02): the `## Summary` proposal
+        # section is gone, nothing writes or reads this, every row is
+        # NULL. Kept because dropping a column is a full rebuild of
+        # every disk's revision history to delete nothing.
         conn.execute("ALTER TABLE programme_revisions ADD COLUMN summary"
                      " TEXT NULL DEFAULT NULL")
 

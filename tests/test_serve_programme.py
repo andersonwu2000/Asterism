@@ -235,28 +235,3 @@ def test_problem_detail_carries_programme_events(workspace: Path) -> None:
     ev = body["programme_events"]
     assert [(e["rev"], e["status"], e["rounds"]) for e in ev] == [
         (1, "passed", 1), (1, "rejected", 4)]
-
-
-def test_programme_read_carries_each_revision_summary(workspace: Path) -> None:
-    """HID §3.4: the per-revision human-readable summary is reading-layer
-    data, so it rides the read a mathematician's page already makes — on
-    the current revision and on every row of the history, which is where
-    a reader picks one."""
-    from Tooling.state import groups as _groups
-    summary = r"Replaces the $\varepsilon$-ladder with a direct count."
-    conn = _open_db(workspace)
-    _add_problem(conn)
-    top = _groups.ensure_top_group(conn, "Test.rm")
-    prog.record_pass(conn, "Test.rm", _BODY_V1, {"reservations": []}, [],
-                     rounds=0, batch_id="b1", group_id=top)
-    prog.record_pass(conn, "Test.rm",
-                     _BODY_V2 + "\n\n## Summary\n" + summary,
-                     {"reservations": []}, [], rounds=0, batch_id="b2",
-                     group_id=top)
-    conn.commit()
-    conn.close()
-    read = TestClient(create_app(workspace)).get(
-        "/api/problems/Test.rm/programme").json()
-    assert read["current"]["summary"] == summary
-    assert [(h["rev"], h["summary"]) for h in read["history"]] == [
-        (2, summary), (1, None)]
