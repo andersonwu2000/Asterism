@@ -14,11 +14,14 @@ the fresh TREE render) — none removed it, because the author was never
 handed the newer bytes at all.
 
 One refresher, called by both: `refresh` (re)writes the four
-machine-generated files into a working directory, `since` renders what
-the record recorded after a given instant. `Context.md` is NOT touched
-on either side — it is the author's snapshot, the evidence a quotation
-is checked against, and rewriting it mid-debate would make the judge's
-verbatim copy a moving target.
+machine-generated files into a working directory. `since` renders what
+the record recorded after a given instant, and `delta` is the author's
+per-round pack built on it — what moved since the previous rebuttal,
+so the four fresh files do not have to be re-read to find the one line
+that changed. `Context.md` is NOT touched on either side — it is the
+author's snapshot, the evidence a quotation is checked against, and
+rewriting it mid-debate would make the judge's verbatim copy a moving
+target.
 """
 from __future__ import annotations
 
@@ -27,6 +30,17 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+
+#: Where a round records the instant its rebuttal was issued. A file
+#: in the attempts dir because the wake's rounds are separate spawns
+#: against one directory — there is no in-memory round object that
+#: survives them.
+SINCE_MARK = "_since_mark.txt"
+
+#: The delta pack's heading: round 1 measures from the author's
+#: snapshot, every later round from the previous rebuttal.
+SINCE_WAKE_BEGAN = "Since this wake began:"
+SINCE_LAST_REBUTTAL = "Since the last rebuttal:"
 
 #: What `refresh` writes. `ADJUDICATIONS.md` and `BATCHES.md` are
 #: written only when their generators have something to say (no park
@@ -145,3 +159,38 @@ def since(conn: sqlite3.Connection, *, problem: str,
         out.append((str(r["created_at"]), line))
     out.sort(key=lambda t: t[0])
     return [line for _, line in out]
+
+
+def delta(conn: sqlite3.Connection, *, problem: str,
+          attempts_dir: Path) -> "tuple[str, list[str]]":
+    """This round's delta pack — `(heading, lines)`, empty list when the
+    record stood still.
+
+    PER ROUND, not cumulative (owner ruling 2026-09-03). Round 1
+    measures from the author's `Context.md` snapshot: everything at or
+    before it is already IN Context.md — the in-flight batches, the
+    outcomes, the verdict this wake was queued with — and re-sending it
+    would be the same fact twice in one packet. Every later round
+    measures from where the last rebuttal was issued, so a 10-round
+    debate carries each change exactly once.
+
+    ADVANCES the mark: call it exactly once per rebuttal, as the
+    rebuttal is issued.
+    """
+    from ..state import db as _db
+    mark = attempts_dir / SINCE_MARK
+    try:
+        prior = mark.read_text(encoding="utf-8").strip()
+    except OSError:
+        prior = ""
+    taken = snapshot_taken(attempts_dir / "Context.md")
+    # `max` of two isoformat strings in the same shape: the snapshot is
+    # the FLOOR even if a mark somehow predates it.
+    since_iso = max(prior, taken.isoformat() if taken is not None else "")
+    lines = (since(conn, problem=problem, since_iso=since_iso)
+             if since_iso else [])
+    try:
+        mark.write_text(_db.now(), encoding="utf-8")
+    except OSError:  # noqa: BLE001 — the rebuttal still goes out
+        pass
+    return (SINCE_LAST_REBUTTAL if prior else SINCE_WAKE_BEGAN), lines

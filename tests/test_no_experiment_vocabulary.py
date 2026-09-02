@@ -27,6 +27,10 @@ PROMPTS = ROOT / "Tooling" / "prompts"
 AGENT_FACING_MODULES = [
     ROOT / "Tooling" / "pipeline" / "strategist" / "verify.py",
     ROOT / "Tooling" / "pipeline" / "strategist" / "wake.py",
+    # The rebuttal's delta pack (2026-09-03): its headings and its
+    # record lines are read by the author, so the same class of drift
+    # applies here.
+    ROOT / "Tooling" / "pipeline" / "round_materials.py",
     ROOT / "Tooling" / "sandbox" / "__init__.py",
 ]
 WORD = re.compile(r"\bexperiments?\b", re.IGNORECASE)

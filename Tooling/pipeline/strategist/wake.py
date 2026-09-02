@@ -79,7 +79,9 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
 
 def _format_rebuttal(verdict: dict, round_no: int,
                      rounds_left: int,
-                     length_warn: "str | None" = None) -> str:
+                     length_warn: "str | None" = None,
+                     since_label: str = "",
+                     since: "list[str] | None" = None) -> str:
     crits = "\n".join(f"- {c}" for c in verdict.get("criticisms", []))
     # 07-29 bloat ruling: revisions must not answer objections by
     # accretion (observed: each rebut round ADDED argumentation;
@@ -88,7 +90,18 @@ def _format_rebuttal(verdict: dict, round_no: int,
     # warning actually tripped — a rare line keeps its force.
     over = (f"\n{length_warn}\nThe revision must come back smaller.\n"
             if length_warn else "")
+    # Which of the author's files are frozen and which were just
+    # rewritten — it cannot tell by looking (`round_materials`). The
+    # delta below it names what the record did while this round argued;
+    # it rides only when something actually moved.
+    head = ("Context.md is your snapshot from spawn. TREE.md, "
+            "CATALOG.md, BATCHES.md, ADJUDICATIONS.md beside it are "
+            "refreshed for this round.\n")
+    if since:
+        head += ("\n" + since_label + "\n"
+                 + "\n".join(f"- {s}" for s in since) + "\n")
     return (
+        head + "\n"
         f"ADVERSARY REBUTTAL (round {round_no}; {rounds_left} revision "
         "round(s) left before this proposal is discarded and the next "
         "wake restarts fresh):\n" + crits + "\n" + over +
@@ -477,6 +490,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 _round_materials.refresh(
                     conn, workspace=workspace, problem=problem,
                     group_id=group_id, target_dir=attempts_dir)
+                # …and the one line that moved, so finding it is not a
+                # re-read of four files. Per round, never cumulative.
+                _label, _since = _round_materials.delta(
+                    conn, problem=problem, attempts_dir=attempts_dir)
                 # rounds_left = revisions still available AFTER this
                 # rebuttal: a retry fires whenever rounds_used <
                 # max_rounds, so exactly max_rounds - rounds_used
@@ -485,7 +502,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 err = _format_rebuttal(
                     verdict, rounds_used + 1,
                     max_rounds - rounds_used,
-                    length_warn=proof_warn)
+                    length_warn=proof_warn,
+                    since_label=_label, since=_since)
                 err_is_rebuttal = True
                 # delta-gate bookkeeping: THIS body is what the judge
                 # rejected; the next revision must change it.

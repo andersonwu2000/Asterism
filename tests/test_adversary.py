@@ -11,7 +11,9 @@ real).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from Tooling import agent
-from Tooling.pipeline import adversary, strategist
+from Tooling.pipeline import adversary, round_materials, strategist
 from Tooling.state import db, groups as groups_mod, intent, programme
 
 
@@ -1303,28 +1305,34 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
     _insert_root(conn)
     monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "1")
     seen: "dict[str, str]" = {}
-    state = {"strategist": 0, "landed": False}
+    state = {"strategist": 0, "landed": False, "gid": 0}
 
     def fake_spawn(**kw):
         ad = kw["attempts_dir"]
         if kw.get("kind") == "adversary":
             if not state["landed"]:  # a sibling lands a brick mid-debate
                 state["landed"] = True
-                db.insert_goal(
+                state["gid"] = db.insert_goal(
                     conn, problem="p", slug="mid_debate",
                     lean_path="Problems/p/proofs/L_mid_debate.lean",
                     statement="theorem mid_debate : 2 = 2",
-                    origin="forward", depth=1, status="proved")
-                conn.commit()
+                    origin="forward", depth=1)
+                db.update_goal_status(conn, state["gid"], "proved",
+                                      event="builder_proved")
             (ad / "verdict.json").write_text(
                 json.dumps({"criteria": _criteria(c2="objection")}),
                 encoding="utf-8")
             return 0
         state["strategist"] += 1
-        if kw.get("is_retry"):
+        if state["strategist"] == 1:
+            # Pin the snapshot's age: everything the debate does after
+            # this is unambiguously after it.
+            _ctx_at(ad, "2026-09-01T12:00:00+00:00")
+        if kw.get("is_retry") and "catalog" not in seen:
             seen["catalog"] = (ad / "CATALOG.md").read_text(
                 encoding="utf-8")
             seen["tree"] = (ad / "TREE.md").read_text(encoding="utf-8")
+            seen["rebuttal"] = str(kw.get("retry_context") or "")
         (ad / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
                         "proof": "Theorem. b\n## Need\nb\n"
@@ -1345,3 +1353,124 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
         "the author revised against a CATALOG.md frozen at spawn")
     assert "mid_debate" in seen["tree"], (
         "the author revised against no tree at all")
+    # …and the rebuttal itself says which files are fresh and names the
+    # change, so finding the one line that moved is not a re-read of
+    # four files.
+    assert seen["rebuttal"].startswith(_PREFIX)
+    assert (f"Since this wake began:\n- g{state['gid']} mid_debate: "
+            f"open → proved") in seen["rebuttal"]
+
+
+# ── the delta pack: what the record did while the author argued ─────
+
+
+_PREFIX = ("Context.md is your snapshot from spawn. TREE.md, "
+           "CATALOG.md, BATCHES.md, ADJUDICATIONS.md beside it are "
+           "refreshed for this round.")
+
+
+def _ctx_at(attempts: Path, when: str) -> None:
+    """The author's Context.md snapshot, with its mtime pinned."""
+    (attempts / "Context.md").write_text("# author snapshot\n",
+                                         encoding="utf-8")
+    ts = _dt.datetime.fromisoformat(when).timestamp()
+    os.utime(attempts / "Context.md", (ts, ts))
+
+
+def _event(conn: sqlite3.Connection, goal_id: int, at: str,
+           frm: str, to: str) -> None:
+    conn.execute(
+        "INSERT INTO goal_events (goal_id, problem, from_status,"
+        " to_status, event, reason, at) VALUES (?,'p',?,?,'t','',?)",
+        (goal_id, frm, to, at))
+    conn.commit()
+
+
+def _brick(conn: sqlite3.Connection) -> int:
+    return db.insert_goal(
+        conn, problem="p", slug="brick",
+        lean_path="Problems/p/proofs/L_brick.lean", statement="B",
+        origin="forward", depth=1)
+
+
+def test_the_delta_pack_starts_at_the_snapshot_and_never_repeats_itself(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """PER ROUND, not cumulative (owner ruling 2026-09-03). Everything
+    at or before the snapshot is already IN Context.md — the in-flight
+    lines, the batch outcomes, the verdict the wake was queued with —
+    and re-sending it every round is the bloat the round-fresh files
+    exist to avoid. Each later round starts where the last rebuttal was
+    issued."""
+    attempts = workspace / ".attempts" / "since-1"
+    attempts.mkdir(parents=True)
+    _ctx_at(attempts, "2026-09-01T12:00:00+00:00")
+    gid = _brick(conn)
+    _event(conn, gid, "2026-09-01T11:59:59+00:00", "open", "attempting")
+    _event(conn, gid, "2026-09-01T12:30:00+00:00", "attempting", "proved")
+
+    label, lines = round_materials.delta(conn, problem="p",
+                                         attempts_dir=attempts)
+    assert label == "Since this wake began:"
+    assert lines == [f"g{gid} brick: attempting → proved"], (
+        "an event at or before the snapshot is already in Context.md")
+
+    _event(conn, gid, "2099-01-01T00:00:00+00:00", "proved", "open")
+    label2, lines2 = round_materials.delta(conn, problem="p",
+                                           attempts_dir=attempts)
+    assert label2 == "Since the last rebuttal:"
+    assert lines2 == [f"g{gid} brick: proved → open"], (
+        "round 2 re-sent what round 1 already said")
+
+
+def test_the_delta_pack_names_the_three_record_sources(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Goal transitions, Programme revisions passed in any group of the
+    problem, and decisions that landed — ordered by time, and a human's
+    decision named as the human's (v48 §3.2: a person's ruling is not
+    one more group's opinion)."""
+    gid = _brick(conn)
+    grp = int(groups_mod.top_group(conn, "p")["id"])
+    _event(conn, gid, "2026-09-02T01:00:00+00:00", "open", "proved")
+    conn.execute(
+        "INSERT INTO programme_revisions (problem, rev, body, status,"
+        " rounds, created_at, group_id)"
+        " VALUES ('p', 3, 'body', 'passed', 1, ?, ?)",
+        ("2026-09-02T02:00:00+00:00", grp))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, actor, created_at,"
+        " updated_at) VALUES ('p', 1, 'human', 'Inject', ?, 'human',"
+        " ?, ?)",
+        (gid, "2026-09-02T03:00:00+00:00", "2026-09-02T03:00:00+00:00"))
+    conn.commit()
+
+    assert round_materials.since(
+        conn, problem="p",
+        since_iso="2026-09-01T00:00:00+00:00") == [
+            f"g{gid} brick: open → proved",
+            f"grp{grp} rev 3 passed",
+            f"Inject on g{gid} (human)"]
+
+
+def test_the_rebuttal_says_which_files_are_fresh_and_what_changed(
+) -> None:
+    """The prefix rides EVERY rebuttal — the author cannot tell a frozen
+    companion from a fresh one by looking. The delta rides only when the
+    record actually moved: a "nothing changed" line on every round of
+    every short debate is noise."""
+    v = {"criticisms": ["[criterion 2] objection"]}
+    text = strategist._format_rebuttal(
+        v, 1, 5, since_label="Since this wake began:",
+        since=["g9 brick: open → proved"])
+    assert text.startswith(_PREFIX)
+    assert "Since this wake began:\n- g9 brick: open → proved" in text
+    assert "ADVERSARY REBUTTAL (round 1; 5 revision round(s) left" in text
+    assert "[criterion 2] objection" in text
+
+    quiet = strategist._format_rebuttal(
+        v, 2, 4, since_label="Since the last rebuttal:", since=[])
+    assert quiet.startswith(_PREFIX)
+    assert "Since this wake began" not in quiet
+    assert "Since the last rebuttal" not in quiet
