@@ -71,6 +71,61 @@ def test_parse_empty_section_rejected():
     assert sections is None and "## Proof" in err and "empty" in err
 
 
+_SUMMARY = ("This revision drops the $\\varepsilon$-ladder and settles the "
+            "bound by a direct counting argument.")
+
+
+def test_parse_summary_is_optional_and_absent_reads_empty():
+    """HID §1.2/§3.4 — the human-readable per-revision summary. Absent is
+    not a failure: the section is new and the prompts are not live."""
+    sections, err = programme.parse_proposal(_body())
+    assert err is None
+    assert sections["summary"] == ""
+
+
+def test_parse_summary_is_read_wherever_the_author_wrote_it():
+    """Written last (the summary of a revision is what you know once the
+    revision is written), read first — so the parser takes it from
+    anywhere after the title and the render is what places it."""
+    body = _body() + "## Summary\n" + _SUMMARY + "\n"
+    sections, err = programme.parse_proposal(body)
+    assert err is None
+    assert sections["summary"] == _SUMMARY
+    # and it does not eat the section it follows
+    assert sections["roadmap"].startswith("1. Re-prove")
+
+
+def test_parse_empty_summary_rejected():
+    body = _body() + "## Summary\n"
+    sections, err = programme.parse_proposal(body)
+    assert sections is None and "## Summary" in err and "empty" in err
+
+
+def test_record_pass_stores_the_summary_and_null_without_one(tmp_path):
+    """§3.4: `programme_revisions.summary` is the SoT the reading layer
+    serves. It is derived from the passed body at the one writer, so the
+    column and the argument can never disagree."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body() + "## Summary\n" + _SUMMARY + "\n",
+                          {"verdict": "pass"}, [], 1, "b1")
+    programme.record_pass(c, "p", _body(), {"verdict": "pass"}, [], 1, "b2")
+    got = [r["summary"] for r in c.execute(
+        "SELECT summary FROM programme_revisions ORDER BY rev")]
+    assert got == [_SUMMARY, None]
+
+
+def test_render_puts_the_summary_under_the_title(tmp_path):
+    """The reader meets the revision through its summary; the author wrote
+    it last. The render is what moves it — once, under the title."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body() + "## Summary\n" + _SUMMARY + "\n",
+                          {"verdict": "pass"}, [], 1, "b1")
+    text = programme.render(c, "p", tmp_path).read_text(encoding="utf-8")
+    assert text.count(_SUMMARY) == 1
+    assert (text.index("# Close the gcd gap") < text.index(_SUMMARY)
+            < text.index("## Argument"))
+
+
 def test_length_warning_thresholds():
     """07-29 bloat ruling: three absolute surfaces — Proof (readability,
     most headroom), Argument (the observed bloat surface), package

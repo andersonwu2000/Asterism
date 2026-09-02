@@ -70,6 +70,20 @@ _SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
 #: judge already audits, and workers receive exactly this section.
 CONVENTIONS_HEADER = "## Conventions"
 
+#: Optional human-readable summary (human_interface_design.md §1.2 /
+#: §3.4, 2026-09-02): one short English paragraph, LaTeX for the
+#: mathematics, addressed to a mathematician who has NOT read the
+#: Programme — what this revision changes and why. It is not argued
+#: material: the judge rules on Argument / Proof / Roadmap, and this
+#: says what came of them.
+#:
+#: Position is free. The summary of a revision is what the author knows
+#: once the revision is written, so it is written last; the reader needs
+#: it first, so `render` is what places it under the title. Making that
+#: the render's job rather than a section-order rule is what keeps the
+#: contract from spending a debate round on where the paragraph goes.
+SUMMARY_HEADER = "## Summary"
+
 
 # ---------------------------------------------------------------------
 # Proposal parsing / validation
@@ -97,7 +111,7 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
         return None, "programme `# <Title>` line is empty"
 
     positions: dict[str, int] = {}
-    known = _SECTION_ORDER + (CONVENTIONS_HEADER,)
+    known = _SECTION_ORDER + (CONVENTIONS_HEADER, SUMMARY_HEADER)
     for idx, ln in enumerate(lines):
         stripped = ln.rstrip()
         if stripped in known:
@@ -124,9 +138,10 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
 
     ordered = sorted(positions.items(), key=lambda kv: kv[1])
     bounds = [i for _, i in ordered] + [len(lines)]
-    sections = {"title": title, "conventions": ""}
+    sections = {"title": title, "conventions": "", "summary": ""}
     names = {"## Argument": "argument", "## Proof": "proof",
-             "## Roadmap": "roadmap", CONVENTIONS_HEADER: "conventions"}
+             "## Roadmap": "roadmap", CONVENTIONS_HEADER: "conventions",
+             SUMMARY_HEADER: "summary"}
     for (header, start), end in zip(ordered, bounds[1:]):
         text = "\n".join(lines[start + 1:end]).strip()
         if not text and header != CONVENTIONS_HEADER:
@@ -178,20 +193,19 @@ def parse_brick_proof(text: "str | None") -> tuple[str, str, str, str]:
     return head, statement, argument, ""
 
 
-def extract_conventions(body: "str | None") -> str:
-    """The `## Conventions` section of a revision body, or ''.
+def _section_of(body: "str | None", header: str) -> str:
+    """One `## ` section's text out of a stored body, or ''.
 
     Works on stored bodies (already contract-validated at record time),
     so a plain header split suffices — the parse_proposal duplicate /
     ordering guards ran before the body was stored."""
     if not body:
         return ""
-    lines = str(body).splitlines()
     out: list[str] = []
     inside = False
-    for ln in lines:
+    for ln in str(body).splitlines():
         stripped = ln.rstrip()
-        if stripped == CONVENTIONS_HEADER:
+        if stripped == header:
             inside = True
             continue
         if inside and stripped.startswith("## "):
@@ -199,6 +213,16 @@ def extract_conventions(body: "str | None") -> str:
         if inside:
             out.append(ln)
     return "\n".join(out).strip()
+
+
+def extract_conventions(body: "str | None") -> str:
+    """The `## Conventions` section of a revision body, or ''."""
+    return _section_of(body, CONVENTIONS_HEADER)
+
+
+def extract_summary(body: "str | None") -> str:
+    """The `## Summary` section of a revision body, or '' (§3.4)."""
+    return _section_of(body, SUMMARY_HEADER)
 
 
 def conventions_for_group(conn: sqlite3.Connection, problem: str,
@@ -440,18 +464,22 @@ def record_pass(conn: sqlite3.Connection, problem: str, body: str,
                 dialogue: list[dict[str, Any]],
                 rounds: int, batch_id: Optional[str],
                 group_id: "int | None" = None) -> int:
-    """Advance the revision chain. Returns the new rev number."""
+    """Advance the revision chain. Returns the new rev number.
+
+    `summary` (§3.4) is derived from the body HERE rather than passed in:
+    one writer, so the column and the argument it summarises cannot
+    disagree, and a caller cannot forget it. Absent section → NULL."""
     rev = next_rev_number(conn, problem, group_id)
     j = _judge_cols(verdict)
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at, group_id,"
+        "  batch_id, created_at, group_id, summary,"
         "  judge_model, judge_provider, judge_effort, rubric_sha)"
-        " VALUES (?,?,?,'passed',?,?,?,?,?,?,?,?,?,?)",
+        " VALUES (?,?,?,'passed',?,?,?,?,?,?,?,?,?,?,?)",
         (problem, rev, body, json.dumps(verdict, ensure_ascii=False),
          json.dumps(dialogue, ensure_ascii=False), rounds, batch_id,
-         now(), group_id, *j))
+         now(), group_id, extract_summary(body) or None, *j))
     return rev
 
 
@@ -718,6 +746,32 @@ def group_dir(problem_dir: Path, group_id: "int | None",
     return problem_dir / ".groups" / str(int(group_id))
 
 
+def _summary_first(body: str, summary: str) -> str:
+    """The body with its `## Summary` moved under the `# <Title>` line.
+
+    Author order and reader order differ, and the render is the seam
+    between them: the author writes the summary once the revision is
+    written, the reader meets the revision through it. Moved, never
+    copied — a page carrying the paragraph twice reads as two claims."""
+    kept: list[str] = []
+    inside = False
+    for ln in body.splitlines():
+        stripped = ln.rstrip()
+        if stripped == SUMMARY_HEADER:
+            inside = True
+            continue
+        if inside:
+            if not stripped.startswith("## "):
+                continue
+            inside = False
+        kept.append(ln)
+    block = [SUMMARY_HEADER, "", summary.strip(), ""]
+    for i, ln in enumerate(kept):
+        if ln.startswith("# ") and not ln.startswith("## "):
+            return "\n".join(kept[:i + 1] + [""] + block + kept[i + 1:])
+    return "\n".join(block + kept)
+
+
 def render(conn: sqlite3.Connection, problem: str,
            problem_dir: Path,
            group_id: "int | None" = None) -> Optional[Path]:
@@ -742,5 +796,12 @@ def render(conn: sqlite3.Connection, problem: str,
         f"<!-- rev {row['rev']} · {row['created_at'][:19]} · "
         f"rounds {row['rounds']} -->\n"
         f"<!-- adversary: {_verdict_summary(row['verdict'])} -->\n\n")
-    path.write_text(header + row["body"] + "\n", encoding="utf-8")
+    body = str(row["body"])
+    try:
+        summary = str(row["summary"] or "")
+    except (IndexError, KeyError):   # pre-v48 row
+        summary = ""
+    if summary:
+        body = _summary_first(body, summary)
+    path.write_text(header + body + "\n", encoding="utf-8")
     return path
