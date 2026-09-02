@@ -510,3 +510,78 @@ def test_dotenv_reload_on_file_change(tmp_path, monkeypatch):
     os.utime(p, (_t.time() + 5, _t.time() + 5))  # force a visible mtime step
     assert cfg._env("PROBE_DOTENV_KEY", tmp_path) == "second", \
         "a .env edit must reach a long-lived process without a restart"
+
+
+# ---------------------------------------------------------------------
+# UI settings chokepoint (`/api/config` → set_ui_setting / ui_settings)
+# ---------------------------------------------------------------------
+#
+# The two str knobs the console gained on 2026-09-03 (HID §1.4) carry
+# grammars the generic `[A-Za-z0-9._-]+` guard rejects outright — a
+# comma list and a percentage. A knob whose legal value the writer
+# refuses is a control that promises nothing, which is the exact
+# failure `test_config_ui_keys.py` exists to watch.
+
+def test_ui_blocked_kinds_takes_a_comma_list_and_canonicalizes_it(
+        tmp_path: Path) -> None:
+    rc, msg = config.set_ui_setting(tmp_path, "dispatch.blocked_kinds",
+                                    " formalizer , LIBRARIAN ")
+    assert rc == 0, msg
+    assert config.get("dispatch.blocked_kinds",
+                      workspace=tmp_path) == "Formalizer,Librarian"
+
+
+def test_ui_blocked_kinds_refuses_a_kind_the_queue_never_heard_of(
+        tmp_path: Path) -> None:
+    """Unknown names are IGNORED by the reader (a typo holds nothing
+    rather than everything) — so the writer is the only place that can
+    tell the person their hold will not hold."""
+    rc, msg = config.set_ui_setting(tmp_path, "dispatch.blocked_kinds",
+                                    "Formalizer,Adversary")
+    assert rc == 1 and "Adversary" in msg
+    assert not (tmp_path / "Asterism.yaml").exists()
+
+
+def test_ui_ram_budget_takes_the_parse_budget_grammar(
+        tmp_path: Path) -> None:
+    for spec in ("26G", "85%", "31.5GB"):
+        rc, msg = config.set_ui_setting(tmp_path, "dispatch.ram_budget",
+                                        spec)
+        assert rc == 0, msg
+        config._reset_cache()
+        assert config.get("dispatch.ram_budget", workspace=tmp_path) == spec
+    rc, msg = config.set_ui_setting(tmp_path, "dispatch.ram_budget",
+                                    "plenty")
+    assert rc == 1 and "plenty" in msg
+
+
+def test_ui_str_knobs_can_be_cleared_back_to_unset(tmp_path: Path) -> None:
+    """Empty is a legal VALUE for both (no hold / legacy static pool),
+    so the page must be able to write it back — a bare `key:` parses as
+    None and would fail the writer's own read-back check."""
+    assert config.set_ui_setting(
+        tmp_path, "dispatch.blocked_kinds", "Strategist")[0] == 0
+    rc, msg = config.set_ui_setting(tmp_path, "dispatch.blocked_kinds", "")
+    assert rc == 0, msg
+    config._reset_cache()
+    assert config.get("dispatch.blocked_kinds", default="",
+                      workspace=tmp_path) == ""
+
+
+def test_ui_rows_resolve_the_way_a_run_resolves(
+        tmp_path: Path, monkeypatch) -> None:
+    """`resolved` is "what a run would actually use". The env var is the
+    top of that chain for every dispatch knob, and a page that shows the
+    yaml while the daemon reads the env is two answers to one question
+    (the `.provider` rows have resolved through their env var since
+    2026-08-14; the rest did not)."""
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: 4\n  blocked_kinds: Strategist\n",
+        encoding="utf-8")
+    monkeypatch.setenv("ASTERISM_POOL", "9")
+    monkeypatch.setenv("ASTERISM_BLOCKED_KINDS", "Formalizer")
+    rows = {r["key"]: r for r in config.ui_settings(tmp_path)}
+    assert rows["dispatch.pool"]["yaml"] == 4
+    assert rows["dispatch.pool"]["resolved"] == 9
+    assert rows["dispatch.blocked_kinds"]["yaml"] == "Strategist"
+    assert rows["dispatch.blocked_kinds"]["resolved"] == "Formalizer"

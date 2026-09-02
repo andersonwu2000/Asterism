@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import dataclasses as _dc
 import json
-import os
 import typing as _typing
 import shutil
 import sqlite3
@@ -59,16 +58,19 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
     return g["problem"] if g else None
 
 
-def env_blocked_kinds() -> "set[str]":
-    """Operator hold on dispatch kinds (2026-08-30): `ASTERISM_BLOCKED_KINDS`
-    is a comma list of queue kinds (`Formalizer`, `Strategist`,
-    `Librarian`, case-insensitive) the daemon must not dispatch — the
-    same lever the quota ledger pulls when a seat is out of quota, by
-    hand. Lets an experiment run one kind alone on a live tree (a
-    routine audit without a formalizer quota burn). Unknown names are
-    ignored, so a typo holds nothing rather than everything."""
+def env_blocked_kinds(workspace=None) -> "set[str]":
+    """Operator hold on dispatch kinds (2026-08-30): a comma list of
+    queue kinds (`Formalizer`, `Strategist`, `Librarian`,
+    case-insensitive) the daemon must not dispatch — the same lever the
+    quota ledger pulls when a seat is out of quota, by hand. Lets an
+    experiment run one kind alone on a live tree (a routine audit
+    without a formalizer quota burn). Unknown names are ignored, so a
+    typo holds nothing. Yaml `dispatch.blocked_kinds` is the canonical
+    home (the console sets it, HID §1.4); the env var overrides."""
     from ..quota import DISPATCH_KIND
-    raw = os.environ.get("ASTERISM_BLOCKED_KINDS") or ""
+    raw = config.get("dispatch.blocked_kinds", default="",
+                     env_var="ASTERISM_BLOCKED_KINDS",
+                     workspace=workspace) or ""
     canon = {v.lower(): v for v in DISPATCH_KIND.values()}
     out: "set[str]" = set()
     for tok in raw.split(","):

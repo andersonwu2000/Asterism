@@ -44,3 +44,24 @@ def test_bfs_refill_honours_the_env_hold(conn: sqlite3.Connection, monkeypatch):
     monkeypatch.delenv("ASTERISM_BLOCKED_KINDS")
     refill.bfs_refill(conn, running=set(), blocked_kinds=refill.env_blocked_kinds())
     assert db.queue_size(conn) == 1
+
+
+def test_blocked_kinds_reads_the_yaml_key_with_env_precedence(
+        tmp_path, monkeypatch):
+    """The hold is a per-run knob the console must be able to set (HID
+    §1.4), so `dispatch.blocked_kinds` is the canonical home and the env
+    var stays the override — the same shape every other dispatch knob
+    resolves through."""
+    from Tooling.core import config as _cfg
+    _cfg._reset_cache()
+    monkeypatch.delenv("ASTERISM_BLOCKED_KINDS", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  blocked_kinds: Formalizer,Librarian\n",
+        encoding="utf-8")
+    try:
+        assert refill.env_blocked_kinds(tmp_path) == {"Formalizer",
+                                                      "Librarian"}
+        monkeypatch.setenv("ASTERISM_BLOCKED_KINDS", "Strategist")
+        assert refill.env_blocked_kinds(tmp_path) == {"Strategist"}
+    finally:
+        _cfg._reset_cache()

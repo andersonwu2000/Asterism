@@ -50,6 +50,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "ledger.pressure_headroom_gb": "pressure band: pause dispatch when the cgroup footprint climbs within this many GB of the budget — scale DOWN on small-budget machines (ASTERISM_PRESSURE_HEADROOM_GB; 8.0)",
     "ledger.pressure_release_slack_gb": "pressure band: extra calm below the pause line before dispatch resumes (ASTERISM_PRESSURE_RELEASE_SLACK_GB; 4.0)",
     "dispatch.ram_budget": "adaptive RAM ledger budget, '28G' or '85%' — splits the worker economy: Lean slots follow target_slots(budget - NL reserve), NL kinds admit on measured available RAM; unset = legacy static dispatch.pool semantics (ASTERISM_RAM_BUDGET; '')",
+    "dispatch.blocked_kinds": "operator hold — comma list of queue kinds this machine must not dispatch, e.g. 'Formalizer,Librarian'; unknown names are ignored, so a typo holds nothing (ASTERISM_BLOCKED_KINDS; '')",
     "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
     "dispatch.intake_timeout_sec": "Formalizer intake turn spawn cap (ASTERISM_INTAKE_TIMEOUT_SEC; 300)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
@@ -340,6 +341,17 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
         bool,
         "when the subscription window runs out: wait for the reset and keep going (off: the run stops instead)",
     ),
+    # run/machine knobs the console names (HID §1.4, owner 2026-09-03):
+    # the hold rides the Run controls, the budget the gear. Both were
+    # env-only, so setting either meant editing a file the UI cannot see.
+    "dispatch.blocked_kinds": (
+        str,
+        "queue kinds this machine must not dispatch (comma list: Formalizer, Strategist, Librarian; empty = no hold)",
+    ),
+    "dispatch.ram_budget": (
+        str,
+        "RAM the worker economy may use — '26G' or '85%' of the machine (empty = size the pool by the agent count alone)",
+    ),
 }
 
 #: `<kind>.provider` for every seat, appended rather than written out:
@@ -397,6 +409,62 @@ _INT_BOUNDS = {
     "dispatch.shelve_threshold": (1, 50),
 }
 
+
+def _check_blocked_kinds(value: str) -> "tuple[str, str | None]":
+    """The dispatch hold, canonicalized against the queue's own kind
+    table. The READER ignores an unknown name on purpose (a typo holds
+    nothing rather than everything), so this writer is the only place
+    that can tell the person their hold would not hold. Empty = none."""
+    from .quota import DISPATCH_KIND
+    canon = {v.lower(): v for v in DISPATCH_KIND.values()}
+    out: "list[str]" = []
+    for tok in value.split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        if t.lower() not in canon:
+            return "", (f"unknown queue kind {t!r} — pick from "
+                        + ", ".join(sorted(canon.values())))
+        out.append(canon[t.lower()])
+    return ",".join(out), None
+
+
+def _check_ram_budget(value: str) -> "tuple[str, str | None]":
+    """The budget spec, validated by the grammar the ledger parses —
+    `parse_budget` answers None for anything it cannot read, and an
+    unreadable spec silently means "legacy static pool", which is a
+    different machine from the one the person asked for."""
+    from .ram_ledger import parse_budget
+    if value and parse_budget(value, 100.0) is None:
+        return "", (f"{value!r} is not a RAM budget — write '26G' (an "
+                    f"absolute size) or '85%' (a share of the machine)")
+    return value, None
+
+
+#: per-key grammar for str knobs whose legal values the generic
+#: `[A-Za-z0-9._-]+` guard would reject (a comma list, a percentage).
+#: Each returns (canonical value, error) — one of the two is empty.
+_STR_VALIDATORS: "dict[str, Callable[[str], tuple[str, str | None]]]" = {
+    "dispatch.blocked_kinds": _check_blocked_kinds,
+    "dispatch.ram_budget": _check_ram_budget,
+}
+
+#: the env var the ENGINE reads for a key. `resolved` claims to be
+#: "what a run would actually use", and the env var is the top of that
+#: chain — a row that skips it shows the yaml while the daemon runs on
+#: the environment, which is two answers to one question. The `.model`
+#: / `.provider` rows have resolved this way since 2026-08-14; the
+#: dispatch knobs joined them 2026-09-03.
+_UI_ENV_VAR = {
+    "dispatch.pool": "ASTERISM_POOL",
+    "ledger.idle_spares": "ASTERISM_IDLE_SPARES",
+    "dispatch.budget_sec": "ASTERISM_BUDGET_SEC",
+    "dispatch.shelve_threshold": "ASTERISM_SHELVE_THRESHOLD",
+    "dispatch.quota_wait": "ASTERISM_QUOTA_WAIT",
+    "dispatch.blocked_kinds": "ASTERISM_BLOCKED_KINDS",
+    "dispatch.ram_budget": "ASTERISM_RAM_BUDGET",
+}
+
 #: engine-side defaults for UI bool keys (must mirror the reader's
 #: `config.get(..., default=…)` — the Settings select shows what a run
 #: would actually do when the key is unset)
@@ -417,6 +485,7 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
         for part in key.split("."):
             cur = cur.get(part) if isinstance(cur, dict) else None
         resolved = get(key, workspace=workspace,
+                       env_var=_UI_ENV_VAR.get(key),
                        cast=int if typ is int else None)
         if key.endswith(".provider"):
             # resolve it the way the ENGINE resolves it, or this row and
@@ -498,9 +567,19 @@ def set_ui_setting(workspace: Path, key: str,
         value = "true" if sval in ("true", "1", "yes", "on") else "false"
     else:
         value = str(value).strip()
-        if not _re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        check = _STR_VALIDATORS.get(key)
+        if check is not None:
+            value, err = check(value)
+            if err:
+                return 1, f"FAIL: {key} — {err}"
+        elif not _re.fullmatch(r"[A-Za-z0-9._-]+", value):
             return 1, f"FAIL: {key} value looks malformed"
 
+    # What goes on the LINE. Empty is a legal value for the str knobs
+    # with a validator (no hold / no budget), and a bare `key:` parses
+    # back as None — which the read-back check below would then refuse,
+    # leaving the person unable to clear a knob they could set.
+    written = "''" if (typ is str and value == "") else value
     section, leaf = key.split(".", 1)
     path = workspace / _CONFIG_FILENAME
     text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -515,7 +594,7 @@ def set_ui_setting(workspace: Path, key: str,
         # section absent: append a minimal one at the end
         if lines and lines[-1].strip() != "":
             lines.append("")
-        lines += [f"{section}:", f"  {leaf}: {value}"]
+        lines += [f"{section}:", f"  {leaf}: {written}"]
     else:
         # section extent: until the next top-level key
         end = len(lines)
@@ -533,9 +612,9 @@ def set_ui_setting(workspace: Path, key: str,
                 rf"^(\s{{2}}{_re.escape(leaf)}\s*:\s*)([^#]*?)(\s*#.*)?$",
                 lines[hit])
             assert m is not None
-            lines[hit] = f"{m.group(1)}{value}{m.group(3) or ''}"
+            lines[hit] = f"{m.group(1)}{written}{m.group(3) or ''}"
         else:
-            lines.insert(sec_idx + 1, f"  {leaf}: {value}")
+            lines.insert(sec_idx + 1, f"  {leaf}: {written}")
 
     new_text = "\n".join(lines)
     # validation: must parse, and the key must resolve to what we wrote

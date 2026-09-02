@@ -38,6 +38,12 @@ _PINNED = {
     "dispatch.budget_sec",
     "dispatch.shelve_threshold",
     "dispatch.quota_wait",
+    # 2026-09-03 (owner ruling, HID §1.4): the two knobs the console
+    # names but could not set — `blocked_kinds` rides the Run controls
+    # ("每次 run 都可能改的東西不藏在設定"), the RAM budget rides the
+    # gear's machine parameters. Both were env-only levers.
+    "dispatch.blocked_kinds",
+    "dispatch.ram_budget",
 }
 
 
