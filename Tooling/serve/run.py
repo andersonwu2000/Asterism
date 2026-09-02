@@ -469,13 +469,16 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
             }
         out["problem"] = focus
         for r in conn.execute(
-                "SELECT decision_kind, outcome, updated_at"
+                "SELECT decision_kind, outcome, actor, updated_at"
                 " FROM strategist_decisions"
                 " WHERE problem = ? AND outcome IS NOT NULL"
                 " ORDER BY updated_at DESC LIMIT 8", (focus,)):
             out["recent"].append({
                 "kind": str(r["decision_kind"]),
                 "outcome": str(r["outcome"]),
+                # who decided (v48, HID §3.2) — the feed's rows are
+                # otherwise indistinguishable
+                "actor": str(r["actor"] or "strategist"),
                 "at": str(r["updated_at"]),
             })
 

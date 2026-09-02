@@ -405,6 +405,10 @@ def daemon_status(workspace: Path) -> dict:
     gw_phase, gw_slots = _gateway_status_once(workspace)
     from .. import degraded as _degraded
     from ...pipeline import _olean_warm as _promotion
+    # ONE read: the two numbers come from the same connection, so the
+    # pair describes one instant — and the serve status poll pays for
+    # one read-only open rather than two.
+    _running, _leases = _daemon_counts(workspace)
     return {
         "running": pid is not None,
         # the boot window between daemon_start and the child's lock claim
@@ -419,8 +423,8 @@ def daemon_status(workspace: Path) -> dict:
         and _disp.stop_file_path(workspace).exists(),
         # `in_flight` = running pipelines (the "agents" number);
         # `in_flight_leases` = leased queue rows (diagnostic).
-        "in_flight": _daemon_counts(workspace)[0],
-        "in_flight_leases": _daemon_counts(workspace)[1],
+        "in_flight": _running,
+        "in_flight_leases": _leases,
         # silent-degradation ledger (core/degraded.py): best-effort steps
         # that failed and logged one line — dedupe pre-flight / probe
         # refusals etc. Per run (reset at daemon boot); {} = nothing

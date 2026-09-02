@@ -678,3 +678,23 @@ def test_scratch_drafts_identified_by_pipeline_row_not_title(
     assert ("Strategist", "P.x", "bbbb-old") in got
     assert not any(name == "cccc-unknown" for _, _, name in got)
     conn.close()
+
+
+def test_the_recent_feed_says_who_decided(workspace: Path,
+                                          monkeypatch) -> None:
+    """The run console's decision feed is the third surface a decision
+    row is serialised on (HID §3.2). Without `actor` a person's park and
+    the machine's read identically here."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, outcome, actor, created_at,"
+        " updated_at) VALUES ('p', 0, 'human', 'ConfirmShelve', 'success',"
+        " 'human', ?, ?)", (ts, ts))
+    conn.commit()
+    conn.close()
+    _fake_daemon(monkeypatch, scope="p")
+    body = _client(workspace).get("/api/run").json()
+    assert body["recent"][0]["actor"] == "human"

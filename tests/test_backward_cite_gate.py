@@ -294,6 +294,36 @@ def test_decomp_links_but_does_not_revive_confirmshelve_parked(
     assert revive == set()      # but NOT reopened early
 
 
+def test_decomp_rejects_a_goal_a_person_parked(
+    conn: sqlite3.Connection,
+) -> None:
+    """RULING (HID §3.2 appendix, 2026-09-02): a HUMAN park is terminal,
+    so a citation of it is REJECTED rather than parked behind it. The
+    machine's park is a wait — auto-linking makes the citer wait for the
+    prereqs the paired Inject promised. A person's park promises nothing,
+    so the same auto-link would hang the citing strategy until someone
+    happened to reopen the goal. The message says who stopped it and what
+    the two ways out are."""
+    g = _insert_goal(conn, "byhand", status="shelved")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, actor, created_at,"
+        " updated_at) VALUES ('p', 0, 'human', 'ConfirmShelve', ?,"
+        " 'human', ?, ?)", (g, db.now(), db.now()))
+    conn.commit()
+    patch = "import Problems.p.proofs.L_byhand\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
+    )
+    assert auto_link == set()
+    assert revive == set()
+    assert err is not None
+    assert "person" in err
+    assert "L_byhand" in err or "byhand" in err
+
+
 def test_decomp_revives_shelved_after_reengage_inject(
     conn: sqlite3.Connection,
 ) -> None:

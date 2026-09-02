@@ -84,6 +84,7 @@ from .problems import (
     has_live_inflight_inject,
     goal_reviewed_at_current_attempts,
     is_confirm_shelve_parked,
+    is_human_parked,
     is_problem_stalled,
     is_group_stalled,
     groups_stalled,

@@ -240,7 +240,8 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         eid: str = "", batch_id: "str | None" = None,
         group_id: "int | None" = None,
         object_group_id: "int | None" = None,
-        rev_id: "int | None" = None) -> dict:
+        rev_id: "int | None" = None,
+        actor: str = "strategist") -> dict:
     # `group_id` = which ARGUMENT this event belongs to (v35). A problem
     # under real load runs several discussion groups at once — 7 on
     # simple_loop_conjecture, 4 on union_closed — and their bricks
@@ -258,6 +259,10 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         # N` of the same group (union_closed group 382 has seven rev
         # 1 rows), so the row id is the only handle that names one.
         "rev_id": rev_id,
+        # who decided (v48, HID §3.2). Semantic, not an audit label: a
+        # person's ConfirmShelve is a terminal stop, and a row that does
+        # not say so offers it to the reader as a peer's opinion.
+        "actor": actor,
     }
 
 
@@ -470,12 +475,14 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
             note = f"{payload['flavour']} — {reason}" if reason \
                 else str(payload["flavour"])
         own = d["group_id"] if "group_id" in d.keys() else None
+        who = d["actor"] if "actor" in d.keys() else None
         out.append(_ev(
             str(d["created_at"]), verb, object_kind=okind, label=label,
             goal_id=gid, note=note, body=brief or None,
             eid=f"d{int(d['id'])}", batch_id=d["batch_id"],
             group_id=int(own) if own is not None else None,
-            object_group_id=obj_group))
+            object_group_id=obj_group,
+            actor=str(who or "strategist")))
     return out
 
 
@@ -560,6 +567,8 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
         "PRAGMA table_info(strategist_decisions)")}
     _gsel = "" if "produced_group_id" not in _dcols \
         else ", produced_group_id, group_id"
+    # `actor` is v48 and semantic (HID §3.2) — see `_ev`.
+    _gsel += ", actor" if "actor" in _dcols else ""
     dec_rows = conn.execute(
         "SELECT id, batch_id, decision_kind, target_id, brief, reason,"
         " payload, outcome, produced_goal_id, created_at, updated_at"

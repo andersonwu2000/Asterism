@@ -98,6 +98,11 @@ def run(workspace: Path, *, once: bool = False,
     # field describes THIS run (core/degraded.py)
     from .. import degraded as _degraded
     _degraded.reset(workspace)
+    # Same contract, same reason: `promotion_gate.json` is this run's
+    # in-flight cold builds, and a daemon killed mid-build leaves a row
+    # that no process is running behind (`pipeline/_olean_warm.py`).
+    from ...pipeline import _olean_warm as _promotion_state
+    _promotion_state.reset_state(workspace)
 
     # Bind this process + every later spawn (claude / lake / lean / per-spawn
     # LSP) into a kill-on-close Job Object, so a hard daemon death reaps the

@@ -154,6 +154,18 @@ def _resolve_cite_dependencies(
                 bad.append((slug, status))
             continue
         if status == "shelved":
+            # A PERSON's park is terminal (HID §3.2 appendix, ruling
+            # 2026-09-02) and the difference decides the citation. The
+            # machine's park is a WAIT: it carries a paired Inject, so
+            # auto-linking makes the citing strategy queue behind
+            # prereqs that are actually coming. A person's park promises
+            # nothing to wait for — the same auto-link would hang this
+            # strategy until someone happened to reopen the goal. Reject
+            # instead, and say so: the stop does not propagate (the
+            # citer may re-plan), it is simply not citable.
+            if _db.is_human_parked(conn, gid):
+                bad.append((slug, "parked by a person"))
+                continue
             # Soft terminal — revivable. dedupe doesn't block it, so
             # neither does citation: auto-link on the decomp path; reject on
             # leaf-bypass/Builder (transitive sorry).
@@ -182,6 +194,16 @@ def _resolve_cite_dependencies(
     if not bad:
         return auto_link, revive, None
     lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
+    human_note = (
+        "\n\nA goal `parked by a person` was stopped BY HAND, and that "
+        "stop is terminal: unlike the framework's own park it carries no "
+        "promised follow-up work, so waiting on it would wait forever. "
+        "Nothing else stops — only this citation is refused. Either build "
+        "what you need yourself (declare it as your own "
+        "`new_<slug>.lean` sub-goal stub, or route around it), or ask the "
+        "person who parked it to reopen it."
+        if any(status == "parked by a person" for _, status in bad) else ""
+    )
     orphan_note = (
         "\n\nAn `orphan` cite is an `import` of a `proofs/L_<slug>.lean` "
         "that has NO tracked goal — a stale stub left by an interrupted or "
@@ -191,8 +213,9 @@ def _resolve_cite_dependencies(
         if any("orphan" in status for _, status in bad) else ""
     )
     if allow_auto_link:
-        # On the decomp path `bad` holds disproved (false) and dead
-        # (wrong-as-stated) cites; shelved are revived above.
+        # On the decomp path `bad` holds disproved (false), dead
+        # (wrong-as-stated) and human-parked cites; machine-shelved are
+        # revived above.
         hint = (
             "\n\nThese goals cannot be cited: DISPROVED = a counterexample "
             "was found (the statement is false); DEAD = wrong as stated in "
@@ -217,5 +240,5 @@ def _resolve_cite_dependencies(
         )
     return auto_link, revive, (
         "Patch imports sibling goals that cannot be cited:\n"
-        + "\n".join(lines) + hint + orphan_note
+        + "\n".join(lines) + hint + human_note + orphan_note
     )

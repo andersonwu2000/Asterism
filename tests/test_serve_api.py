@@ -2288,7 +2288,10 @@ def test_create_project_conflicts_instead_of_clobbering(
                   json={"name": "Erdos", "description": "the shelf"}
                   ).status_code == 200
     assert c.post("/api/projects", json={"name": "Erdos"}).status_code == 409
-    assert c.post("/api/projects", json={"name": "a b"}).status_code == 409
+    # 2026-09-02 ruling (HID §3.2 appendix): a malformed NAME is 422 —
+    # the same answer `/api/problems/create` gives — because 409 told the
+    # person the name was taken when it was simply not a name.
+    assert c.post("/api/projects", json={"name": "a b"}).status_code == 422
     assert [p["name"] for p in c.get("/api/projects").json()["projects"]] \
         == ["Erdos"]
 
@@ -2441,3 +2444,18 @@ def test_start_many_requires_every_problem_to_exist(
     ok = c.post("/api/daemon/start-many", json={"problems": ["a", "b"]})
     assert ok.status_code == 200, ok.text
     assert db.scope_names(seen["scope"]) == ["a", "b"]
+
+
+def test_detail_decisions_carry_the_actor(workspace: Path) -> None:
+    """HID §3.2: `actor` is semantic, so the reading layer carries it —
+    a reader who cannot see that a PERSON decided cannot tell a human
+    park (terminal) from the machine's own (a wait)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    did = _add_decision(conn, "p", kind="ConfirmShelve", reason="stop")
+    conn.execute("UPDATE strategist_decisions SET actor = 'human'"
+                 " WHERE id = ?", (did,))
+    conn.commit()
+    conn.close()
+    detail = _client(workspace).get("/api/problems/p").json()
+    assert detail["decisions"][0]["actor"] == "human"

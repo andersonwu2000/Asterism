@@ -402,3 +402,22 @@ def test_a_dispatch_is_named_by_its_title_when_no_path_is_given(
     asked = [e for e in _events(workspace)["events"] if e["kind"] == "asked"]
     assert asked[0]["label"] == "uc_residual_surplus_floor"
     assert asked[0]["object_kind"] == "unbuilt"
+
+
+def test_a_human_decision_says_who_decided(workspace: Path) -> None:
+    """HID §3.2: `actor` is a semantic field, so the reading layer must
+    carry it — a person's park rendered identically to the machine's
+    invites the reader to answer it as a peer's opinion. The timeline
+    event names the actor; the machine's rows keep saying 'strategist'."""
+    conn = _open_db(workspace)
+    gid = _goal(conn, "brick")
+    mine = _decide(conn, "ConfirmShelve", target=gid, reason="stop",
+                   outcome="success")
+    conn.execute("UPDATE strategist_decisions SET actor = 'human',"
+                 " trigger_kind = 'human' WHERE id = ?", (mine,))
+    theirs = _decide(conn, "Noop", reason="thinking", outcome="success")
+    conn.commit()
+    conn.close()
+    by_id = {e["id"]: e for e in _events(workspace)["events"]}
+    assert by_id[f"d{mine}"]["actor"] == "human"
+    assert by_id[f"d{theirs}"]["actor"] == "strategist"

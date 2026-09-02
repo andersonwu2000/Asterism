@@ -47,6 +47,12 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         except KeyError as e:
             raise HTTPException(status_code=404,
                                 detail=f"no project {e.args[0]!r}")
+        except _projects.InvalidName as e:
+            # The name is not a name — a malformed REQUEST, like
+            # `/api/problems/create`'s 422. 409 would have told the
+            # person "already exists", which is a different problem and
+            # a different fix (ruling 2026-09-02, §3.2 appendix).
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         finally:

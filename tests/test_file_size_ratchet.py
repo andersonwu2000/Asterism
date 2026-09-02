@@ -286,7 +286,7 @@ _WATERMARKS = {
     "Tooling/core/dispatcher/triggers.py": 632,  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     "Tooling/core/dispatcher/worker.py": 650,
     "Tooling/core/dispatcher/lock.py": 300,
-    "Tooling/core/dispatcher/loop.py": 1320,  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
+    "Tooling/core/dispatcher/loop.py": 1325,  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -644,7 +644,7 @@ _WATERMARKS = {
     # systemd unit, installer/launch.ps1).
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/run.py": 764,  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/run.py": 770,  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)

@@ -391,11 +391,14 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "PRAGMA table_info(strategist_decisions)")}
     _gsel = ("" if "group_id" not in _dcols
              else ", group_id, produced_group_id")
+    # `actor` is v48 and SEMANTIC (HID §3.2): a reader who cannot see
+    # that a PERSON decided reads a human park as the machine's own.
+    _asel = ", actor" if "actor" in _dcols else ""
     for d in conn.execute(
             "SELECT id, batch_id, trigger_kind, decision_kind, target_id,"
             " brief, reason, payload, outcome, outcome_detail,"
             " produced_goal_id, produced_strategy_id, created_at, updated_at"
-            + _gsel +
+            + _gsel + _asel +
             " FROM strategist_decisions WHERE problem = ?"
             " ORDER BY id DESC LIMIT 200", (problem,)):
         try:
@@ -419,6 +422,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "updated_at": str(d["updated_at"]),
             "group_id": (d["group_id"] if _gsel else None),
             "produced_group_id": (d["produced_group_id"] if _gsel else None),
+            "actor": (str(d["actor"]) if _asel else "strategist"),
         })
 
     # Dependency edges for Forward-built problems: strategies only exist

@@ -34,10 +34,20 @@ PROBLEM_NAME_RE = re.compile(
 NAME_MAX = 120
 
 
+class InvalidName(ValueError):
+    """The name itself is malformed — 422, not 409 (§3.2 appendix ruling
+    2026-09-02, matching `/api/problems/create`). A ValueError from the
+    mutators means "the Project is there and the write is refused", which
+    is a different answer to a different question; a caller that cannot
+    tell them apart tells the person their name is taken when it is
+    simply not a name. A subclass, so every existing `except ValueError`
+    still catches it."""
+
+
 def _validate(name: str) -> str:
     name = (name or "").strip()
     if not NAME_RE.fullmatch(name) or len(name) > NAME_MAX:
-        raise ValueError(
+        raise InvalidName(
             f"invalid project name {name!r} — one identifier "
             f"(letter, then letters/digits/underscore), at most "
             f"{NAME_MAX} characters; no dots, a Project name is a "

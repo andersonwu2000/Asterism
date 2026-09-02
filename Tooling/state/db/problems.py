@@ -787,6 +787,25 @@ def goal_reviewed_at_current_attempts(conn: sqlite3.Connection,
     ).fetchone() is not None
 
 
+def is_human_parked(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """True iff a PERSON's last word on this goal was a ConfirmShelve
+    (human_interface_design.md §3.2).
+
+    Read on its own by the readers that must treat the two parks
+    differently rather than merely notice that the goal is parked: the
+    citation gate rejects a cite of a human park (a machine park is a
+    WAIT the citer can queue behind; a person's park promises nothing to
+    wait for), and `is_confirm_shelve_parked` builds on it.
+    """
+    row = conn.execute(
+        "SELECT decision_kind FROM strategist_decisions"
+        " WHERE target_id = ? AND actor = 'human'"
+        " ORDER BY id DESC LIMIT 1",
+        (int(goal_id),),
+    ).fetchone()
+    return row is not None and str(row["decision_kind"]) == "ConfirmShelve"
+
+
 def is_confirm_shelve_parked(conn: sqlite3.Connection, goal_id: int) -> bool:
     """True iff `goal_id` is shelved BECAUSE the Strategist ConfirmShelve'd it
     (a deliberate PARK pending an in-flight prereq batch), as opposed to being
@@ -821,13 +840,7 @@ def is_confirm_shelve_parked(conn: sqlite3.Connection, goal_id: int) -> bool:
     must not lift it. Only the human reverses the human: the rule below
     reads the latest decision BY THE HUMAN first, and falls through to
     the machine rule when the person's last word was not a park."""
-    row = conn.execute(
-        "SELECT decision_kind FROM strategist_decisions"
-        " WHERE target_id = ? AND actor = 'human'"
-        " ORDER BY id DESC LIMIT 1",
-        (int(goal_id),),
-    ).fetchone()
-    if row is not None and str(row["decision_kind"]) == "ConfirmShelve":
+    if is_human_parked(conn, goal_id):
         return True
     row = conn.execute(
         "SELECT decision_kind FROM strategist_decisions"

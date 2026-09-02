@@ -79,6 +79,22 @@ def inflight_builds(workspace: Path) -> list[dict]:
         if isinstance(builds, list) else []
 
 
+def reset_state(workspace: Path) -> None:
+    """Clear the published set — called at daemon boot beside
+    `core/degraded.reset`, and for the same reason: this file describes
+    the CURRENT run's field.
+
+    A daemon killed mid-build (or crashed) never clears its last row, so
+    `daemon status` and the cockpit go on showing a cold build that no
+    process is running — for as long as the next run happens not to
+    promote anything. Never raises: a reading aid must not be able to
+    stop a boot."""
+    try:
+        state_path(workspace).unlink()
+    except OSError:
+        pass
+
+
 class PromotionGate:
     """Serial background cold build for promotions.
 

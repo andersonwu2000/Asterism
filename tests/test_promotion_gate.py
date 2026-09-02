@@ -354,3 +354,19 @@ def test_a_disabled_gate_publishes_nothing(tmp_path):
     g.submit(3, ["Problems.p.proofs.L_a"])
     assert not warm.state_path(tmp_path).exists()
     assert warm.inflight_builds(tmp_path) == []
+
+
+def test_crash_residue_is_cleared_at_boot(tmp_path) -> None:
+    """The published set is per-PROCESS state, like `core/degraded.py`'s
+    ledger: a daemon killed mid-build leaves its last build on disk, and
+    `daemon status` then shows a cold build that no longer exists — for
+    as long as the next run happens not to promote anything. Boot clears
+    it, so the field always describes the daemon that is running."""
+    warm.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    warm.state_path(tmp_path).write_text(
+        '{"builds": [{"strategy_id": 9, "modules": [], '
+        '"started_at": "2026-09-01T00:00:00+00:00"}]}', encoding="utf-8")
+    assert warm.inflight_builds(tmp_path) != []
+    warm.reset_state(tmp_path)
+    assert warm.inflight_builds(tmp_path) == []
+    warm.reset_state(tmp_path)      # idempotent: no file is not an error
