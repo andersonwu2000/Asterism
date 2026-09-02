@@ -11,6 +11,11 @@ import pytest
 
 from Tooling.state import db
 
+# The terminal `user_version` pinned below steps with
+# `db._CURRENT_USER_VERSION`. 48→49 2026-09-02: HID §3.7's `Signal`
+# widens `human_commands.kind`, and SQLite takes a widened CHECK only
+# as a table rebuild — hence a version step.
+
 
 def _fresh(tmp_path):
     c = db.connect(tmp_path / "t.db")
@@ -20,7 +25,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
 
 
 def test_queue_accepts_librarian(tmp_path):
@@ -71,7 +76,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -84,7 +89,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
@@ -121,7 +126,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -150,7 +155,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -227,7 +232,7 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 49
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"

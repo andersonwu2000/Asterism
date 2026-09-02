@@ -18,6 +18,11 @@ import pytest
 
 from Tooling.state import db
 
+# The terminal `user_version` this file pins steps with
+# `db._CURRENT_USER_VERSION`. 48→49 2026-09-02: HID §3.7's `Signal`
+# widens `human_commands.kind`, and SQLite takes a widened CHECK only
+# as a table rebuild — hence a version step.
+
 
 # ---------------------------------------------------------------------
 # Pre-Phase 2 schema fixture (verbatim from before this migration)
@@ -228,7 +233,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -370,7 +375,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     conn.close()
 
 
@@ -510,7 +515,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -550,7 +555,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -597,7 +602,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -936,7 +941,7 @@ def test_v41_retires_stranded_manifest_amend_rows(tmp_path, monkeypatch):
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     rows = {str(r["problem"]): (str(r["outcome"]),
                                 str(r["outcome_detail"] or ""))
             for r in conn.execute(
@@ -1240,7 +1245,7 @@ def test_v48_backfills_every_problem_into_a_project(tmp_path: Path) -> None:
                    ("Erdos.p1", "Erdos.p10", "union_closed"))
     db.init_schema(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     assert {str(r["name"]): str(r["project"]) for r in conn.execute(
         "SELECT name, project FROM problems")} == {
         "Erdos.p1": "Erdos", "Erdos.p10": "Erdos",
@@ -1277,7 +1282,7 @@ def test_v48_completes_on_a_populated_disk(tmp_path: Path) -> None:
 
     db.init_schema(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
     assert "summary" in {r[1] for r in conn.execute(
         "PRAGMA table_info(programme_revisions)")}
     assert int(conn.execute(
@@ -1389,3 +1394,180 @@ def test_v48_migrated_db_matches_a_fresh_one(tmp_path: Path) -> None:
             == db._CURRENT_USER_VERSION)
     old.close()
     fresh.close()
+
+
+# ---------------------------------------------------------------------
+# v49 — `Signal` joins human_commands.kind (human_interface_design §3.7)
+# ---------------------------------------------------------------------
+
+def _rewind_to_v49_predecessor(conn: sqlite3.Connection) -> None:
+    """Undo exactly v49 on a current-schema DB: rebuild `human_commands`
+    with the v48 CHECK (no 'Signal') and step the version back.
+
+    A rebuild, not a hand-written DDL: the forward step's probe is a
+    substring test on the LIVE sqlite_master text, so a rewind the probe
+    cannot see is no fixture at all — the blind spot `_rewind_to_v47`
+    was written to close (2026-09-02)."""
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'human_commands'").fetchone()[0]
+    sql = sql.replace("'Inject','Signal'", "'Inject'")
+    assert "'Signal'" not in sql, "rewind did not remove 'Signal'"
+    conn.execute(re.sub(r"CREATE TABLE\s+\"?human_commands\"?",
+                        "CREATE TABLE _hc_v48", sql, count=1))
+    conn.execute("INSERT INTO _hc_v48 SELECT * FROM human_commands")
+    conn.execute("DROP TABLE human_commands")
+    conn.execute("ALTER TABLE _hc_v48 RENAME TO human_commands")
+    conn.execute("PRAGMA user_version = 48")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+_HC_INSERT = (
+    "INSERT INTO human_commands (problem, kind, payload,"
+    " idempotency_key, status, created_at) VALUES ('p', ?, '{}', ?,"
+    " 'queued', ?)")
+
+
+def test_v49_carries_the_queue_and_admits_a_signal(tmp_path: Path) -> None:
+    """§3.7: the kill signal is a `human_commands.kind`, and SQLite cannot
+    widen a CHECK in place — so v49 rebuilds the table. The queue is live
+    state (a person's queued command must not evaporate under a version
+    step), so the rows are carried; and the value the whole migration
+    exists for is admitted afterwards, refused before."""
+    conn = sqlite3.connect(str(tmp_path / "v48.db"), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('p', ?)",
+                 (db.now(),))
+    conn.execute(_HC_INSERT, ("ConfirmShelve", "k1", db.now()))
+    conn.commit()
+    _rewind_to_v49_predecessor(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_HC_INSERT, ("Signal", "k-sig-v48", db.now()))
+    conn.rollback()
+
+    db.init_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 49
+    rows = conn.execute(
+        "SELECT id, kind, idempotency_key, status FROM human_commands"
+    ).fetchall()
+    assert [(r["kind"], r["idempotency_key"], r["status"]) for r in rows] \
+        == [("ConfirmShelve", "k1", "queued")]
+    conn.execute(_HC_INSERT, ("Signal", "k-sig", db.now()))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_HC_INSERT, ("Telepathy", "k-nope", db.now()))
+    conn.rollback()
+    assert list(conn.execute("PRAGMA foreign_key_check")) == []
+    conn.close()
+
+
+def test_v49_keeps_the_unique_key_and_the_foreign_keys(
+        tmp_path: Path) -> None:
+    """The rebuild must carry the table's CONSTRAINTS, not just its rows:
+    the UNIQUE idempotency_key is the queue's whole replay defence (§3.3)
+    and the two FKs are what make a receipt point at something."""
+    conn = sqlite3.connect(str(tmp_path / "v48b.db"), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('p', ?)",
+                 (db.now(),))
+    conn.commit()
+    _rewind_to_v49_predecessor(conn)
+    db.init_schema(conn)
+
+    conn.execute(_HC_INSERT, ("Signal", "dup", db.now()))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_HC_INSERT, ("Signal", "dup", db.now()))
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO human_commands (problem, kind, payload,"
+            " idempotency_key, status, created_at) VALUES ('ghost',"
+            " 'Signal', '{}', 'fk', 'queued', ?)", (db.now(),))
+    conn.rollback()
+    fks = {r[2] for r in conn.execute(
+        "PRAGMA foreign_key_list(human_commands)")}
+    assert fks == {"problems", "strategist_decisions"}
+    conn.close()
+
+
+def test_v49_migrated_human_commands_matches_a_fresh_one(
+        tmp_path: Path) -> None:
+    """Both directions of the completion condition: a v48-shaped
+    `human_commands` migrated forward and a fresh `init_schema` one end
+    at the same user_version, the same column shape and the same
+    sqlite_master text."""
+    fresh = sqlite3.connect(str(tmp_path / "fresh49.db"), timeout=30)
+    fresh.row_factory = sqlite3.Row
+    db.init_schema(fresh)
+    old = sqlite3.connect(str(tmp_path / "old49.db"), timeout=30)
+    old.row_factory = sqlite3.Row
+    old.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(old)
+    _rewind_to_v49_predecessor(old)
+    db.init_schema(old)
+
+    def shape(conn):
+        return [(r[1], r[2], r[3], r[4], r[5])
+                for r in conn.execute("PRAGMA table_info(human_commands)")]
+
+    q = ("SELECT sql FROM sqlite_master WHERE type='table'"
+         " AND name = 'human_commands'")
+    assert shape(old) == shape(fresh)
+    assert old.execute(q).fetchone()[0] == fresh.execute(q).fetchone()[0]
+    assert (old.execute("PRAGMA user_version").fetchone()[0]
+            == fresh.execute("PRAGMA user_version").fetchone()[0]
+            == db._CURRENT_USER_VERSION == 49)
+    old.close()
+    fresh.close()
+
+
+def test_the_ladder_restores_foreign_key_enforcement(tmp_path: Path) -> None:
+    """A migrated connection must still ENFORCE its foreign keys.
+
+    Every table rebuild disarms them (`_disarm_foreign_keys`) and re-arms
+    in its own `finally` — but that re-arm runs inside the transaction
+    the rebuild's `INSERT INTO _tmp SELECT *` opened, where `PRAGMA
+    foreign_keys` is the same silent no-op the disarm was written to
+    defeat. So the connection came out of the ladder unenforced, and
+    `connect()` migrates: the daemon's own connection was the one it
+    happened to. `PRAGMA foreign_key_check` cannot see this — it is a
+    scan, not enforcement — so the probe here is a write that must be
+    refused."""
+    conn = sqlite3.connect(str(tmp_path / "fk.db"), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    _rewind_to_v49_predecessor(conn)
+
+    db.init_schema(conn)
+
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO goals (problem, slug, lean_path, statement,"
+            " origin, depth, status, created_at, updated_at) VALUES"
+            " ('ghost', 's', 'p.lean', 'T', 'root', 0, 'open', ?, ?)",
+            (db.now(), db.now()))
+    conn.rollback()
+    conn.close()
+
+
+def test_the_ladder_leaves_an_unenforced_connection_unenforced(
+        tmp_path: Path) -> None:
+    """The restore is a RESTORE, not a policy: a caller that opened with
+    foreign keys off (most test fixtures — `sqlite3.connect` defaults to
+    off) gets its connection back the way it handed it over. Turning
+    them on here would be this module deciding a caller's enforcement
+    for it, one migration after the fact."""
+    conn = sqlite3.connect(str(tmp_path / "nofk.db"), timeout=30)
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+    conn.close()

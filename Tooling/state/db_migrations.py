@@ -93,6 +93,18 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
     # goals.entry_kind; the unconditional ALTER re-added it on every
     # daemon start — review 07-27 #4).
     v0 = conn.execute("PRAGMA user_version").fetchone()[0]
+    # The caller's FK setting, to be RESTORED at the end of the ladder.
+    # `_disarm_foreign_keys` turns enforcement off for a table rebuild;
+    # every rebuild's `finally` then turns it back on — inside the
+    # rebuild's own transaction, which its `INSERT INTO _tmp SELECT *`
+    # opened, where `PRAGMA foreign_keys` is the SAME silent no-op the
+    # disarm exists to defeat. So a connection that migrated any version
+    # carrying a rebuild went on with foreign keys OFF for the rest of
+    # its life — `connect()` migrates, so that included the daemon's own
+    # connection. Found 2026-09-02 by v49's constraint test; restored
+    # here, once, after the last commit, because that is the only point
+    # in the ladder that is reliably at autocommit.
+    fk_at_entry = conn.execute("PRAGMA foreign_keys").fetchone()[0]
     # Additive migrations for older DBs (CREATE TABLE IF NOT EXISTS is
     # a no-op when the table already exists, so blind ALTER TABLE is
     # needed to backfill columns added in later versions). Idempotent
@@ -1029,6 +1041,15 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v48(conn)
         conn.execute("PRAGMA user_version = 48")
         conn.commit()
+    if v < 49:
+        # v49 — the kill signal (human_interface_design.md §3.7): a
+        # person may stop an in-flight Formalizer, and the command that
+        # does it is a `human_commands.kind` like any other. SQLite
+        # cannot widen a CHECK in place, so this is a table rebuild —
+        # the v45/v48 channel, one value further.
+        _migrate_to_v49(conn)
+        conn.execute("PRAGMA user_version = 49")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -1046,6 +1067,13 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE programme_revisions"
                          f" ADD COLUMN {col} TEXT NULL DEFAULT NULL")
     conn.commit()
+    if fk_at_entry:
+        conn.execute("PRAGMA foreign_keys = ON")
+        if not conn.execute("PRAGMA foreign_keys").fetchone()[0]:
+            raise RuntimeError(
+                "migration ladder: foreign keys could not be re-armed — "
+                "a transaction is still open at the end of the ladder, "
+                "so this connection would keep running unenforced")
 
 
 _V48_PROJECTS_DDL = """
@@ -1211,6 +1239,66 @@ def _v48_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE strategist_decisions ADD COLUMN actor TEXT NOT NULL"
             " DEFAULT 'strategist' CHECK(actor IN ('strategist','human'))")
+
+
+def _migrate_to_v49(conn: sqlite3.Connection) -> None:
+    """`Signal` joins `human_commands.kind` (human_interface_design §3.7).
+
+    A table rebuild, because SQLite widens no CHECK in place — the same
+    live-DDL channel v45 and v48 take. The rebuild REPLACES one token in
+    the table's own sqlite_master text rather than re-declaring the
+    table from a literal here: the UNIQUE on `idempotency_key` (the
+    queue's whole replay defence) and the two foreign keys then survive
+    by construction, and a fresh disk and a migrated one end with byte-
+    identical DDL because both arrive at it through this one edit.
+
+    The rows are CARRIED. `human_commands` is live state — a command a
+    person queued seconds before a version step is still their command,
+    and dropping it would lose it silently, with a receipt still saying
+    `queued`.
+
+    `_disarm_foreign_keys` even though nothing references `human_commands`
+    today: the disarm is also the ASSERTION that this step is reached at
+    autocommit (see its docstring — the v48 incident), and a rebuild that
+    quietly stops being a leaf is exactly the change nobody would notice.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'human_commands'").fetchone()
+    sql = (row[0] or "") if row else ""
+    if not sql:
+        # A disk whose v48 step died before the CREATE (the FK-armed
+        # rebuild, `d9ba5ec9`): mint it here, already widened.
+        conn.execute(_V48_HUMAN_COMMANDS_DDL.replace(
+            "'FetchPaper','Inject'", "'FetchPaper','Inject','Signal'", 1))
+        return
+    if "'Signal'" in sql:
+        return
+    if "'Inject'" not in sql:
+        raise RuntimeError(
+            "v49: human_commands CHECK enum has no 'Inject' — this is "
+            "not the v48 table; refusing to guess")
+    new_sql = sql.replace("'Inject'", "'Inject','Signal'", 1)
+    new_sql = re.sub(r"CREATE TABLE\s+\"?human_commands\"?",
+                     "CREATE TABLE _hc_v49", new_sql, count=1)
+    indexes = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index'"
+        " AND tbl_name = 'human_commands' AND sql IS NOT NULL")]
+    conn.execute("DROP TABLE IF EXISTS _hc_v49")
+    _disarm_foreign_keys(conn, "v49 human_commands rebuild")
+    try:
+        conn.execute(new_sql)
+        n = conn.execute("INSERT INTO _hc_v49"
+                         " SELECT * FROM human_commands").rowcount
+        conn.execute("DROP TABLE human_commands")
+        conn.execute("ALTER TABLE _hc_v49 RENAME TO human_commands")
+        for s_idx in indexes:
+            conn.execute(s_idx)
+        if n:
+            print(f"[v49] human_commands rebuilt with 'Signal' in the "
+                  f"kind CHECK ({n} row(s) carried)", flush=True)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v41(conn: sqlite3.Connection) -> None:
