@@ -2474,3 +2474,24 @@ def test_detail_carries_the_ingest_report(workspace: Path) -> None:
     assert c.get("/api/problems/p").json()["ingest_report"] \
         == "# What was proved\n\nThe bound."
     assert c.get("/api/problems/q").json()["ingest_report"] is None
+
+
+def test_a_command_missing_its_own_field_is_422_at_the_post(
+        workspace: Path) -> None:
+    """§3.3 ruling 2026-09-02: §1.3's per-kind requirements are checked
+    when the person presses the button, not minutes later on the daemon's
+    tick — and nothing is queued, so there is no receipt to chase."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = _goal_row(conn, "p")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    r = c.post("/api/commands", json={
+        "problem": "p", "kind": "ConfirmShelve",
+        "payload": {"target_goal_id": gid}, "idempotency_key": "no-reason"})
+    assert r.status_code == 422, r.text
+    assert "reason" in r.json()["detail"]
+    conn2 = _open_db(workspace)
+    assert conn2.execute(
+        "SELECT COUNT(*) FROM human_commands").fetchone()[0] == 0

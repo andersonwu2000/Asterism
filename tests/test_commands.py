@@ -96,6 +96,87 @@ def test_a_stale_expected_revision_is_rejected_not_applied(
     assert str(db.get_goal(conn, gid)["status"]) == "open"
 
 
+def test_revision_counts_by_TARGET_KIND_not_by_bare_id(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """§3.3 ruling 2026-09-02. `strategist_decisions.target_id` holds GOAL
+    ids; `group_id` holds group ids; the two spaces are independent and
+    both start at 1, so counting a group's revision as "rows whose
+    target_id is that number" counts the decisions of an unrelated GOAL.
+
+    Here goal 2 and group 2 are the same number and the goal carries
+    three decisions: read by bare id, the group's revision reads 3, the
+    person's page shows 3, and the ReturnToParent they send back is
+    refused `stale` against a state nothing ever moved."""
+    top = groups.ensure_top_group(conn, "p")
+    g1 = _goal(conn)
+    g2 = _goal(conn, "brick", "B", origin="forward")
+    kid = groups.open_group(conn, problem="p", parent_group_id=top,
+                            charter="the sub-charter")
+    assert (g1, g2) == (top, kid), "the id collision this test is about"
+    for _ in range(3):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, target_id, created_at,"
+            " updated_at) VALUES ('p', 0, 'routine', 'Inject', ?, ?, ?)",
+            (g2, db.now(), db.now()))
+    conn.commit()
+
+    assert commands.revision(
+        conn, kind="ConfirmShelve", payload={"target_goal_id": g2}) == 3
+    assert commands.revision(
+        conn, kind="ReturnToParent", payload={"group_id": kid}) == 0
+
+    cid = _q(conn, "ReturnToParent",
+             {"group_id": kid, "reason": "hand it back"},
+             key="rtp", expected_revision=0)
+    commands.apply_pending(conn, workspace)
+    row = commands.get(conn, cid)
+    assert row["status"] == "applied", row["outcome"]
+
+
+# ---------------------------------------------------------------------
+# what a person owes at POST (§3.3 ruling 2026-09-02)
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind,payload,word", [
+    ("ConfirmShelve", {"target_goal_id": 1}, "reason"),
+    ("ReturnToParent", {"group_id": 1}, "reason"),
+    ("Inject", {"target_goal_id": 1}, "Proof"),
+    ("Delegate", {}, "charter"),
+    ("MarkDeliverable", {}, "target_goal_id"),
+])
+def test_enqueue_refuses_a_command_missing_its_own_field(
+        conn: sqlite3.Connection, kind: str, payload: dict,
+        word: str) -> None:
+    """The refusal belongs at the POST, where a person is still looking at
+    the screen. Left to apply, the same command comes back minutes later
+    as a `rejected` row in a receipt nobody is watching — and §1.3's
+    requirements are exactly the ones a form can check."""
+    with pytest.raises(ValueError) as e:
+        _q(conn, kind, payload, key=f"missing-{kind}")
+    assert word in str(e.value)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM human_commands").fetchone()[0] == 0
+
+
+def test_enqueue_accepts_the_minimal_valid_payloads(
+        conn: sqlite3.Connection) -> None:
+    """And the other half: the smallest payload §1.3 asks for is enough.
+    A `Delegate` carrying a `target_goal_id` owes neither charter nor
+    reason — the goal's own statement is the charter, and a person owes
+    no justification for handing work down."""
+    for kind, payload in (
+            ("ConfirmShelve", {"target_goal_id": 1, "reason": "stop"}),
+            ("ReturnToParent", {"group_id": 1, "reason": "exhausted"}),
+            ("Inject", {"target_goal_id": 1,
+                        "proof": "Theorem. T\nProof. p"}),
+            ("Delegate", {"target_goal_id": 1}),
+            ("Delegate", {"charter": "settle the claim"}),
+            ("MarkDeliverable", {"target_goal_id": 1}),
+    ):
+        assert _q(conn, kind, payload, key=f"ok-{kind}-{len(payload)}")
+
+
 # ---------------------------------------------------------------------
 # the applier
 # ---------------------------------------------------------------------

@@ -106,12 +106,18 @@ def pending(conn: sqlite3.Connection) -> "list[dict]":
 # the target, and its revision
 # ---------------------------------------------------------------------
 
+#: The kinds whose target is a GROUP. Everything else targets a goal.
+#: `target_of` reads the id out of the payload by this split, and
+#: `revision` counts it in the column that actually holds it.
+GROUP_TARGETED: frozenset[str] = frozenset({"ReturnToParent"})
+
+
 def target_of(kind: str, payload: dict) -> "int | None":
     """The id this command acts on — a goal for the four goal-targeted
     kinds, a group for `ReturnToParent`. None when the command targets
     nothing (a `Delegate` that mints a group from prose, `FetchPaper`).
     """
-    if kind == "ReturnToParent":
+    if kind in GROUP_TARGETED:
         gid = payload.get("group_id")
     else:
         gid = payload.get("target_goal_id", payload.get("target_id"))
@@ -128,18 +134,78 @@ def revision(conn: sqlite3.Connection, *, kind: str, payload: dict) -> int:
     the command; a decision landing in between means the person acted on
     a page that has moved.
 
-    NOTE (§3.3 contract): `strategist_decisions.target_id` holds goal ids
-    AND — for the group kinds — group ids, so a group's revision counts
-    any decision filed against a GOAL of the same number. The consequence
-    is a spurious `stale` refusal, never a missed one; the direction is
-    safe, and the conflation is a follow-up, not a hole.
+    Counted in the column that HOLDS the id (§3.3 ruling 2026-09-02).
+    `strategist_decisions.target_id` is a goal id and `group_id` is a
+    group id; the two id spaces are independent and both start at 1, so
+    counting a group by bare `target_id` counts the decisions of an
+    unrelated GOAL that happens to carry the same number. That is not a
+    safe over-count: it is a `stale` refusal against a state nothing
+    moved, on the one command a person issues to stop work — and no
+    retry clears it, because the number never goes back down.
     """
     tid = target_of(kind, payload)
     if tid is None:
         return 0
+    column = "group_id" if kind in GROUP_TARGETED else "target_id"
     return int(conn.execute(
-        "SELECT COUNT(*) FROM strategist_decisions WHERE target_id = ?",
+        f"SELECT COUNT(*) FROM strategist_decisions WHERE {column} = ?",
         (tid,)).fetchone()[0])
+
+
+# ---------------------------------------------------------------------
+# what a person owes, per kind
+# ---------------------------------------------------------------------
+
+def validate_fields(kind: str, payload: dict) -> None:
+    """§1.3's own requirements, raised as `ValueError` (422 upstream).
+
+    Checked at the POST (§3.3 ruling 2026-09-02), not left to apply: a
+    missing `reason` is not a race, it is a form the person is still
+    looking at. Left to the daemon's tick it comes back minutes later as
+    a `rejected` row in a receipt nobody is watching, and the person's
+    only signal is that nothing happened.
+
+    The applier calls this too, so the two answers cannot diverge — a row
+    can reach the queue by another route (a replay, a hand-written row),
+    and the requirement is the same one either way.
+
+    These are §1.3's requirements, NOT the Strategist's: the pairing rule
+    (`ConfirmShelve` needs an `Inject`), the delegation justification —
+    those bind the machine, which may never stop itself, and a person is
+    exactly the actor they do not bind.
+    """
+    tid = target_of(kind, payload)
+
+    def _needs(field: str, why: str) -> None:
+        if not str(payload.get(field) or "").strip():
+            raise ValueError(f"{kind} requires `{field}` — {why} (§1.3)")
+
+    if kind == "ConfirmShelve":
+        if tid is None:
+            raise ValueError("ConfirmShelve requires target_goal_id")
+        _needs("reason", "a person's park is TERMINAL, and the reason is "
+                         "the only record of why this line was stopped")
+    elif kind == "ReturnToParent":
+        if tid is None:
+            raise ValueError("ReturnToParent requires group_id")
+        _needs("reason", "closing a group retires every line under it, "
+                         "and the parent is owed the why")
+    elif kind == "Inject":
+        _needs("proof", "the `## Proof` the formalizer is to settle — "
+                        "the statement and the argument for it, as you "
+                        "would write them for a colleague")
+    elif kind == "MarkDeliverable":
+        if tid is None:
+            raise ValueError("MarkDeliverable requires target_goal_id")
+    elif kind == "Delegate":
+        # With a `target_goal_id` a person owes NEITHER charter nor
+        # reason (§1.3): the goal's own statement is the charter, and a
+        # person owes no justification for handing work down.
+        if tid is None and not str(payload.get("charter") or "").strip():
+            raise ValueError(
+                "Delegate needs either a `charter` (the claim the new "
+                "group must settle) or a `target_goal_id` to take one "
+                "from")
 
 
 # ---------------------------------------------------------------------
@@ -168,9 +234,14 @@ def enqueue(conn: sqlite3.Connection, *, problem: str, kind: str,
     if not key:
         raise ValueError("idempotency_key is required — it is what makes "
                          "a retried command the same command")
+    # The named thing first, the form second: a command against a problem
+    # that is not there is a 404 whatever its payload says, and reporting
+    # the missing `reason` of a command nobody could ever apply sends the
+    # person to fix the wrong half.
     if conn.execute("SELECT 1 FROM problems WHERE name = ?",
                     (problem,)).fetchone() is None:
         raise KeyError(problem)
+    validate_fields(kind, payload)
     existing = conn.execute(
         "SELECT id FROM human_commands WHERE idempotency_key = ?",
         (key,)).fetchone()
@@ -302,37 +373,26 @@ def _decision_for(conn: sqlite3.Connection, *, problem: str, kind: str,
 
     if kind == "FetchPaper":
         raise ValueError(_FETCHPAPER_REFUSAL)
+    # The same per-kind requirements the POST refused on. A row can reach
+    # the queue by another route (a replay, a hand-written row), and the
+    # two answers must not be able to diverge.
+    validate_fields(kind, payload)
     decision, err = parse_decision(json.dumps({**payload, "kind": kind}))
     if decision is None:
         raise ValueError(err)
     tid = target_of(kind, payload)
-    if kind != "ReturnToParent" and tid is not None:
+    if kind not in GROUP_TARGETED and tid is not None:
         g = db.get_goal(conn, tid)
         if g is None or str(g["problem"]) != problem:
             raise ValueError(
                 f"target_goal_id={tid} is not a goal of {problem!r}")
         decision.target_id = int(g["id"])
-    if kind == "Inject" and not str(decision.brief or "").strip():
-        raise ValueError("Inject requires `proof` — the argument the "
-                         "formalizer is to settle (§1.3)")
-    if kind == "ConfirmShelve":
-        if tid is None:
-            raise ValueError("ConfirmShelve requires target_goal_id")
-        if not str(decision.reason or "").strip():
-            raise ValueError("ConfirmShelve requires a reason (§1.3)")
-    if kind == "MarkDeliverable" and tid is None:
-        raise ValueError("MarkDeliverable requires target_goal_id")
     if kind == "Delegate" and not str(decision.brief or "").strip():
         # §1.3: with a `target_goal_id` the person owes no charter. The
         # applier needs one anyway — it is the child group's fixed
         # reference point, what its own Adversary judges against — so it
         # is taken from the goal being handed over. Nothing is invented:
         # the claim IS the statement.
-        if tid is None:
-            raise ValueError(
-                "Delegate needs either a `charter` (the claim the new "
-                "group must settle) or a `target_goal_id` to take one "
-                "from")
         decision.brief = str(db.get_goal(conn, tid)["statement"])
     if kind == "ReturnToParent":
         from . import groups as _groups
