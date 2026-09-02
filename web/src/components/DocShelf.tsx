@@ -28,6 +28,10 @@ export interface DocEntry {
   size?: number
 }
 
+/** Where the column's fold is remembered. Its own key, beside the task
+ * rail's — the two columns are different postures on different pages. */
+const COLUMN_KEY = 'asterism.docColumnOpen'
+
 const TEXT_EXT = ['.md', '.tex', '.txt']
 const IMAGE_EXT = ['.png', '.jpg', '.svg']
 
@@ -277,6 +281,14 @@ export default function DocShelf({
   const [renameNote, setRenameNote] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const renameRef = useRef<HTMLInputElement | null>(null)
+  /** the file column's fold, remembered — a reading posture, like the
+   * task rail's (App.tsx `asterism.railOpen`), not a per-visit choice */
+  const [columnOpen, setColumnOpen] = useState(
+    () => localStorage.getItem(COLUMN_KEY) !== '0',
+  )
+  useEffect(() => {
+    localStorage.setItem(COLUMN_KEY, columnOpen ? '1' : '0')
+  }, [columnOpen])
 
   const files = useMemo(() => entries.filter((e) => e.kind === 'file'), [entries])
   // the column opens on something rather than an empty frame
@@ -450,6 +462,19 @@ export default function DocShelf({
 
   return (
     <>
+      {!columnOpen ? (
+        // the same fold the task rail carries (ProjectShell): a reading
+        // posture, kept, and the strip that brings it back
+        <div className="shrink-0 border-r border-edge px-2 py-4">
+          <button
+            onClick={() => setColumnOpen(true)}
+            title="show the file list"
+            className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+          >
+            ›
+          </button>
+        </div>
+      ) : (
       <div className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-edge py-2">
         <div className="flex items-baseline gap-2 px-4 pt-1 pb-1">
           <span className="text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase">
@@ -477,6 +502,13 @@ export default function DocShelf({
               title="a new folder under user/"
             >
               folder
+            </button>
+            <button
+              onClick={() => setColumnOpen(false)}
+              title="hide the file list"
+              className="cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              ‹
             </button>
           </span>
         </div>
@@ -527,6 +559,7 @@ export default function DocShelf({
           onPick={setSelected}
         />
       </div>
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-edge px-4 py-1.5">
