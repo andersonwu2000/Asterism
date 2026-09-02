@@ -324,7 +324,7 @@ def _daemon_live_pid(workspace: Path) -> "int | None":
 
 def _daemon_counts(workspace: Path) -> "tuple[int | None, int | None]":
     """(running pipelines, leased queue rows); (None, None) when the
-    DB's schema outran this code — SchemaBehind, a read-only consumer
+    on-disk schema is BEHIND this code — SchemaBehind, a read-only consumer
     may not migrate, so there is nothing to count (2026-09-02: it fell
     into the blanket handler and printed `in_flight: -1`, which reads
     as a measurement rather than as "I could not look").
@@ -432,7 +432,7 @@ def daemon_status(workspace: Path) -> dict:
         # when `schema` is "behind" — nothing could be counted.
         "in_flight": _running,
         "in_flight_leases": _leases,
-        # "behind" = the on-disk schema outran this code, so the status
+        # "behind" = the on-disk schema is older than this code, so the status
         # is reading a DB it may not open; run the engine once to migrate
         "schema": "ok" if _running is not None else "behind",
         # silent-degradation ledger (core/degraded.py): best-effort steps
