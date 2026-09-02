@@ -326,11 +326,15 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
 
 
 def telemetry_usage(conn: sqlite3.Connection, *,
-                    since: "str | None" = None) -> dict:
+                    since: "str | None" = None,
+                    project: "str | None" = None) -> dict:
     """spawn_usage aggregation: totals per problem and per (problem,
     pipeline kind). `since` (an ISO timestamp, same format as the `ts`
     column) restricts the window — pass the running daemon's start time
-    to get THIS run's burn instead of the all-time ledger."""
+    to get THIS run's burn instead of the all-time ledger. `project`
+    scopes it to one shelf (the Engine Room lives inside a Project,
+    §1.4) by the FK — `problems_of`, never the name's first segment,
+    which stops being the Project the moment someone renames one."""
     per_problem: dict[str, dict] = {}
     where = " WHERE ts >= ?" if since else ""
     params: tuple = (since,) if since else ()
@@ -370,6 +374,10 @@ def telemetry_usage(conn: sqlite3.Connection, *,
         p["wall_sec"] += row["wall_sec"]
     rows = sorted(per_problem.values(),
                   key=lambda x: -(x["input_tokens"] + x["output_tokens"]))
+    if project is not None:
+        from ...state import projects as _projects
+        shelf = _projects.problems_of(conn, project)
+        rows = [r for r in rows if r["problem"] in shelf]
     return {"problems": rows}
 
 

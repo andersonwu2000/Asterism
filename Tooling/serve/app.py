@@ -1330,17 +1330,19 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         return d
 
     @app.get("/api/telemetry/usage")
-    def usage() -> dict:
+    def usage(project: "str | None" = None) -> dict:
         """Burn figures. While a daemon runs, the window is THIS run
         (since its start time); idle, it's the all-time ledger — the
-        response says which, so the UI never mislabels the window."""
+        response says which, so the UI never mislabels the window.
+        `project` scopes the rows to one shelf's problems (the FK, §3.1);
+        absent, the whole workspace answers as it always has."""
         if not (workspace / "asterism.db").exists():
             return {"problems": [], "window": "all", "since": None}
         from ..core.cli import daemon_status
         d = daemon_status(workspace)
         since = d.get("started_at") if d.get("running") else None
         with _ro(workspace) as conn:
-            out = _data.telemetry_usage(conn, since=since)
+            out = _data.telemetry_usage(conn, since=since, project=project)
         out["window"] = "run" if since else "all"
         out["since"] = since
         return out

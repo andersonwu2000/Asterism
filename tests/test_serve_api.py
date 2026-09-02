@@ -2680,3 +2680,56 @@ def test_docs_of_an_unknown_project_are_404(workspace: Path) -> None:
     _with_project(workspace)
     assert _client(workspace).get(
         "/api/projects/ghost/docs").status_code == 404
+
+
+# ---------------------------------------------------------------------
+# Project-scoped reads (HID §1.4: the Engine Room and the Timeline are
+# per-Project surfaces, so the workspace-wide reads take a filter)
+# ---------------------------------------------------------------------
+
+
+def _shelve(conn: sqlite3.Connection, project: str, *problems: str) -> None:
+    """A Project row plus the problems filed on it — the FK, which is
+    what a scoped read must follow (§3.1: the name's first segment is
+    only the DEFAULT shelf, and stops being the Project on a rename)."""
+    conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                 " created_at) VALUES (?, '', ?)", (project, db.now()))
+    for p in problems:
+        conn.execute("UPDATE problems SET project = ? WHERE name = ?",
+                     (project, p))
+    conn.commit()
+
+
+def _burn(conn: sqlite3.Connection, problem: str, out_tok: int) -> None:
+    conn.execute(
+        "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
+        " input_tokens, output_tokens, turns, wall_sec, ts)"
+        " VALUES ('pl', 'Formalizer', ?, 10, ?, 1, 2.5, ?)",
+        (problem, out_tok, db.now()))
+    conn.commit()
+
+
+def test_usage_scopes_to_a_project_by_the_fk_not_the_prefix(
+        workspace: Path) -> None:
+    """The Engine Room's burn panel lives inside a Project, so it must
+    answer for THAT shelf. Following the FK and not the name is the
+    whole point: `Erdos.p2` is filed under `Side` here, and a prefix
+    filter would hand its tokens to the wrong panel."""
+    conn = _open_db(workspace)
+    for p in ("Erdos.p1", "Erdos.p2"):
+        _add_problem(conn, p)
+    _shelve(conn, "Erdos", "Erdos.p1")
+    _shelve(conn, "Side", "Erdos.p2")
+    _burn(conn, "Erdos.p1", 100)
+    _burn(conn, "Erdos.p2", 7)
+    conn.close()
+    c = _client(workspace)
+    everything = c.get("/api/telemetry/usage").json()["problems"]
+    assert {r["problem"] for r in everything} == {"Erdos.p1", "Erdos.p2"}
+    scoped = c.get("/api/telemetry/usage?project=Erdos").json()
+    assert [r["problem"] for r in scoped["problems"]] == ["Erdos.p1"]
+    assert scoped["problems"][0]["output_tokens"] == 100
+    # the window label is unaffected by the filter
+    assert scoped["window"] == "all"
+    # an empty shelf burns nothing — not "everything"
+    assert c.get("/api/telemetry/usage?project=ghost").json()["problems"] == []
