@@ -266,6 +266,13 @@ def classify_tables(conn: sqlite3.Connection) -> "dict[str, str]":
     out: "dict[str, str]" = {}
     tables = _tables(conn)
     reaches: "dict[str, bool]" = {"problems": True}
+    # 'owner' (v48): a table `problems` itself points AT sits ABOVE the
+    # problem — `projects` is the first. Nothing in it is a satellite and
+    # an empty Project legally outlives every problem that named it
+    # (human_interface_design.md §3.1), so it is neither a wipe target nor
+    # a blind spot. Derived from the schema like every other bucket.
+    owners = {r[2] for r in conn.execute(
+        "PRAGMA foreign_key_list(problems)")}
 
     def _reaches(table: str, seen: "frozenset[str]" = frozenset()) -> bool:
         if table in reaches:
@@ -285,6 +292,8 @@ def classify_tables(conn: sqlite3.Connection) -> "dict[str, str]":
             out[t] = "problem-column"
         elif t in POLYMORPHIC_TABLES:
             out[t] = "polymorphic"
+        elif t in owners:
+            out[t] = "owner"
         elif _reaches(t):
             out[t] = "fk-transitive"
         else:
@@ -312,7 +321,9 @@ def db_leftovers(conn: sqlite3.Connection,
             if pred is None:
                 continue
             sql = f"SELECT COUNT(*) FROM {table} WHERE {pred}"
-        else:               # fk-transitive: parents deleted first
+        else:               # fk-transitive: parents deleted first.
+            # 'owner' too: it is above the problem, not owned by it — an
+            # empty Project is legal, not a leftover (§3.1).
             continue
         n = conn.execute(sql, {"p": problem}).fetchone()[0]
         if n:

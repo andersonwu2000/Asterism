@@ -562,11 +562,17 @@ def test_trigger_kinds_match_schema(conn: sqlite3.Connection):
     # Retired at runtime, kept in the CHECK for old rows (same pattern
     # as the legacy decision kinds above): 'first_launch' (Phase 6) and
     # 'audit' (2026-07-25 — belief sweep merged into the routine wake).
+    # 'human' (v48) is the third kind of non-runtime value and the only
+    # FORWARD-looking one: a person's command stamps the decision row it
+    # produces, it never seats a Strategist. TRIGGER_KINDS is the wake
+    # vocabulary — every member of it must have a prompt file
+    # (test_phase2_strategist) — so a conversation that never happens
+    # must stay out of it.
     from Tooling.pipeline import strategist
     schema = _check_values(conn, "strategist_decisions", "trigger_kind")
     runtime = set(strategist.TRIGGER_KINDS)
     assert runtime <= schema, f"runtime trigger_kinds not in schema: {runtime - schema}"
-    assert schema - runtime == {"first_launch", "audit"}
+    assert schema - runtime == {"first_launch", "audit", "human"}
 
 
 # --------------------------------------------------------------------------- #

@@ -512,7 +512,12 @@ _WATERMARKS = {
     # self-heal (2026-08-24); +v43 stall rebuild.
     # 2750→2800: judge provenance columns (survey P1/P2,
     # 2026-08-29) — conscious bump.
-    "Tooling/state/db_migrations.py": 2874,  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    # 2874→3020: v48 (2026-09-02, human_interface_design §3.1-§3.4) — the
+    # `projects` / `human_commands` DDL, the Project backfill and the
+    # strategist_decisions rebuild for `actor` all live in the ladder by
+    # design (a SCHEMA-declared column would order differently on a fresh
+    # DB than on a migrated one) — conscious bump.
+    "Tooling/state/db_migrations.py": 3020,  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

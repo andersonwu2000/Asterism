@@ -1020,6 +1020,15 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
                 raise
         conn.execute("PRAGMA user_version = 47")
         conn.commit()
+    if v < 48:
+        # v48 — the human interface (human_interface_design.md §3.1-§3.4):
+        # `Project` becomes a first-class row, the human joins the
+        # Strategist in the decision log, and the command queue + the
+        # reading-layer columns arrive. One step, four schema facts; see
+        # `_migrate_to_v48` for which channel each of them uses and why.
+        _migrate_to_v48(conn)
+        conn.execute("PRAGMA user_version = 48")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -1037,6 +1046,142 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE programme_revisions"
                          f" ADD COLUMN {col} TEXT NULL DEFAULT NULL")
     conn.commit()
+
+
+_V48_PROJECTS_DDL = """
+CREATE TABLE IF NOT EXISTS projects (
+    name        TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+)"""
+
+_V48_HUMAN_COMMANDS_DDL = """
+CREATE TABLE IF NOT EXISTS human_commands (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem     TEXT NOT NULL REFERENCES problems(name),
+    kind        TEXT NOT NULL
+                    CHECK(kind IN ('Delegate','ReturnToParent',
+                                   'MarkDeliverable','ConfirmShelve',
+                                   'FetchPaper','Inject')),
+    payload     TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    expected_revision INTEGER NULL DEFAULT NULL,
+    status      TEXT NOT NULL
+                    CHECK(status IN ('queued','applied','rejected')),
+    outcome     TEXT NULL DEFAULT NULL,
+    decision_id INTEGER NULL DEFAULT NULL
+                    REFERENCES strategist_decisions(id),
+    created_at  TEXT NOT NULL,
+    applied_at  TEXT NULL DEFAULT NULL
+)"""
+
+
+def _migrate_to_v48(conn: sqlite3.Connection) -> None:
+    """The human interface's schema (human_interface_design.md §3.1-§3.4).
+
+    Four facts, three channels — each picked by the shape of the change,
+    not by preference:
+
+      * `projects` + `human_commands` are pure new TABLES, so they are
+        born HERE rather than in SCHEMA (the v30 `programme_revisions`
+        precedent): a fresh DB runs the whole ladder, so both directions
+        create them from this one DDL and their sqlite_master text is
+        identical.
+      * `problems.project` / `problems.ingest_report` /
+        `programme_revisions.summary` are additive COLUMNS — blind ALTER
+        behind a column probe, the v47 channel. They are deliberately NOT
+        in SCHEMA: `problems` already grows three migration-only columns
+        after it (v18 / v22 / v27), so a SCHEMA-declared column would land
+        BEFORE them on a fresh DB and AFTER them on a migrated one — the
+        same shape, different column order.
+      * `strategist_decisions` needs its `trigger_kind` CHECK widened,
+        which SQLite cannot do in place: table rebuild, the v45 channel.
+        `actor` is appended afterwards by ALTER — under its OWN probe, not
+        the rebuild's, so an interrupt between the two still converges.
+
+    Backfill: every problem gets a Project. A dotted name defaults into
+    its FIRST segment, a dotless one into a Project of its own name; the
+    referenced rows are minted here. The prefix is only that default —
+    `Problems/<segment>/` stays the problem's physical home whatever the
+    Project is later renamed to.
+    """
+    conn.execute(_V48_PROJECTS_DDL)
+    conn.execute(_V48_HUMAN_COMMANDS_DDL)
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+    if "project" not in pcols:
+        conn.execute("ALTER TABLE problems ADD COLUMN project TEXT NULL"
+                     " DEFAULT NULL REFERENCES projects(name)")
+    if "ingest_report" not in pcols:
+        conn.execute("ALTER TABLE problems ADD COLUMN ingest_report TEXT"
+                     " NULL DEFAULT NULL")
+    ts = now()
+    orphans = [str(r[0]) for r in conn.execute(
+        "SELECT name FROM problems WHERE project IS NULL OR project = ''")]
+    for name in orphans:
+        project = name.split(".", 1)[0] if "." in name else name
+        conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                     " created_at) VALUES (?, '', ?)", (project, ts))
+        conn.execute("UPDATE problems SET project = ? WHERE name = ?",
+                     (project, name))
+    if orphans:
+        n_projects = conn.execute(
+            "SELECT COUNT(*) FROM projects").fetchone()[0]
+        print(f"[v48] {len(orphans)} problem(s) backfilled into"
+              f" {n_projects} project(s)", flush=True)
+    _v48_rebuild_strategist_decisions(conn)
+    prcols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(programme_revisions)")}
+    if "summary" not in prcols:
+        conn.execute("ALTER TABLE programme_revisions ADD COLUMN summary"
+                     " TEXT NULL DEFAULT NULL")
+
+
+def _v48_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
+    """Widen `trigger_kind` with 'human' and append `actor` — the v45
+    live-DDL rebuild one value further, plus the column the human channel
+    is actually read by. The two halves carry separate probes: the CHECK
+    probe would short-circuit on the rebuilt DDL, so hanging `actor` off
+    it would strand the column forever if a crash landed between them."""
+    conn.execute("DROP TABLE IF EXISTS _sd_v48")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'strategist_decisions'").fetchone()
+        sql = (row[0] or "") if row else ""
+        if not sql:
+            return
+        if "'human'" not in sql:
+            if "'routine_fired'" not in sql:
+                raise RuntimeError(
+                    "v48: strategist_decisions CHECK enum has no"
+                    " 'routine_fired' — v45 did not run; refusing to guess")
+            new_sql = sql.replace("'routine_fired'",
+                                  "'routine_fired','human'", 1)
+            new_sql = re.sub(r"CREATE TABLE\s+\"?strategist_decisions\"?",
+                             "CREATE TABLE _sd_v48", new_sql, count=1)
+            indexes = [r[0] for r in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
+            conn.execute(new_sql)
+            n = conn.execute("INSERT INTO _sd_v48"
+                             " SELECT * FROM strategist_decisions").rowcount
+            conn.execute("DROP TABLE strategist_decisions")
+            conn.execute("ALTER TABLE _sd_v48 RENAME TO strategist_decisions")
+            for s in indexes:
+                conn.execute(s)
+            if n:
+                print(f"[v48] strategist_decisions rebuilt with 'human' in"
+                      f" the trigger_kind CHECK ({n} row(s) carried)",
+                      flush=True)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategist_decisions)")}
+    if "actor" not in cols:
+        conn.execute(
+            "ALTER TABLE strategist_decisions ADD COLUMN actor TEXT NOT NULL"
+            " DEFAULT 'strategist' CHECK(actor IN ('strategist','human'))")
 
 
 def _migrate_to_v41(conn: sqlite3.Connection) -> None:

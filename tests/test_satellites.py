@@ -54,6 +54,18 @@ def test_every_table_is_classified(mem) -> None:
         + "\n  ".join(unclassified))
 
 
+def test_a_table_problems_points_at_is_an_owner_not_a_satellite(mem) -> None:
+    """`projects` (v48) sits ABOVE a problem, not under it. Nothing in it
+    is a satellite and an empty Project legally outlives every problem
+    that ever named it (§3.1), so the per-problem complement must not
+    read a surviving row as a wipe blind spot. Derivable — `problems`'
+    own FK list names the table — so it needs no hand declaration."""
+    assert satellites.classify_tables(mem)["projects"] == "owner"
+    mem.execute("INSERT INTO projects (name, description, created_at)"
+                " VALUES ('Erdos', '', ?)", (db.now(),))
+    assert "projects" not in satellites.db_leftovers(mem, "Erdos")
+
+
 def test_a_new_unclassifiable_table_is_caught_by_name(mem) -> None:
     """Mutation check, planted live: the exact violation the guard
     exists for — a new table with no derivable problem linkage."""

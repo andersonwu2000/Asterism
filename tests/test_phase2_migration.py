@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -369,7 +369,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
     conn.close()
 
 
@@ -509,7 +509,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -549,7 +549,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -596,7 +596,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -935,7 +935,7 @@ def test_v41_retires_stranded_manifest_amend_rows(tmp_path, monkeypatch):
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 47
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
     rows = {str(r["problem"]): (str(r["outcome"]),
                                 str(r["outcome_detail"] or ""))
             for r in conn.execute(
@@ -1168,3 +1168,161 @@ def test_v45_widens_trigger_kind_check_with_routine_fired(tmp_path):
         " AND name='idx_sd_problem'").fetchone()
     m._migrate_to_v45(conn)  # idempotent
     conn.close()
+
+
+# ---------------------------------------------------------------------
+# v48 — the human interface (human_interface_design.md §3.1-§3.4)
+# ---------------------------------------------------------------------
+
+def _rewind_to_v47(conn: sqlite3.Connection) -> None:
+    """Undo exactly the v48 surface on a current-schema DB so a following
+    `init_schema` runs the real forward step. The FK child goes first:
+    SQLite refuses to drop a parent table while a live column still
+    references it."""
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE problems DROP COLUMN project")
+    conn.execute("ALTER TABLE problems DROP COLUMN ingest_report")
+    conn.execute("ALTER TABLE strategist_decisions DROP COLUMN actor")
+    conn.execute("ALTER TABLE programme_revisions DROP COLUMN summary")
+    conn.executescript("DROP TABLE human_commands; DROP TABLE projects;")
+    conn.execute("PRAGMA user_version = 47")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _v47_db(path: Path, problems: tuple = ()) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    for name in problems:
+        conn.execute("INSERT INTO problems (name, created_at)"
+                     " VALUES (?, ?)", (name, db.now()))
+    _rewind_to_v47(conn)
+    return conn
+
+
+def test_v48_backfills_every_problem_into_a_project(tmp_path: Path) -> None:
+    """§3.1 backfill: a dotted problem name defaults into a Project named
+    by its FIRST segment, a dotless one into a Project of its own name,
+    and the referenced `projects` rows are minted by the backfill itself
+    — after it no problem row is left project-less."""
+    conn = _v47_db(tmp_path / "v47.db",
+                   ("Erdos.p1", "Erdos.p10", "union_closed"))
+    db.init_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert {str(r["name"]): str(r["project"]) for r in conn.execute(
+        "SELECT name, project FROM problems")} == {
+        "Erdos.p1": "Erdos", "Erdos.p10": "Erdos",
+        "union_closed": "union_closed"}
+    assert {str(r["name"]) for r in conn.execute(
+        "SELECT name FROM projects")} == {"Erdos", "union_closed"}
+    assert list(conn.execute("PRAGMA foreign_key_check")) == []
+    conn.close()
+
+
+def test_v48_decision_rebuild_keeps_ids_and_defaults_actor(tmp_path) -> None:
+    """v48 rebuilds strategist_decisions for the 'human' trigger_kind (the
+    v45 live-DDL rebuild, one value further) and appends `actor`. Carried
+    rows keep their ids and read as the machine's own; the new CHECKs
+    admit a human row and reject an unknown actor; indexes survive;
+    the step is idempotent."""
+    import sqlite3 as _sqlite3
+    from Tooling.state import db_migrations as m
+    conn = _sqlite3.connect(str(tmp_path / "old.db"))
+    conn.row_factory = _sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript("""
+        CREATE TABLE problems (name TEXT PRIMARY KEY);
+        CREATE TABLE strategist_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL REFERENCES problems(name),
+            trigger_kind TEXT NOT NULL CHECK(trigger_kind IN
+                ('first_launch','pending_review','routine',
+                 'inject_batch_done','audit','stall','routine_fired')),
+            decision_kind TEXT NOT NULL);
+        CREATE INDEX idx_sd_problem ON strategist_decisions(problem);
+        INSERT INTO problems VALUES ('p');
+        INSERT INTO strategist_decisions
+            (id, problem, trigger_kind, decision_kind)
+            VALUES (41, 'p', 'stall', 'ConfirmShelve');
+    """)
+    m._v48_rebuild_strategist_decisions(conn)
+
+    old = conn.execute(
+        "SELECT id, actor FROM strategist_decisions").fetchall()
+    assert [(r["id"], r["actor"]) for r in old] == [(41, "strategist")]
+    conn.execute(
+        "INSERT INTO strategist_decisions"
+        " (problem, trigger_kind, decision_kind, actor)"
+        " VALUES ('p', 'human', 'ConfirmShelve', 'human')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO strategist_decisions"
+            " (problem, trigger_kind, decision_kind, actor)"
+            " VALUES ('p', 'human', 'ConfirmShelve', 'operator')")
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index'"
+        " AND name='idx_sd_problem'").fetchone()
+    m._v48_rebuild_strategist_decisions(conn)  # idempotent
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions").fetchone()[0] == 2
+    conn.close()
+
+
+def test_v48_human_commands_idempotency_key_is_unique(tmp_path) -> None:
+    """§3.3: the queue's replay defence is the UNIQUE idempotency_key —
+    a re-POSTed command collides instead of enqueuing twice."""
+    conn = sqlite3.connect(str(tmp_path / "hc.db"), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('p', ?)",
+                 (db.now(),))
+    ins = ("INSERT INTO human_commands (problem, kind, payload,"
+           " idempotency_key, status, created_at)"
+           " VALUES ('p', 'ConfirmShelve', '{}', 'k1', 'queued', ?)")
+    conn.execute(ins, (db.now(),))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(ins, (db.now(),))
+    conn.close()
+
+
+def test_v48_migrated_db_matches_a_fresh_one(tmp_path: Path) -> None:
+    """Both directions of the completion condition: a v47-shaped DB
+    migrated forward and a fresh `init_schema` DB end at the same
+    user_version and the same column shape on every table v48 touches —
+    including the two new tables' DDL."""
+    fresh = sqlite3.connect(str(tmp_path / "fresh.db"), timeout=30)
+    fresh.row_factory = sqlite3.Row
+    db.init_schema(fresh)
+    old = _v47_db(tmp_path / "old.db", ("Erdos.p1",))
+    db.init_schema(old)
+
+    def shape(conn, table):
+        return [(r[1], r[2], r[3], r[4], r[5])
+                for r in conn.execute(f"PRAGMA table_info({table})")]
+
+    # Column ORDER is load-bearing on strategist_decisions (the rebuild
+    # copies with SELECT *) and free everywhere else, so it is pinned as a
+    # list here and as a set for programme_revisions — whose order is
+    # vintage-dependent by construction: `last_words` is added by the
+    # UNVERSIONED post-ladder block, i.e. after v48 on a fresh DB and
+    # before it on a disk that already ran the old code.
+    for table in ("problems", "strategist_decisions", "projects",
+                  "human_commands"):
+        assert shape(old, table) == shape(fresh, table), table
+    assert (sorted(shape(old, "programme_revisions"))
+            == sorted(shape(fresh, "programme_revisions")))
+    for table in ("projects", "human_commands"):
+        q = ("SELECT sql FROM sqlite_master WHERE type='table'"
+             " AND name = ?")
+        assert (old.execute(q, (table,)).fetchone()[0]
+                == fresh.execute(q, (table,)).fetchone()[0]), table
+    assert (old.execute("PRAGMA user_version").fetchone()[0]
+            == fresh.execute("PRAGMA user_version").fetchone()[0]
+            == db._CURRENT_USER_VERSION)
+    old.close()
+    fresh.close()

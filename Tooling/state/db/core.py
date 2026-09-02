@@ -482,10 +482,13 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- first-class since 2026-08-24 (was conflated
                             -- with inject_batch_done, leaving the rescue
                             -- rate grep-only).
+                            -- 'human' (v48, human_interface_design §3.2): a
+                            -- person's command, not a clock or a cascade. Its
+                            -- `actor` column is APPENDED by `_migrate_to_v48`.
                             CHECK(trigger_kind IN
                                   ('first_launch','pending_review','routine',
                                    'inject_batch_done','audit','stall',
-                                   'routine_fired')),
+                                   'routine_fired','human')),
     decision_kind       TEXT NOT NULL
                             -- 'Reopen'/'InitializeDefs': LEGACY, never emitted now
                             -- (see strategist.DECISION_KINDS); retained so pre-
@@ -768,7 +771,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 47
+_CURRENT_USER_VERSION = 48
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
