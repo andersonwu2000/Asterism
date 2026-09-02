@@ -7,7 +7,7 @@ Inject siblings all resolved).
 
 `_section_inject_batch_outcomes` is the render both the Strategist's
 Context.md and the Adversary's PROGRAMME projection call directly
-(`pipeline/adversary.py` imports it from this package by name — the
+(`pipeline/round_materials.py` imports it from this package by name — the
 facade and this module both have to keep answering to it).
 
 Split out of `phase2_context.py` 2026-08-28 (Phase B, B2) unchanged.

@@ -39,7 +39,7 @@ target of a shared name is the CONSUMING module, not the defining one
 — there are no recorded `monkeypatch.setattr(phase2_context, ...)` (or
 any alias thereof) sites anywhere in the repo (verified 2026-08-28), so
 this facade carries no split patch-target risk. One direct-import path
-bypasses the facade on purpose: `pipeline/adversary.py` imports
+bypasses the facade on purpose: `pipeline/round_materials.py` imports
 `_section_inject_batch_outcomes` straight from this package
 (`from ..agent.phase2_context import _section_inject_batch_outcomes`)
 — that resolves through this same re-export, so both paths answer to

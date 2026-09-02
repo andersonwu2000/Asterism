@@ -332,6 +332,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
 
     from ...state import programme as _programme
     from .. import adversary as _adversary
+    from .. import round_materials as _round_materials
 
     dialogue: list[dict] = []
     rounds_used = 0
@@ -465,6 +466,17 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                                  "criticisms": verdict["criticisms"],
                                  "verdict": verdict,
                                  "proposal": proposal_body})
+                # The author's companions were written once, at spawn,
+                # while the judge's projection is rebuilt every round —
+                # so a brick that landed mid-debate was a fact only the
+                # judge could see, and it fired criterion 5 on the
+                # mismatch the packet itself made. Same refresher, same
+                # four files, into the author's own dir (2026-09-03).
+                # Context.md is NOT touched: it is the snapshot the
+                # judge holds a verbatim copy of.
+                _round_materials.refresh(
+                    conn, workspace=workspace, problem=problem,
+                    group_id=group_id, target_dir=attempts_dir)
                 # rounds_left = revisions still available AFTER this
                 # rebuttal: a retry fires whenever rounds_used <
                 # max_rounds, so exactly max_rounds - rounds_used

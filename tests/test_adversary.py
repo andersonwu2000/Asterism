@@ -1282,3 +1282,66 @@ def test_no_current_rev_leaves_the_snapshot_untouched(
     ctx = (proj / "Context.md").read_text(encoding="utf-8")
     assert "no programme yet" in ctx
     assert "Programme revision text elided" not in ctx
+
+
+# ── one record for both sides of the debate (2026-09-03) ────────────
+# The judge's projection is rebuilt every round; the author's
+# companions were frozen at spawn. A brick that landed mid-debate was
+# therefore visible to the judge and invisible to its author, and the
+# judge fired criterion 5 on a mismatch the packet itself had made
+# (four labelling remedies: 07-29, 08-01, 08-15, 08-31). One refresher
+# now writes the same round-fresh files into both working dirs.
+
+
+def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A brick that lands while the debate runs must reach the AUTHOR's
+    companions before it is asked to revise — otherwise it defends a
+    proposal against a record only its judge can see."""
+    _insert_root(conn)
+    monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "1")
+    seen: "dict[str, str]" = {}
+    state = {"strategist": 0, "landed": False}
+
+    def fake_spawn(**kw):
+        ad = kw["attempts_dir"]
+        if kw.get("kind") == "adversary":
+            if not state["landed"]:  # a sibling lands a brick mid-debate
+                state["landed"] = True
+                db.insert_goal(
+                    conn, problem="p", slug="mid_debate",
+                    lean_path="Problems/p/proofs/L_mid_debate.lean",
+                    statement="theorem mid_debate : 2 = 2",
+                    origin="forward", depth=1, status="proved")
+                conn.commit()
+            (ad / "verdict.json").write_text(
+                json.dumps({"criteria": _criteria(c2="objection")}),
+                encoding="utf-8")
+            return 0
+        state["strategist"] += 1
+        if kw.get("is_retry"):
+            seen["catalog"] = (ad / "CATALOG.md").read_text(
+                encoding="utf-8")
+            seen["tree"] = (ad / "TREE.md").read_text(encoding="utf-8")
+        (ad / "decision.json").write_text(
+            json.dumps({"kind": "Inject", "pipeline": "Forward",
+                        "proof": "Theorem. b\n## Need\nb\n"
+                                 "Proof. as argued."}),
+            encoding="utf-8")
+        (ad / "proposal.md").write_text(
+            _PROPOSAL.replace("# Step", f"# Step v{state['strategist']}"),
+            encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
+        workspace=workspace, intent=pintent, pipeline_id="adv-refresh")
+
+    assert "catalog" in seen, "the revision round never ran"
+    assert "mid_debate" in seen["catalog"], (
+        "the author revised against a CATALOG.md frozen at spawn")
+    assert "mid_debate" in seen["tree"], (
+        "the author revised against no tree at all")

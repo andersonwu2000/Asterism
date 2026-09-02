@@ -675,7 +675,7 @@ _WATERMARKS = {
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/verify.py": 1200,  # 1150→1200 2026-09-02: the Ingest report gate checks the four paper headings (owner ruling) — conscious bump  # +32 2026-09-02 HID D2: the Ingest-report structural gate (unconditional since the wake prompts ask for the field)  # +9 2026-08-30 two-part brick shape gate on Inject proof  # +17 2026-08-30 refuted needs the gate-born brick; Ingest accepts a disproved root  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30; +7 2026-08-30 action gate reads target_id, shelved roots not in flight (3e61beb9 shipped red here — caught 05:59Z)
     "Tooling/pipeline/strategist/commit.py": 1070,  # +15 2026-09-02 HID D2: the Ingest report stored + rendered on the problem-terminal path  # +39 2026-09-02 HID §3.2/§3.3: `actor` threaded through every INSERT + the human Inject's dispatch band  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
-    "Tooling/pipeline/strategist/wake.py": 906,  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/wake.py": 918,  # 906→918 2026-09-03: the author's round-fresh record — `round_materials.refresh` into the attempts dir at every rebuttal round (the new module holds the rendering) — conscious bump  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
     # here) split move-only into `Tooling/agent/phase2_context/` along the
     # file's own section breaks (task B2): `dossier.py` is the pending-
@@ -683,8 +683,8 @@ _WATERMARKS = {
     # sections); `outcomes.py` is the Inject-batch results (delegate/
     # delivered-group summaries, the per-step scoreboard + BATCHES.md,
     # `_prose_label`, worker declines, pending reopens — `pipeline/
-    # adversary.py` imports `_section_inject_batch_outcomes` from this
-    # package directly, not through the facade); `compile.py` is the rest
+    # round_materials.py` imports `_section_inject_batch_outcomes` from
+    # this package directly, not through the facade); `compile.py` is the rest
     # of the Strategist side (trigger/gate/stall sections, roster/replay/
     # plan/directive/tree/charter, `compile_strategist_context` itself,
     # `_CATALOG_RECENT_N`); `forward.py` is the Forward side (brief/

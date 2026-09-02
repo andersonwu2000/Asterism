@@ -23,7 +23,6 @@ lines go to the strategist via the retry channel), all `clear` → pass.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import json
 import re
 import shutil
@@ -183,7 +182,6 @@ def build_projection(*, round_no: int, attempts_dir: Path,
                      proof_warn: Optional[str],
                      group_id: "int | None" = None) -> Path:
     """Assemble the whitelist verbatim into an isolated working dir."""
-    from ..agent.phase2_context import _section_inject_batch_outcomes
     from ..state import programme
 
     proj = attempts_dir / PROJECTION_DIRNAME / f"r{round_no}"
@@ -220,18 +218,31 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         src = problem_dir / fname
         if src.exists():
             shutil.copyfile(src, proj / fname)
-    # TREE.md is rendered fresh from THIS round's connection (2026-08-31,
-    # 131 fleet reports: the dispatcher's copy could describe another
-    # moment than the projection judging it). Fallback to the on-disk
-    # copy only if the render itself fails.
-    from ..state import tree as _tree
-    try:
-        (proj / "TREE.md").write_text(_tree.render(conn, problem),
-                                      encoding="utf-8")
-    except Exception:  # noqa: BLE001 — degrade to the dispatcher's copy
-        src = problem_dir / "TREE.md"
-        if src.exists():
-            shutil.copyfile(src, proj / "TREE.md")
+    # TREE.md / CATALOG.md / BATCHES.md / ADJUDICATIONS.md are the
+    # round-fresh record, written by the ONE refresher both sides of the
+    # debate now call (`round_materials.refresh`, 2026-09-03) — the
+    # author gets the same four files in its own dir at every rebuttal
+    # round, so a brick that lands mid-debate stops being a fact only
+    # the judge can see. The batch-outcome render falls out of writing
+    # BATCHES.md; it is welded into PROGRAMME.md below.
+    #
+    # Workspace from attempts_dir (fixed <workspace>/.attempts/<pid>
+    # layout), NOT problem_dir: problem nesting varies (flat vs
+    # Problems/<Domain>/<name>), and the wrong root made the catalog's
+    # signature file-read silently fall back to the bare DB statement —
+    # the judge then saw `Prop` where the strategist's own CATALOG
+    # carried the full def, and prosecuted an honest citation as
+    # fabrication for two rounds (cube_e2e 07-29).
+    #
+    # `target_dir=proj` also gives the judge the same lazy BATCHES.md
+    # companion the strategist has — the briefs it is checking the
+    # Argument against are the ones under judgement, and a 1200-byte cut
+    # through them is how a judge came to quote a sentence that ended
+    # mid-clause (08-02).
+    from . import round_materials as _round_materials
+    outcome_lines = _round_materials.refresh(
+        conn, workspace=attempts_dir.parent.parent, problem=problem,
+        group_id=group_id, target_dir=proj)
     # The decision-kind contract is reference material, not instruction:
     # 17 lines that were inlined into every judge spawn's prompt. It
     # rides the projection instead, next to the decisions it governs.
@@ -273,12 +284,9 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         # manufactures exactly the status-drift defects the adversary
         # keeps firing"; "no stated precedence"). The evidence stays
         # byte-identical below the label, so quotations remain checkable.
-        try:
-            _taken = _dt.datetime.fromtimestamp(
-                ctx.stat().st_mtime, tz=_dt.timezone.utc,
-            ).strftime("%Y-%m-%d %H:%M UTC")
-        except OSError:
-            _taken = "unknown"
+        _t = _round_materials.snapshot_taken(ctx)
+        _taken = (_t.strftime("%Y-%m-%d %H:%M UTC") if _t is not None
+                  else "unknown")
         ctx_text = ctx.read_text(encoding="utf-8")
         # Identity-gated elision (owner condition, 2026-08-15): the
         # snapshot embeds the Programme revision the author saw, and
@@ -311,38 +319,12 @@ def build_projection(*, round_no: int, attempts_dir: Path,
             " status decides your verdict, ask the record:"
             " `inspect({\"decl\": \"<slug>\"})` reads it live.)_\n\n"
             + ctx_text, encoding="utf-8")
-    # CATALOG.md is lazily machine-generated per assembly and never
-    # lives in problem_dir — generate it into the projection directly
-    # (the old problem_dir copy was dead code: the judge could never
-    # check "X already landed" claims; 07-19 feedback).
-    # Workspace from attempts_dir (fixed <workspace>/.attempts/<pid>
-    # layout), NOT problem_dir: problem nesting varies (flat vs
-    # Problems/<Domain>/<name>), and the wrong root made the signature
-    # file-read silently fall back to the bare DB statement — the judge
-    # then saw `Prop` where the strategist's own CATALOG carried the
-    # full def, and prosecuted an honest citation as fabrication for
-    # two rounds (cube_e2e 07-29).
-    from ..agent.context import (write_adjudications_companion,
-                                 write_catalog_companion)
-    write_catalog_companion(conn, problem, proj,
-                            workspace=attempts_dir.parent.parent)
-    # Ruling history rides the same projection (2026-08-25): a proposal
-    # that re-parks or revives an already-adjudicated goal should be
-    # judged against the recorded rulings, not from memory.
-    write_adjudications_companion(conn, problem, proj)
-
     # Current rev (hoisted above) + the terminal outcomes since it,
     # welded into one file: the outcomes ARE this rev's execution
     # record, and the judge's first duty is checking the candidate's
-    # Argument against them (判官必見源). Outcome lines reuse the exact
-    # section the strategist context renders.
-    # `attempts_dir=proj` so the judge gets the same lazy companion the
-    # strategist does — the briefs it is checking the Argument against are
-    # the ones under judgement, and a 1200-byte cut through them is how
-    # a judge came to quote a sentence that ended mid-clause (08-02).
-    outcome_lines = _section_inject_batch_outcomes(
-        conn, problem, workspace=attempts_dir.parent.parent,
-        group_id=group_id, attempts_dir=proj)
+    # Argument against them (判官必見源). The outcome lines are the ones
+    # `refresh` above rendered — the exact section the strategist
+    # context renders, off the same call that wrote BATCHES.md.
     (proj / "PROGRAMME.md").write_text(
         (current["body"] if current is not None else
          "(no Programme yet — this cycle's proposal is rev 1; judge it "
