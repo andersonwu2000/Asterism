@@ -12,6 +12,7 @@ import { frameClass } from '../lib/textFrame'
 import { renderInline, renderProse } from '../lib/prose'
 import { LeanProbe } from '../components/LeanProbe'
 import LogTail from '../components/LogTail'
+import { SignalSheet } from '../components/CommandSheet'
 import { SectionLabel } from '../components/ui'
 import { UsageLedger } from './Usage'
 import type { Meta, RunStatus, RunWorker } from '../lib/types'
@@ -248,6 +249,13 @@ function Lane({
   // the reader's Lean slot as an interactive probe — the cursor shows
   // the goal at any line while the agent keeps writing the original
   const [probe, setProbe] = useState<{ seed: string; seq: number } | null>(null)
+  // §3.7: a person may stop ONE in-flight Formalizer. Only a Formalizer
+  // — the applier refuses every other kind — and only when the run feed
+  // names the pipeline, because a kill is aimed at an id and never at a
+  // kind or a name (CLAUDE.md's broad-filter rule, in the engine).
+  const [stopping, setStopping] = useState(false)
+  const killable = w.kind === 'Formalizer' && laneProblem !== null && laneProblem !== undefined
+  const pipelineId = (w.pipeline_id ?? '').trim()
   return (
     <div className="rounded-xl border border-edge bg-surface p-3">
       <div className="flex items-baseline gap-2.5">
@@ -286,6 +294,15 @@ function Lane({
         >
           on it {laneAge(w.leased_at) ?? '—'}
         </span>
+        {killable && pipelineId !== '' && !stopping && (
+          <button
+            className="shrink-0 cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+            onClick={() => setStopping(true)}
+            title="stop this worker — you choose what becomes of its goal"
+          >
+            stop…
+          </button>
+        )}
       </div>
       {w.statement &&
         (() => {
@@ -314,6 +331,24 @@ function Lane({
         <div className="mt-1 text-[11px] text-ink-dim" title={w.group.charter}>
           {renderInline(w.group.charter, `ch${w.group.id}`)}
         </div>
+      )}
+      {killable && pipelineId === '' && (
+        /* the one lane control with no door: a kill names ONE pipeline
+           id, and `/api/run` reports the queue lease, which does not
+           carry it. Saying so beats a button over nothing — the same
+           answer the run parameters give for a knob with no endpoint. */
+        <div className="mt-1.5 text-[11px] text-ink-faint">
+          this console cannot stop this worker: the run feed does not name the pipeline it
+          is, and a kill signal must name one.
+        </div>
+      )}
+      {killable && pipelineId !== '' && stopping && (
+        <SignalSheet
+          problem={laneProblem!}
+          pipelineId={pipelineId}
+          label={`${w.kind.toLowerCase()} · ${w.slug}`}
+          onClose={() => setStopping(false)}
+        />
       )}
       {w.kind === 'Strategist' && w.cycle && <CycleLine cycle={w.cycle} />}
       {w.file ? (

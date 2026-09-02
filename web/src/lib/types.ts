@@ -428,6 +428,14 @@ export interface RunWorker {
   slug: string
   /** which problem this agent is on — a pattern scope runs several */
   problem?: string | null
+  /** the dispatched pipeline this lane IS (`pipelines.id`) — what a
+   * §3.7 kill signal names, since a kill is aimed at one worker and
+   * never at a kind or a name. Optional because `/api/run` does not
+   * carry it yet: the lane comes from the queue lease, which holds no
+   * pipeline id, and no endpoint exposes the in-flight `pipelines`
+   * rows. Without it the console cannot address a worker, and says so
+   * rather than guessing one out of a path. */
+  pipeline_id?: string | null
   /** the discussion group this agent speaks for (Strategist seats are
    * per group since v35); null = not a group seat */
   group?: Group | null
