@@ -283,7 +283,7 @@ _WATERMARKS = {
     # fresh locks per module — the monolith never grows back.
     "Tooling/core/dispatcher/__init__.py": 250,
     "Tooling/core/dispatcher/refill.py": 300,
-    "Tooling/core/dispatcher/triggers.py": 632,  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
+    "Tooling/core/dispatcher/triggers.py": 668,  # +36 2026-09-03 `strategist_has_nothing_to_deliver` — the residual-case read of the classifier that door uses  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     # 650→660: +7 2026-09-02 HID §3.7 — `_run_pipeline` binds its thread to
     # its pipeline id (`core/spawn_registry`), which is what lets a
     # person's kill signal find THIS worker's process tree by pid rather
@@ -294,7 +294,7 @@ _WATERMARKS = {
     # signal's sink over its own futures map, hands it to the command
     # applier, and substitutes a killed pipeline's ending with the
     # person's signal before the existing cascade — conscious bump.
-    "Tooling/core/dispatcher/loop.py": 1340,  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
+    "Tooling/core/dispatcher/loop.py": 1345,  # +5 2026-09-03 the pop door also drops a Strategist row with nothing left to deliver  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

@@ -1147,6 +1147,73 @@ def test_a_terminal_group_holds_no_seat(conn: sqlite3.Connection) -> None:
                                     "Group") is False
 
 
+def test_a_strategist_row_with_nothing_to_deliver_is_dropped(
+    conn: sqlite3.Connection,
+) -> None:
+    """The second half of the same door. A batch-done row enqueued while
+    a wake was in flight can be EMPTY by the time it pops: the wake's own
+    commit acknowledged that batch (`strategist.batch_ack`), or another
+    wake did. Spawning on it costs a full Strategist cycle to say Noop —
+    and bumps the clocks, which is worse than the cycle.
+
+    'Nothing to deliver' is exactly the classifier's residual case: no
+    unacknowledged batch, no pending review, no stall, no fired routine
+    verdict, and the routine clock not due. It is read OFF the classifier
+    (`_derive_strategist_trigger`) rather than re-listing the reasons, so
+    a reason added there can never be forgotten here.
+
+    The routine clock is untouched: the machine never stops itself. A due
+    routine IS something to deliver and keeps its seat."""
+    from Tooling.core.dispatcher.triggers import (
+        strategist_has_nothing_to_deliver as _empty)
+    from Tooling.state import groups as _groups
+    conn.execute(
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('e', ?, 1)", (db.now(),))
+    root = db.insert_goal(
+        conn, problem="e", slug="main", lean_path="Problems/e/Root.lean",
+        statement="T", origin="root")
+    top = _groups.ensure_top_group(conn, "e")
+    conn.commit()
+    # An open root: there is live work, so the group is not stalled — and
+    # with no batch, no review and no routine due, this row owes nobody
+    # anything.
+    assert _empty(conn, str(top), "Group") is True
+
+    # Each reason on its own keeps the seat.
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, payload, batch_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('e', 0, 'routine', 'Inject', ?, '{}', 'bE', 'success',"
+        "         ?, ?)", (top, ts, ts))
+    conn.commit()
+    assert _empty(conn, str(top), "Group") is False
+    conn.execute("UPDATE strategist_decisions SET report_carried_at = NULL,"
+                 " updated_at = '1970-01-01T00:00:00+00:00'"
+                 " WHERE batch_id = 'bE'")
+    conn.execute("UPDATE groups SET last_strategist_at = ? WHERE id = ?",
+                 (db.now(), top))
+    conn.commit()
+    assert _empty(conn, str(top), "Group") is True
+
+    db.update_goal_status(conn, root, "pending_strategist_review")
+    assert _empty(conn, str(top), "Group") is False
+    db.update_goal_status(conn, root, "open")
+    assert _empty(conn, str(top), "Group") is True
+
+    # A due routine clock is work: the periodic wake outranks every
+    # event, and dropping its row is the machine stopping itself.
+    assert _empty(conn, str(top), "Group", routine_interval_min=1.0,
+                  since_iso="1970-01-01T00:00:00+00:00") is False
+
+    # Pre-v35 rows are keyed by problem name and keep the anti-wedge
+    # default: a row this door cannot resolve to a group is never
+    # dropped for emptiness.
+    assert _empty(conn, "e", "Problem") is False
+
+
 def test_attempt_owner_alive(tmp_path: Path) -> None:
     """#90 liveness probe: live owner_pid → True; dead pid or missing
     manifest → False (orphan, safe to clean)."""

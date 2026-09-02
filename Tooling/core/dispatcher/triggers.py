@@ -555,6 +555,43 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     return ("routine", pending_id)
 
 
+def strategist_has_nothing_to_deliver(
+        conn: sqlite3.Connection, target_id: str,
+        target_kind: str = "Problem", *,
+        routine_interval_min: float = 0.0,
+        since_iso: "str | None" = None) -> bool:
+    """The second half of the pop-time door (`_row_is_stale` is the
+    first): a queued Strategist row whose group owes nobody anything.
+
+    Reachable since the acknowledgement law (2026-09-03): a batch-done
+    row enqueued while a wake was in flight can be empty by the time it
+    pops, because that wake's own commit acknowledged the batch it was
+    enqueued for. Spawning on it buys a full Strategist cycle to reach
+    Noop — and advances the wake clocks, which is the worse half.
+
+    Read OFF the classifier: 'nothing to deliver' IS its residual case
+    (the trigger it falls through to when no reason applies), so a reason
+    added to `_derive_strategist_trigger` cannot be forgotten here. The
+    routine clock keeps its seat — a due routine is work, and the machine
+    never stops itself.
+
+    Group rows only. A pre-v35 `Problem` row keeps the anti-wedge default
+    it was given: reached by a name, never dropped for emptiness.
+    """
+    if str(target_kind or "Problem") != "Group":
+        return False
+    gid, problem = _strategist_target(conn, str(target_id), "Group")
+    if problem is None or gid is None:
+        return False
+    trigger, _pending = _derive_strategist_trigger(
+        conn, problem, group_id=int(gid),
+        routine_interval_min=routine_interval_min, since_iso=since_iso)
+    if trigger != "routine":
+        return False
+    return not _routine_due(conn, problem, routine_interval_min,
+                            since_iso=since_iso, group_id=int(gid))
+
+
 def _row_is_stale(conn: sqlite3.Connection,
                   target_id: str, kind: str,
                   target_kind: str = "Problem") -> bool:

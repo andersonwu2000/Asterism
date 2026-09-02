@@ -39,7 +39,8 @@ from .worker import (WorkerDone, FutureMeta, SchedulerState, _run_pipeline,  # n
 from .refill import (bfs_refill, _verify_problem, _problem_of_target,  # noqa: E402
                      env_blocked_kinds,
                      _dispatch_is_duplicate)
-from .triggers import reconcile_stuck_states, strategist_triggers, _row_is_stale  # noqa: E402
+from .triggers import (reconcile_stuck_states, strategist_triggers,  # noqa: E402
+                       strategist_has_nothing_to_deliver, _row_is_stale)
 from .lock import stop_file_path, _acquire_singleton_lock, _spawn_handoff_successor  # noqa: E402
 from ...state import db, thresholds, transitions, tree
 from ...state import commands as _commands
@@ -1158,6 +1159,20 @@ def run(workspace: Path, *, once: bool = False,
                 print(f"[dispatch] skip {kind} "
                       f"{target_kind}={target_id} — target already "
                       f"settled (terminal / retired / gone)", flush=True)
+                db.complete_queue_row(conn, qid)
+                continue
+            # …and the row whose REASON settled, not its target: a
+            # batch-done seat whose batch was acknowledged by the wake
+            # that was in flight when it was enqueued. Same door, its
+            # own sentence — the two say different things to whoever
+            # reads the log.
+            if kind == "Strategist" and strategist_has_nothing_to_deliver(
+                    conn, target_id, target_kind,
+                    routine_interval_min=strategist_interval_min,
+                    since_iso=daemon_start_iso):
+                print(f"[dispatch] skip Strategist "
+                      f"{target_kind}={target_id} — nothing to deliver",
+                      flush=True)
                 db.complete_queue_row(conn, qid)
                 continue
             # Lazy verify gate — must hold before any worker spawn.
