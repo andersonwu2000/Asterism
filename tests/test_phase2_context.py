@@ -1903,6 +1903,45 @@ def test_pending_review_surfaces_adjudication_history(
     assert "long second sentence" in adj
 
 
+def test_a_human_ruling_is_not_rendered_as_a_group_ruling(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """§3.2: the adjudication record exists so a reviewer answers the
+    LAST ruling instead of rediscovering it — which requires knowing who
+    made it. A human park is the one ruling a group may not simply
+    overturn, so rendering it as `grp<N>` (the group the command was
+    filed under) hands the reviewer a peer's opinion where a person's
+    decision stands. Both the inline history and the full companion say
+    so."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    _insert_ruling(conn, target_id=root, group_id=501,
+                   reason="Park until the census lands.")
+    conn.execute(
+        "UPDATE strategist_decisions SET actor = 'human',"
+        " trigger_kind = 'human', reason = 'Owner: stop this line.'"
+        " WHERE target_id = CAST(? AS TEXT)", (root,))
+    conn.commit()
+
+    attempts_dir = tmp_path / "_attempts_human_adj"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="pending_review",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+        pending_review_id=root,
+    )
+    text = out.read_text(encoding="utf-8")
+    start = text.index("### Adjudication history on this goal")
+    end = text.find("##", start + 4)
+    section = text[start:end if end > 0 else len(text)]
+    assert "grp501" not in section
+    assert "the human parked it" in section
+    adj = (attempts_dir / "ADJUDICATIONS.md").read_text(encoding="utf-8")
+    assert "grp501" not in adj
+    assert "human" in adj
+
+
 def test_strategist_context_points_at_adjudications(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, tmp_path: Path,

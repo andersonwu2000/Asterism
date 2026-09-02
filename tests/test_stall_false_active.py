@@ -854,3 +854,111 @@ def test_stall_trigger_kind_is_batch_done_like_everywhere(
     assert not (PROMPT_DIR / "strategist" / "stall.md").exists()
     assert (PROMPT_DIR / "strategist" / "inject_batch_done.md").exists()
     conn.close()
+
+
+# ---------------------------------------------------------------------
+# human authority (human_interface_design.md §3.2) — a person's park is
+# a TERMINAL stop, not a machine park waiting on a prerequisite
+# ---------------------------------------------------------------------
+
+
+def _human_confirm_shelve(conn, goal_id: int, *,
+                          batch: "str | None" = None) -> int:
+    """The row a human `ConfirmShelve` command lands (§3.3): same table,
+    same kind, `trigger_kind='human'` and `actor='human'`. Unpaired by
+    design — the pairing rule exists because the MACHINE may never stop
+    itself, and the human is the one role allowed to."""
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " actor, created_at, updated_at)"
+        " VALUES (?, 0, 'human', 'ConfirmShelve', CAST(? AS TEXT),"
+        " ?, 'success', 'human', ?, ?)",
+        (P, goal_id, batch, _db.now(), _db.now()))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_human_park_is_not_a_promise_waiting_on_a_prerequisite(
+        tmp_path: Path) -> None:
+    """§3.2: a human ConfirmShelve has no paired Inject, so it can never
+    be "waiting on its batch" — not even if the applier files it under a
+    batch id alongside the machine's own in-flight work. Reading it as a
+    live promise would hold the parent open forever on a wait that has
+    no end."""
+    conn = _conn(tmp_path)
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _human_confirm_shelve(conn, leaf, batch="promise-h")
+    _mint_inject(conn, batch="promise-h", outcome=None)   # machine, live
+    assert not _tr._awaiting_promised_batch(conn, leaf)
+    conn.close()
+
+
+def test_machine_park_after_a_human_one_keeps_machine_semantics(
+        tmp_path: Path) -> None:
+    """The other direction of the same rule: the machine's own park is
+    untouched — a live promise batch still holds the parent."""
+    conn = _conn(tmp_path)
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _human_confirm_shelve(conn, leaf)
+    _confirm_shelve(conn, leaf, batch="promise-m")
+    _mint_inject(conn, batch="promise-m", outcome=None)
+    assert _tr._awaiting_promised_batch(conn, leaf)
+    conn.close()
+
+
+def test_human_park_survives_a_later_machine_inject(tmp_path: Path) -> None:
+    """§3.2: the human park is TERMINAL. The machine un-parks its OWN
+    ConfirmShelve by targeting the goal again (that is what makes the
+    goal citable/revivable), and applying that rule to a person's stop
+    would let a redispatch quietly overrule it."""
+    conn = _conn(tmp_path)
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _human_confirm_shelve(conn, leaf)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Inject', CAST(? AS TEXT), 'b9',"
+        " NULL, ?, ?)", (P, leaf, _db.now(), _db.now()))
+    conn.commit()
+    assert _db.is_confirm_shelve_parked(conn, leaf)
+    conn.close()
+
+
+def test_machine_park_is_still_unparked_by_a_later_inject(
+        tmp_path: Path) -> None:
+    """Today's semantics, pinned so the human branch cannot swallow
+    them: the machine's park ends when the Strategist targets the goal
+    again, which is what lets citation revive it."""
+    conn = _conn(tmp_path)
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _confirm_shelve(conn, leaf, batch="promise-m")
+    assert _db.is_confirm_shelve_parked(conn, leaf)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Inject', CAST(? AS TEXT), 'b9',"
+        " NULL, ?, ?)", (P, leaf, _db.now(), _db.now()))
+    conn.commit()
+    assert not _db.is_confirm_shelve_parked(conn, leaf)
+    conn.close()
+
+
+def test_a_human_reopen_ends_the_human_park(tmp_path: Path) -> None:
+    """Terminal does not mean irreversible — it means only the human
+    reverses it. A human Inject on the same goal lifts the park; without
+    this the person who stopped a line could never restart it."""
+    conn = _conn(tmp_path)
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _human_confirm_shelve(conn, leaf)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " actor, created_at, updated_at)"
+        " VALUES (?, 0, 'human', 'Inject', CAST(? AS TEXT), 'bh',"
+        " NULL, 'human', ?, ?)", (P, leaf, _db.now(), _db.now()))
+    conn.commit()
+    assert not _db.is_confirm_shelve_parked(conn, leaf)
+    conn.close()

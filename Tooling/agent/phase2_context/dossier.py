@@ -96,7 +96,7 @@ def _section_pending_review_adjudications(
     groups, each reviewer blind to the last ruling."""
     from .. import context
     rows = list(conn.execute(
-        "SELECT group_id, decision_kind, reason, created_at"
+        "SELECT group_id, decision_kind, reason, created_at, actor"
         " FROM strategist_decisions"
         " WHERE target_id = ? AND decision_kind IN"
         "       ('ConfirmShelve', 'Inject')"
@@ -114,11 +114,16 @@ def _section_pending_review_adjudications(
     if parked:
         for r in rows:
             ts = str(r["created_at"])[:16]
+            # v48 §3.2 — WHO ruled is half the record. A human park is
+            # the one ruling a group may not simply overturn; naming the
+            # filing group would offer it as a peer's opinion.
+            who = ("the human" if str(r["actor"] or "") == "human"
+                   else f"grp{r['group_id']}")
             if r["decision_kind"] == "ConfirmShelve":
-                out.append(f"- {ts} grp{r['group_id']} parked it: "
+                out.append(f"- {ts} {who} parked it: "
                            f"{_first_sentence(str(r['reason'] or ''))}")
             else:
-                out.append(f"- {ts} grp{r['group_id']} re-dispatched it")
+                out.append(f"- {ts} {who} re-dispatched it")
         where = (context.adjudications_companion_path(attempts_dir)
                  if attempts_dir is not None
                  else context.ADJUDICATIONS_COMPANION)

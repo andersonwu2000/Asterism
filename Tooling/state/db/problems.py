@@ -810,7 +810,26 @@ def is_confirm_shelve_parked(conn: sqlite3.Connection, goal_id: int) -> bool:
     ConfirmShelve (a later targeting Inject/Reopen means it was un-parked; a
     subsequent cascade-shelve writes no row, leaving that Inject/Reopen as the
     latest → correctly read as NOT ConfirmShelve-parked). Forward reuse-repoints
-    set produced_goal_id, not target_id, so they never count as un-parking."""
+    set produced_goal_id, not target_id, so they never count as un-parking.
+
+    v48 (human_interface_design.md §3.2) — a HUMAN ConfirmShelve is a
+    TERMINAL park, and the difference is not cosmetic. The machine's park
+    is a WAIT: it is paired with an Inject and ends when the Strategist
+    targets the goal again, which is exactly why a machine redispatch
+    un-parks it. A person's park is the one legal "stop" in a framework
+    whose whole design is that it never stops itself, and it carries no
+    paired Inject to wait for — so a later MACHINE decision on the goal
+    must not lift it. Only the human reverses the human: the rule below
+    reads the latest decision BY THE HUMAN first, and falls through to
+    the machine rule when the person's last word was not a park."""
+    row = conn.execute(
+        "SELECT decision_kind FROM strategist_decisions"
+        " WHERE target_id = ? AND actor = 'human'"
+        " ORDER BY id DESC LIMIT 1",
+        (int(goal_id),),
+    ).fetchone()
+    if row is not None and str(row["decision_kind"]) == "ConfirmShelve":
+        return True
     row = conn.execute(
         "SELECT decision_kind FROM strategist_decisions"
         " WHERE target_id = ? ORDER BY id DESC LIMIT 1",

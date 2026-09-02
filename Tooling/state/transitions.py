@@ -1107,11 +1107,18 @@ def _awaiting_promised_batch(conn: sqlite3.Connection,
     no live promise still settles the parent exactly as before.
     """
     row = conn.execute(
-        "SELECT batch_id FROM strategist_decisions"
+        "SELECT batch_id, actor FROM strategist_decisions"
         " WHERE decision_kind = 'ConfirmShelve'"
         "   AND target_id = CAST(? AS TEXT)"
         " ORDER BY id DESC LIMIT 1", (goal_id,)).fetchone()
-    if row is None or not row["batch_id"]:
+    # v48 (human_interface_design.md §3.2) — a HUMAN park promises
+    # nothing. The pairing rule this predicate reads exists because the
+    # machine may never stop itself; the human is the one role allowed to
+    # simply stop, so their command carries no compensating Inject and no
+    # wait that could ever end. The applier files the row under whatever
+    # batch the wake committed, so a NULL batch_id is not the defence.
+    if (row is None or not row["batch_id"]
+            or str(row["actor"] or "") == "human"):
         return False
     # 'Delegate' joined the promise-carrier set 2026-08-06 (v35 seam,
     # live on the Frankl opener): a park waiting on a sub-group's

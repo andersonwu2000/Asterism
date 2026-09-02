@@ -638,7 +638,8 @@ def write_adjudications_companion(conn: sqlite3.Connection, problem: str,
     rendered (0 = no file written)."""
     rows = list(conn.execute(
         "SELECT d.id, d.group_id, d.target_id, d.decision_kind,"
-        "       d.reason, d.batch_id, d.created_at, g.slug, g.status"
+        "       d.reason, d.batch_id, d.created_at, d.actor,"
+        "       g.slug, g.status"
         " FROM strategist_decisions d JOIN goals g ON g.id = d.target_id"
         " WHERE d.problem = ? AND d.target_id IS NOT NULL"
         "   AND d.decision_kind IN ('ConfirmShelve', 'Inject')"
@@ -681,13 +682,20 @@ def write_adjudications_companion(conn: sqlite3.Connection, problem: str,
                   f"_current status: {rs[0]['status']}_", ""]
         for r in rs:
             ts = str(r["created_at"])[:16]
+            # v48 §3.2 — a human ruling is named as the human's. A park
+            # a person committed is not a peer group's opinion to
+            # overturn, and the filing group's number would read as one.
+            human = str(r["actor"] or "") == "human"
+            who = "the human" if human else f"grp{r['group_id']}"
             if r["decision_kind"] == "ConfirmShelve":
                 reason = " ".join(str(r["reason"] or "").split())
-                lines.append(f"- {ts} grp{r['group_id']} **ConfirmShelve**"
-                             f"{_rev_of(r['batch_id'])}: "
-                             f"{reason or '(no reason recorded)'}")
+                lines.append(f"- {ts} {who} **ConfirmShelve**"
+                             + (" (terminal — only the human reopens it)"
+                                if human else "")
+                             + f"{_rev_of(r['batch_id'])}: "
+                             + f"{reason or '(no reason recorded)'}")
             else:
-                lines.append(f"- {ts} grp{r['group_id']} Inject"
+                lines.append(f"- {ts} {who} Inject"
                              f" (re-dispatched — reopens a parked goal)"
                              f"{_rev_of(r['batch_id'])}")
         lines.append("")

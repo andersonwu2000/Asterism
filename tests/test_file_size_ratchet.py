@@ -343,7 +343,7 @@ _WATERMARKS = {
     # consumers must not block Reopen on shared goals).
     # 08-25 +41: cited-wait conduction (`_review_cited_waiters` — a
     # shelve returns citing waiters to their group's review at once).
-    "Tooling/state/transitions.py": 1900,  # +5 2026-08-30 problem terminal `refuted`
+    "Tooling/state/transitions.py": 1910,  # +5 2026-08-30 problem terminal `refuted`  # +7 2026-09-02 v48 HID §3.2: a human ConfirmShelve is never a live promise (_awaiting_promised_batch)
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -719,7 +719,7 @@ _WATERMARKS = {
     "Tooling/quality/dedupe.py": 1950,
     "Tooling/llm/zen_shim.py": 1950,
     "Tooling/llm/claude_cli.py": 1900,
-    "Tooling/agent/context.py": 1804,  # +4 2026-08-30 intake counterexample section (the disproof turn)
+    "Tooling/agent/context.py": 1815,  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's
     # judge verdict. app.py IS the route table, so an endpoint costs it
