@@ -638,7 +638,8 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 
 def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
                    workspace: Path,
-                   group_id: "int | None" = None) -> None:
+                   group_id: "int | None" = None,
+                   report: "str | None" = None) -> None:
     """Execute a Strategist `Ingest` decision's side effect (anchor+claim
     Phase 4).
 
@@ -684,6 +685,19 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
               f"delivered {len(marked)} brick(s) to group "
               f"{me['parent_group_id']}", flush=True)
         return
+    # The human-readable report (HID §1.2 / §3.4) — stored and rendered
+    # here, on the PROBLEM-terminal path only. A sub-group's Ingest
+    # returned above: it is a delivery upward, and `problems.ingest_report`
+    # is one column per problem, so asking a group that closed nothing for
+    # a reader's report would be a gate naming an action it cannot take.
+    # Absent report → nothing written, no failure (the prompt is staged).
+    if str(report or "").strip():
+        from ...state import report as _report
+        _report.record(conn, problem, report)
+        try:
+            _report.render(conn, problem, db.problem_dir(workspace, problem))
+        except OSError as e:
+            print(f"[strategist] REPORT.md render failed: {e}", flush=True)
     # Tripwire, not a gate (operator ruling 2026-08-02 — log only, the
     # human is not asked). `ingested_at` is what `groups_stalled` and
     # `is_group_stalled` filter on, so the instant the TOP group Ingests,
@@ -923,7 +937,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # into direct ingest); harvest to Library iff `library:`.
         # Falls through to the audit INSERT.
         _commit_ingest(conn, problem=problem, workspace=workspace,
-                       group_id=group_id)
+                       group_id=group_id,
+                       report=decision.payload.get("report"))
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename

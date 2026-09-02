@@ -106,6 +106,10 @@ FILE_SATELLITES: "tuple[FileSatellite, ...]" = (
                   "rendered from programme_revisions (wiped with the "
                   "rows); left behind it hands a rerun the prior run's "
                   "winning worldview (2026-07-19 leak audit)"),
+    FileSatellite(SCOPE_PROBLEM_ROOT, "REPORT.md", SWEPT, False,
+                  "rendered from problems.ingest_report (cleared with "
+                  "the row); reset revokes the terminal, so a survivor "
+                  "is a page announcing a result the DB no longer has"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "_plan.md", SWEPT, False,
                   "strategists sometimes write the plan note at the "
                   "problem root instead of .drafts/ — same leak class as "

@@ -236,12 +236,17 @@ def test_reset_sweeps_drafts_and_presearch(
     (pdir / ".groups" / "369").mkdir(parents=True)
     (pdir / ".groups" / "369" / "PROGRAMME.md").write_text(
         "# rev 2\nthesis...", encoding="utf-8")
+    # REPORT.md = the rendered Ingest report (HID §3.4). Reset clears
+    # `ingested_at`, so a survivor is a page announcing a terminal the
+    # DB no longer records — the PROGRAMME.md leak class exactly.
+    (pdir / "REPORT.md").write_text("# What was proved\n", encoding="utf-8")
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
     assert not (pdir / ".drafts").exists()
     assert not (pdir / ".presearch").exists()
     assert not (pdir / "PROGRAMME.md").exists()
+    assert not (pdir / "REPORT.md").exists()
     assert not (pdir / "_plan.md").exists()
     assert not (pdir / ".groups").exists()
 

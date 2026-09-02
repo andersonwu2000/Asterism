@@ -461,6 +461,85 @@ def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Phase 4b: the human-readable Ingest report (HID 1.2 / 3.4)
+# ---------------------------------------------------------------------------
+
+_REPORT = ("# What was proved\n\n"
+           r"The bound $B(n) \le 2n$ holds for every $n$, carried by "
+           "`L_bound` and `L_step`. The uniform variant was refuted; "
+           "the limiting case is left open.\n")
+
+
+def test_ingest_report_rides_the_decision_and_lands_in_the_db(conn, tmp_path):
+    """3.4: the report the Strategist writes at the terminal is the one
+    thing a mathematician reads first. It arrives as an ordinary decision
+    field (the parser carries unknown keys into `payload` untouched) and
+    the terminal commit stores it on the problem."""
+    from Tooling.pipeline.strategist import _commit_ingest
+    from Tooling.pipeline.strategist.model import parse_decision
+    import json as _json
+    conn.execute("INSERT INTO problems(name,created_at) VALUES ('P.a',?)",
+                 (_db.now(),))
+    conn.commit()
+    (_db.problem_dir(tmp_path, "P.a")).mkdir(parents=True)
+    d, err = parse_decision(_json.dumps({"kind": "Ingest",
+                                         "report": _REPORT}))
+    assert err == "" and d.payload["report"] == _REPORT
+
+    _commit_ingest(conn, problem="P.a", workspace=tmp_path,
+                   report=d.payload.get("report"))
+
+    assert conn.execute(
+        "SELECT ingest_report FROM problems WHERE name = 'P.a'"
+    ).fetchone()[0] == _REPORT
+
+
+def test_ingest_renders_report_md_beside_the_problem(conn, tmp_path):
+    """Rendered like PROGRAMME.md — the DB row is the SoT, the file is a
+    read-only render nobody hand-writes. No report, no file: the prompt
+    that asks for one is not live yet, and an absent report is not a
+    failure."""
+    from Tooling.pipeline.strategist import _commit_ingest
+    from Tooling.state import report as _report
+    conn.execute("INSERT INTO problems(name,created_at) VALUES ('P.a',?)",
+                 (_db.now(),))
+    conn.execute("INSERT INTO problems(name,created_at) VALUES ('P.b',?)",
+                 (_db.now(),))
+    conn.commit()
+    for name in ("P.a", "P.b"):
+        _db.problem_dir(tmp_path, name).mkdir(parents=True)
+
+    _commit_ingest(conn, problem="P.a", workspace=tmp_path, report=_REPORT)
+    _commit_ingest(conn, problem="P.b", workspace=tmp_path, report=None)
+
+    rendered = _db.problem_dir(tmp_path, "P.a") / _report.REPORT_BASENAME
+    text = rendered.read_text(encoding="utf-8")
+    assert "DO NOT EDIT" in text and _REPORT.strip() in text
+    assert not (_db.problem_dir(tmp_path, "P.b")
+                / _report.REPORT_BASENAME).exists()
+
+
+def test_ingest_report_gate_exists_in_both_positions(conn, tmp_path,
+                                                     monkeypatch):
+    """1.2 asks the terminal to carry a human-readable summary. The gate
+    is written now and armed with the prompt: `INGEST_REPORT_REQUIRED`
+    stays False until the wording is live, so today's Strategist is never
+    refused for a field it was never asked for."""
+    from Tooling.pipeline.strategist import Decision, verify_decision
+    from Tooling.pipeline.strategist import verify as _verify
+    g = _seed_goal(conn, "P.a", "foo")
+    _db.mark_deliverable(conn, g)
+    assert _verify.INGEST_REPORT_REQUIRED is False
+    assert verify_decision(Decision(kind="Ingest"), conn, problem="P.a") == ""
+
+    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
+    err = verify_decision(Decision(kind="Ingest"), conn, problem="P.a")
+    assert "report" in err
+    assert verify_decision(
+        Decision(kind="Ingest", payload={"report": _REPORT}),
+        conn, problem="P.a") == ""
+
+# ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------
 

@@ -245,10 +245,15 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     """Full problem view: goal DAG (nodes + strategy edges), strategist
     decision timeline, proofs file list. `daemon` gates the liveness
     claims (status chip, per-goal in-flight pulse) exactly as board()."""
+    # `ingest_report` is v48 (HID §3.4) — probed, like `actor` below, so
+    # a pre-migration disk opened read-only still answers.
+    _rsel = (", ingest_report" if "ingest_report" in
+             {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+             else "")
     prow = conn.execute(
         "SELECT name, created_at, ingest_signoff_pending, ingested_at,"
         " library_bridged_at, strategist_directive, last_strategist_at"
-        " FROM problems WHERE name = ?", (problem,)).fetchone()
+        + _rsel + " FROM problems WHERE name = ?", (problem,)).fetchone()
     if prow is None:
         return None
 
@@ -512,6 +517,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "ingested_at": prow["ingested_at"],
         "library_bridged_at": prow["library_bridged_at"],
         "strategist_directive": prow["strategist_directive"],
+        # the terminal's human-readable summary (§3.4), or null
+        "ingest_report": (prow["ingest_report"] if _rsel else None),
         "goals": goals,
         "strategies": strategies,
         "strategy_edges": edges,

@@ -2459,3 +2459,18 @@ def test_detail_decisions_carry_the_actor(workspace: Path) -> None:
     conn.close()
     detail = _client(workspace).get("/api/problems/p").json()
     assert detail["decisions"][0]["actor"] == "human"
+
+
+def test_detail_carries_the_ingest_report(workspace: Path) -> None:
+    """HID §3.4: the terminal's human-readable summary is on the problem
+    read — the page a mathematician opens, not a file they must find.
+    Null before the terminal, and null for every problem whose Strategist
+    wrote none."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p", ingest_report="# What was proved\n\nThe bound.")
+    _add_problem(conn, "q")
+    conn.close()
+    c = _client(workspace)
+    assert c.get("/api/problems/p").json()["ingest_report"] \
+        == "# What was proved\n\nThe bound."
+    assert c.get("/api/problems/q").json()["ingest_report"] is None

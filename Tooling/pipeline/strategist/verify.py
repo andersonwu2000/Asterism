@@ -37,6 +37,17 @@ USER_AMEND_FILES: frozenset[str] = frozenset(
     {"Defs.lean", "Root.lean", "charter"})
 
 
+#: HID §1.2: the terminal must hand a mathematician a readable summary
+#: (`Ingest.report` → `problems.ingest_report` → `REPORT.md`). The gate
+#: is written and tested in both positions NOW and armed LATER: the
+#: wording that asks for the field is staged in
+#: `Tooling/prompts/_staged/hid_prompt_changes.md` and is not live, and a
+#: gate that refuses a field the Strategist was never asked for teaches
+#: nothing — it just burns the wake. Flip to True in the same commit that
+#: moves that wording into the live prompts.
+INGEST_REPORT_REQUIRED = False
+
+
 # ---------------------------------------------------------------------
 # Schema validation (self_verify stage)
 # ---------------------------------------------------------------------
@@ -565,6 +576,19 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # never satisfies the charter" survives in the contract line
         # plus the judge's reachability criterion: a refuted main claim
         # leaves no Roadmap entry that could close it.)
+        #
+        # Last, on purpose: the mechanical blockers above name work that
+        # must happen before the terminal is even arguable, and asking
+        # for the write-up first would put the report ahead of the proof.
+        if INGEST_REPORT_REQUIRED and not str(
+                decision.payload.get("report") or "").strip():
+            return ("Ingest requires `report` — the human-readable "
+                    "summary of what this problem settled, in English "
+                    "markdown with LaTeX for the mathematics: the "
+                    "statement, the route in prose, which bricks carry "
+                    "it, what was refuted, and what is left open. It is "
+                    "the only part of this result a mathematician who "
+                    "has not read the Programme can read")
         return ""
 
     if k == "RequestUserAmend":

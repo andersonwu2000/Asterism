@@ -378,6 +378,20 @@ def test_spawn_cmd_denies_user_file_writes() -> None:
         assert f'"Edit(**/{f})"' in src, f
 
 
+def test_spawn_cmd_denies_writes_to_the_rendered_files() -> None:
+    """The rendered files are DB projections, not documents: PROGRAMME.md
+    from `programme_revisions` (research_mode_design.md §2), REPORT.md
+    from `problems.ingest_report` (HID §3.4). A spawn that edits one is
+    editing a page the next render silently discards — and, worse, one a
+    human reads as the record."""
+    src = (Path(__file__).resolve().parents[1]
+           / "Tooling" / "llm" / "claude_cli.py").read_text(
+               encoding="utf-8")
+    for f in ("PROGRAMME.md", "REPORT.md"):
+        assert f'"Write(**/{f})"' in src, f
+        assert f'"Edit(**/{f})"' in src, f
+
+
 def test_spawn_isolates_operator_memory() -> None:
     """2026-07-13: Claude Code auto-memory is keyed by git repo root,
     so spawns cwd'd in Problems/<p>/ shared the OPERATOR's memory dir

@@ -1555,7 +1555,11 @@ class ClaudeCliProvider:
             # PROGRAMME.md is a read-only render of the adversarially
             # reviewed Programme (research_mode_design.md §2); the only
             # write path is state.programme on a passed proposal commit.
+            # REPORT.md is the same shape one layer up (HID §3.4):
+            # rendered from problems.ingest_report by state.report on the
+            # Ingest commit, and read by a human as THE record.
             "Write(**/PROGRAMME.md)", "Edit(**/PROGRAMME.md)",
+            "Write(**/REPORT.md)", "Edit(**/REPORT.md)",
             *_operator_state_deny_rules(),
             # Whitelist fence (spawn_guard.py): PreToolUse hook denies
             # file tools outside {repo, scratchpad, ~/.elan} and Bash
