@@ -4,6 +4,7 @@ import { ApiError, apiDelete, apiGet, apiPost, apiPut, usePoll } from '../lib/ap
 import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
+import LeanDoc from './LeanDoc'
 import { Button } from './ui'
 
 /*
@@ -32,8 +33,12 @@ export interface DocEntry {
  * rail's — the two columns are different postures on different pages. */
 const COLUMN_KEY = 'asterism.docColumnOpen'
 
-const TEXT_EXT = ['.md', '.tex', '.txt']
+const TEXT_EXT = ['.md', '.tex', '.txt', '.lean']
 const IMAGE_EXT = ['.png', '.jpg', '.svg']
+/** The kinds whose right half is a panel of its own while you write
+ * (§1.2-2: 左編輯、右面板) — Lean's Info view. `.md` keeps the
+ * read/edit toggle: its render is the whole page, not a companion. */
+const SPLIT_EXT = ['.lean']
 
 const ext = (p: string): string => {
   const i = p.lastIndexOf('.')
@@ -99,18 +104,13 @@ function Body({
         className="max-w-full rounded-xl border border-edge"
       />
     )
+  // Only the Assistant's area reaches this: a `.lean` under `user/`
+  // opens in the editor beside its Info panel (§1.2-2).
   if (e === '.lean')
     return (
-      <>
-        <pre className={frameClass({ frame: false, size: 'md', wrap: false })}>
-          <Lean code={content} />
-        </pre>
-        {/* the one thing this viewer cannot do, said once and quietly */}
-        <div className="mt-2 text-[11px] text-ink-faint">
-          read-only here — importing this file and checking it through the reader's Lean
-          slot is a later package.
-        </div>
-      </>
+      <pre className={frameClass({ frame: false, size: 'md', wrap: false })}>
+        <Lean code={content} />
+      </pre>
     )
   if (e === '.tex') return <TexBody content={content} />
   if (e === '.md')
@@ -295,6 +295,9 @@ export default function DocShelf({
   const open = selected ?? files[0]?.path ?? null
   const openIsDir = entries.some((e) => e.path === open && e.kind === 'dir')
   const writable = open !== null && isUser(open) && isText(open)
+  /** a document whose companion panel IS the page's right half — it has
+   * no read mode to toggle into, because the editor already reads */
+  const split = writable && !openIsDir && SPLIT_EXT.includes(ext(open))
 
   useEffect(() => {
     if (open === null || openIsDir) {
@@ -569,7 +572,7 @@ export default function DocShelf({
           {open !== null && !isUser(open) && (
             <span className="text-[11px] text-ink-faint">the Assistant's — read-only</span>
           )}
-          {writable && (
+          {writable && !split && (
             <span className="ml-2 flex items-center gap-1">
               {(['read', 'edit'] as const).map((m) => (
                 <button
@@ -648,6 +651,13 @@ export default function DocShelf({
             </div>
           </div>
         )}
+        {split && open !== null && doc !== null && body !== undefined ? (
+          <LeanDoc
+            key={open}
+            value={body}
+            onChange={(v) => setDrafts((d) => ({ ...d, [open]: v }))}
+          />
+        ) : (
         <div className="min-w-0 flex-1 overflow-auto p-4">
           {loadError && <div className="text-xs text-warn">{loadError}</div>}
           {open === null && (
@@ -679,6 +689,7 @@ export default function DocShelf({
             <div className="late-fade text-xs text-ink-faint">loading…</div>
           )}
         </div>
+        )}
       </div>
       {confirmDelete && open !== null && (
         <DeleteDoc

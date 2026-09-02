@@ -1906,6 +1906,79 @@ def test_lean_eval_assemble_hoists_later_part_imports() -> None:
     assert spans[1][2] - spans[1][1] + 1 == len(root.splitlines())
 
 
+def test_lean_eval_builds_the_workspace_modules_the_file_imports(
+        workspace: Path, monkeypatch) -> None:
+    """A Project document imports the engine's own proofs (HID §1.2-2).
+
+    The gateway reads on-disk oleans as-is and never rebuilds a stale
+    dependency, so an import of a module THIS workspace builds has to be
+    made fresh first. That was true of `Library.*` and equally true of
+    `Problems.*` — and the modules are read off the ASSEMBLED text, not
+    off the request's `imports` list, because a `.lean` document carries
+    its own import header."""
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.pipeline import _lake
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    monkeypatch.setattr(gw, "verify_file",
+                        lambda path, **kw: {"ok": True, "diagnostics": []})
+    built: list = []
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda ws, mods: (built.append(list(mods)) or
+                                          (True, "")))
+    code = ("import Mathlib\nimport Problems.Erdos.p1.proofs.L_x\n"
+            "example : True := trivial")
+    r = _client(workspace).post(
+        "/api/lean/eval", json={"parts": [{"id": "doc", "code": code}]})
+    assert r.status_code == 200, r.text
+    assert built == [["Problems.Erdos.p1.proofs.L_x"]]
+
+
+def test_lean_eval_says_so_when_the_module_rebuild_fails(
+        workspace: Path, monkeypatch) -> None:
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.pipeline import _lake
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda ws, mods: (False, "no such module"))
+    r = _client(workspace).post("/api/lean/eval", json={"parts": [
+        {"id": "doc", "code": "import Problems.Erdos.p1.Root\n#check 1"}]})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is False
+    assert "no such module" in d["preamble"][0]["message"]
+
+
+def test_lean_session_ws_builds_project_modules_once(
+        workspace: Path, monkeypatch) -> None:
+    """The Info panel runs on the WS session, so the freshness build has
+    to live on that path too — once per module per connection."""
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.pipeline import _lake
+    from Tooling.serve import lean_eval as le
+    monkeypatch.setattr(le, "_warm_started", True)
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    monkeypatch.setattr(gw, "interactive_register",
+                        lambda content: {"session_token": "tok"})
+    monkeypatch.setattr(
+        gw, "interactive_sync",
+        lambda token, content, line=None, col=0: {
+            "diagnostics": [], "goal": None, "note": None})
+    monkeypatch.setattr(gw, "interactive_release", lambda token: {"ok": True})
+    built: list = []
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda ws, mods: (built.append(list(mods)) or
+                                          (True, "")))
+    code = "import Problems.Erdos.p1.proofs.L_x\nexample : True := trivial"
+    with _client(workspace).websocket_connect("/api/lean/session") as ws:
+        ws.send_json({"type": "sync", "seq": 1,
+                      "parts": [{"id": "doc", "code": code}]})
+        assert ws.receive_json()["type"] == "state"
+        ws.send_json({"type": "sync", "seq": 2,
+                      "parts": [{"id": "doc", "code": code + "\n"}]})
+        assert ws.receive_json()["type"] == "state"
+    assert built == [["Problems.Erdos.p1.proofs.L_x"]]
+
+
 def test_lean_session_ws_sync_and_cursor(workspace: Path,
                                          monkeypatch) -> None:
     """WS bridge: sync assembles parts, registers an interactive

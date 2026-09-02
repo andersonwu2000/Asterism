@@ -16,10 +16,12 @@ level as the engine compiling agent code all day.
 
 Gateway coupling is soft: if the gateway is not ready we kick ONE
 background warm-up thread and return {"status": "warming"} immediately
-— the frontend retries. Library-module imports get an incremental
-`lake build` first (the gateway imports on-disk oleans as-is and does
-NOT rebuild stale deps; the librarian rewrites Library files, so a
-chapter probe can otherwise race a run's mid-chain state).
+— the frontend retries. Imports of modules THIS workspace builds
+(`Library.*`, `Problems.*`) get an incremental `lake build` first (the
+gateway imports on-disk oleans as-is and does NOT rebuild stale deps;
+the librarian rewrites Library files and the engine writes Problems
+ones, so a chapter probe or a Project document can otherwise race a
+run's mid-chain state).
 """
 from __future__ import annotations
 
@@ -54,6 +56,34 @@ class EvalBody(BaseModel):
 
 _IMPORT_CAPTURE = re.compile(
     r"^\s*(?:public\s+|private\s+)?import\s+([\w.]+)\s*$", re.M)
+
+#: The module trees THIS workspace builds. The gateway imports on-disk
+#: oleans as-is and never rebuilds a stale dependency, so an import of
+#: one of these has to be made fresh before the elaboration reads it:
+#: `Library.*` because the librarian rewrites those files under a
+#: running probe, `Problems.*` because a Project document imports the
+#: engine's own proofs while the engine is still writing them (HID
+#: §1.2-2). Mathlib and the toolchain are not ours to rebuild.
+_LOCAL_PREFIXES = ("Library.", "Problems.")
+
+
+def _local_imports(text: str) -> "list[str]":
+    """Workspace-built modules the assembled file imports, in order, and
+    each one once.
+
+    Read off the assembled TEXT rather than the request's `imports`
+    list, because the list is not where every import comes from: the
+    first part may open with its own header — which is exactly how a
+    `.lean` document on the Project's shelf names the proofs it cites —
+    and a module named there is precisely as stale as one named in the
+    list. Later parts' imports are already blanked by `_assemble` (their
+    content is inlined above), so they cannot reach this scan."""
+    out: "list[str]" = []
+    for m in _IMPORT_CAPTURE.finditer(text):
+        name = m.group(1)
+        if name.startswith(_LOCAL_PREFIXES) and name not in out:
+            out.append(name)
+    return out
 
 
 def _assemble(parts: "list[tuple[str, str]]",
@@ -184,13 +214,16 @@ def register(app: FastAPI, workspace: Path) -> None:
         if phase is not None:
             return {"status": "warming", "phase": phase}
 
-        # Chapter probes import Library modules; rebuild them
-        # incrementally first (no-op seconds when fresh) so the probe
-        # sees the text the page shows, not a stale olean.
-        lib_mods = [m for m in imports if m.startswith("Library.")]
-        if lib_mods:
-            from ..pipeline._lake import lake_build_modules
-            ok, detail = lake_build_modules(workspace, lib_mods)
+        text, n_pre, spans = _assemble(parts, imports)
+
+        # Chapter probes import Library modules and Project documents
+        # import Problems ones; rebuild them incrementally first (no-op
+        # seconds when fresh) so the elaboration sees the text on disk,
+        # not a stale olean.
+        local_mods = _local_imports(text)
+        if local_mods:
+            from ..pipeline import _lake
+            ok, detail = _lake.lake_build_modules(workspace, local_mods)
             if not ok:
                 return {"status": "ok", "ok": False, "wall_sec": 0.0,
                         "parts": {}, "preamble": [{
@@ -198,7 +231,6 @@ def register(app: FastAPI, workspace: Path) -> None:
                             "message": "module rebuild failed: "
                                        + (detail or "")[:800]}]}
 
-        text, n_pre, spans = _assemble(parts, imports)
         evdir = workspace / ".asterism" / "eval"
         evdir.mkdir(parents=True, exist_ok=True)
         from ..lsp import lifecycle as gw
@@ -265,25 +297,25 @@ def register(app: FastAPI, workspace: Path) -> None:
                                             "phase": phase})
                         continue
                     imports = list(msg.get("imports") or [])
-                    # chapter probes import Library modules — same
-                    # incremental freshness build the one-shot path
-                    # does (the gateway imports on-disk oleans as-is),
-                    # once per module per connection
-                    lib_mods = [m for m in imports
-                                if m.startswith("Library.")
-                                and m not in built]
-                    if lib_mods:
-                        from ..pipeline._lake import lake_build_modules
+                    text, n_pre, spans = _assemble(parts, imports)
+                    # chapter probes import Library modules, Project
+                    # documents import Problems ones — same incremental
+                    # freshness build the one-shot path does (the gateway
+                    # imports on-disk oleans as-is), once per module per
+                    # connection
+                    local_mods = [m for m in _local_imports(text)
+                                  if m not in built]
+                    if local_mods:
+                        from ..pipeline import _lake
                         ok, detail = await asyncio.to_thread(
-                            lake_build_modules, workspace, lib_mods)
+                            _lake.lake_build_modules, workspace, local_mods)
                         if not ok:
                             await ws.send_json({
                                 "type": "error", "seq": seq,
                                 "detail": "module rebuild failed: "
                                           + (detail or "")[:400]})
                             continue
-                        built.update(lib_mods)
-                    text, n_pre, spans = _assemble(parts, imports)
+                        built.update(local_mods)
                     cur = _global_cursor(msg.get("cursor"), spans)
                     r: dict = {}
                     for _attempt in (1, 2):
