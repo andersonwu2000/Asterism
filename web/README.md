@@ -40,19 +40,35 @@ are exactly two frames and no sidebar.
   anything is live the unproved stars carry the light and the proved
   mass recedes. `map` / `list` is the same data read two ways, not two
   pages; clicking a star opens its panel (routes, subgoals, dead
-  attempts), and a route's file link lands in Documents.
+  attempts), and a route's file link lands in Documents. The panel is
+  also where a person ACTS on a goal — park it, mark it delivered, hand
+  it a proof, hand it to a new group — through the command queue: a
+  preview, a live confirm window naming every node that closes, and a
+  receipt polled until the engine's tick answers.
 - **Groups** — the discussion tree: each group by code and charter, its
   Programme, the round it is arguing right now, and the bricks it handed
-  back. One renderer, live or archived.
-- **Engine room** — read-only observation: slots (one lane per agent,
-  its unit, its statement, the tail it is writing, plus `cold-building
-  sN` rows for promotion builds `in_flight` cannot see), each provider's
-  quota bars, the all-time ledger, and the engine log.
-- **Timeline** — what happened to this task, newest first; every row
-  names an object, and the name opens it on the Sky.
+  back. One renderer, live or archived. A sub-group can be handed back
+  to its parent from here, with a reason, through the same window.
+- **Engine room** — observation: slots (one lane per agent, its unit,
+  its statement, the tail it is writing, plus `cold-building sN` rows
+  for promotion builds `in_flight` cannot see), each provider's quota
+  bars, this Project's ledger, and the engine log. The one thing it can
+  do rather than watch is stop ONE running Formalizer — the three
+  signals of §3.7, through the same confirm window. (It needs the
+  worker's `pipelines.id`, which `/api/run` does not yet carry; until it
+  does, the lane says so instead of offering a button.)
+- **Timeline** — what happened, newest first; every row names an object,
+  and the name opens it on the Sky. With no task in the address it is
+  the whole shelf's history, each row stamped with its task and paged by
+  `load earlier`; naming a task scopes it to that one.
 - **Documents** — two roots in one file column: `proofs` (what the
-  engine wrote for a task) and `documents` (the Project's own `_docs/`
-  shelf). Read-only until the documents package.
+  engine wrote for a task, read-only, opening on its REPORT.md when the
+  Ingest terminal wrote one) and `documents`, the Project's own `_docs/`
+  shelf. That one is writable: `user/` takes an editor for `.md` /
+  `.tex` / `.txt`, plus new file, new folder and delete; `agent/` is
+  what the Assistant wrote and is marked read-only. `.lean` opens in the
+  Lean viewer, images render inline, and a refused path shows the
+  engine's own sentence about it.
 
 ### Outside a Project
 
@@ -60,13 +76,18 @@ are exactly two frames and no sidebar.
   and every Project: the accounts the engine spends and what is left of
   them, the machine's parameters, appearance, and quit. Run parameters
   are deliberately NOT here.
-- **New task** (`#/new`) — a name and a natural-language description,
-  paper bindings, and two advanced folds (pinned Defs/Root; axiom
-  whitelist, forbidden lemmas, lemma hints). The description IS the
-  goal.
+- **New task** (`#/new`, or `#/new/<project>` from a shelf, which files
+  it there) — a name and a natural-language description, paper bindings,
+  and two advanced folds (pinned Defs/Root; axiom whitelist, forbidden
+  lemmas, lemma hints). The description IS the goal.
 - **Papers** (`#/papers`) — the shelf a task binds its sources from.
-- **Assistant** — the right-hand drawer, opened by the corner glyph or
-  `Ctrl+/`. It is handed the Project and the task on screen.
+- **Assistant** — the docked right panel, opened by the corner glyph or
+  `Ctrl+/`; the glyph blinks while it is thinking and holds a mark when
+  an answer landed unseen. One conversation per Project, and every
+  question carries the focus: the star that is open, the group being
+  read, the document under the cursor. When an answer carries a prepared
+  command it offers to review it — in the same window a command from a
+  star opens. The panel prepares; the window submits.
 - `#/problems/<name>` still opens: it asks the DB which shelf the task
   is on and redirects. The name's first segment is only a default at
   registration (§3.1), so it is never split to guess.
@@ -85,5 +106,7 @@ npm run smoke      # Playwright against a live `asterism serve`
                    # SMOKE_URL=http://localhost:5173 to hit the dev server
 ```
 
-The UI is read-only against the engine database; every mutation goes
-through the same HTTP chokepoints as the CLI.
+The UI never touches the engine database; every mutation goes through
+the same HTTP chokepoints as the CLI — and a command against the proof
+state is QUEUED there, applied by the daemon's own tick through the
+appliers the Strategist's decisions go through.

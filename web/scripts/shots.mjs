@@ -9,7 +9,7 @@ import { chromium } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 
 const base = process.argv[2] ?? 'http://localhost:5173'
-const prefix = process.argv[3] ?? 'p5'
+const prefix = process.argv[3] ?? 'p6'
 const out = new URL('../.shots/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 mkdirSync(out, { recursive: true })
 
