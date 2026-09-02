@@ -129,6 +129,40 @@ const ORDERED_RE = /^\s*\d+[.)]\s+/
 const QUOTE_RE = /^\s*>\s?/
 // hard-wrap continuation: an indented line that is not itself a marker
 const CONT_RE = /^\s{2,}\S/
+// a heading is one LINE — leading whitespace disqualifies it, as in
+// CommonMark's indented-code rule, and everything else about the
+// paragraph it sits in is irrelevant
+const HEADING_RE = /^(#{1,6})\s+(.*)$/
+
+export interface ProseSegment {
+  /** the heading this segment opens with, if it opens with one */
+  heading: { level: number; text: string } | null
+  /** everything under it, up to the next heading line */
+  lines: string[]
+}
+
+/** A paragraph's lines, cut at every heading line.
+ *
+ * The renderer used to look for a heading in the paragraph's FIRST
+ * line only, so `# Title` written flush against `## Argument` — no
+ * blank line, which is how three of the 188 PROGRAMME.md bodies on
+ * disk are written — rendered the second as the literal text
+ * `## Argument`. A heading is a property of its own line; nothing
+ * above it can take that away.
+ */
+export function headingSegments(lines: string[]): ProseSegment[] {
+  const out: ProseSegment[] = []
+  for (const line of lines) {
+    const h = HEADING_RE.exec(line)
+    if (h !== null) {
+      out.push({ heading: { level: h[1].length, text: h[2] }, lines: [] })
+      continue
+    }
+    if (out.length === 0) out.push({ heading: null, lines: [] })
+    out[out.length - 1].lines.push(line)
+  }
+  return out.length > 0 ? out : [{ heading: null, lines: [] }]
+}
 
 type Run =
   | { type: 'p'; text: string }
@@ -305,57 +339,59 @@ export function renderProse(
             /^\|[-\s|:]+\|$/.test(lines[1].trim())
           )
             return renderTable(lines, key)
-          // a heading owns the paragraph's first line even without a
-          // blank line after it (the Programme writes `## Argument`
-          // flush against its text)
-          const h = /^(#{1,6})\s+(.*)$/.exec(first)
-          const rest = h ? lines.slice(lines.indexOf(first) + 1) : lines
-          const restRuns = renderRuns(parseRuns(rest), key)
-          if (h && doc) {
-            // one heading ladder for every reading page: # = title
-            // voice, ## = section voice (both Fraunces), ###+ = quiet
-            // uppercase eyebrow — FileViewer / Programme / chapter had
-            // three private dialects before
-            const level = h[1].length
-            return (
-              <div key={key} className={level > 1 ? 'space-y-2' : 'space-y-3'}>
-                {level === 1 ? (
-                  <h3 className="font-display pt-1 text-[20px] leading-snug font-medium text-ink">
-                    {renderInline(h[2], `${key}h`)}
-                  </h3>
-                ) : level === 2 ? (
-                  <h4 className="font-display pt-2 text-[16px] leading-snug font-medium text-ink">
-                    {renderInline(h[2], `${key}h`)}
-                  </h4>
-                ) : (
-                  // renderInline, not the raw string: eyebrows carry
-                  // $TeX$/`code` too — and those runs wear normal-case
-                  // so the uppercase voice can't flip math letters
-                  // (g(n) vs G(N) is a different statement)
-                  <h5 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-                    {renderInline(h[2], `${key}h`)}
-                  </h5>
-                )}
+          // EVERY heading line is a heading — the Programme writes
+          // `# Title` flush against `## Argument`, and matching only
+          // the paragraph's first line rendered the second as text
+          return headingSegments(lines).map((seg, si) => {
+            const skey = `${key}.${si}`
+            const h = seg.heading
+            const restRuns = renderRuns(parseRuns(seg.lines), skey)
+            if (h === null && seg.lines.every((l) => l.trim() === '')) return null
+            if (h && doc) {
+              // one heading ladder for every reading page: # = title
+              // voice, ## = section voice (both Fraunces), ###+ = quiet
+              // uppercase eyebrow — FileViewer / Programme / chapter had
+              // three private dialects before
+              return (
+                <div key={skey} className={h.level > 1 ? 'space-y-2' : 'space-y-3'}>
+                  {h.level === 1 ? (
+                    <h3 className="font-display pt-1 text-[20px] leading-snug font-medium text-ink">
+                      {renderInline(h.text, `${skey}h`)}
+                    </h3>
+                  ) : h.level === 2 ? (
+                    <h4 className="font-display pt-2 text-[16px] leading-snug font-medium text-ink">
+                      {renderInline(h.text, `${skey}h`)}
+                    </h4>
+                  ) : (
+                    // renderInline, not the raw string: eyebrows carry
+                    // $TeX$/`code` too — and those runs wear normal-case
+                    // so the uppercase voice can't flip math letters
+                    // (g(n) vs G(N) is a different statement)
+                    <h5 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+                      {renderInline(h.text, `${skey}h`)}
+                    </h5>
+                  )}
+                  {restRuns}
+                </div>
+              )
+            }
+            if (h) {
+              // chat: heading marks read as emphasis, not structure
+              return (
+                <div key={skey} className="space-y-2">
+                  <p className="font-medium text-ink">{renderInline(h.text, `${skey}h`)}</p>
+                  {restRuns}
+                </div>
+              )
+            }
+            return restRuns.length === 1 ? (
+              <div key={skey}>{restRuns}</div>
+            ) : (
+              <div key={skey} className="space-y-2">
                 {restRuns}
               </div>
             )
-          }
-          if (h) {
-            // chat: heading marks read as emphasis, not structure
-            return (
-              <div key={key} className="space-y-2">
-                <p className="font-medium text-ink">{renderInline(h[2], `${key}h`)}</p>
-                {restRuns}
-              </div>
-            )
-          }
-          return restRuns.length === 1 ? (
-            <div key={key}>{restRuns}</div>
-          ) : (
-            <div key={key} className="space-y-2">
-              {restRuns}
-            </div>
-          )
+          })
         })
       })}
     </div>
