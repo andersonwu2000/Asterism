@@ -472,6 +472,33 @@ def elab_lanes() -> int:
 IDLE_SPARES_DEFAULT = 4
 
 
+def idle_spares(workspace=None) -> int:
+    """The configured idle spares (yaml `ledger.idle_spares`, env
+    `ASTERISM_IDLE_SPARES`). ONE resolution shared by both consumers —
+    the dispatcher's ledger and the gateway's launch count — so the cap
+    cannot drift between them; an unparseable value falls back to the
+    default instead of taking the daemon down."""
+    from . import config
+    try:
+        return max(1, int(config.get(
+            "ledger.idle_spares", default=IDLE_SPARES_DEFAULT,
+            env_var="ASTERISM_IDLE_SPARES", cast=int,
+            workspace=workspace)))
+    except (TypeError, ValueError):
+        return IDLE_SPARES_DEFAULT
+
+
+def launch_warm_slots(target: int, workspace=None) -> int:
+    """The gateway's LAUNCH warm count: the opening bid min(elab lanes,
+    RAM target), capped by the idle spares — at launch NOTHING is in
+    use, and the pool follows demand (owner ruling 2026-08-31, enforced
+    for every later tick in `DispatcherLedger.tick`). 2026-09-02, 32 GB
+    co-tenant desktop, budget 26G: the uncapped bid warmed 12 workers
+    in 52 s, available fell 7 G -> 2.1 G and dispatch paused before the
+    first spawn had claimed a slot."""
+    return max(1, min(elab_lanes(), int(target), idle_spares(workspace)))
+
+
 class DispatcherLedger:
     """Dispatcher-side ledger state + the rate-limited tick.
 

@@ -139,12 +139,9 @@ def run(workspace: Path, *, once: bool = False,
         _machine_gb = ram_ledger.total_gb()
         _budget_gb = ram_ledger.parse_budget(_budget_spec, _machine_gb)
         if _budget_gb:
-            _idle_spares = config.get(
-                "ledger.idle_spares", default=ram_ledger.IDLE_SPARES_DEFAULT,
-                env_var="ASTERISM_IDLE_SPARES", cast=int,
-                workspace=workspace)
             ledger = ram_ledger.DispatcherLedger(
-                _budget_gb, _machine_gb, idle_spares=_idle_spares,
+                _budget_gb, _machine_gb,
+                idle_spares=ram_ledger.idle_spares(workspace),
                 pressure_headroom_gb=config.get(
                     "ledger.pressure_headroom_gb",
                     default=ram_ledger.DispatcherLedger.PRESSURE_HEADROOM_GB,

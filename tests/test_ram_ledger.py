@@ -733,6 +733,39 @@ def test_idle_spares_is_configurable(monkeypatch):
     assert pushed["t"] == 2
 
 
+def test_launch_warm_count_honours_the_idle_spares_cap(monkeypatch):
+    """2026-09-02, 32 GB desktop, budget 26G: the gateway's LAUNCH count
+    was min(lanes, RAM target) alone — it warmed 12 workers in 52 s, the
+    box fell from 7 G available to 2.1 G and the ledger paused dispatch
+    before a single spawn had claimed a slot. At launch NOTHING is in
+    use, so the demand cap binds there too: the opening bid may not
+    exceed the ledger's idle spares."""
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 14)
+    monkeypatch.setattr(rl, "idle_spares", lambda workspace=None: 4)
+    assert rl.launch_warm_slots(12) == 4
+    monkeypatch.setattr(rl, "idle_spares", lambda workspace=None: 1)
+    assert rl.launch_warm_slots(12) == 1
+
+
+def test_launch_warm_count_keeps_its_older_floors(monkeypatch):
+    """The lanes and the RAM target still bind when either is smaller
+    than the spares cap; the count is never zero."""
+    monkeypatch.setattr(rl, "idle_spares", lambda workspace=None: 4)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 2)
+    assert rl.launch_warm_slots(12) == 2
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 14)
+    assert rl.launch_warm_slots(3) == 3
+    assert rl.launch_warm_slots(0) == 1
+
+
+def test_idle_spares_has_one_resolution_for_both_consumers(monkeypatch):
+    """The dispatcher's ledger and the gateway's launch count read the
+    SAME knob through one accessor — no second parse to drift."""
+    monkeypatch.setenv("ASTERISM_IDLE_SPARES", "2")
+    assert rl.idle_spares() == 2
+    monkeypatch.setenv("ASTERISM_IDLE_SPARES", "banana")
+    assert rl.idle_spares() == rl.IDLE_SPARES_DEFAULT
+
 
 def test_pressure_band_is_configurable_for_small_budgets(monkeypatch):
     """Surface node, 2026-09-01: budget 5G on a 6.8G machine. The class

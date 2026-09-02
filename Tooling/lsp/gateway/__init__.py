@@ -869,10 +869,9 @@ def main() -> None:
         workspace=workspace,
     )
     # Adaptive RAM ledger (owner design 2026-08-25): the dispatcher's
-    # ledger tick will own the slot count via /warm_target, so the
-    # LAUNCH count only decides how fast first_warm opens the Lean
-    # plane — start small, let the converger grow the pool in the
-    # background while work already flows.
+    # ledger tick will own the slot count via /warm_target, so the LAUNCH
+    # count only decides how fast first_warm opens the Lean plane — start
+    # small, let the converger grow the pool while work already flows.
     try:
         from ...core import ram_ledger as _rl
         _budget_gb = _rl.parse_budget(_rl.env_budget_spec(workspace),
@@ -883,13 +882,14 @@ def main() -> None:
     if _budget_gb is not None:
         _target0 = _rl.compute_target_slots(budget_gb=_budget_gb,
                                             nl_demand=0)
-        # Launch warms the ledger's OPENING bid (min(lanes, RAM target));
-        # the daemon's ramp pushes the climb one slot per calm minute.
-        w_count = max(1, min(_rl.elab_lanes(), _target0))
+        # Launch warms the OPENING bid — min(lanes, RAM target) under the
+        # idle-spares cap (nothing is in use yet: the pool follows demand).
+        w_count = _rl.launch_warm_slots(_target0, workspace)
         _state.warm_target = w_count
         print(f"[gateway] RAM ledger active — budget {_budget_gb:.1f} GB,"
-              f" launch warms {w_count} slot(s) (lanes {_rl.elab_lanes()}),"
-              f" RAM target {_target0}; the ramp climbs on measured calm",
+              f" launch warms {w_count} slot(s) (lanes {_rl.elab_lanes()},"
+              f" spares {_rl.idle_spares(workspace)}), RAM target"
+              f" {_target0}; the ramp climbs on measured calm",
               file=sys.stderr, flush=True)
     # Reserved slots for the serve UI's interactive editor — outside
     # the pipeline pool entirely (pipeline=slot identity holds both
