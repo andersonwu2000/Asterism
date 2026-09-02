@@ -25,3 +25,6 @@ dist-ssr
 
 # Playwright artifacts
 test-results
+
+# Design-review screenshots (scratch: taken, looked at, discarded)
+.shots

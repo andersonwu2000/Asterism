@@ -12,6 +12,7 @@ import Problem from './screens/Problem'
 import Settings from './screens/Settings'
 import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
+import Proto from './screens/Proto'
 import ChatDrawer from './components/ChatDrawer'
 import type { Meta } from './lib/types'
 import { isStopped, onStopped } from './lib/shutdown'
@@ -524,13 +525,23 @@ function Farewell() {
   )
 }
 
+/** THROWAWAY (human_interface_design.md §1.4, implementation step 3:
+ * "先做資訊架構原型再實作"). The mock draws the shell that REPLACES
+ * this sidebar, so it cannot be rendered inside it — it takes the whole
+ * window. Delete the branch with `screens/Proto` when §1.4 lands. */
+function Root() {
+  const route = useRoute()
+  if (route.segments[0] === 'proto') return <Proto />
+  return <Shell />
+}
+
 export default function App() {
   const [gone, setGone] = useState(isStopped())
   useEffect(() => onStopped(() => setGone(true)), [])
   if (gone) return <Farewell />
   return (
     <RouterProvider>
-      <Shell />
+      <Root />
     </RouterProvider>
   )
 }
