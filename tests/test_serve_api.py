@@ -2733,3 +2733,73 @@ def test_usage_scopes_to_a_project_by_the_fk_not_the_prefix(
     assert scoped["window"] == "all"
     # an empty shelf burns nothing — not "everything"
     assert c.get("/api/telemetry/usage?project=ghost").json()["problems"] == []
+
+
+def _goal_at(conn: sqlite3.Connection, problem: str, slug: str,
+             at: str) -> int:
+    """A goal nobody dispatched still has a birthday, and the Timeline
+    dates it exactly — the cheapest event with a timestamp I choose."""
+    gid = db.insert_goal(conn, problem=problem, slug=slug,
+                         lean_path=f"Problems/{problem}/proofs/{slug}.lean",
+                         statement="True", origin="root", depth=0)
+    conn.execute("UPDATE goals SET created_at = ? WHERE id = ?", (at, gid))
+    conn.commit()
+    return gid
+
+
+def test_project_events_union_is_newest_first_and_names_each_task(
+        workspace: Path) -> None:
+    """The Project Timeline is the per-task feeds interleaved BY TIME:
+    a reader standing on the shelf watches the whole shelf move, so a
+    row has to say which task it came from."""
+    conn = _open_db(workspace)
+    for p in ("Erdos.p1", "Erdos.p2", "Side.p9"):
+        _add_problem(conn, p)
+    _shelve(conn, "Erdos", "Erdos.p1", "Erdos.p2")
+    _shelve(conn, "Side", "Side.p9")
+    _goal_at(conn, "Erdos.p1", "a", "2026-01-01T00:00:00+00:00")
+    _goal_at(conn, "Erdos.p2", "b", "2026-01-02T00:00:00+00:00")
+    _goal_at(conn, "Erdos.p1", "c", "2026-01-03T00:00:00+00:00")
+    _goal_at(conn, "Side.p9", "d", "2026-01-04T00:00:00+00:00")
+    conn.close()
+    r = _client(workspace).get("/api/projects/Erdos/events")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [(e["problem"], e["label"]) for e in body["events"]] == [
+        ("Erdos.p1", "c"), ("Erdos.p2", "b"), ("Erdos.p1", "a")]
+    # the row shape is the per-task feed's, `problem` aside
+    assert set(body["events"][0]) - {"problem"} == set(
+        _client(workspace).get("/api/problems/Erdos.p1/events"
+                               ).json()["events"][0])
+    assert body["problems"] == ["Erdos.p1", "Erdos.p2"]
+
+
+def test_project_events_paginate_without_dropping_a_row(
+        workspace: Path) -> None:
+    """`before` is exclusive on `at`, so a page must never END in the
+    middle of a timestamp — the next request would skip the rows that
+    share it. Two goals born in the same second prove it."""
+    conn = _open_db(workspace)
+    for p in ("Erdos.p1", "Erdos.p2"):
+        _add_problem(conn, p)
+    _shelve(conn, "Erdos", "Erdos.p1", "Erdos.p2")
+    _goal_at(conn, "Erdos.p1", "old", "2026-01-01T00:00:00+00:00")
+    _goal_at(conn, "Erdos.p1", "tie_a", "2026-01-02T00:00:00+00:00")
+    _goal_at(conn, "Erdos.p2", "tie_b", "2026-01-02T00:00:00+00:00")
+    conn.close()
+    c = _client(workspace)
+    first = c.get("/api/projects/Erdos/events?limit=1").json()
+    # limit=1, two rows: the tie rides along rather than being stranded
+    assert {e["label"] for e in first["events"]} == {"tie_a", "tie_b"}
+    assert first["next_before"] == "2026-01-02T00:00:00+00:00"
+    rest = c.get("/api/projects/Erdos/events?limit=1&before="
+                 + first["next_before"]).json()
+    assert [e["label"] for e in rest["events"]] == ["old"]
+    assert rest["next_before"] is None
+
+
+def test_project_events_of_an_unknown_project_are_404(
+        workspace: Path) -> None:
+    _open_db(workspace).close()
+    assert _client(workspace).get(
+        "/api/projects/ghost/events").status_code == 404

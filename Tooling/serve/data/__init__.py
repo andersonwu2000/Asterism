@@ -97,7 +97,7 @@ from .status import (
     board,
     last_event_map,
 )
-from .projects import project_rows, _running_problems
+from .projects import project_events, project_rows, _running_problems
 from .human_inbox import inbox, inbox_count
 from .timeline import (
     _already_said,

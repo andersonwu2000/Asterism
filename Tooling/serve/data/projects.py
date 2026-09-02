@@ -21,6 +21,7 @@ from ...state import db
 from ...state import projects as _projects
 from ...state.recovery import _pipeline_problem
 from .status import _awaiting_set, _live_daemon_pid, last_event_map
+from .timeline import _LIFE_RANK, problem_events
 
 
 def _running_problems(conn: sqlite3.Connection,
@@ -76,3 +77,58 @@ def project_rows(conn: sqlite3.Connection, *,
     return [{**row, **stats.get(row["name"], {"running": 0, "attention": 0,
                                               "last_event": None})}
             for row in _projects.list_projects(conn)]
+
+
+#: rows per page when the caller names no limit, and the ceiling on
+#: what it may ask for. The per-task feed is unpaginated because one
+#: task's history is one task's; a shelf's is every task's at once.
+_EVENTS_PAGE = 200
+_EVENTS_MAX = 2000
+
+
+def project_events(conn: sqlite3.Connection, project: str, *,
+                   limit: "int | None" = None,
+                   before: "str | None" = None) -> dict:
+    """The Project's Timeline: the per-task feeds unioned, newest first.
+
+    Same rows as `/api/problems/{p}/events` — the same query, so the two
+    surfaces can never disagree about what happened — each carrying the
+    `problem` it came from, which is the one thing a shelf-wide reader
+    needs that a task-wide reader already knows.
+
+    `log_since` is per problem and deliberately NOT one number: it marks
+    where a task's engine-written record starts (below it, landings are
+    dated by inference), and a single shelf-wide line would mislabel
+    every other task's rows. It keeps its own key so a client reusing
+    the per-task reader cannot mistake the map for that feed's string.
+
+    Pagination: `before` is exclusive on `at`, and a page therefore
+    never ends in the middle of a timestamp — the rows sharing the last
+    row's second ride along, or the next request would skip them.
+    `next_before` is the cursor for that request, None at the end.
+    """
+    names = sorted(_projects.problems_of(conn, project))
+    events: "list[dict]" = []
+    log_since: "dict[str, str | None]" = {}
+    for name in names:
+        feed = problem_events(conn, name)
+        log_since[name] = feed.get("log_since")
+        for e in feed["events"]:
+            e["problem"] = name
+            events.append(e)
+    events.sort(key=lambda e: (e["at"], _LIFE_RANK.get(e["kind"], 5),
+                               str(e["id"])), reverse=True)
+    if before:
+        events = [e for e in events if e["at"] < before]
+    n = max(1, min(int(limit or _EVENTS_PAGE), _EVENTS_MAX))
+    page = events[:n]
+    while len(page) < len(events) and events[len(page)]["at"] == page[-1]["at"]:
+        page.append(events[len(page)])
+    more = len(page) < len(events)
+    return {
+        "project": project,
+        "problems": names,
+        "log_since_by_problem": log_since,
+        "events": page,
+        "next_before": page[-1]["at"] if (more and page) else None,
+    }

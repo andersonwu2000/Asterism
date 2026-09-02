@@ -73,6 +73,22 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         with ro(workspace) as conn:
             return {"projects": _data.project_rows(conn, daemon=daemon)}
 
+    @app.get("/api/projects/{name}/events")
+    def project_events(name: str, limit: "int | None" = None,
+                       before: "str | None" = None) -> dict:
+        """The shelf's Timeline — every task's events in one stream
+        (§1.4: the Timeline is a Project surface with a task list as its
+        secondary menu, so it must read whole before it reads scoped).
+        History, so it is its own endpoint and nobody polls it."""
+        with ro(workspace) as conn:
+            try:
+                _projects.require(conn, name)
+            except KeyError:
+                raise HTTPException(status_code=404,
+                                    detail=f"no project {name!r}")
+            return _data.project_events(conn, name, limit=limit,
+                                        before=before)
+
     @app.post("/api/projects")
     def create_project(body: ProjectBody) -> dict:
         with _writes() as conn:
