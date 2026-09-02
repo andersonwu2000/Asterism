@@ -808,7 +808,12 @@ def test_pressure_watermarks_take_env_overrides(monkeypatch):
     monkeypatch.delenv("ASTERISM_RAM_PRESSURE_LOW_GB")
     monkeypatch.delenv("ASTERISM_RAM_PRESSURE_HIGH_GB")
     assert rl.pressure_low_gb(6.8) == pytest.approx(3.5)
-    assert rl.pressure_high_gb(6.8) == pytest.approx(7.5)
+    # Requirement change 2026-09-02: the DERIVED resume line is "room
+    # for one more worker" (low + the slot price, fallback here), not
+    # the old flat low + 4.0 band — see `pressure_resume_gb`. The
+    # override branches above are unchanged.
+    assert rl.pressure_high_gb(6.8) == pytest.approx(3.5
+                                                    + rl.SLOT_GB_FALLBACK)
     # The .env FILE path (first field deployment, 2026-09-01): nothing
     # exports .env into the process on a non-systemd host, so a direct
     # os.environ read silently missed and the Surface ran the default
