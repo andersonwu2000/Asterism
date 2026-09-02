@@ -56,12 +56,28 @@ class CommitOutcome:
     batch_decision_row_ids: list[int] = field(default_factory=list)
 
 
+#: Who authored the row. 'strategist' is every machine path; 'human' is
+#: a command from `state/commands.py` (human_interface_design.md §3.2) —
+#: a SEMANTIC field, not an audit label: the parked / revival / cascade
+#: predicates each read it.
+ACTOR_STRATEGIST = "strategist"
+ACTOR_HUMAN = "human"
+
+#: The dispatch band a person's Inject joins. The Strategist's own
+#: Inject enqueues at 10, ahead of BFS's 2 — that is the machine
+#: promoting its own next experiment. A human Inject "只進佇列、不插隊"
+#: (§1.3, owner ruling 2026-09-02): it takes the ordinary band, so it
+#: neither outranks the goals BFS already queued nor sinks below them.
+_HUMAN_INJECT_PRIORITY = 2
+
+
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          *, problem: str, tick: int,
                          trigger_kind: str,
                          inject_batch_id: str | None = None,
                          step_index: int = 0,
                          batch_size: int = 1,
+                         actor: str = ACTOR_STRATEGIST,
                          group_id: "int | None" = None) -> CommitOutcome:
     """Commit one Strategist Inject decision. Dispatches to the
     pipeline-specific helper.
@@ -89,13 +105,13 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, batch_id_override=inject_batch_id,
             step_index=step_index, batch_size=batch_size,
-            group_id=group_id)
+            actor=actor, group_id=group_id)
     return _commit_inject_redispatch(
         decision, conn, problem=problem, tick=tick,
         trigger_kind=trigger_kind, pipeline="Formalizer",
         batch_id_override=inject_batch_id,
         step_index=step_index, batch_size=batch_size,
-        group_id=group_id)
+        actor=actor, group_id=group_id)
 
 
 def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
@@ -104,6 +120,7 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
                            batch_id_override: str | None = None,
                            step_index: int = 0,
                            batch_size: int = 1,
+                           actor: str = ACTOR_STRATEGIST,
                            group_id: "int | None" = None) -> CommitOutcome:
     """Mint variant — 1 brief → 1 row + 1 Formalizer enqueue
     (target_kind=Problem).
@@ -124,16 +141,17 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief,"
-        " reason, payload, batch_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, NULL, ?, ?, ?, ?, NULL, ?, ?)",
+        " reason, payload, batch_id, outcome, actor, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?)",
         (problem, tick, trigger_kind, group_id, brief,
          decision.reason, json.dumps(row_payload, ensure_ascii=False),
-         batch_id, ts, ts),
+         batch_id, actor, ts, ts),
     )
     row_id = int(cur.lastrowid)
     db.enqueue(
         conn, kind="Formalizer", target_id=problem,
-        target_kind="Problem", priority=10,
+        target_kind="Problem",
+        priority=_HUMAN_INJECT_PRIORITY if actor == ACTOR_HUMAN else 10,
         decision_id=row_id, problem=problem,
     )
     conn.commit()
@@ -153,6 +171,7 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
                               batch_id_override: str | None = None,
                               step_index: int = 0,
                               batch_size: int = 1,
+                              actor: str = ACTOR_STRATEGIST,
                               group_id: "int | None" = None,
                               ) -> CommitOutcome:
     """Backward / Builder variant — 1 row + 1 enqueue on target goal.
@@ -189,13 +208,13 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief,"
         " reason, payload, batch_id, produced_goal_id, produced_kind,"
-        " outcome, created_at, updated_at)"
+        " outcome, actor, created_at, updated_at)"
         " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, ?, 'redispatch',"
-        " NULL, ?, ?)",
+        " NULL, ?, ?, ?)",
         (problem, tick, trigger_kind, group_id, target_id,
          brief, decision.reason,
          json.dumps(row_payload, ensure_ascii=False),
-         batch_id, target_id, ts, ts),
+         batch_id, target_id, actor, ts, ts),
     )
     row_id = int(cur.lastrowid)
 
@@ -234,7 +253,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     # pin worked around (LU lu_step_assembly 2026-05-28).
     db.enqueue(
         conn, kind=pipeline, target_id=str(target_id),
-        target_kind="Goal", priority=10,
+        target_kind="Goal",
+        priority=_HUMAN_INJECT_PRIORITY if actor == ACTOR_HUMAN else 10,
         decision_id=row_id, problem=problem,
     )
     conn.commit()
@@ -252,7 +272,8 @@ def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
                      group_id: "int | None",
                      batch_id_override: str | None = None,
                      step_index: int = 0,
-                     batch_size: int = 1) -> CommitOutcome:
+                     batch_size: int = 1,
+                     actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
     """Open a sub-group and hand it the charter (v35).
 
     The row rides the same batch as this wake's Injects, and its
@@ -311,12 +332,12 @@ def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief, reason,"
         " payload, batch_id, produced_group_id, produced_kind, outcome,"
-        " created_at, updated_at)"
+        " actor, created_at, updated_at)"
         " VALUES (?, ?, ?, 'Delegate', ?, ?, ?, ?, ?, ?, ?, 'group',"
-        " NULL, ?, ?)",
+        " NULL, ?, ?, ?)",
         (problem, tick, trigger_kind, int(parent["id"]), target, charter,
          decision.reason, json.dumps(row_payload, ensure_ascii=False),
-         batch_id, new_gid, ts, ts),
+         batch_id, new_gid, actor, ts, ts),
     )
     row_id = int(cur.lastrowid)
     conn.execute("UPDATE groups SET opened_by = ? WHERE id = ?",
@@ -346,7 +367,8 @@ def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
 def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
                              *, problem: str, tick: int,
                              trigger_kind: str,
-                             group_id: "int | None") -> CommitOutcome:
+                             group_id: "int | None",
+                             actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
     """Hand the charter back up (v35).
 
     Setting the group's status to 'returned' is what fills the parent's
@@ -371,13 +393,13 @@ def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, reason,"
         " payload, produced_group_id, outcome, outcome_detail,"
-        " created_at, updated_at)"
+        " actor, created_at, updated_at)"
         " VALUES (?, ?, ?, 'ReturnToParent', ?, ?, ?, ?, ?, 'committed',"
-        " ?, ?, ?)",
+        " ?, ?, ?, ?)",
         (problem, tick, trigger_kind, int(me["id"]),
          decision.target_id, decision.reason,
          json.dumps(payload, ensure_ascii=False), int(me["id"]),
-         flavour, ts, ts),
+         flavour, actor, ts, ts),
     )
     row_id = int(cur.lastrowid)
     anchor = me["anchor_goal_id"]
@@ -423,7 +445,8 @@ def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
 
 def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
                         *, problem: str, tick: int, trigger_kind: str,
-                        group_id: "int | None") -> CommitOutcome:
+                        group_id: "int | None",
+                        actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
     """Retire a child group (v35). The reverse of `Delegate`.
 
     A parent's Programme is alive: its route changes, and a burden it
@@ -448,10 +471,10 @@ def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, reason, payload,"
-        " produced_group_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'CloseGroup', ?, ?, ?, ?, 'committed', ?, ?)",
+        " produced_group_id, outcome, actor, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'CloseGroup', ?, ?, ?, ?, 'committed', ?, ?, ?)",
         (problem, tick, trigger_kind, int(me["id"]), decision.reason,
-         json.dumps(payload, ensure_ascii=False), target, ts, ts),
+         json.dumps(payload, ensure_ascii=False), target, actor, ts, ts),
     )
     row_id = int(cur.lastrowid)
     # The anchor-shelve lives inside `set_status` now (one spelling for
@@ -471,8 +494,15 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str, tick: int, trigger_kind: str,
                      workspace: Path,
                      group_id: "int | None" = None,
+                     actor: str = ACTOR_STRATEGIST,
                      ) -> list[CommitOutcome]:
     """Execute a multi-decision batch in declared order.
+
+    `actor` names who decided (§3.2). It defaults to the Strategist, so
+    every existing caller is unchanged; `state/commands.py` passes
+    'human' and this is the ONLY way a human row is written — the
+    appliers are shared so a person's command has the same side effects,
+    the same batch bookkeeping and the same audit shape as the machine's.
 
     Caller must have already passed `verify_decisions`. All decisions
     commit; per-kind side effects fire individually. The transaction
@@ -533,7 +563,7 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             trigger_kind=trigger_kind, workspace=workspace,
             inject_batch_id=inject_batch_id,
             inject_step_index=idx, inject_batch_size=n_inject,
-            group_id=group_id))
+            actor=actor, group_id=group_id))
     # Wake-clock touch — ONE point for the whole batch (task #119).
     # When each per-kind path touched last_strategist_at itself, the
     # early-return paths (Inject / FetchPaper) never
@@ -567,11 +597,18 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # let a wake whose math half failed read as "strategist ran",
     # starving the retry pressure. With one turn there is no half to
     # fail separately, so the flag went with the split (2026-08-11).
-    db.update_problem_last_strategist_at(conn, problem)
-    _groups.touch_strategist(conn, int(gid),
-                             routine=(trigger_kind == "routine"))
-    if trigger_kind == "routine":
-        db.update_problem_last_routine_at(conn, problem)
+    #
+    # A HUMAN command is not a wake (§3.3): these clocks meter the
+    # MACHINE's cadence — T1 reads `last_strategist_at` as "the seat ran
+    # this recently" — so a person's command restamping them would push
+    # the next routine out by up to a full interval, silently buying the
+    # machine quiet with the human's action.
+    if actor != ACTOR_HUMAN:
+        db.update_problem_last_strategist_at(conn, problem)
+        _groups.touch_strategist(conn, int(gid),
+                                 routine=(trigger_kind == "routine"))
+        if trigger_kind == "routine":
+            db.update_problem_last_routine_at(conn, problem)
     if trigger_kind == "routine_fired":
         # The action wake's batch stands: the audit it answered is acted
         # on (verify already required a decision per fired root).
@@ -586,7 +623,8 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
 def commit_decision(decision: Decision, conn: sqlite3.Connection,
                     *, problem: str, tick: int, trigger_kind: str,
                     workspace: Path,
-                    group_id: "int | None" = None) -> CommitOutcome:
+                    group_id: "int | None" = None,
+                    actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
     """Single-decision wrapper around `commit_decisions`. Preserved
     so existing callers (single-decision tests, anyone hand-driving
     one decision) keep their CommitOutcome-returning contract.
@@ -594,7 +632,7 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     return commit_decisions(
         [decision], conn, problem=problem, tick=tick,
         trigger_kind=trigger_kind, workspace=workspace,
-        group_id=group_id,
+        group_id=group_id, actor=actor,
     )[0]
 
 
@@ -781,6 +819,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 inject_batch_id: str | None,
                 inject_step_index: int = 0,
                 inject_batch_size: int = 1,
+                actor: str = ACTOR_STRATEGIST,
                 group_id: "int | None" = None) -> CommitOutcome:
     """Execute one decision's side effects + INSERT audit row.
 
@@ -804,7 +843,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             inject_batch_id=inject_batch_id,
             step_index=inject_step_index,
             batch_size=inject_batch_size,
-            group_id=group_id,
+            actor=actor, group_id=group_id,
         )
 
     if k == "Delegate":
@@ -813,19 +852,19 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             trigger_kind=trigger_kind, group_id=group_id,
             batch_id_override=inject_batch_id,
             step_index=inject_step_index,
-            batch_size=inject_batch_size,
+            batch_size=inject_batch_size, actor=actor,
         )
 
     if k == "CloseGroup":
         return _commit_close_group(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, group_id=group_id,
+            trigger_kind=trigger_kind, group_id=group_id, actor=actor,
         )
 
     if k == "ReturnToParent":
         return _commit_return_to_parent(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, group_id=group_id,
+            trigger_kind=trigger_kind, group_id=group_id, actor=actor,
         )
 
     if k == "Noop":
@@ -973,13 +1012,13 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief,"
-        " reason, payload, batch_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " reason, payload, batch_id, outcome, actor, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (problem, tick, trigger_kind, decision.kind, group_id,
          decision.target_id, decision.brief, decision.reason,
          json.dumps(payload_for_audit, ensure_ascii=False),
          inject_batch_id,
-         db_outcome,
+         db_outcome, actor,
          ts, ts),
     )
     decision_row_id = int(cur.lastrowid)

@@ -286,7 +286,7 @@ _WATERMARKS = {
     "Tooling/core/dispatcher/triggers.py": 632,  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     "Tooling/core/dispatcher/worker.py": 650,
     "Tooling/core/dispatcher/lock.py": 300,
-    "Tooling/core/dispatcher/loop.py": 1300,
+    "Tooling/core/dispatcher/loop.py": 1320,  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -662,7 +662,7 @@ _WATERMARKS = {
     "Tooling/pipeline/strategist/__init__.py": 100,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/verify.py": 1118,  # +9 2026-08-30 two-part brick shape gate on Inject proof  # +17 2026-08-30 refuted needs the gate-born brick; Ingest accepts a disproved root  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30; +7 2026-08-30 action gate reads target_id, shelved roots not in flight (3e61beb9 shipped red here — caught 05:59Z)
-    "Tooling/pipeline/strategist/commit.py": 1011,  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/commit.py": 1055,  # +39 2026-09-02 HID §3.2/§3.3: `actor` threaded through every INSERT + the human Inject's dispatch band  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/wake.py": 906,  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
     # here) split move-only into `Tooling/agent/phase2_context/` along the

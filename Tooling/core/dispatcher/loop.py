@@ -41,6 +41,7 @@ from .refill import (bfs_refill, _verify_problem, _problem_of_target,  # noqa: E
 from .triggers import reconcile_stuck_states, strategist_triggers, _row_is_stale  # noqa: E402
 from .lock import stop_file_path, _acquire_singleton_lock, _spawn_handoff_successor  # noqa: E402
 from ...state import db, thresholds, transitions, tree
+from ...state import commands as _commands
 from ...state import intent as intent_mod
 from ...state import failures as _failures
 from ...state import groups as _groups
@@ -946,6 +947,21 @@ def run(workspace: Path, *, once: bool = False,
         blocked_kinds = set(_blocks)
         blocked_kinds |= env_blocked_kinds()
         _prev_blocked = quota.report_block_changes(_prev_blocked, _blocks)
+
+        # Human commands (human_interface_design.md §3.3): serve only
+        # INSERTs the queue row — this is the half that applies it,
+        # through the Strategist's own appliers (actor='human'). Ahead
+        # of the refill so a command's dispatch joins THIS tick's fan-out
+        # instead of waiting for the next one. Guarded: the queue is a
+        # guest in this loop and must never be able to wedge it.
+        try:
+            _human = _commands.apply_pending(conn, workspace)
+            for _c in _human:
+                print(f"[commands] #{_c['id']} {_c['kind']} → "
+                      f"{_c['status']}: {_c['outcome']}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — never wedge the tick
+            print(f"[commands] apply pass failed: {exc}", flush=True)
+            _degraded.record(workspace, "human_commands_apply", str(exc))
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
         # holds spawn_fast_fail back-offs; st.kind_backoff_until holds the

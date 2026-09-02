@@ -241,3 +241,62 @@ def test_e2e_root_proved_through_dispatcher(
         "                              'strategist_unimplemented')"
     ).fetchone()
     assert deaths["n"] == 0, "no failures expected on the happy path"
+
+
+def test_dispatcher_tick_applies_queued_human_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """human_interface_design.md §3.3: serve only INSERTs the queue row
+    — the DAEMON is what applies it. Without a call in the tick a
+    command sits `queued` forever and the receipt never resolves, which
+    no unit test of `state/commands.py` can notice.
+
+    Refill is stubbed to a no-op so the loop does exactly one pass and
+    takes `--once`'s empty-queue exit: this test is about the hook, not
+    about dispatch.
+    """
+    monkeypatch.chdir(tmp_path)
+    _seed_workspace(tmp_path)
+    from Tooling.pipeline import _lake as _lake_mod
+    monkeypatch.setattr(_lake_mod, "lake_build", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(_lake_mod, "lake_build_modules",
+                        lambda *a, **k: (True, ""))
+    assert cli.cmd_init(argparse.Namespace(problem="p", force=False)) == 0
+
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+
+    class _NoopGw:
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(gateway_lifecycle, "start_gateway",
+                        lambda workspace, **kw: _NoopGw())
+    from Tooling.core.dispatcher import loop as _loop
+    monkeypatch.setattr(_loop, "bfs_refill", lambda *a, **k: 0)
+    monkeypatch.setattr(_loop, "strategist_triggers", lambda *a, **k: None)
+
+    from Tooling.state import commands
+    conn = db.connect()
+    root = conn.execute(
+        "SELECT id FROM goals WHERE problem='p'").fetchone()
+    # `cli init` mints roots 'frozen'; a park is only legal from a live
+    # status, so open it the way the neighbouring e2e does.
+    db.update_goal_status(conn, int(root["id"]), "open")
+    cid = commands.enqueue(
+        conn, problem="p", kind="ConfirmShelve",
+        payload={"target_goal_id": int(root["id"]),
+                 "reason": "a person stops this line"},
+        idempotency_key="tick-1")
+    conn.commit()
+    conn.close()
+
+    dispatcher.run(tmp_path, once=True)
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
+
+    conn2 = db.connect()
+    row = commands.get(conn2, cid)
+    assert row["status"] == "applied", row["outcome"]
+    assert conn2.execute(
+        "SELECT actor FROM strategist_decisions WHERE id = ?",
+        (row["decision_id"],)).fetchone()["actor"] == "human"
