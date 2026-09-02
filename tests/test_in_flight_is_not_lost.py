@@ -12,6 +12,13 @@ same function the Strategist's Context and the Adversary's PROGRAMME
 projection render (`pipeline/adversary.py` calls it directly), so the
 line lands in both. That is checked here rather than assumed — fixing
 one side of this pair was how it stayed open.
+
+…AND WORK THAT IS PARKED MUST NOT READ AS WORK THAT IS RUNNING (SP7,
+2026-09-03). `outcome IS NULL` was the whole definition of "in flight",
+and a `shelved` goal deliberately leaves its step's outcome NULL
+forever (P13 4284, 2026-06-15) — so both batches SP7 listed as running
+were phantoms with zero live pipelines, and the Strategist re-parked
+g10712 twice citing "exact batch e9cbf9d9 remains in flight".
 """
 from __future__ import annotations
 
@@ -116,3 +123,104 @@ def test_a_running_batchs_substance_rides_the_lazy_companion(
     assert "## In flight — batch `cafe1234`" in companion
     assert "do it" in companion, "the full brief, untruncated"
     assert "mint (a new brick from the brief)" in companion
+
+
+# ---------------------------------------------------------------------
+# Parked is not running (SP7 2026-09-03)
+# ---------------------------------------------------------------------
+
+def _problem(conn: sqlite3.Connection) -> None:
+    from Tooling.state import db
+    conn.execute(
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)", (db.now(),))
+    conn.commit()
+
+
+def _goal(conn: sqlite3.Connection, slug: str, status: str) -> int:
+    from Tooling.state import db
+    return db.insert_goal(
+        conn, problem="p", slug=slug, lean_path=f"proofs/L_{slug}.lean",
+        statement="T", origin="forward", status=status)
+
+
+def _seed_produced(conn: sqlite3.Connection, *, batch: str,
+                   goal_id: int) -> None:
+    """A step whose worker already registered its product — the shape
+    `outcome IS NULL` cannot classify on its own."""
+    from Tooling.state import db
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', NULL, 'do it', NULL,"
+        "         '{}', ?, ?, NULL, ?, ?)", (batch, goal_id, ts, ts))
+    conn.commit()
+
+
+def _running_pipeline(conn: sqlite3.Connection, goal_id: int) -> None:
+    from Tooling.state import db
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('pid-live', 'Backward', ?, 'Goal', 'running', NULL,"
+        "         ?, NULL)", (str(goal_id), db.now()))
+    conn.commit()
+
+
+def test_a_parked_step_is_not_called_running(conn: sqlite3.Connection):
+    """SP7: batch e9cbf9d9 → g10712, goal shelved, zero pipelines. It
+    rendered as `Still running … do not re-dispatch them`, so the
+    Strategist re-parked the goal citing its own phantom."""
+    _problem(conn)
+    g = _goal(conn, "parked_brick", "shelved")
+    _seed_produced(conn, batch="parked-batch-1", goal_id=g)
+
+    text = "\n".join(
+        phase2_context._section_inject_batch_outcomes(conn, "p"))
+
+    assert "still running" not in text.lower(), text
+    assert "do not re-dispatch" not in text.lower(), text
+    assert "parked" in text.lower(), text
+    assert f"g{g}" in text and "shelved" in text, text
+
+
+def test_a_live_worker_over_an_attempting_goal_stays_running(
+        conn: sqlite3.Connection):
+    """The other direction, so the fix cannot be "call everything
+    parked": a produced goal with an unfinished `pipelines` row is a
+    worker that really is computing, and re-dispatching it duplicates
+    the spawn."""
+    _problem(conn)
+    g = _goal(conn, "live_brick", "attempting")
+    _seed_produced(conn, batch="live-batch-2", goal_id=g)
+    _running_pipeline(conn, g)
+
+    text = "\n".join(
+        phase2_context._section_inject_batch_outcomes(conn, "p"))
+
+    assert "live-bat" in text, text
+    assert "running" in text.lower(), text
+    assert "do not re-dispatch" in text.lower(), text
+
+
+def test_the_companion_files_parked_steps_apart_from_in_flight(
+        conn: sqlite3.Connection, tmp_path):
+    """`BATCHES.md`'s `## In flight` sections carry the full briefs of
+    what is running; a parked step's brief in that section says the
+    same false thing at greater length."""
+    _problem(conn)
+    live = _goal(conn, "live_brick", "attempting")
+    dead = _goal(conn, "parked_brick", "shelved")
+    _seed_produced(conn, batch="cafe1234beef", goal_id=live)
+    _running_pipeline(conn, live)
+    _seed_produced(conn, batch="dead5678beef", goal_id=dead)
+
+    phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=tmp_path)
+    companion = (tmp_path / "BATCHES.md").read_text(encoding="utf-8")
+
+    assert "## In flight — batch `cafe1234`" in companion, companion
+    assert "## In flight — batch `dead5678`" not in companion, companion
+    assert "Parked" in companion and "dead5678" in companion, companion

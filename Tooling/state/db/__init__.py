@@ -82,6 +82,8 @@ from .problems import (
     propagate_inject_outcome_from_group,
     has_active_inflight_inject,
     has_live_inflight_inject,
+    open_batch_steps,
+    batch_has_running_step,
     goal_reviewed_at_current_attempts,
     is_confirm_shelve_parked,
     is_human_parked,

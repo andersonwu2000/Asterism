@@ -1155,12 +1155,15 @@ def _awaiting_promised_batch(conn: sqlite3.Connection,
     # to adjudicate a non-question — the exact cascade b047b910 killed,
     # resurfacing through kind-enumeration (the failure mode
     # `predicted_batch_delta`'s comment names).
-    return conn.execute(
-        "SELECT 1 FROM strategist_decisions"
-        " WHERE batch_id = ?"
-        "   AND decision_kind IN ('Inject', 'Delegate')"
-        "   AND outcome IS NULL LIMIT 1",
-        (str(row["batch_id"]),)).fetchone() is not None
+    # …and a promise waits on WORK, not on an empty column. A helper
+    # whose own goal got parked keeps `outcome` NULL forever by design
+    # (P13 4284, 2026-06-15), so spelling the wait "outcome IS NULL"
+    # made such a promise permanently un-due: the parent strategy never
+    # stalls, the branch never reaches a review wake, and the line is
+    # held open by a step nobody is working on. `db.batch_has_running_
+    # step` asks the produced work, the same structured signal the
+    # stall predicate's active-check reads (SP7 2026-09-03).
+    return db.batch_has_running_step(conn, str(row["batch_id"]))
 
 
 def _strategy_waits_on_promised_batch(conn: sqlite3.Connection,

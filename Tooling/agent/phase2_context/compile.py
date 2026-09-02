@@ -386,7 +386,7 @@ def _section_failure_replay(conn: sqlite3.Connection,
     'what I tried, what happened'."""
     try:
         rows = list(conn.execute(
-            "SELECT triggered_at_tick, trigger_kind, decision_kind,"
+            "SELECT id, triggered_at_tick, trigger_kind, decision_kind,"
             " target_id, brief, reason, payload, outcome, outcome_detail,"
             " created_at"
             " FROM strategist_decisions WHERE problem = ?"
@@ -395,6 +395,15 @@ def _section_failure_replay(conn: sqlite3.Connection,
         ))
     except sqlite3.OperationalError:
         return []
+    # An empty `outcome` is not one state: a parked product leaves it
+    # empty for good (db.open_batch_steps), so "dispatched, no result
+    # yet" was a claim about a worker that no longer exists. Its own
+    # guard — a replay that cannot classify still has a replay to give.
+    try:
+        parked = {s["decision_id"] for s in db.open_batch_steps(conn, problem)
+                  if not s["running"]}
+    except sqlite3.OperationalError:
+        parked = set()
     if not rows:
         return ["## Recent decisions", "", "(none — first Strategist run)", ""]
     out = ["## Recent decisions (newest first)", ""]
@@ -405,7 +414,10 @@ def _section_failure_replay(conn: sqlite3.Connection,
             f"`{r['decision_kind']}`"
             + (f" target={r['target_id']}" if r['target_id'] else "")
             + (f" outcome={r['outcome']}" if r['outcome']
-               else "  [IN FLIGHT — dispatched, no result yet]")
+               else ("  [PARKED — you parked what it produced; no worker"
+                     " is running and no wake is coming for it]"
+                     if int(r["id"]) in parked
+                     else "  [IN FLIGHT — dispatched, no result yet]"))
         )
         if r["reason"]:
             reason = str(r["reason"])

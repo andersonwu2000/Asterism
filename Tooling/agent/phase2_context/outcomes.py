@@ -196,7 +196,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
                              order: "list[str]",
                              grouped: "dict[str, list[sqlite3.Row]]",
                              step_idx,
-                             live_steps: "list[sqlite3.Row] | None" = None,
+                             open_steps: "list[dict] | None" = None,
                              ) -> bool:
     """`BATCHES.md` — every completed step's brief, reply, and what it left.
 
@@ -222,16 +222,20 @@ def _write_batches_companion(conn: sqlite3.Connection,
              "live: `inspect({\"decl\": ...})`). The inline"
              " `## Completed Inject batches` section carries the"
              " scoreboard; the untruncated text lives here._", ""]
-    # In-flight batches first, IN FULL (owner ruling 2026-08-22: lazy
+    # Unfinished batches first, IN FULL (owner ruling 2026-08-22: lazy
     # surfaces don't truncate — inline carries existence + pointer,
     # the substance lives here where inspect reads it by section).
     # Cross-group included: sub-groups see each other by design.
-    if live_steps:
-        by_batch: "dict[str, list[sqlite3.Row]]" = {}
-        for r in live_steps:
-            by_batch.setdefault(str(r["batch_id"]), []).append(r)
+    # Two headings, not one: a step whose product the Strategist parked
+    # is not running, and filing it under `## In flight` says the false
+    # thing at greater length (SP7 2026-09-03).
+    for running, head in ((True, "In flight"), (False, "Parked, no worker")):
+        by_batch: "dict[str, list[dict]]" = {}
+        for r in (open_steps or []):
+            if bool(r["running"]) is running:
+                by_batch.setdefault(str(r["batch_id"]), []).append(r)
         for bid, steps in by_batch.items():
-            lines.append(f"## In flight — batch `{bid[:8]}` "
+            lines.append(f"## {head} — batch `{bid[:8]}` "
                          f"(group {steps[0]['grp']})")
             lines.append("")
             for r in steps:
@@ -240,6 +244,11 @@ def _write_batches_companion(conn: sqlite3.Connection,
                            f"({r['target_status']})")
                 else:
                     tgt = "mint (a new brick from the brief)"
+                if not running and r["produced_ref"]:
+                    tgt += (f" — produced {r['produced_ref']}"
+                            f" `{r['produced_slug'] or '?'}`, now"
+                            f" {r['produced_status']}; yours to reopen,"
+                            f" re-dispatch or leave")
                 lines += [f"### {r['decision_kind']} — {tgt}", "",
                           str(r["brief"] or "(no brief)").strip(), ""]
     for bid in order:
@@ -311,60 +320,69 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # spent a whole round reconstructing chronology by hand (08-12/13,
     # the largest cluster in that week's feedback). One line, from the
     # rows the DB already has.
+    #
+    # …AND WORK THAT IS PARKED IS NOT WORK THAT IS RUNNING. The roster
+    # was `outcome IS NULL`, which a parked product satisfies forever
+    # (`db.open_batch_steps` carries the whole autopsy), so the two
+    # states shared one line that only ever named the running one.
     try:
-        live = list(conn.execute(
-            "SELECT batch_id, COUNT(*) n, MAX(group_id) grp"
-            " FROM strategist_decisions"
-            " WHERE problem = ? AND outcome IS NULL AND batch_id IS NOT NULL"
-            " GROUP BY batch_id ORDER BY MAX(updated_at) DESC", (problem,)))
+        open_steps = db.open_batch_steps(conn, problem)
     except sqlite3.OperationalError:
-        live = []
+        open_steps = []
     # Own-group hashes only (2026-08-18 context diet): a mature run had
     # ~60 problem-wide in-flight batch ids inlined here, ~1.6KB of hex
     # the reader cannot act on — the actionable fact is "don't
     # re-dispatch MINE"; other groups' work needs a count, not a roster.
     # `group_id=None` (top-group / legacy callers) keeps the full list.
-    mine = [r for r in live
+    mine = [r for r in open_steps
             if group_id is None or r["grp"] == group_id]
-    other_n = len(live) - len(mine)
-    in_flight = [f"`{str(r['batch_id'])[:8]}` ({r['n']} step(s))"
-                 for r in mine]
+    running_batches: "dict[str, int]" = {}
+    for r in mine:
+        if r["running"]:
+            running_batches[r["batch_id"]] = (
+                running_batches.get(r["batch_id"], 0) + 1)
+    other_n = len({r["batch_id"] for r in open_steps if r["running"]}
+                  ) - len(running_batches)
+    in_flight = [f"`{b[:8]}` ({n} step(s))"
+                 for b, n in running_batches.items()]
     others_note = (f" (+{other_n} other groups' batch(es) also in flight)"
-                   if other_n else "")
-    # WHAT the live batches contain rides the LAZY companion in full
-    # (owner ruling 2026-08-22: lazy surfaces don't truncate; inline
-    # carries existence + the pointer). "Don't re-dispatch mine" was
-    # unactionable from a bare hash — checking one proposed Inject for
-    # duplication took a four-source inference (46+2 self-reports).
-    live_steps: "list[sqlite3.Row]" = []
-    if live:
-        ph = ",".join("?" * len(live))
-        try:
-            live_steps = list(conn.execute(
-                f"SELECT d.batch_id, d.brief, d.decision_kind,"
-                f" d.group_id AS grp, d.target_id,"
-                f" g.slug AS target_slug, g.status AS target_status"
-                f" FROM strategist_decisions d"
-                f" LEFT JOIN goals g ON g.id = d.target_id"
-                f" WHERE d.batch_id IN ({ph}) AND d.outcome IS NULL"
-                f"   AND d.decision_kind IN ('Inject', 'Delegate')"
-                f" ORDER BY d.batch_id, d.id",
-                [str(r["batch_id"]) for r in live]))
-        except sqlite3.OperationalError:
-            live_steps = []
+                   if other_n > 0 else "")
+    # A parked step names its product and its status: the reader has to
+    # be able to tell WHICH goal it parked without a second lookup, and
+    # the fact that no wake is coming for it is the actionable half.
+    parked = [f"`{r['batch_id'][:8]}` → {r['produced_ref']}"
+              f" `{r['produced_slug'] or '?'}` {r['produced_status']}"
+              + (f" since {str(r['produced_at'])[:19]}"
+                 if r["produced_at"] else "")
+              for r in mine if not r["running"] and r["produced_ref"]]
+    parked_line = (
+        "_Parked, NOT running — no worker exists for these; their step "
+        "has no outcome because you parked what it produced, not "
+        "because it is still computing. No batch-done wake is coming: "
+        "reopening, re-dispatching or leaving them parked is your call. "
+        + ", ".join(parked) + "._") if parked else ""
+    # WHAT the unfinished batches contain rides the LAZY companion in
+    # full (owner ruling 2026-08-22: lazy surfaces don't truncate;
+    # inline carries existence + the pointer). "Don't re-dispatch mine"
+    # was unactionable from a bare hash — checking one proposed Inject
+    # for duplication took a four-source inference (46+2 self-reports).
     pointer = (" Each one's targets and full briefs: "
                f"`{BATCHES_COMPANION}`, the `## In flight` sections."
-               if live_steps else "")
+               if running_batches else "")
     if not batch_ids:
-        if in_flight or other_n:
+        if in_flight or other_n or parked:
             _write_batches_companion(conn, attempts_dir, [], {},
-                                     lambda r: 0, live_steps=live_steps)
-            return (["## Dispatched, still running", "",
-                     "Not finished, and therefore not below: "
+                                     lambda r: 0, open_steps=open_steps)
+            head = ("## Dispatched, still running" if in_flight or other_n
+                    else "## Dispatched, now parked")
+            body = ([] if not (in_flight or other_n) else
+                    ["Not finished, and therefore not below: "
                      + (", ".join(in_flight) or "(none of yours)")
                      + others_note
                      + ". Their outcomes reach you on the batch-done "
-                       "wake — do not re-dispatch them." + pointer, ""]
+                       "wake — do not re-dispatch them." + pointer, ""])
+            return ([head, ""] + body
+                    + ([parked_line, ""] if parked_line else [])
                     + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
@@ -372,6 +390,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         out += ["_Still running, so not listed below: "
                 + (", ".join(in_flight) or "(none of yours)")
                 + others_note + "._" + pointer, ""]
+    if parked_line:
+        out += [parked_line, ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
     # ConfirmShelve/EmitDirective siblings used to render as brief-less
@@ -408,7 +428,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
             return 0
 
     lazy = _write_batches_companion(conn, attempts_dir, order, grouped,
-                                    _step_idx, live_steps=live_steps)
+                                    _step_idx, open_steps=open_steps)
     if lazy:
         out += [f"Full proof/brief and worker reply per step:"
                 f" `{BATCHES_COMPANION}`, beside this file.", ""]
@@ -690,8 +710,19 @@ def _section_pending_reopens(conn: sqlite3.Connection,
     # re-confirm co-batched with an UNRELATED forced-advance Inject
     # used to read as a fresh pairing and re-arm this section every
     # wake (agent_feedback 2026-07-14, goal 5941 — 15 reports).
+    # A promise waits on WORK. The exclusion below used to read "any
+    # Inject/Delegate sibling with outcome NULL", which a PARKED product
+    # satisfies forever (P13 4284 — see `db.open_batch_steps`): the
+    # promise never came due, so the goal waiting on it never surfaced
+    # here again. Only a RUNNING sibling is still worth waiting for; a
+    # batch whose remainder is parked is as done as it will get without
+    # a decision. Re-surfacing is bounded by the newer-ConfirmShelve /
+    # Reopen guard below — once, until the Strategist answers.
+    running = sorted({s["batch_id"] for s in db.open_batch_steps(conn, problem)
+                      if s["running"]}) or [""]
+    _ph = ",".join("?" * len(running))
     rows = list(conn.execute(
-        """
+        f"""
         WITH latest_cs AS (
             SELECT g.id AS goal_id, g.slug AS goal_slug,
                    g.updated_at AS shelved_at,
@@ -716,20 +747,14 @@ def _section_pending_reopens(conn: sqlite3.Connection,
                cs.batch_id AS cs_batch_id
         FROM latest_cs lcs
         JOIN strategist_decisions cs ON cs.id = lcs.cs_decision_id
-        WHERE cs.batch_id NOT IN (
-            -- exclude batches still in-flight: any Inject OR Delegate
-            -- sibling with outcome NULL means the promise hasn't landed
-            -- yet ('Delegate' joined the promise-carrier set 2026-08-06,
-            -- mirroring transitions._awaiting_promised_batch: a park
-            -- waiting on a sub-group's charter surfaced as "due" the
-            -- moment the batch's mints resolved, prompting a re-park
-            -- adjudication of a non-question)
-            SELECT batch_id FROM strategist_decisions
-            WHERE problem = ?
-              AND decision_kind IN ('Inject', 'Delegate')
-              AND batch_id IS NOT NULL
-              AND outcome IS NULL
-        )
+        -- exclude batches still RUNNING: an Inject OR Delegate sibling
+        -- whose work is moving means the promise hasn't landed yet
+        -- ('Delegate' joined the promise-carrier set 2026-08-06,
+        -- mirroring transitions._awaiting_promised_batch: a park
+        -- waiting on a sub-group's charter surfaced as "due" the
+        -- moment the batch's mints resolved, prompting a re-park
+        -- adjudication of a non-question)
+        WHERE cs.batch_id NOT IN ({_ph})
         AND EXISTS (
             -- and the batch must contain at least one promise carrier —
             -- pure ConfirmShelve+Reopen batches carry no promise to
@@ -753,7 +778,7 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         ORDER BY lcs.shelved_at DESC
         LIMIT 12
         """,
-        (problem, problem, problem),
+        (problem, *running, problem),
     ))
     if not rows:
         return []

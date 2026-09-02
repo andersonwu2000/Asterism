@@ -2453,6 +2453,30 @@ def test_a_landed_decision_acknowledges_the_batch_it_touches(
     assert db.unacknowledged_inject_batches(conn, "p", top) == [b]
 
 
+def test_a_batch_that_terminated_on_the_commits_own_tick_is_still_owed(
+    conn: sqlite3.Connection,
+) -> None:
+    """The ratchet compared `MAX(updated_at) > last_strategist_at`, and
+    on Windows both stamps come from the same coarse clock: a batch whose
+    last row settled inside the commit's own tick tied, lost the strict
+    comparison, and its report reached no wake at all. Same granularity
+    bug the decline window already carries `>=` for (`_recent_decline_
+    lines`: "a decline landing the same clock tick as the wake's own
+    commit must not vanish"); an exact-boundary repeat is harmless,
+    a swallowed report is not."""
+    from Tooling.state import groups as _groups
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    _seed_done_batch(conn, batch_id="TIE", group_id=top)
+    tie = db.now()
+    conn.execute("UPDATE strategist_decisions SET updated_at = ?"
+                 " WHERE batch_id = 'TIE'", (tie,))
+    conn.execute("UPDATE groups SET last_strategist_at = ? WHERE id = ?",
+                 (tie, top))
+    conn.commit()
+    assert db.unacknowledged_inject_batches(conn, "p", top) == ["TIE"]
+
+
 def test_a_batch_seen_only_in_the_delta_stays_unacknowledged(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

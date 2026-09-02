@@ -478,7 +478,7 @@ _WATERMARKS = {
     "Tooling/state/db/core.py": 971,  # +1 2026-09-03 strategist_decisions.report_carried_at: the batch-report carry-over mark the clock ratchet cannot express  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
     "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/goals.py": 650,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/problems.py": 1209,  # +9 2026-09-03 `unacknowledged_inject_batches` also honours the carry-over mark (a mid-debate batch nobody acted on is still owed its report)  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/problems.py": 1363,  # +9 2026-09-03 the batch-report ratchet takes `>=`: a batch settling inside the commit's own clock tick used to lose the strict comparison and reach no wake  # +145 2026-09-03 `open_batch_steps` / `batch_has_running_step` — the one place that splits an outcome-NULL batch step into running vs parked (SP7 phantom "still running" batches)  # +9 2026-09-03 `unacknowledged_inject_batches` also honours the carry-over mark (a mid-debate batch nobody acted on is still owed its report)  # born 2026-08-29 from the db.py split
     "Tooling/state/db/reach.py": 200,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/strategies.py": 400,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/pipelines.py": 165,  # born 2026-08-29 from the db.py split  # +routine audit 2026-08-30
@@ -694,7 +694,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1243,  # +31 2026-08-31 heading demotion + wake-time TREE refresh  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
+    "Tooling/agent/phase2_context/compile.py": 1255,  # +12 2026-09-03 the decision replay names a PARKED step instead of calling it dispatched  # +31 2026-08-31 heading demotion + wake-time TREE refresh  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section

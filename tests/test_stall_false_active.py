@@ -223,15 +223,18 @@ def _confirm_shelve(conn, goal_id: int, *, batch: str) -> int:
     return int(cur.lastrowid)
 
 
-def _mint_inject(conn, *, batch: str, outcome: str | None) -> int:
+def _mint_inject(conn, *, batch: str, outcome: str | None,
+                 produced_goal: "int | None" = None) -> int:
     """A no-target Inject sibling — the helper brick a ConfirmShelve
-    promises. `outcome=None` = still in flight."""
+    promises. `outcome=None` = no result written yet; with
+    `produced_goal` set, whether that means "running" or "parked" is
+    the produced goal's business, not the column's."""
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, batch_id, outcome,"
-        " created_at, updated_at)"
-        " VALUES (?, 0, 'pending_review', 'Inject', ?, ?, ?, ?)",
-        (P, batch, outcome, _db.now(), _db.now()))
+        " trigger_kind, decision_kind, batch_id, produced_goal_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'pending_review', 'Inject', ?, ?, ?, ?, ?)",
+        (P, batch, produced_goal, outcome, _db.now(), _db.now()))
     conn.commit()
     return int(cur.lastrowid)
 
@@ -366,6 +369,38 @@ def test_promise_that_came_due_escalates_again(tmp_path: Path) -> None:
     # latest ConfirmShelve's batch does.
     _confirm_shelve(conn, leaf, batch="promise-3")
     _mint_inject(conn, batch="promise-3", outcome=None)
+    assert _tr._awaiting_promised_batch(conn, leaf)
+    conn.close()
+
+
+def test_a_promise_whose_helper_got_parked_is_not_live(
+        tmp_path: Path) -> None:
+    """A promise waits on WORK, and a parked helper is not work.
+
+    The helper's own goal was shelved, so its Inject's outcome stays
+    NULL forever by design (P13 4284, 2026-06-15). Read as "outcome
+    NULL ⇒ in flight", the promise can never come due: the parent
+    strategy never stalls, the branch never reaches a review wake, and
+    the whole line is held open by a step nobody is working on. The
+    liveness test is the produced work, exactly as it is for the stall
+    predicate's active-check."""
+    conn = _conn(tmp_path)
+    pa = _goal(conn, "pa", status="attempting")
+    sp = _strategy(conn, pa, "proposed")
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _link(conn, sp, leaf)
+    helper = _goal(conn, "phelper", status="shelved")
+    _confirm_shelve(conn, leaf, batch="promise-parked")
+    _mint_inject(conn, batch="promise-parked", outcome=None,
+                 produced_goal=helper)
+
+    assert not _tr._awaiting_promised_batch(conn, leaf)
+
+    # …and the same promise with a LIVE helper still holds the parent.
+    live = _goal(conn, "plive", status="open")
+    _confirm_shelve(conn, leaf, batch="promise-live")
+    _mint_inject(conn, batch="promise-live", outcome=None,
+                 produced_goal=live)
     assert _tr._awaiting_promised_batch(conn, leaf)
     conn.close()
 

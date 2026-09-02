@@ -474,6 +474,29 @@ def test_a_long_outcome_detail_keeps_its_tail(
     assert "……" in text, "expected a middle elision, not a cut end"
 
 
+def test_recent_decisions_do_not_call_a_parked_step_dispatched(
+    conn: sqlite3.Connection,
+) -> None:
+    """The replay's no-outcome arm read `[IN FLIGHT — dispatched, no
+    result yet]` off an empty column. A step whose product the
+    Strategist parked keeps that column empty for good (a shelved goal
+    never settles its inject — P13 4284), so the replay told the
+    Strategist a goal it had shelved was out with a worker."""
+    _insert_problem(conn)
+    gid = _seed_shelved_goal(conn, slug="g_parked")
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', NULL, 'b', NULL, '{}',"
+        "         'batch-parked', ?, NULL, ?, ?)", (gid, ts, ts))
+    conn.commit()
+    text = "\n".join(phase2_context._section_failure_replay(conn, "p"))
+    assert "IN FLIGHT" not in text, text
+    assert "PARKED" in text, text
+
+
 def test_batch_outcomes_filter_non_inject_and_flag_unattributed(
     conn: sqlite3.Connection,
 ) -> None:
@@ -788,6 +811,36 @@ def test_pending_reopens_suppresses_when_promised_batch_inflight(
     lines = phase2_context._section_pending_reopens(
         conn, "p", "inject_batch_done")
     assert lines == []
+
+
+def test_pending_reopens_fires_when_the_promised_helper_is_parked(
+    conn: sqlite3.Connection,
+) -> None:
+    """A promise waits on work, and a parked helper is not work. The
+    suppression read `outcome IS NULL` as "still in flight", but a
+    helper whose own goal got shelved keeps that column NULL forever
+    (P13 4284) — so the promise never came due and the parked goal that
+    was waiting on it never surfaced again."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_promised")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-parked-helper",
+        inject_outcomes=["success"],
+    )
+    helper = _seed_shelved_goal(conn, slug="g_helper")
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Inject', NULL, 'helper',"
+        "         NULL, '{}', 'batch-parked-helper', ?, NULL, ?, ?)",
+        (helper, ts, ts))
+    conn.commit()
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_promised" in body, body
 
 
 def test_pending_reopens_waits_on_a_live_delegate(

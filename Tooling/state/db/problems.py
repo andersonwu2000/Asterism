@@ -134,6 +134,15 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
     unacknowledged until a wake actually delivers or acts on it. NULL
     (every legacy row, every batch a wake received normally) means the
     clock decides, exactly as before.
+
+    `>=`, not `>`: both stamps come from `now()`, whose Windows
+    resolution is coarse enough for a batch settling inside the commit's
+    own tick to TIE — and a tie lost the strict comparison, so that
+    batch's report reached no wake at all. Same granularity rule the
+    decline window already carries ("a decline landing the same clock
+    tick as the wake's own commit must not vanish",
+    `phase2_context.outcomes._recent_decline_lines`): a boundary repeat
+    costs one re-render, a swallowed report costs the outcomes.
     """
     sql = ("SELECT batch_id,"
            "       SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
@@ -161,7 +170,7 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
             " WHERE name = ?", (problem,)).fetchone()
     lsa = str(lsa_row["lsa"]) if lsa_row else '1970-01-01T00:00:00+00:00'
     return [str(r["batch_id"]) for r in rows
-            if r["carried"] is not None or str(r["last_update"]) > lsa]
+            if r["carried"] is not None or str(r["last_update"]) >= lsa]
 
 
 # Phase 6 — `problems_needing_t0` (root `frozen` → first_launch wake) is
@@ -769,6 +778,158 @@ def has_live_inflight_inject(conn: sqlite3.Connection, problem: str, *,
                 if _subtree_has_live_frontier(
                         conn, int(sub["gid"]), frontier="dispatch"):
                     return True
+    return False
+
+
+# ------------------------------------------- a batch step's two states
+#
+# `outcome IS NULL` says "nobody has written a result", and that is TWO
+# states, not one: a worker is still computing, or the Strategist PARKED
+# the product and no worker exists any more. The second is by design —
+# `shelved` stopped settling an inject on 2026-06-15 (P13 4284: settling
+# it re-fired `inject_batch_done` on every park), and a 'stalled'
+# strategy reaches the same shape. So every reader that spelled "in
+# flight" as `outcome IS NULL` told the Strategist its own parked goal
+# was still running: SP7 2026-09-03 listed batches `e9cbf9d9` → g10712
+# and `576886b8` → g10719 as "Still running … do not re-dispatch them"
+# with zero live pipelines, and the Strategist re-parked g10712 twice
+# (revs 23 and 25) citing "exact batch e9cbf9d9 remains in flight".
+#
+# The structured signal is the produced work, the same one the stall
+# predicates read. These helpers are the single place that spells it.
+
+def _subtree_has_running_worker(conn: sqlite3.Connection,
+                                goal_id: int) -> bool:
+    """An unfinished `pipelines` row over this subtree — a worker
+    PROCESS is alive on one of its goals or on a strategy of one.
+
+    Complements `_subtree_has_live_frontier`, whose queue arm reads
+    `target_kind='Goal'` rows only: a Verify running against a strategy
+    of an `attempting` goal has no goal-kind row to be found by."""
+    return conn.execute(
+        _SUBTREE_CTE +
+        " SELECT 1 FROM pipelines p WHERE p.finished_at IS NULL"
+        "   AND ((p.target_kind = 'Goal'"
+        "         AND CAST(p.target_id AS INTEGER) IN (SELECT gid FROM sub))"
+        "     OR (p.target_kind = 'Strategy'"
+        "         AND CAST(p.target_id AS INTEGER) IN ("
+        "               SELECT s.id FROM strategies s"
+        "                WHERE s.goal_id IN (SELECT gid FROM sub))))"
+        " LIMIT 1", (goal_id,)).fetchone() is not None
+
+
+def _produced_goal_is_live(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """Work is moving on this produced goal without a Strategist: an
+    `open` node BFS will dispatch, a queued/leased worker, or a running
+    pipeline — anywhere in its subtree, the goal itself included."""
+    return (_subtree_has_live_frontier(conn, goal_id, frontier="dispatch")
+            or _subtree_has_running_worker(conn, goal_id))
+
+
+def _step_is_running(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    """Is this outcome-NULL batch step's work actually MOVING?
+
+    Deliberately generous in one direction only: a step that has
+    produced nothing yet counts as running, because the worker has not
+    reached its artifact and there is nothing to read (the same arm
+    `has_live_inflight_inject` opens with; a worker that died there is
+    recovered by `null_inject_redispatch_specs`, not by this reader)."""
+    gid, sid = row["produced_goal_id"], row["produced_strategy_id"]
+    grp = row["produced_group_id"]
+    if gid is None and sid is None and grp is None:
+        return True
+    if queue_has_decision(conn, int(row["id"])):
+        return True
+    if grp is not None:
+        g = conn.execute("SELECT status FROM groups WHERE id = ?",
+                         (int(grp),)).fetchone()
+        if g is not None and str(g["status"]) == "active":
+            return True
+    if gid is not None and _produced_goal_is_live(conn, int(gid)):
+        return True
+    if sid is not None:
+        if conn.execute(
+            "SELECT 1 FROM pipelines WHERE target_kind = 'Strategy'"
+            "   AND CAST(target_id AS INTEGER) = ? AND finished_at IS NULL"
+            " LIMIT 1", (int(sid),)).fetchone() is not None:
+            return True
+        for sub in conn.execute(
+            "SELECT ss.subgoal_id AS gid FROM strategies s"
+            " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+            " WHERE s.id = ? AND s.status = 'proposed'", (int(sid),),
+        ).fetchall():
+            if _produced_goal_is_live(conn, int(sub["gid"])):
+                return True
+    return False
+
+
+_OPEN_STEP_SQL = (
+    "SELECT d.id, d.batch_id, d.group_id AS grp, d.decision_kind,"
+    " d.brief, d.updated_at, d.produced_goal_id, d.produced_strategy_id,"
+    " d.produced_group_id, tg.slug AS target_slug,"
+    " tg.status AS target_status, pg.slug AS produced_slug,"
+    " pg.status AS goal_status, pg.updated_at AS produced_at,"
+    " ps.status AS strategy_status, pgr.status AS group_status"
+    " FROM strategist_decisions d"
+    " LEFT JOIN goals tg ON tg.id = d.target_id"
+    " LEFT JOIN goals pg ON pg.id = d.produced_goal_id"
+    " LEFT JOIN strategies ps ON ps.id = d.produced_strategy_id"
+    " LEFT JOIN groups pgr ON pgr.id = d.produced_group_id"
+    " WHERE d.outcome IS NULL AND d.batch_id IS NOT NULL"
+    "   AND d.decision_kind IN " + _BATCH_KINDS_SQL
+)
+
+
+def open_batch_steps(conn: sqlite3.Connection,
+                     problem: str) -> "list[dict]":
+    """Every batch step on `problem` whose `outcome` is still NULL, each
+    classified `running` (work is moving without you) or PARKED (its
+    product is shelved / stalled / closed — no worker exists and only
+    the Strategist can move it).
+
+    Problem-wide on purpose: the batch surfaces show a group its own
+    hashes and a COUNT of the others', so the caller filters on `grp`.
+    Newest batch activity first, steps in commit order within a batch."""
+    steps: "list[dict]" = []
+    for r in conn.execute(_OPEN_STEP_SQL + " AND d.problem = ?"
+                          " ORDER BY d.batch_id, d.id", (problem,)):
+        if r["produced_goal_id"] is not None:
+            ref = f"g{int(r['produced_goal_id'])}"
+            status, at = r["goal_status"], r["produced_at"]
+        elif r["produced_strategy_id"] is not None:
+            ref = f"s{int(r['produced_strategy_id'])}"
+            status, at = r["strategy_status"], None
+        elif r["produced_group_id"] is not None:
+            ref = f"group {int(r['produced_group_id'])}"
+            status, at = r["group_status"], None
+        else:
+            ref = status = at = None
+        steps.append({
+            "decision_id": int(r["id"]), "batch_id": str(r["batch_id"]),
+            "grp": r["grp"], "decision_kind": str(r["decision_kind"]),
+            "brief": r["brief"], "target_slug": r["target_slug"],
+            "target_status": r["target_status"],
+            "produced_ref": ref, "produced_slug": r["produced_slug"],
+            "produced_status": None if status is None else str(status),
+            "produced_at": None if at is None else str(at),
+            "updated_at": str(r["updated_at"] or ""),
+            "running": _step_is_running(conn, r),
+        })
+    steps.sort(key=lambda s: s["updated_at"], reverse=True)
+    return steps
+
+
+def batch_has_running_step(conn: sqlite3.Connection,
+                           batch_id: str) -> bool:
+    """True iff this batch still has a step whose work is MOVING — the
+    promise-liveness test shared by `transitions._awaiting_promised_
+    batch` and the pending-reopen section's complement. A batch whose
+    remaining steps are all parked is as done as it will get without a
+    Strategist decision."""
+    for r in conn.execute(_OPEN_STEP_SQL + " AND d.batch_id = ?",
+                          (str(batch_id),)):
+        if _step_is_running(conn, r):
+            return True
     return False
 
 
