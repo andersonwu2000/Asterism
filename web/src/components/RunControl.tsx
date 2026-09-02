@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
+import { SCHEMA_BEHIND_LINE, schemaBehind } from '../lib/daemon'
 import { scopeCovers } from '../lib/programmeFocus'
 import { Link } from '../lib/router'
 import type { DaemonStatus } from '../lib/types'
@@ -41,6 +42,11 @@ export default function RunControl({
   }
 
   if (!d) return null
+  // the status could not open the DB (its schema trails this engine's
+  // code), so nothing it would say about THIS problem's run is a
+  // reading. Say the one thing that is true and name the action.
+  if (schemaBehind(d))
+    return <span className="text-[11px] text-ink-faint">{SCHEMA_BEHIND_LINE}</span>
   // COVERS, not equals: a fleet's scope is a LIKE pattern, and every
   // member's page read "engine busy elsewhere" about its own run
   // (2026-08-22, the first Erdos fleet)

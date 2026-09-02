@@ -642,7 +642,18 @@ export interface DaemonStatus {
   started_at: string | null
   /** only ever true while running (a stale stop-file is not a state) */
   stopping: boolean
-  in_flight_leases: number
+  /** running pipelines — what a person calls "agents". NULL when
+   * `schema` is "behind": nothing was counted, and a count of -1 read
+   * as a measurement (`c30bba77`). */
+  in_flight?: number | null
+  /** leased queue rows (diagnostic); null for the same reason */
+  in_flight_leases: number | null
+  /** "behind" = the on-disk schema trails this engine's code, so the
+   * status read a DB a read-only consumer may not migrate and counted
+   * nothing. Absent on a serve older than `c30bba77`, which counted
+   * fine — read it through `lib/daemon.schemaBehind`, never directly,
+   * so absent can never be mistaken for degraded. */
+  schema?: 'ok' | 'behind'
   /** Lean toolchain phase: 'warming' (cold start, minutes), 'ready',
    * or null (no gateway) — names the dead-air minutes after Run */
   gateway: 'warming' | 'ready' | null

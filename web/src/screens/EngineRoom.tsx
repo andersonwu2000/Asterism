@@ -13,6 +13,7 @@ import { renderInline, renderProse } from '../lib/prose'
 import { LeanProbe } from '../components/LeanProbe'
 import LogTail from '../components/LogTail'
 import { laneSignal } from '../lib/commands'
+import { SCHEMA_BEHIND_LINE, schemaBehind } from '../lib/daemon'
 import { SignalSheet } from '../components/CommandSheet'
 import { SectionLabel } from '../components/ui'
 import { UsageLedger } from './Usage'
@@ -575,6 +576,16 @@ export default function EngineRoom({
   if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
   const d = data.daemon
+  // nothing on this page was counted: the status read a DB whose schema
+  // trails this engine's code, which a read-only consumer may not
+  // migrate. Slots, lanes and the ledger would all be instruments over
+  // a dial nobody turned — one line that names the action instead.
+  if (schemaBehind(d))
+    return (
+      <div className="mx-auto max-w-4xl px-6 py-6 text-xs text-ink-dim">
+        {SCHEMA_BEHIND_LINE}
+      </div>
+    )
   const running = d.running
   const starting = !running && d.starting
   const workers = data.workers

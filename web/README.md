@@ -64,7 +64,10 @@ are exactly two frames and no sidebar.
   signals of §3.7, through the same confirm window, aimed at the
   `pipelines.id` the lane now carries. A lane no running pipeline
   answers to says so instead of offering a button: a kill names one
-  worker, never a kind or a name.
+  worker, never a kind or a name. When the daemon status reports its
+  schema `behind`, nothing on this page was counted — the room and the
+  per-task run control both collapse to one line naming the action,
+  rather than drawing instruments over a dial nobody turned.
 - **Timeline** — what happened, newest first; every row names an object,
   and the name opens it on the Sky. With no task in the address it is
   the whole shelf's history, each row stamped with its task and paged by
