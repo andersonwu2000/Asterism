@@ -156,3 +156,65 @@ def test_delete_refuses_a_populated_directory(ws: Path) -> None:
         pd.delete(ws, "Erdos", "user/chapter")
     assert "one.md" in str(e.value) or "empty" in str(e.value)
     assert pd.read(ws, "Erdos", "user/chapter/one.md") == b"x"
+
+
+# ------------------------------------------------------------------ move
+
+def test_move_renames_a_file_and_leaves_nothing_behind(ws: Path) -> None:
+    pd.write(ws, "Erdos", "user/draft.md", "body")
+    assert pd.move(ws, "Erdos", "user/draft.md",
+                   "user/chapter/final.md") == "user/chapter/final.md"
+    assert pd.read(ws, "Erdos", "user/chapter/final.md") == b"body"
+    with pytest.raises(KeyError):
+        pd.read(ws, "Erdos", "user/draft.md")
+
+
+def test_move_takes_a_folder_and_everything_under_it(ws: Path) -> None:
+    pd.write(ws, "Erdos", "user/old/one.md", "x")
+    assert pd.move(ws, "Erdos", "user/old", "user/new") == "user/new"
+    assert pd.read(ws, "Erdos", "user/new/one.md") == b"x"
+    assert not (pd.root(ws, "Erdos") / "user" / "old").exists()
+
+
+def test_move_refuses_to_overwrite(ws: Path) -> None:
+    pd.write(ws, "Erdos", "user/a.md", "a")
+    pd.write(ws, "Erdos", "user/b.md", "b")
+    with pytest.raises(ValueError) as e:
+        pd.move(ws, "Erdos", "user/a.md", "user/b.md")
+    assert "b.md" in str(e.value)
+    assert pd.read(ws, "Erdos", "user/b.md") == b"b"
+    assert pd.read(ws, "Erdos", "user/a.md") == b"a"
+
+
+def test_move_refuses_to_cross_into_the_agent_area(ws: Path) -> None:
+    """The write fence is the same one `write`/`mkdir`/`delete` carry —
+    a rename that lands in `agent/` would merge the two areas §1.2-1
+    separates."""
+    pd.write(ws, "Erdos", "user/note.md", "x")
+    with pytest.raises(ValueError) as e:
+        pd.move(ws, "Erdos", "user/note.md", "agent/note.md")
+    assert "user/" in str(e.value)
+    assert not (pd.root(ws, "Erdos") / "agent").exists()
+    with pytest.raises(ValueError):
+        pd.move(ws, "Erdos", "agent/x.md", "user/x.md")
+
+
+def test_move_refuses_an_extension_off_the_whitelist(ws: Path) -> None:
+    pd.write(ws, "Erdos", "user/note.md", "x")
+    with pytest.raises(ValueError) as e:
+        pd.move(ws, "Erdos", "user/note.md", "user/note.exe")
+    assert ".md" in str(e.value)
+    assert pd.read(ws, "Erdos", "user/note.md") == b"x"
+
+
+def test_move_refuses_a_folder_into_its_own_descendant(ws: Path) -> None:
+    pd.write(ws, "Erdos", "user/chapter/one.md", "x")
+    with pytest.raises(ValueError) as e:
+        pd.move(ws, "Erdos", "user/chapter", "user/chapter/inner")
+    assert "chapter" in str(e.value)
+    assert pd.read(ws, "Erdos", "user/chapter/one.md") == b"x"
+
+
+def test_move_of_a_missing_document_is_a_keyerror(ws: Path) -> None:
+    with pytest.raises(KeyError):
+        pd.move(ws, "Erdos", "user/ghost.md", "user/other.md")

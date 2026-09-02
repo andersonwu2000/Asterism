@@ -2758,6 +2758,45 @@ def test_docs_of_an_unknown_project_are_404(workspace: Path) -> None:
         "/api/projects/ghost/docs").status_code == 404
 
 
+def test_docs_move_renames_a_file_and_a_folder(workspace: Path) -> None:
+    """§1.2-3's naming affordance: the same fence as mkdir/delete, so a
+    rename is a move inside `user/` and nothing else."""
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/chapter/draft.md",
+          json={"content": "body"})
+    r = c.post("/api/projects/Erdos/docs/user/chapter/draft.md",
+               json={"to": "user/chapter/final.md"})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "user/chapter/final.md"
+    assert c.get("/api/projects/Erdos/docs/user/chapter/final.md"
+                 ).json()["content"] == "body"
+    assert c.get("/api/projects/Erdos/docs/user/chapter/draft.md"
+                 ).status_code == 404
+    assert c.post("/api/projects/Erdos/docs/user/chapter",
+                  json={"to": "user/part_one"}).status_code == 200
+    assert [e["path"] for e in
+            c.get("/api/projects/Erdos/docs").json()["entries"]] == [
+        "user", "user/part_one", "user/part_one/final.md"]
+
+
+def test_docs_move_refuses_the_agent_area_and_an_overwrite(
+        workspace: Path) -> None:
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/a.md", json={"content": "a"})
+    c.put("/api/projects/Erdos/docs/user/b.md", json={"content": "b"})
+    r = c.post("/api/projects/Erdos/docs/user/a.md",
+               json={"to": "agent/a.md"})
+    assert r.status_code == 422 and "user/" in r.json()["detail"]
+    assert c.post("/api/projects/Erdos/docs/user/a.md",
+                  json={"to": "user/b.md"}).status_code == 422
+    assert c.get("/api/projects/Erdos/docs/user/b.md"
+                 ).json()["content"] == "b"
+    assert c.post("/api/projects/Erdos/docs/user/ghost.md",
+                  json={"to": "user/c.md"}).status_code == 404
+
+
 # ---------------------------------------------------------------------
 # Project-scoped reads (HID §1.4: the Engine Room and the Timeline are
 # per-Project surfaces, so the workspace-wide reads take a filter)

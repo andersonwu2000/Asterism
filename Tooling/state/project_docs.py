@@ -242,6 +242,48 @@ def mkdir(workspace: Path, project: str, path: str, *,
     return rel.as_posix()
 
 
+def move(workspace: Path, project: str, path: str, new_path: str, *,
+         area: str = AREA_USER) -> str:
+    """Rename or move one document, or one folder with everything under
+    it; returns the destination's root-relative path.
+
+    BOTH ends go through the fence, and both under the SAME `area` — a
+    rename that landed in `agent/` would merge the two areas §1.2-1
+    separates, and it would do so through the one call that names two
+    paths. The refusals are the ones the caller can act on: the
+    destination is taken, the new name is not a document, the folder
+    would be moved inside itself.
+
+    Never an overwrite. `os.rename` silently replaces a file on POSIX
+    and refuses on Windows, so the check is ours rather than the
+    platform's — a rename that ate the file it landed on would be a
+    delete nobody asked for, from a button labelled "rename".
+    """
+    if area not in AREAS:
+        raise ValueError(f"unknown docs area {area!r}; "
+                         f"expected one of {' '.join(AREAS)}")
+    src, src_rel = _resolve(workspace, project, path, area=area)
+    dst, dst_rel = _resolve(workspace, project, new_path, area=area)
+    if not src.exists():
+        raise KeyError(path)
+    if src_rel == dst_rel:
+        return dst_rel.as_posix()
+    if src.is_file():
+        _check_extension(dst_rel)
+    if dst.exists():
+        raise ValueError(
+            f"{dst_rel.as_posix()!r} already exists — pick another name, "
+            f"or delete that one first")
+    if src.is_dir() and src_rel in dst_rel.parents:
+        raise ValueError(
+            f"{dst_rel.as_posix()!r} is inside {src_rel.as_posix()!r} — "
+            f"a folder cannot be moved into itself. Move it beside its "
+            f"current parent instead.")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(src, dst)
+    return dst_rel.as_posix()
+
+
 def delete(workspace: Path, project: str, path: str, *,
            area: str = AREA_USER) -> str:
     """Remove one document, or one EMPTY folder.

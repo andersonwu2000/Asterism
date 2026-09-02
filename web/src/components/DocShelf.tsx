@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ApiError, apiDelete, apiGet, apiPut, usePoll } from '../lib/api'
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, usePoll } from '../lib/api'
 import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
@@ -271,7 +271,12 @@ export default function DocShelf({
   const [createNote, setCreateNote] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  /** the address being renamed — the whole root-relative path, so the
+   * one control both renames and moves (§1.2-3) */
+  const [renameTo, setRenameTo] = useState<string | null>(null)
+  const [renameNote, setRenameNote] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const renameRef = useRef<HTMLInputElement | null>(null)
 
   const files = useMemo(() => entries.filter((e) => e.kind === 'file'), [entries])
   // the column opens on something rather than an empty frame
@@ -306,7 +311,13 @@ export default function DocShelf({
   useEffect(() => {
     setEditing(false)
     setNote(null)
+    setRenameTo(null)
+    setRenameNote(null)
   }, [open])
+  useEffect(() => {
+    if (renameTo !== null) renameRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renameTo === null])
   const openChangeRef = useRef(onOpenChange)
   openChangeRef.current = onOpenChange
   useEffect(() => {
@@ -384,6 +395,35 @@ export default function DocShelf({
       }
     } catch (e) {
       setCreateNote(e instanceof ApiError ? e.detail : String((e as Error).message))
+    }
+  }
+
+  /** Rename, or move: the box carries the whole root-relative path, so
+   * editing the last segment renames and editing an earlier one moves.
+   * The engine owns what a legal path is — a refusal comes back as the
+   * sentence it wrote about the path the person typed. */
+  const doRename = async () => {
+    if (open === null || renameTo === null) return
+    const to = renameTo.trim()
+    if (to === '' || to === open) {
+      setRenameTo(null)
+      return
+    }
+    setRenameNote(null)
+    try {
+      const r = (await apiPost(docPath(project, open), { to })) as { path: string }
+      setDrafts((d) => {
+        if (d[open] === undefined) return d
+        const next = { ...d }
+        next[r.path] = next[open]
+        delete next[open]
+        return next
+      })
+      setRenameTo(null)
+      setSelected(r.path)
+      refresh()
+    } catch (e) {
+      setRenameNote(e instanceof ApiError ? e.detail : String((e as Error).message))
     }
   }
 
@@ -529,14 +569,52 @@ export default function DocShelf({
             </span>
           )}
           {open !== null && isUser(open) && (
-            <button
-              className="ml-auto cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
-              onClick={() => setConfirmDelete(true)}
-            >
-              delete…
-            </button>
+            <span className="ml-auto flex items-center gap-3">
+              <button
+                className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+                onClick={() => {
+                  setRenameTo(open)
+                  setRenameNote(null)
+                }}
+                title="rename it, or move it by editing the folders in its path"
+              >
+                rename…
+              </button>
+              <button
+                className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+                onClick={() => setConfirmDelete(true)}
+              >
+                delete…
+              </button>
+            </span>
           )}
         </div>
+        {renameTo !== null && (
+          <div className="shrink-0 border-b border-edge px-4 py-1.5">
+            <input
+              ref={renameRef}
+              className="w-full max-w-lg rounded-md border border-edge bg-bg px-2 py-1 font-mono text-[11px] text-ink focus:border-ink-faint focus:outline-none"
+              value={renameTo}
+              spellCheck={false}
+              onChange={(e) => setRenameTo(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void doRename()
+                if (e.key === 'Escape') {
+                  setRenameTo(null)
+                  setRenameNote(null)
+                }
+              }}
+            />
+            <div
+              className={`mt-1 text-[11px] leading-relaxed ${
+                renameNote ? 'text-warn' : 'text-ink-faint'
+              }`}
+            >
+              {renameNote ??
+                'the whole path — edit the last part to rename, an earlier one to move. Enter saves, Escape cancels.'}
+            </div>
+          </div>
+        )}
         <div className="min-w-0 flex-1 overflow-auto p-4">
           {loadError && <div className="text-xs text-warn">{loadError}</div>}
           {open === null && (

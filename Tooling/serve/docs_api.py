@@ -2,7 +2,7 @@
 (human_interface_design.md §3.6).
 
 Its own module on the `projects_api.py` / `commands_api.py` precedent:
-`app.py` is at its size watermark, and a surface with two reads, two
+`app.py` is at its size watermark, and a surface with two reads, three
 writes and one shared refusal shape is a natural unit. All path
 handling lives in `state/project_docs`, which owns the fence; this file
 only translates its two refusal types into the two honest HTTP answers
@@ -41,8 +41,15 @@ class DocBody(BaseModel):
     kind: str = "file"
 
 
+class DocMove(BaseModel):
+    """A rename. The destination travels in the BODY, not the URL: a
+    URL parser collapses `user/../x` before the request is sent, so a
+    path in the address is a path the fence never gets to judge."""
+    to: str = ""
+
+
 def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
-    """Mount the four endpoints. `ro` is app.py's `_ro` contextmanager —
+    """Mount the five endpoints. `ro` is app.py's `_ro` contextmanager —
     borrowed so the Project check inherits the same 404/503 semantics."""
 
     def _require_project(project: str) -> None:
@@ -117,6 +124,18 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             rel = _docs.write(workspace, project, path, content,
                               area=_docs.AREA_USER)
             return {"path": rel, "kind": "file"}
+
+    @app.post("/api/projects/{project}/docs/{path:path}")
+    def docs_move(project: str, path: str, body: DocMove) -> dict:
+        """Rename or move a document or a folder — under `user/` only.
+
+        POST rather than a second PUT shape: the addressed thing already
+        exists and the request names where it goes, which is an action
+        on it rather than a body for it."""
+        with _answers(project):
+            rel = _docs.move(workspace, project, path, body.to or "",
+                             area=_docs.AREA_USER)
+            return {"path": rel, "from": path, "action": "move"}
 
     @app.delete("/api/projects/{project}/docs/{path:path}")
     def docs_delete(project: str, path: str) -> dict:
