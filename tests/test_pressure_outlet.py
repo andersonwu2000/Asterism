@@ -120,6 +120,26 @@ def test_calm_forgives_one_step_only_once_the_pool_converged(
     assert gw._pressure_debt() == 1
 
 
+def test_the_outlet_resumes_on_the_ledger_s_own_calm_line(
+        gw, monkeypatch, capsys):
+    """The outlet and the dispatch brake must read ONE definition of
+    calm (they decide the same question from two processes). 2026-09-02,
+    32 GB desktop: available 5.5 G with ~1.4 G workers is room for one
+    more worker (pressure_low 3.5 + the measured price) — the old flat
+    pressure_low + 4 G = 7.5 G line held the debt forever on a box whose
+    co-tenants keep available at 6-7 G."""
+    calls: list = []
+    _backend(gw, monkeypatch, calls)
+    _axes(gw, monkeypatch, avail=5.5)
+    monkeypatch.setattr(gw.governor, "_PRESSURE_DEBT", 2)
+    slots = [_slot(gw, i) for i in range(8)]  # open 8 = target 10 - 2
+    monkeypatch.setattr(gw._state, "workers", slots)
+    _readings(gw, monkeypatch, cached={i: 1400 for i in range(8)})
+    assert gw._pressure_outlet_step() is True
+    assert gw._pressure_debt() == 1
+    assert "debt forgiven" in capsys.readouterr().err
+
+
 def test_static_mode_and_no_budget_leave_the_outlet_dormant(
         gw, monkeypatch):
     calls: list = []

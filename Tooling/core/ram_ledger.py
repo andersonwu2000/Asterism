@@ -255,15 +255,42 @@ def pressure_low_gb(machine_gb: float) -> float:
     return max(ABS_AVAILABLE_FLOOR_GB + 2.0, 0.06 * machine_gb)
 
 
-def pressure_high_gb(machine_gb: float) -> float:
-    """Above this line the pause lifts and the outlet forgives debt,
-    one measured step at a time — the gap to `pressure_low_gb` is the
-    hysteresis band that keeps a 5 GB/min inflation wave (measured)
-    from oscillating the feedback."""
+def pressure_resume_gb(machine_gb: float,
+                       slot_gb: "float | None" = None) -> float:
+    """Above this measured available-RAM line the pause lifts and the
+    outlet forgives debt, one step at a time. ONE definition of calm
+    for both consumers — the ledger's dispatch brake and the gateway's
+    pressure outlet decide the same question from two processes and
+    must not drift.
+
+    The line is "room for one more worker": `pressure_low_gb` plus the
+    caller's own measured slot price (the calibration fallback when
+    nothing is measured), the same shape `nl_admit_floor_gb` has for an
+    NL seat. It used to be a flat +4.0 GB band — the 2026-08-27 answer
+    to 27 pause/clear oscillations, which stopped them by putting
+    resume out of reach: on the operator's 32 GB desktop (2026-09-02,
+    budget 26G) the pool shed back to 2 workers and available then sat
+    at 6-7 GB for 80 minutes against a 7.5 GB line, because co-tenants
+    hold ~19 GB of the box; dispatch stayed PAUSED the whole time. An
+    absolute threshold pushed out of reach by co-tenants is a class
+    (SP7 BUILD_NEED 00961c32; the `machine - budget` floor 61cbed8f).
+    The hysteresis survives as the quantum the feedback actually moves
+    in — one shed, one warm — instead of a constant.
+
+    `ASTERISM_RAM_PRESSURE_HIGH_GB` remains the EXPLICIT override and
+    wins over the derived line (SP7's .env 1.2 / 2.2 semantics)."""
     v = _env_override_gb("ASTERISM_RAM_PRESSURE_HIGH_GB")
     if v is not None:
         return v
-    return pressure_low_gb(machine_gb) + 4.0
+    return pressure_low_gb(machine_gb) + max(float(slot_gb or 0.0),
+                                             SLOT_GB_FALLBACK)
+
+
+def pressure_high_gb(machine_gb: float) -> float:
+    """The calm watermark for a caller with no measured slot price (the
+    build gate): `pressure_resume_gb` priced at the calibration
+    fallback. The explicit override is honoured inside the helper."""
+    return pressure_resume_gb(machine_gb)
 
 
 def _cgroup_footprint_gb(cg_dir: str) -> "float | None":
@@ -438,8 +465,8 @@ def build_threads_fit(threads: int, *, machine_gb: "float | None" = None
     with them on board (owner ruling 2026-08-30). SHRINKS, never blocks:
     the floor is one thread — a single compile is what every build did
     before the gate existed, and a 32 GB workstation (11 GB available,
-    7.5 GB watermark) would otherwise never build again. The CPU side is
-    the gateway's build lease."""
+    a watermark of the same order) would otherwise never build again.
+    The CPU side is the gateway's build lease."""
     machine = float(machine_gb) if machine_gb else total_gb()
     headroom = available_gb() - pressure_high_gb(machine)
     fit = int(headroom // BUILD_GB_PER_THREAD) if headroom > 0 else 0
@@ -539,7 +566,7 @@ class DispatcherLedger:
     PRESSURE_HEADROOM_GB = 8.0
     #: Extra calm required before the pause lifts / debt forgives
     #: (hysteresis on the cgroup axis; the available axis has its own
-    #: band in pressure_low/high_gb).
+    #: band, pressure_low_gb -> pressure_resume_gb).
     PRESSURE_RELEASE_SLACK_GB = 4.0
 
     def __init__(self, budget_gb: float, machine_gb: float,
@@ -662,7 +689,8 @@ class DispatcherLedger:
         ram_calm = ((cur is None
                      or cur < (self.budget_gb - self.pressure_headroom_gb
                                - self.pressure_release_slack_gb))
-                    and avail > pressure_high_gb(self.machine_gb))
+                    and avail > pressure_resume_gb(self.machine_gb,
+                                                   self.slot_gb))
         # CPU axis (owner 2026-08-30): the run queue votes exactly like
         # RAM — hot / calm / hold — and abstains when unreadable.
         load = cpu_load_ratio()

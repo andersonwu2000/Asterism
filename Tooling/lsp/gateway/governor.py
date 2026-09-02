@@ -140,12 +140,16 @@ def _pressure_outlet_step() -> bool:
     machine = _machine_gb()
     headroom = rl.DispatcherLedger.PRESSURE_HEADROOM_GB
     slack = rl.DispatcherLedger.PRESSURE_RELEASE_SLACK_GB
+    # The resume line is the ledger's own helper, priced with the pool's
+    # measured slot cost — the two processes decide the same question and
+    # a second formula here would drift (2026-09-02).
+    readings = _slot_private_mb_cached()
     hot = ((cur is not None and cur > budget - headroom)
            or avail < rl.pressure_low_gb(machine))
     calm = ((cur is None or cur < budget - headroom - slack)
-            and avail > rl.pressure_high_gb(machine))
+            and avail > rl.pressure_resume_gb(
+                machine, rl.slot_gb_from_readings(list(readings.values()))))
     if hot:
-        readings = _slot_private_mb_cached()
         candidates = sorted(
             (s for s in list(_state.workers)
              if not s.reserved and not s.closed and not s.frozen

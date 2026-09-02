@@ -405,6 +405,47 @@ def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     assert led.dispatch_paused is False
 
 
+def test_the_ram_calm_line_is_room_for_one_more_worker(monkeypatch):
+    """2026-09-02, 32 GB co-tenant desktop, budget 26G: the outlet shed
+    the pool back to 2 workers and available then sat at 6-7 G for 80
+    minutes — under the old resume line (pressure_low + a flat 4 G =
+    7.5 G here) while a browser and two editors held ~19 G of the box —
+    so dispatch never resumed. Calm means one more worker FITS:
+    pressure_low + the ledger's own measured slot price. The band below
+    that still holds the pause (hysteresis survives at the quantum the
+    feedback actually moves in: one shed, one warm)."""
+    led = rl.DispatcherLedger(26.0, 32.0)
+    led.slot_gb = 2.2                       # measured price this run
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
+    monkeypatch.setattr(rl, "cpu_load_ratio", lambda: None)
+    low = rl.pressure_low_gb(32.0)
+    avail = {"v": low - 0.1}
+    monkeypatch.setattr(rl, "available_gb", lambda: avail["v"])
+    led._apply_pressure(2)
+    assert led.dispatch_paused is True, "under the low line: hot"
+    avail["v"] = low + 1.0
+    led._apply_pressure(2)
+    assert led.dispatch_paused is True, "no room for a worker yet: hold"
+    avail["v"] = low + 3.0
+    led._apply_pressure(2)
+    assert led.dispatch_paused is False, "a 2.2 G worker fits: resume"
+
+
+def test_the_resume_line_is_one_helper_and_the_override_wins(monkeypatch):
+    """One helper for both consumers (the ledger's dispatch brake and
+    the gateway's pressure outlet) so the two cannot drift; an
+    unmeasured price falls back to the calibration constant; and the
+    explicit ASTERISM_RAM_PRESSURE_HIGH_GB still beats the derived line
+    (SP7's .env 1.2 / 2.2 semantics)."""
+    assert rl.pressure_resume_gb(32.0, 2.2) == pytest.approx(
+        rl.pressure_low_gb(32.0) + 2.2)
+    assert rl.pressure_resume_gb(32.0) == pytest.approx(
+        rl.pressure_low_gb(32.0) + rl.SLOT_GB_FALLBACK)
+    monkeypatch.setenv("ASTERISM_RAM_PRESSURE_HIGH_GB", "2.2")
+    assert rl.pressure_resume_gb(6.8, 2.2) == pytest.approx(2.2)
+
+
 # ───────────── CPU axis (owner ruling 2026-08-30) ─────────────
 #
 # Flagship 16 OCPU / 125 GB, 2026-08-30 00:00Z: the RAM axis read calm
