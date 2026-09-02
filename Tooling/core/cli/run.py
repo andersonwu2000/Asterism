@@ -322,8 +322,12 @@ def _daemon_live_pid(workspace: Path) -> "int | None":
     return pid if _disp._lock_held_by_live_daemon(pid, start) else None
 
 
-def _daemon_counts(workspace: Path) -> "tuple[int, int]":
-    """(running pipelines, leased queue rows).
+def _daemon_counts(workspace: Path) -> "tuple[int | None, int | None]":
+    """(running pipelines, leased queue rows); (None, None) when the
+    DB's schema outran this code — SchemaBehind, a read-only consumer
+    may not migrate, so there is nothing to count (2026-09-02: it fell
+    into the blanket handler and printed `in_flight: -1`, which reads
+    as a measurement rather than as "I could not look").
 
     2026-08-31: the old single number counted LEASED QUEUE ROWS and was
     displayed as "agents" — a stop-window read said 34 while 9 pipelines
@@ -336,14 +340,16 @@ def _daemon_counts(workspace: Path) -> "tuple[int, int]":
         # Read-only on purpose: db.connect() CREATES a missing file (a
         # write), and this runs from the serve API's status poll too.
         conn = db.connect_readonly(path)
-        running = conn.execute(
-            "SELECT count(*) FROM pipelines WHERE finished_at IS NULL"
-        ).fetchone()[0]
-        leases = conn.execute(
-            "SELECT count(*) FROM queue WHERE owner_pid IS NOT NULL"
-        ).fetchone()[0]
+        # ONE statement: the pair describes one instant, not two reads.
+        running, leases = conn.execute(
+            "SELECT (SELECT count(*) FROM pipelines"
+            "         WHERE finished_at IS NULL),"
+            "       (SELECT count(*) FROM queue"
+            "         WHERE owner_pid IS NOT NULL)").fetchone()
         conn.close()
         return int(running), int(leases)
+    except db.SchemaBehind:
+        return None, None
     except Exception:  # noqa: BLE001 — status must not crash
         return -1, -1
 
@@ -422,9 +428,13 @@ def daemon_status(workspace: Path) -> dict:
         "stopping": pid is not None
         and _disp.stop_file_path(workspace).exists(),
         # `in_flight` = running pipelines (the "agents" number);
-        # `in_flight_leases` = leased queue rows (diagnostic).
+        # `in_flight_leases` = leased queue rows (diagnostic); both null
+        # when `schema` is "behind" — nothing could be counted.
         "in_flight": _running,
         "in_flight_leases": _leases,
+        # "behind" = the on-disk schema outran this code, so the status
+        # is reading a DB it may not open; run the engine once to migrate
+        "schema": "ok" if _running is not None else "behind",
         # silent-degradation ledger (core/degraded.py): best-effort steps
         # that failed and logged one line — dedupe pre-flight / probe
         # refusals etc. Per run (reset at daemon boot); {} = nothing
@@ -683,7 +693,7 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
         _write_exit_summary(workspace, rc=None,
                             error="force-stopped by the user", scope=_sc)
         return 0, (f"force-stopped pid {pid}; released {released} of "
-                   f"{n} in-flight lease(s)")
+                   f"{'?' if n is None else n} in-flight lease(s)")
     stop_file.write_text(db.now(), encoding="utf-8")
     return 0, (f"stop requested (graceful): daemon pid {pid} will finish "
                f"in-flight work and exit; `daemon status` to watch, "

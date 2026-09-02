@@ -757,6 +757,38 @@ def test_daemon_status_carries_the_promotion_builds(tmp_path):
     assert builds[0]["modules"] == ["Problems.p.proofs.L_a"]
 
 
+def test_daemon_status_says_schema_behind_rather_than_minus_one(tmp_path):
+    """`_daemon_counts` folded every failure into (-1, -1), so a
+    SchemaBehind inside a code-drift window printed `in_flight: -1`
+    (2026-09-02) — a MEASUREMENT, where the truth was "this reader may
+    not open that DB". The schema case is named: counts go null and
+    `schema` says "behind"; a current schema still counts."""
+    import sqlite3
+    from Tooling.state import db as _db
+    from Tooling.core.cli import daemon_status
+    path = tmp_path / "asterism.db"
+    c = _db.connect(path)
+    _db.init_schema(c)
+    current = int(c.execute("PRAGMA user_version").fetchone()[0])
+    c.execute("PRAGMA user_version = 3")
+    c.commit()
+    c.close()
+
+    st = daemon_status(tmp_path)
+    assert st["schema"] == "behind"
+    assert st["in_flight"] is None
+    assert st["in_flight_leases"] is None
+
+    # raw sqlite3: db.connect would migrate the version back for us
+    c = sqlite3.connect(str(path))
+    c.execute(f"PRAGMA user_version = {current}")
+    c.commit()
+    c.close()
+    st = daemon_status(tmp_path)
+    assert st["schema"] == "ok"
+    assert st["in_flight"] == 0 and st["in_flight_leases"] == 0
+
+
 def test_daemon_status_starting_window(tmp_path):
     """The boot window between daemon_start and the child's lock claim:
     a fresh anti-double-spawn marker must read as starting (with the
