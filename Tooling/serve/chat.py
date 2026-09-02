@@ -32,6 +32,16 @@ the context block is built from that frozen value — the QPaper lesson
 navigated to mid-stream. Context is re-sent only when the page key
 changes between messages; the session carries the rest.
 
+The session is bound to a PROJECT (HID §1.1-2, §3.5): one conversation
+per Project, keyed here, so switching Project switches session instead
+of carrying an Erdos answer into a Topology page. The Project-picker
+page has no Project and gets its own key (`_global`, which is not a
+legal Project name, so it cannot collide with one). And the panel
+follows the cursor: `focus` names the object on screen — a goal, a
+group, a document, a problem — and its section joins the context block.
+That is §1.4's "the panel receives the current screen's context", the
+one thing it has that the old Ask did not.
+
 Grounding: the model cites app objects with bracket tokens
 ([goal:…]/[problem:…]/…). The client — never the model — turns those
 into navigation links, so a hallucinated citation can at worst point
@@ -56,7 +66,23 @@ from ..state import db
 
 _MAX_MESSAGE = 8_000        # chars — a question, not an upload
 _MAX_CONTEXT = 6_000        # chars — prebuilt page context budget
+#: Sub-budgets, so a Project with 300 problems cannot crowd out the page
+#: the question was asked on. The page block keeps whatever is left.
+_MAX_PROJECT = 1_200
+_MAX_FOCUS = 1_800
 _TIMEOUT_SEC = int(os.environ.get("ASTERISM_EXPLAINER_TIMEOUT", "300"))
+
+#: The session key for a conversation with no Project — the picker page
+#: (§1.4). `_global` starts with an underscore, which `projects.NAME_RE`
+#: refuses, so no Project can ever take this key.
+GLOBAL_SESSION_KEY = "_global"
+
+#: The keys a `focus` object may carry, in the order their sections are
+#: laid out. A focus with several is legal (a goal inside a group) and
+#: each one contributes its own section — the panel is describing one
+#: screen, not answering a query.
+FOCUS_KINDS: "tuple[str, ...]" = ("problem", "group_id", "goal_id",
+                                  "doc_path")
 
 _SYSTEM_PROMPT = """You are the explainer inside Asterism's console — \
 a proving framework where LLM agents build machine-checked Lean proofs \
@@ -193,39 +219,194 @@ def _board_context(conn: sqlite3.Connection, workspace: Path) -> str:
     }, ensure_ascii=False)
 
 
-def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
+def _project_context(conn: sqlite3.Connection, project: str) -> str:
+    """The Project's shelf: its blurb and the problems filed under it.
+
+    Its OWN problems — a Project is the unit the person switched into,
+    and handing over the whole board would put another shelf's problem
+    one hallucination away from being cited as this one's.
+    """
+    row = conn.execute("SELECT description FROM projects WHERE name = ?",
+                       (project,)).fetchone()
+    problems = [
+        {"name": str(r["name"]), "state": str(r["state"]),
+         "goals": int(r["goals"]), "proved": int(r["proved"])}
+        for r in conn.execute(
+            "SELECT p.name AS name, p.state AS state,"
+            " (SELECT COUNT(*) FROM goals g WHERE g.problem = p.name)"
+            "   AS goals,"
+            " (SELECT COUNT(*) FROM goals g WHERE g.problem = p.name"
+            "   AND g.status = 'proved') AS proved"
+            " FROM problems p WHERE p.project = ? ORDER BY p.name",
+            (project,))]
+    ctx: dict = {"project": project,
+                 "known": row is not None,
+                 "description": _clip(row["description"] if row else "", 300),
+                 "problem_count": len(problems),
+                 "problems": problems[:40]}
+    if len(problems) > 40:
+        ctx["problems_omitted"] = len(problems) - 40
+    return "Project: " + json.dumps(ctx, ensure_ascii=False)
+
+
+def _focus_context(conn: sqlite3.Connection, workspace: Path,
+                   project: "str | None", focus: dict) -> str:
+    """What the person has open on screen, section by section (§1.4).
+
+    A focus that names nothing gets a section saying so, with the id in
+    it. Silence would be worse than a miss: the model would describe the
+    page instead and the person would read that as an answer about the
+    star they clicked.
+    """
+    from ..state import groups as _groups
+
+    parts: "list[str]" = []
+    for kind in FOCUS_KINDS:
+        if kind not in focus or focus[kind] in (None, ""):
+            continue
+        value = focus[kind]
+        if kind == "problem":
+            parts.append("Focus (problem): "
+                         + _problem_context(conn, str(value)))
+            continue
+        if kind == "goal_id":
+            try:
+                gid = int(value)
+            except (TypeError, ValueError):
+                parts.append(f"Focus (goal): {value!r} is not a goal id.")
+                continue
+            g = db.get_goal(conn, gid)
+            if g is None:
+                parts.append(f"Focus (goal): no goal {gid} in this "
+                             f"workspace — say so rather than answering "
+                             f"about the page.")
+                continue
+            grp = _groups.group_for_goal(conn, str(g["problem"]), gid)
+            parts.append("Focus (goal): " + json.dumps({
+                "goal_id": gid, "problem": str(g["problem"]),
+                "slug": str(g["slug"]), "status": str(g["status"]),
+                "statement": _clip(g["statement"], 700),
+                "group_id": None if grp is None else int(grp["id"]),
+            }, ensure_ascii=False))
+            continue
+        if kind == "group_id":
+            try:
+                grid = int(value)
+            except (TypeError, ValueError):
+                parts.append(f"Focus (group): {value!r} is not a group id.")
+                continue
+            row = _groups.get(conn, grid)
+            if row is None:
+                parts.append(f"Focus (group): no group {grid} in this "
+                             f"workspace.")
+                continue
+            parts.append("Focus (group): " + json.dumps({
+                "group_id": grid, "problem": str(row["problem"]),
+                "status": str(row["status"]),
+                "anchor_goal_id": (None if row["anchor_goal_id"] is None
+                                   else int(row["anchor_goal_id"])),
+                "charter": _clip(row["charter"], 900),
+            }, ensure_ascii=False))
+            continue
+        # doc_path — the file under the cursor in the documents pane.
+        from ..state import project_docs as _docs
+        if not project:
+            parts.append(f"Focus (document): {value!r} — no Project was "
+                         f"named with this question, so the document "
+                         f"root is unknown.")
+            continue
+        try:
+            raw = _docs.read(workspace, project, str(value))
+        except KeyError:
+            parts.append(f"Focus (document): {value!r} is not in this "
+                         f"Project's documents.")
+            continue
+        except (ValueError, OSError) as e:
+            parts.append(f"Focus (document): {value!r} cannot be read "
+                         f"({e}).")
+            continue
+        if _docs.is_binary(str(value)):
+            parts.append(f"Focus (document): {value!r} — {len(raw)} bytes "
+                         f"of binary; the person is looking at it, you "
+                         f"cannot read it here.")
+            continue
+        head = raw.decode("utf-8", errors="replace")[:_MAX_FOCUS]
+        parts.append(f"Focus (document) {value!r}:\n{head}")
+    return "\n\n".join(parts)
+
+
+def _focus_key(focus: "dict | None") -> str:
+    """The focus, as part of the page key — so moving the cursor to
+    another star re-sends the context instead of letting the session's
+    memory answer about the previous one."""
+    if not focus:
+        return ""
+    return ";".join(f"{k}={focus[k]}" for k in FOCUS_KINDS
+                    if focus.get(k) not in (None, ""))
+
+
+def _page_context(workspace: Path, page: "dict | None", *,
+                  project: "str | None" = None,
+                  focus: "dict | None" = None) -> "tuple[str, str]":
     """(page_key, context_text). Best-effort; empty context is legal
-    (fresh workspace, no DB)."""
+    (fresh workspace, no DB).
+
+    With neither `project` nor `focus` this is byte-for-byte what the
+    drawer got before Projects existed — the key included, because the
+    key is what decides whether a session is re-primed.
+    """
     kind = str((page or {}).get("kind") or "board")
     name = (page or {}).get("name")
     key = f"{kind}:{name or ''}"
+    if project:
+        key += f"|project={project}"
+    fkey = _focus_key(focus)
+    if fkey:
+        key += f"|focus={fkey}"
+
+    def _decorate(conn: sqlite3.Connection, text: str) -> str:
+        parts = [text]
+        if focus:
+            try:
+                block = _focus_context(conn, workspace, project, focus)
+            except sqlite3.Error:
+                block = ""
+            if block:
+                parts.append(block[:_MAX_FOCUS])
+        if project:
+            try:
+                parts.append(_project_context(conn, project)[:_MAX_PROJECT])
+            except sqlite3.Error:
+                pass
+        return "\n\n".join(p for p in parts if p)
+
     conn = _connect(workspace)
     try:
         if conn is None:
             return key, f"Page: {kind}. (No database yet — fresh workspace.)"
         if kind == "problem" and name:
-            return key, _problem_context(conn, str(name))
+            return key, _decorate(conn, _problem_context(conn, str(name)))
         if kind == "library" and name:
-            return key, (
+            return key, _decorate(conn, (
                 f"Library chapter page for problem {name!r}: the archived,"
                 f" human-signed form of its proofs. Sources live under"
                 f" Library/ (Lean files; Read them for exact statements)."
-            )
+            ))
         if kind == "engine":
             # the console IS an overview surface — give it the board's
             # whole-run context (QA: an Engine-page question got "the
             # current view only shows daemon status" because that was
             # literally all we handed over)
-            return key, _board_context(conn, workspace)
+            return key, _decorate(conn, _board_context(conn, workspace))
         if kind == "papers":
             from . import data as _data
             shelf = _data.papers_list(conn, workspace)["papers"][:30]
             rows = [{"id": p["id"],
                      "title": p["title"] or p["source_name"]}
                     for p in shelf]
-            return key, json.dumps({"page": "papers", "papers": rows},
-                                   ensure_ascii=False)
-        return key, _board_context(conn, workspace)
+            return key, _decorate(conn, json.dumps(
+                {"page": "papers", "papers": rows}, ensure_ascii=False))
+        return key, _decorate(conn, _board_context(conn, workspace))
     except sqlite3.Error:
         return key, f"Page: {kind}. (Context query failed — answer from" \
                     f" files instead.)"
@@ -239,19 +420,81 @@ def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
 
 
 class _ChatState:
+    """One conversation per Project (§1.1-2), plus the one slot.
+
+    The maps are keyed by `_session_key(project)`, so the Project the
+    person is in decides which conversation a question continues. The
+    lock stays SINGLE: the constraint is one question at a time on this
+    machine, not one per Project — a second spawn would double the cost
+    of the same subscription while the first is still thinking.
+    """
+
     def __init__(self) -> None:
         self.lock = threading.Lock()      # ONE question at a time
-        #: the seated provider's resume handle for the live conversation
-        #: — a caller-minted uuid, a provider-minted conversation id, or
-        #: None forever on a backend that resumes nothing
-        self.session_id: "str | None" = None
-        self.page_key: "str | None" = None
+        #: session key → the seated provider's resume handle for that
+        #: conversation: a caller-minted uuid, a provider-minted
+        #: conversation id, or absent on a backend that resumes nothing
+        self.sessions: "dict[str, str]" = {}
+        #: session key → the page key its context was last built for
+        self.page_keys: "dict[str, str]" = {}
+
+    @property
+    def session_id(self) -> "str | None":
+        """The Project-less conversation — the drawer's whole world
+        before Projects, and still the picker page's own session."""
+        return self.sessions.get(GLOBAL_SESSION_KEY)
+
+
+def _session_key(project: "str | None") -> str:
+    """Which conversation this question belongs to.
+
+    Refuses a name that is not a Project name: the key reaches a SQL
+    parameter and a dict, and "whatever the client sent" is not a
+    vocabulary either of them should learn.
+    """
+    from ..state import projects as _projects
+    name = (project or "").strip()
+    if not name:
+        return GLOBAL_SESSION_KEY
+    if not _projects.NAME_RE.fullmatch(name):
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid project name {project!r} — one identifier "
+                   f"(letter, then letters/digits/underscore); omit it "
+                   f"for the Project-picker conversation")
+    return name
 
 
 class ChatBody(BaseModel):
+    """One question.
+
+    `page` is the frozen screen ({kind: board|problem|library|engine|
+    papers, name?}). `project` binds the conversation (§1.1-2); omit it
+    on the picker page. `focus` is what the person has OPEN on that
+    screen and carries one or more of:
+
+        {"problem":  "Erdos.p1"}    the problem being read
+        {"group_id": 12}            the group whose Programme is open
+        {"goal_id":  3141}          the star that was clicked
+        {"doc_path": "user/x.md"}   the document under the cursor,
+                                    relative to the Project's docs root
+
+    Each key present contributes its own section to the context block,
+    and the focus is part of the page key — moving to another star
+    re-primes the session instead of letting it answer about the last.
+    """
+
     message: str
     page: "dict | None" = None   # {kind: board|problem|library|engine|papers, name?}
     model: "str | None" = None   # one of /api/chat/state's `models`
+    project: "str | None" = None
+    focus: "dict | None" = None
+
+
+class ClearBody(BaseModel):
+    """Which conversation to forget. Absent = the Project-less one."""
+
+    project: "str | None" = None
 
 
 def register(app: FastAPI, workspace: Path) -> None:
@@ -269,7 +512,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                               workspace=workspace))
 
     @app.get("/api/chat/state")
-    def chat_state() -> dict:
+    def chat_state(project: "str | None" = None) -> dict:
         """What the drawer must know BEFORE the user types.
 
         `conversation_memory` and `read_scope` are the two ways a
@@ -278,13 +521,19 @@ def register(app: FastAPI, workspace: Path) -> None:
         events because both are properties of the seat, and a caveat
         that arrives after the question has been asked is a caveat that
         arrived too late.
+
+        `has_session` is per Project (§1.1-2): the panel asks about the
+        Project it is open in, and a site-wide answer would tell it the
+        conversation continues when the person just switched shelves.
         """
+        key = _session_key(project)
         name = explainer.provider(workspace)
         backend = explainer.backend_for(name)
         ok, detail = explainer.availability(name)
         return {
             "busy": state.lock.locked(),
-            "has_session": state.session_id is not None,
+            "has_session": key in state.sessions,
+            "session_key": key,
             "provider": name,
             "available": ok,
             "unavailable_detail": detail,
@@ -296,15 +545,20 @@ def register(app: FastAPI, workspace: Path) -> None:
         }
 
     @app.post("/api/chat/clear")
-    def chat_clear() -> dict:
-        """Forget the conversation — both ends. The provider's session
-        is simply abandoned (claude keeps sessions as files under the
-        user's state and ages unreferenced ones out; agy's conversation
-        id is dropped and never replayed)."""
+    def chat_clear(body: "ClearBody | None" = None) -> dict:
+        """Forget ONE Project's conversation — both ends. The provider's
+        session is simply abandoned (claude keeps sessions as files under
+        the user's state and ages unreferenced ones out; agy's
+        conversation id is dropped and never replayed).
+
+        One Project, not all of them: "clear" is pressed inside a
+        Project, and the person clearing their Erdos thread has said
+        nothing about the Topology one."""
         if state.lock.locked():
             raise HTTPException(status_code=409, detail="busy")
-        state.session_id = None
-        state.page_key = None
+        key = _session_key(body.project if body else None)
+        state.sessions.pop(key, None)
+        state.page_keys.pop(key, None)
         return {"cleared": True}
 
     @app.post("/api/chat")
@@ -314,6 +568,10 @@ def register(app: FastAPI, workspace: Path) -> None:
             raise HTTPException(status_code=400, detail="empty message")
         if len(message) > _MAX_MESSAGE:
             raise HTTPException(status_code=413, detail="message too long")
+        # Before the slot is taken: a malformed Project name is a bad
+        # request, and a 422 that arrives after the lock is held is a
+        # 422 that has already cost the next question its turn.
+        session_key = _session_key(body.project)
         provider = explainer.provider(workspace)
         ok, detail = explainer.availability(provider)
         if not ok:
@@ -329,15 +587,19 @@ def register(app: FastAPI, workspace: Path) -> None:
         # Until the generator exists, release on ANY exception — a
         # failed context build must not wedge the drawer shut.
         try:
-            page_key, context = _page_context(workspace, body.page)
+            page_key, context = _page_context(
+                workspace, body.page, project=body.project,
+                focus=body.focus)
             context = context[:_MAX_CONTEXT]
             # THE DEGRADATION, wired: on a provider that resumes nothing
             # `turn.resume` is False for every question, so the page
             # context below is re-sent every time instead of being left
             # to a session memory that does not exist.
-            turn = explainer.plan_turn(provider, state.session_id)
+            turn = explainer.plan_turn(provider,
+                                       state.sessions.get(session_key))
             parts: "list[str]" = []
-            if not turn.resume or page_key != state.page_key:
+            if not turn.resume or page_key != state.page_keys.get(
+                    session_key):
                 parts.append(_CONTEXT_HEADER + context + "\n")
             parts.append(message)
             prompt = "\n".join(parts)
@@ -401,7 +663,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                                 err = (proc.stderr.read() or "")[-400:]
                             if turn.resume:
                                 turn = explainer.plan_turn(provider, None)
-                                state.session_id = None
+                                state.sessions.pop(session_key, None)
                                 yield _sse({"type": "status",
                                             "stage": "retry"})
                                 proc = _spawn(turn)
@@ -423,10 +685,14 @@ def register(app: FastAPI, workspace: Path) -> None:
                         # minted (claude), the one the provider minted
                         # and reported (agy), or None — a backend that
                         # resumes nothing must never look resumed.
-                        state.session_id = (
-                            (item.get("handle") or turn.handle)
-                            if explainer.remembers(provider) else None)
-                        state.page_key = page_key
+                        handle = ((item.get("handle") or turn.handle)
+                                  if explainer.remembers(provider)
+                                  else None)
+                        if handle:
+                            state.sessions[session_key] = handle
+                        else:
+                            state.sessions.pop(session_key, None)
+                        state.page_keys[session_key] = page_key
                     yield _sse(item)
                     if item.get("type") == "done":
                         break
