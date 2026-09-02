@@ -121,7 +121,7 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
         where, args = " WHERE project = ?", (project,)
     problems = conn.execute(
         "SELECT name, project, created_at, ingest_signoff_pending,"
-        " ingested_at, library_bridged_at FROM problems"
+        " ingested_at, library_bridged_at, benched FROM problems"
         + where + " ORDER BY name", args).fetchall()
 
     goal_counts: dict[str, dict[str, int]] = {}
@@ -181,6 +181,10 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
                 + counts.get("pending_shelve_confirm", 0),
                 "total": sum(counts.values()),
             },
+            # operator bench (v47): off the live path with every asset
+            # kept, so the chip reads like any other quiet problem —
+            # only this flag tells "nobody is on it" from "I took it off"
+            "benched": bool(p["benched"]),
             "in_flight": inflight.get(name, 0),
             "queued": queued.get(name, 0),
             "last_event": last_event.get(name),

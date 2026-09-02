@@ -1,4 +1,6 @@
-"""Problem authoring over HTTP — `POST /api/problems/create`.
+"""Problem authoring over HTTP — `POST /api/problems/create`, plus the
+bench pair that takes an existing problem off the live path and back
+(`POST /api/problems/{p}/bench` | `/unbench`).
 
 Its own module for the reason `projects_api.py` / `docs_api.py` /
 `run.py` are: `app.py` IS the route table and sits at its size
@@ -37,6 +39,18 @@ class ProblemCreateBody(BaseModel):
 
 
 def register(app, workspace: Path) -> None:  # noqa: ANN001 — FastAPI app
+
+    @app.post("/api/problems/{problem}/bench")
+    def bench_problem_ep(problem: str) -> dict:
+        """Stop this task without stopping the run: the problem takes
+        no further dispatch and no Strategist seat, keeping every goal,
+        revision and last word (bench is not a reset)."""
+        return _set_benched(workspace, problem, True)
+
+    @app.post("/api/problems/{problem}/unbench")
+    def unbench_problem_ep(problem: str) -> dict:
+        """Back on the live path at the next daemon tick."""
+        return _set_benched(workspace, problem, False)
 
     @app.post("/api/problems/create")
     def create_problem_ep(body: ProblemCreateBody) -> dict:
@@ -127,6 +141,27 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001 — FastAPI app
                 _shutil.rmtree(pdir, ignore_errors=True)
             raise HTTPException(status_code=500,
                                 detail=f"create failed: {e}")
+
+
+def _set_benched(workspace: Path, problem: str, benched: bool) -> dict:
+    """One chokepoint with `asterism bench` (`state/db/bench.py`): the
+    flag flips, the unleased queue rows are flushed, in-flight work
+    finishes on its own. Idempotent, so the console's button never has
+    to read the current state before it is safe to press. A workspace
+    with no DB has no problem to bench — and answering 404 from the
+    missing FILE keeps this write from creating one."""
+    path = workspace / "asterism.db"
+    detail = f"unknown problem {problem!r}"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=detail)
+    conn = db.connect(path)
+    try:
+        known = db.set_benched(conn, problem, benched=benched)
+    finally:
+        conn.close()
+    if known is None:
+        raise HTTPException(status_code=404, detail=detail)
+    return {"problem": problem, "benched": benched}
 
 
 def _require_project(workspace: Path, name: str) -> None:

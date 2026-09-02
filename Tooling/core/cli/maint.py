@@ -377,20 +377,14 @@ def cmd_bench(args: argparse.Namespace) -> int:
     conn = db.connect()
     db.init_schema(conn)
     problem = str(args.problem)
-    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
-                    (problem,)).fetchone() is None:
+    flushed = db.set_benched(conn, problem, benched=True)
+    conn.close()
+    if flushed is None:
         print(f"[bench] unknown problem {problem!r}")
         return 1
-    conn.execute("UPDATE problems SET benched = 1 WHERE name = ?",
-                 (problem,))
-    cur = conn.execute(
-        "DELETE FROM queue WHERE problem = ? AND owner_pid IS NULL",
-        (problem,))
-    conn.commit()
     print(f"[bench] {problem}: benched — no new dispatch or seats; "
-          f"flushed {cur.rowcount} queued row(s); state untouched "
+          f"flushed {flushed} queued row(s); state untouched "
           f"(`asterism unbench` to resume).")
-    conn.close()
     return 0
 
 
@@ -400,15 +394,12 @@ def cmd_unbench(args: argparse.Namespace) -> int:
     conn = db.connect()
     db.init_schema(conn)
     problem = str(args.problem)
-    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
-                    (problem,)).fetchone() is None:
+    known = db.set_benched(conn, problem, benched=False)
+    conn.close()
+    if known is None:
         print(f"[unbench] unknown problem {problem!r}")
         return 1
-    conn.execute("UPDATE problems SET benched = 0 WHERE name = ?",
-                 (problem,))
-    conn.commit()
     print(f"[unbench] {problem}: back on the live path.")
-    conn.close()
     return 0
 
 

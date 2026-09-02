@@ -91,10 +91,15 @@ from .problems import (
     problem_quiet,
     problems_stalled,
     problem_has_awaiting_human,
-    problem_benched,
     scoped_problem_names,
     dispatchable_open_goals,
     increment_goal_attempts,
+)
+
+# bench.py — the operator bench flag (v47), read + write in one home
+from .bench import (
+    problem_benched,
+    set_benched,
 )
 
 # reach.py — Phase 6 alive-reachability CTE

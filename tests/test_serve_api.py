@@ -1398,6 +1398,65 @@ def test_daemon_start_requires_exact_known_scope(
 
 
 # ---------------------------------------------------------------------
+# operator bench over HTTP (write chokepoint: db.set_benched)
+# ---------------------------------------------------------------------
+
+def test_bench_and_unbench_over_http(workspace: Path) -> None:
+    """"Stop this task without stopping the run" (the console's
+    per-task control) is the same act `asterism bench` performs, so it
+    runs the same chokepoint: the flag flips, the problem's UNLEASED
+    queue rows are flushed so nothing already enqueued fires, and
+    in-flight work is left to finish. Idempotent — the UI's button must
+    not have to know the current state to be safe to press."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    _add_problem(conn, "q")
+    db.enqueue(conn, kind="Formalizer", target_id="1", problem="p")
+    db.enqueue(conn, kind="Formalizer", target_id="2", problem="q")
+    conn.commit()
+    conn.close()
+
+    c = _client(workspace)
+    assert c.post("/api/problems/nope/bench").status_code == 404
+    assert c.post("/api/problems/nope/unbench").status_code == 404
+
+    r = c.post("/api/problems/p/bench")
+    assert r.status_code == 200
+    assert r.json() == {"problem": "p", "benched": True}
+    assert c.post("/api/problems/p/bench").json()["benched"] is True
+
+    conn = db.connect(workspace / "asterism.db")
+    assert db.problem_benched(conn, "p") is True
+    assert db.problem_benched(conn, "q") is False
+    assert [str(row["problem"]) for row in
+            conn.execute("SELECT problem FROM queue")] == ["q"], \
+        "benching flushes the benched problem's unleased rows only"
+    conn.close()
+
+    r = c.post("/api/problems/p/unbench")
+    assert r.status_code == 200
+    assert r.json() == {"problem": "p", "benched": False}
+    conn = db.connect(workspace / "asterism.db")
+    assert db.problem_benched(conn, "p") is False
+    conn.close()
+
+
+def test_board_row_carries_the_bench_flag(workspace: Path) -> None:
+    """A benched problem is off the live path but keeps every asset —
+    so its chip reads "paused"/"idle" like any other quiet problem. The
+    row carries the flag itself; without it the task list cannot tell
+    "nobody is working on this" from "I took this one off"."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "live_p")
+    _add_problem(conn, "benched_p", benched=1)
+    conn.close()
+    rows = {p["name"]: p for p in
+            _client(workspace).get("/api/problems").json()["problems"]}
+    assert rows["live_p"]["benched"] is False
+    assert rows["benched_p"]["benched"] is True
+
+
+# ---------------------------------------------------------------------
 # problem authoring (POST /api/problems/create)
 # ---------------------------------------------------------------------
 
