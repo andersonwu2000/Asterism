@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { renderProse } from './prose'
+import { goalMentions, renderProse } from './prose'
 
 /*
  * The block engine's one law under test: a heading is a heading
@@ -69,5 +69,57 @@ describe('renderProse headings', () => {
   it('a rule and a table still read as their own shapes', () => {
     expect(html('---')).toContain('<hr')
     expect(html('| a | b |\n|---|---|\n| 1 | 2 |')).toContain('<table')
+  })
+})
+
+/*
+ * A bare `g<id>` in prose is a link to that star (HID §1.5-1). The
+ * matcher is the part with a right answer, so it is pinned here: a
+ * mention is a WORD, and everything that merely contains those
+ * characters is not one.
+ */
+
+describe('goalMentions', () => {
+  it('finds a bare goal id in running prose', () => {
+    expect(goalMentions('see g123 for the split')).toEqual([
+      { index: 4, text: 'g123', id: 123 },
+    ])
+    expect(goalMentions('g1 and g22, then g333.').map((m) => m.id)).toEqual([
+      1, 22, 333,
+    ])
+  })
+
+  it('is a word, not a substring', () => {
+    // inside an identifier, inside a slug, and inside a longer token
+    expect(goalMentions('log123 and img12')).toEqual([])
+    expect(goalMentions('g12_trace and fin4_g7_x')).toEqual([])
+    expect(goalMentions('gg12')).toEqual([])
+    expect(goalMentions('g')).toEqual([])
+    expect(goalMentions('group 4')).toEqual([])
+  })
+
+  it('a bracket citation is not scanned twice', () => {
+    // `[goal:p:g12_x]` is the citation token's own business; the bare
+    // matcher must not carve a second link out of the middle of it
+    expect(goalMentions('[goal:p:g12_x]')).toEqual([])
+  })
+})
+
+describe('renderProse goal mentions', () => {
+  it('a bare g<id> renders as a link and keeps its text', () => {
+    const out = html('the split lives in g4021 now.')
+    expect(out).toContain('g4021')
+    expect(out).toContain('role="link"')
+  })
+
+  it('a g<id> inside a code span stays code', () => {
+    const out = html('call `g123` on it')
+    expect(out).toContain('<code')
+    expect(out).not.toContain('role="link"')
+  })
+
+  it('a g<id> inside a fence stays code', () => {
+    const out = html('before\n\n```\nexact g123\n```\n\nafter')
+    expect(out).not.toContain('role="link"')
   })
 })

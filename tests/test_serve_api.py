@@ -453,10 +453,17 @@ def test_cited_subgoal_is_a_reuse_not_a_branch(workspace: Path) -> None:
 def test_goal_locate_resolves_a_bare_goal_id(workspace: Path) -> None:
     """Prose across the reading layer names goals as `g<id>` and nothing
     else — no problem, no group. `locate` turns that id into a link
-    target (HID §3.4); an id nobody minted is a 404, not an empty page."""
+    target (HID §3.4); an id nobody minted is a 404, not an empty page.
+
+    The SHELF rides along (2026-09-03): every address inside the console
+    is `/p/<project>/sky/<task>/g/<id>`, so an answer without the project
+    is an answer the reader cannot navigate to — the console would have
+    to guess, or bounce through the legacy resolver."""
     from Tooling.state import groups as _groups
     conn = _open_db(workspace)
-    _add_problem(conn, "p")
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Erdos', '', ?)", (db.now(),))
+    _add_problem(conn, "p", project="Erdos")
     top = _groups.ensure_top_group(conn, "p", charter="# c")
     gid = db.insert_goal(conn, problem="p", slug="lemma_a",
                          lean_path="Problems/p/proofs/lemma_a.lean",
@@ -466,7 +473,7 @@ def test_goal_locate_resolves_a_bare_goal_id(workspace: Path) -> None:
     conn.close()
     c = _client(workspace)
     assert c.get(f"/api/goals/{gid}/locate").json() == {
-        "id": gid, "problem": "p", "slug": "lemma_a",
+        "id": gid, "problem": "p", "project": "Erdos", "slug": "lemma_a",
         "status": "attempting", "group_id": top}
     assert c.get("/api/goals/99999/locate").status_code == 404
 

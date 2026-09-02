@@ -827,8 +827,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         target for every prose mention (HID §3.4). Problem-agnostic on
         purpose: the prose carries the id alone, and asking the reader
         to already know the problem is what makes such a mention dead
-        text. Group is derived (`groups.group_for_goal`), never stored."""
+        text. Group is derived (`groups.group_for_goal`), never stored.
+
+        The SHELF is part of "where": every address inside the console
+        is `/p/<project>/sky/<task>/g/<id>`, so an answer without the
+        project leaves the caller guessing at half the route."""
         from ..state import groups as _groups
+        from ..state import projects as _projects
         with _ro(workspace) as conn:
             row = db.get_goal(conn, goal_id)
             if row is None:
@@ -836,7 +841,9 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                                     detail=f"no goal {goal_id}")
             problem = str(row["problem"])
             group = _groups.group_for_goal(conn, problem, goal_id)
+            project = _projects.project_of(conn, problem)
         return {"id": int(row["id"]), "problem": problem,
+                "project": project,
                 "slug": str(row["slug"]), "status": str(row["status"]),
                 "group_id": None if group is None else int(group["id"])}
 

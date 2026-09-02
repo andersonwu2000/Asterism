@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react'
-import { navigate } from './router'
+import { apiGet } from './api'
+import { currentSegments, navigate } from './router'
 import { Lean } from './lean'
 import { withMath } from './tex'
 import { emitGoalHover, emitGoalOpen } from './goalFocus'
+import { parseProjectRoute, projectPath } from './projectRoute'
 import { frameClass } from './textFrame'
 
 /*
@@ -22,7 +24,88 @@ import { frameClass } from './textFrame'
  * faithful colouring, a different job).
  */
 
-const CITE_RE = /\[(problem|goal|library|paper):([^[\]\n]+)\]/g
+/* One scanner, two shapes of citation.
+ *
+ * `[goal:problem:slug]` is a token a model emitted on purpose. `g4021`
+ * is how EVERY author — the Programme, a plan note, a rebuttal, the
+ * Assistant — actually names a star in running prose, and until now
+ * that was dead text (HID §1.5-1). Both alternatives live in one
+ * regex so a bare id inside a bracket token cannot be carved out a
+ * second time: the bracket matches first at its own `[`, and the
+ * scanner resumes past it.
+ */
+const CITE_RE =
+  /\[(problem|goal|library|paper):([^[\]\n]+)\]|\bg(\d+)\b/g
+
+export interface GoalMention {
+  /** where the mention starts in the segment it was found in */
+  index: number
+  /** the mention as written — `g4021` */
+  text: string
+  id: number
+}
+
+/** Every bare `g<id>` a segment names, in order.
+ *
+ * A mention is a WORD: `log123`, `img12`, the slug `g12_trace` and the
+ * label `gg12` all contain the characters and name no star. Exported
+ * for its own test — the boundary rule is the whole of this function,
+ * and it is not observable through the rendered markup.
+ */
+export function goalMentions(seg: string): GoalMention[] {
+  const out: GoalMention[] = []
+  let m: RegExpExecArray | null
+  CITE_RE.lastIndex = 0
+  while ((m = CITE_RE.exec(seg)) !== null) {
+    if (m[3] !== undefined)
+      out.push({ index: m.index, text: m[0], id: Number(m[3]) })
+  }
+  return out
+}
+
+/** Where a bare mention points when the engine cannot place it.
+ *
+ * The text carries the id alone, so the task is not in it — but the
+ * ADDRESS is: prose is read inside a Project, on a page that already
+ * names a task, and the overwhelming majority of mentions are that
+ * task's own stars. `null` outside a Project (the picker page), where
+ * there is nothing to point at. Read at CLICK time, not at render
+ * time: the reader may have walked somewhere else in between, and a
+ * renderer that touches `window` cannot be tested off a browser.
+ */
+function mentionHere(id: number): string | null {
+  const here = parseProjectRoute(currentSegments())
+  if (here === null || !here.problem) return null
+  return projectPath(here.project, 'sky', here.problem, id)
+}
+
+/** …and where it points once the engine has answered. `locate` knows
+ * the shelf and the task, so the click lands on the real star even
+ * when the mention was written about another task. */
+function openMention(id: number): void {
+  apiGet<{
+    problem: string
+    project: string | null
+    slug: string
+  }>(`/api/goals/${id}/locate`)
+    .then((loc) => {
+      // a mounted sky claims the open in place, exactly as a bracket
+      // citation does — no navigation, no camera reset
+      if (emitGoalOpen({ problem: loc.problem, slug: loc.slug })) return
+      navigate(
+        loc.project
+          ? projectPath(loc.project, 'sky', loc.problem, id)
+          : // filed nowhere: the legacy resolver finds the shelf
+            `/problems/${encodeURIComponent(loc.problem)}/g/${id}`,
+      )
+    })
+    .catch(() => {
+      // the engine could not place it (a stale id in old prose) — the
+      // reader still goes somewhere real, which is where they are
+      const here = mentionHere(id)
+      if (here !== null) navigate(here)
+    })
+}
 
 function citeTarget(
   kind: string,
@@ -47,6 +130,26 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
   CITE_RE.lastIndex = 0
   while ((m = CITE_RE.exec(seg)) !== null) {
     if (m.index > last) out.push(seg.slice(last, m.index))
+    if (m[3] !== undefined) {
+      const id = Number(m[3])
+      out.push(
+        <span
+          key={`${keyBase}g${m.index}`}
+          role="link"
+          tabIndex={0}
+          className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
+          title="open this star"
+          onClick={() => openMention(id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') openMention(id)
+          }}
+        >
+          {m[0]}
+        </span>,
+      )
+      last = m.index + m[0].length
+      continue
+    }
     const t = citeTarget(m[1], m[2])
     if (t === null) {
       out.push(m[0])

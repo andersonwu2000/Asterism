@@ -35,6 +35,15 @@ export function useRoute(): Route {
   return useContext(RouteContext)
 }
 
+/** The address as it stands, for code that is not a component.
+ *
+ * `renderProse` is a plain function called from a dozen places, and a
+ * bare `g<id>` mention needs to know which task the reader is standing
+ * on. The hash IS that answer, and reading it here keeps one parser. */
+export function currentSegments(): string[] {
+  return parseHash().segments
+}
+
 export function navigate(path: string) {
   window.location.hash = '#' + (path.startsWith('/') ? path : '/' + path)
 }
