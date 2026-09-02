@@ -146,6 +146,28 @@ def _pipeline_kind_problem(conn, pipeline_id: str) -> "tuple[str, str] | None":
         return None
 
 
+def _running_pipelines(conn) -> "dict[tuple[str, str, str], str]":
+    """{(kind, target_id, target_kind): pipeline_id} for every pipeline
+    still running.
+
+    The lane is built from the queue LEASE, which carries no pipeline
+    column — so a lane could not name the worker a Signal must be
+    aimed at. The join key is the dispatcher's OWN in-flight identity
+    (`_dispatch_is_duplicate`, core/dispatcher/refill.py): one worker
+    per (target, kind) is exactly the invariant that makes this a
+    lookup and not a guess. Newest start wins if a stale 'running' row
+    (a crashed daemon's, until recovery finalizes it) shares the key.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT id, kind, target_id, target_kind FROM pipelines"
+            " WHERE status = 'running' ORDER BY started_at").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {(str(r["kind"]), str(r["target_id"]), str(r["target_kind"])):
+            str(r["id"]) for r in rows}
+
+
 def _scratch_drafts(conn, workspace: Path) -> "list[tuple[str, str, float, Path, str]]":
     """(kind, problem, ctx_mtime, dir, stage) for each live agent
     workarea under `.attempts/`. A Forward worker's bricks live ONLY
@@ -487,6 +509,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     live_pid = _data._live_daemon_pid(d)
     if live_pid is not None:
         drafts: "list[tuple[str, str, float, Path]] | None" = None
+        running_pipelines = _running_pipelines(conn)
         for r in conn.execute(
                 "SELECT q.kind AS kind, q.target_kind AS tk,"
                 " q.target_id AS tid, q.leased_at AS leased_at,"
@@ -530,6 +553,13 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 # gone (2026-08-11) and the field stays so a stale UI
                 # bundle reads "no stage" rather than KeyError.
                 "stage": None,
+                # the worker BEHIND this lease — what a Signal is aimed
+                # at (`human_commands` kind Signal, §3.7). null = no
+                # running pipelines row matches: the lease is claimed but
+                # the dispatch has not opened (or already closed) its
+                # row, and a lane must not name a worker it cannot see.
+                "pipeline_id": running_pipelines.get(
+                    (str(r["kind"]), str(r["tid"]), str(r["tk"]))),
             }
             if r["lean_path"]:
                 rel = str(r["lean_path"])

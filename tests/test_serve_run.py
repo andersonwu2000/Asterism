@@ -180,6 +180,48 @@ def test_run_live_lanes_carry_statement_and_file_tail(
     assert body["burn_5h"] is not None
 
 
+def test_run_lane_names_the_pipeline_it_is_running(
+        workspace: Path, monkeypatch) -> None:
+    """A lane is built from the queue LEASE, which holds no pipeline
+    column — so the console's Signal sheet (`human_commands` kind
+    Signal, §3.7) had nothing to aim at. The lane joins to its running
+    `pipelines` row by the identity the dispatcher's own `running` set
+    uses, (kind, target); a lane with no running row carries null
+    rather than a neighbour's id, and a FINISHED row is not a worker.
+    """
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    live = db.insert_goal(conn, problem="p", slug="lemma_a",
+                          lean_path="Problems/p/proofs/L_lemma_a.lean",
+                          statement="a = a", origin="root")
+    done = db.insert_goal(conn, problem="p", slug="lemma_b",
+                          lean_path="Problems/p/proofs/L_lemma_b.lean",
+                          statement="b = b", origin="root")
+    for gid in (live, done):
+        db.enqueue(conn, kind="Builder", target_id=str(gid),
+                   target_kind="Goal", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?",
+                 (db.now(),))
+    db.record_pipeline_start(conn, pipeline_id="pipe-live", kind="Builder",
+                             target_id=str(live), target_kind="Goal")
+    # same target, WRONG kind — a Verify row must not claim the Builder
+    db.record_pipeline_start(conn, pipeline_id="pipe-verify", kind="Verify",
+                             target_id=str(live), target_kind="Goal")
+    # the other lane's only row is finished: no worker, no id
+    db.record_pipeline_start(conn, pipeline_id="pipe-done", kind="Builder",
+                             target_id=str(done), target_kind="Goal")
+    db.finish_pipeline(conn, pipeline_id="pipe-done", status="succeeded",
+                       outcome="proved")
+    conn.commit()
+    conn.close()
+
+    _fake_daemon(monkeypatch, scope="p")
+    body = _client(workspace).get("/api/run").json()
+    lanes = {lane["slug"]: lane for lane in body["workers"]}
+    assert lanes["lemma_a"]["pipeline_id"] == "pipe-live"
+    assert lanes["lemma_b"]["pipeline_id"] is None
+
+
 def test_run_forward_lane_tails_the_scratch_draft(
         workspace: Path, monkeypatch) -> None:
     """A Forward worker has no goal row and no landed file — its lane
