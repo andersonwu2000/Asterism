@@ -314,8 +314,9 @@ function Shelf({ project, rows }: { project: string; rows: BoardProblem[] }) {
         />
         {filtering && <span className="tnum text-[11px] text-ink-faint">{sorted.length}</span>}
         <Link
-          to="/new"
+          to={`/new/${encodeURIComponent(project)}`}
           className="ml-auto rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+          title={`a new task, filed on ${project}`}
         >
           New task
         </Link>

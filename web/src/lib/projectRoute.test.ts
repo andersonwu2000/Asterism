@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  TASK_SECTIONS,
   defaultTask,
   parseProjectRoute,
   projectPath,
@@ -149,5 +150,25 @@ describe('railVisible', () => {
   })
   it('shows it as soon as there is a choice to make', () => {
     expect(railVisible([task('Erdos.a'), task('Erdos.b')])).toBe(true)
+  })
+})
+
+describe('the Timeline reads whole before it reads scoped', () => {
+  // §1.4 makes the Timeline a Project surface whose secondary menu is
+  // the task list, and `GET /api/projects/{p}/events` is the shelf-wide
+  // feed that makes that possible. Before it existed the section had to
+  // borrow a task's feed, so the address was rewritten to name one.
+  it('an address with no task stays without one', () => {
+    expect(TASK_SECTIONS).not.toContain('timeline')
+    const r = parseProjectRoute(['p', 'Erdos', 'timeline'])
+    expect(r).toMatchObject({ section: 'timeline', problem: null })
+  })
+
+  it('and still carries one when the reader picks a task', () => {
+    expect(parseProjectRoute(['p', 'Erdos', 'timeline', 'Erdos.p1'])).toMatchObject({
+      section: 'timeline',
+      problem: 'Erdos.p1',
+    })
+    expect(projectPath('Erdos', 'timeline', 'Erdos.p1')).toBe('/p/Erdos/timeline/Erdos.p1')
   })
 })

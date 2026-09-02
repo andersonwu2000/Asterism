@@ -218,7 +218,9 @@ function Shell() {
           ) : section === 'settings' ? (
             <Settings />
           ) : section === 'new' ? (
-            <New />
+            /* `#/new/<project>` files the task on that shelf (§3.1: the
+               name's first segment is only a default) */
+            <New project={route.segments[1] ?? null} />
           ) : section === 'papers' ? (
             route.segments[1] ? (
               <PaperReader id={route.segments[1]} />

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { usePoll } from '../lib/api'
+import { useEffect, useMemo, useState } from 'react'
+import { apiGet, usePoll } from '../lib/api'
 import { goalCode, goalLabel, groupCode, groupLabel } from '../lib/format'
 import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
@@ -304,12 +304,29 @@ export default function Timeline({
 }) {
   const { data, error, loading } = usePoll<{
     events: TimelineEvent[]
-    log_since: string | null
-    groups: TimelineGroup[]
+    /** the per-task feed's seam. The shelf-wide one carries a MAP under
+     * its own key instead (`log_since_by_problem`) — one line across
+     * several tasks would mislabel every task but one, so the seam is
+     * simply not drawn there. */
+    log_since?: string | null
+    groups?: TimelineGroup[]
     problems?: string[]
     truncated?: number
+    /** the shelf-wide feed pages; `null` at the end of the history */
+    next_before?: string | null
   }>(path, pollMs, { keepPrevious: true })
   const [follow, setFollow] = useState<Follow | null>(null)
+  /** pages fetched behind the first one, oldest-ward. History does not
+   * change, so they are held rather than re-polled. */
+  const [older, setOlder] = useState<TimelineEvent[]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // a new subject is a new history — never show one feed's tail under
+  // another's head
+  useEffect(() => {
+    setOlder([])
+    setCursor(null)
+  }, [path])
 
   // dispatch rows for bricks that don't exist (kind 'asked', no goal):
   // the backend's label falls back to the problem name — identical on
@@ -318,11 +335,27 @@ export default function Timeline({
   // exist carry a name and a goal id and stay (owner, 2026-08-24)
   const all = useMemo(
     () =>
-      (data?.events ?? []).filter(
+      [...(data?.events ?? []), ...older].filter(
         (e) => !(e.kind === 'asked' && e.goal_id === null),
       ),
-    [data],
+    [data, older],
   )
+  const more = cursor ?? data?.next_before ?? null
+  const loadEarlier = async () => {
+    if (more === null || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const page = await apiGet<{ events: TimelineEvent[]; next_before?: string | null }>(
+        `${path}${path.includes('?') ? '&' : '?'}before=${encodeURIComponent(more)}`,
+      )
+      setOlder((o) => [...o, ...page.events])
+      setCursor(page.next_before ?? null)
+    } catch {
+      /* the button stays; the history is not going anywhere */
+    } finally {
+      setLoadingMore(false)
+    }
+  }
   const since = data?.log_since ?? null
   // one group is the ordinary case and reads exactly as it did before
   // groups existed — the argument is named only where there is a
@@ -434,6 +467,17 @@ export default function Timeline({
           </div>
         )
       })}
+      {/* a shelf's history is every task's at once, so it pages. One
+          task's does not, and the button simply never appears. */}
+      {more !== null && follow === null && (
+        <button
+          className="mt-4 cursor-pointer self-center text-[11px] text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
+          onClick={() => void loadEarlier()}
+          disabled={loadingMore}
+        >
+          {loadingMore ? 'reading…' : 'load earlier'}
+        </button>
+      )}
     </div>
   )
 }

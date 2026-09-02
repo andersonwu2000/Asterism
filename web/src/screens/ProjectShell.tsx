@@ -264,20 +264,25 @@ export default function ProjectShell({
           ) : section === 'engine' ? (
             <EngineRoom project={project} pin={problem} rows={rows} />
           ) : section === 'timeline' ? (
-            current ? (
-              <div className="mx-auto max-w-4xl px-6 py-6">
-                <Timeline
-                  key={current}
-                  path={`/api/problems/${encodeURIComponent(current)}/events`}
-                  problem={current}
-                  onSelectGoal={(id, p) =>
-                    navigate(projectPath(project, 'sky', p ?? current, id))
-                  }
-                />
-              </div>
-            ) : (
-              <Empty project={project} />
-            )
+            /* the shelf's whole history when the address names no task,
+               one task's when it does (§1.4: a Project surface whose
+               secondary menu is the task list) */
+            <div className="mx-auto max-w-4xl px-6 py-6">
+              <Timeline
+                key={problem ?? '@project'}
+                path={
+                  problem
+                    ? `/api/problems/${encodeURIComponent(problem)}/events`
+                    : `/api/projects/${encodeURIComponent(project)}/events`
+                }
+                problem={problem ?? undefined}
+                showProblem={problem === null}
+                onSelectGoal={(id, p) => {
+                  const target = p ?? problem
+                  if (target) navigate(projectPath(project, 'sky', target, id))
+                }}
+              />
+            </div>
           ) : (
             <Docs
               project={project}

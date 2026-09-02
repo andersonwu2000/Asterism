@@ -428,19 +428,18 @@ function ShutDown() {
 }
 
 /** The installation's own numbers: how many agents may work at once,
- * and the warm pool above them. The RAM budget belongs in this card and
- * is not here — `dispatch.ram_budget` is read from yaml/.env and is not
- * one of the keys `/api/config` will write, so a control would be a
- * control over nothing. Named, not silently missing. */
+ * the warm pool above them, and the RAM the worker economy may use.
+ * `dispatch.ram_budget` became writable with the rest (`b00783d4`), so
+ * the line that said this page could not change it is gone with it —
+ * the control IS the answer now. */
 function Machine() {
   return (
     <Row>
       <Label>Machine</Label>
       <MachineParameters />
       <div className="mt-2 text-[11px] text-ink-faint">
-        the RAM budget (<span className="font-mono">dispatch.ram_budget</span>) is read
-        from <span className="font-mono">Asterism.yaml</span> or the environment — the
-        engine serves no endpoint for it, so this page can neither show nor change it.
+        a saved change reaches the engine within about a minute: a running daemon finishes
+        its in-flight work and hands off to a fresh one on the new settings.
       </div>
     </Row>
   )

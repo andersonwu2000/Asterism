@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPost } from '../lib/api'
 import { Link, navigate } from '../lib/router'
+import { projectPath } from '../lib/projectRoute'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
 import { DiagList, LeanBlock, countErrors } from '../components/LeanBlock'
@@ -39,7 +40,11 @@ const LEAN_BOXES = [
   },
 ]
 
-export default function New() {
+export default function New({ project }: { project?: string | null }) {
+  // Which shelf the task is filed under. §3.1: the name's first segment
+  // is only the DEFAULT — arriving from a Project's own "New task"
+  // means that shelf, whatever the name turns out to say, and serve
+  // takes `project` for exactly this (`d29983f3`).
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   // the standing word (v40): what holds however the goal is later
@@ -205,6 +210,7 @@ export default function New() {
     try {
       await apiPost<{ problem: string }>('/api/problems/create', {
         name,
+        ...(project ? { project } : {}),
         charter: desc.trim(),
         ...(word.trim() === '' ? {} : { word: word.trim() }),
         settings: {
@@ -230,8 +236,11 @@ export default function New() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">
       <div className="mb-1 flex items-baseline gap-3">
-        <Link to="/" className="text-[11px] text-ink-faint transition-colors hover:text-ink">
-          ‹ projects
+        <Link
+          to={project ? projectPath(project, 'tasks') : '/'}
+          className="text-[11px] text-ink-faint transition-colors hover:text-ink"
+        >
+          ‹ {project ?? 'projects'}
         </Link>
         <h1 className="font-display text-[22px] font-medium text-ink">New task</h1>
       </div>

@@ -23,9 +23,9 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 }
 
 
-function UsageTable() {
+function UsageTable({ project }: { project?: string }) {
   const { data } = usePoll<{ problems: UsageProblem[]; window?: 'run' | 'all' }>(
-    '/api/telemetry/usage',
+    `/api/telemetry/usage${project ? `?project=${encodeURIComponent(project)}` : ''}`,
     10000,
   )
   // kind → model (from settings) turns raw tokens into weighted burn
@@ -226,11 +226,14 @@ function BurnStrip() {
 }
 
 /** The engine room's usage face: the run's burn, then the ledger. */
-export function UsageLedger() {
+export function UsageLedger({ project }: { project?: string }) {
   return (
     <>
       <BurnStrip />
-      <UsageTable />
+      {/* the engine room is a per-Project surface (§1.4), so its ledger
+          answers for the shelf the reader is standing on. Membership is
+          the FK, not the name's first segment — serve does that half. */}
+      <UsageTable project={project} />
     </>
   )
 }

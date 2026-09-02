@@ -951,7 +951,7 @@ export default function EngineRoom({
       </section>
 
       <section className="mt-7">
-        <UsageLedger />
+        <UsageLedger project={project} />
       </section>
     </div>
   )

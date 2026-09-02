@@ -18,12 +18,17 @@ import type { ConfigSetting, ModelGroup } from '../lib/types'
  */
 
 /** What a run does. Everything else is the installation's business, so
- * a knob added later surfaces in Settings rather than vanishing. */
+ * a knob added later surfaces in Settings rather than vanishing.
+ *
+ * `dispatch.blocked_kinds` is here rather than in the gear because §1.4
+ * puts the operator's hold beside the Run controls: it is a thing you
+ * reconsider for THIS run, not a property of the installation. */
 const RUN_KEYS = (key: string): boolean =>
   key.endsWith('.model') ||
   key === 'dispatch.budget_sec' ||
   key === 'dispatch.shelve_threshold' ||
-  key === 'dispatch.quota_wait'
+  key === 'dispatch.quota_wait' ||
+  key === 'dispatch.blocked_kinds'
 
 function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
   const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
@@ -226,6 +231,9 @@ export function RunParameters({ running }: { running: boolean }) {
   const [open, setOpen] = useState(false)
   const { data } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   const budget = data?.settings.find((s) => s.key === 'dispatch.budget_sec')
+  const held = String(
+    data?.settings.find((s) => s.key === 'dispatch.blocked_kinds')?.resolved ?? '',
+  ).trim()
   const seats = (data?.settings ?? []).filter((s) => s.key.endsWith('.model')).length
   return (
     <div>
@@ -243,6 +251,13 @@ export function RunParameters({ running }: { running: boolean }) {
             {budget?.resolved ? ` · ${duration(Number(budget.resolved))} budget` : ''}
           </span>
         )}
+        {/* a hold is why a run can dispatch nothing at all — it is the
+            one parameter whose value must be legible while folded */}
+        {!open && held !== '' && (
+          <span className="text-warn" title="these kinds are held on this machine">
+            holding {held}
+          </span>
+        )}
       </button>
       {open && (
         <div className="mt-2">
@@ -253,14 +268,6 @@ export function RunParameters({ running }: { running: boolean }) {
             </div>
           )}
           <ConfigPanel owns={RUN_KEYS} />
-          {/* the one run parameter with no door: the dispatcher reads it
-              from the environment and nothing serves it over HTTP */}
-          <div className="mt-2 text-[11px] text-ink-faint">
-            blocked kinds are set with{' '}
-            <span className="font-mono">ASTERISM_BLOCKED_KINDS</span> in the environment —
-            the engine offers no endpoint for them, so this console can neither show nor
-            change what is held.
-          </div>
         </div>
       )}
     </div>

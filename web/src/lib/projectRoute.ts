@@ -31,10 +31,15 @@ export const SECTION_LABEL: Record<Section, string> = {
 /** The sections that show ONE task, and therefore carry its name in the
  * address. `engine` is the odd one out: the machine is a single daemon,
  * whatever it happens to be running, so its room belongs to the whole
- * shelf. `timeline` is here because the engine's own event feed is the
- * RUN's, and on an idle shelf that is some other Project's last run —
- * which is exactly what it showed before this list included it. */
-export const TASK_SECTIONS: Section[] = ['tasks', 'sky', 'groups', 'timeline']
+ * shelf.
+ *
+ * `timeline` LEFT this list (2026-09-03): it was here because the only
+ * shelf-wide feed available was the RUN's, and on an idle shelf that is
+ * some other Project's last run. `GET /api/projects/{p}/events` is the
+ * Project's own history, so the section reads whole first and scopes to
+ * a task when the address names one — which is what §1.4 asks for (a
+ * Project surface whose secondary menu is the task list). */
+export const TASK_SECTIONS: Section[] = ['tasks', 'sky', 'groups']
 
 export interface ProjectRoute {
   project: string
