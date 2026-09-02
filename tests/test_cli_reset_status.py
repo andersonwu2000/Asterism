@@ -1078,3 +1078,38 @@ def test_reset_sweeps_worker_sandbox_output_from_proofs(
     assert not (proofs / "patch.lean").exists()
     assert not (proofs / "new_forward.lean").exists()
     assert (proofs / "README.md").exists()
+
+
+def test_daemon_status_dials_the_gateway_only_when_one_says_it_is_there(
+        tmp_path, monkeypatch):
+    """The status poll must not pay a connect timeout to learn nothing.
+
+    `_gateway_status_once` probed the gateway port unconditionally on
+    every call, and `daemon_status` rides EVERY serve poll. A connect to
+    a port nothing listens on is not refused on this machine — it hangs
+    to the 1.0s timeout, which was ~95% of the console's latency
+    (measured 1.016s for a 315-byte /api/daemon, 2026-09-03). The
+    presence question has a structured answer (the gateway's own live
+    marker); the network is asked only after that answer is yes."""
+    import os
+    import urllib.request
+
+    from Tooling.core.cli import daemon_status
+    from Tooling.lsp.lifecycle import gateway_live_marker
+
+    dialled: list = []
+
+    def counted(req, *a, **kw):  # noqa: ANN001
+        dialled.append(req)
+        raise OSError("nothing is listening")
+    monkeypatch.setattr(urllib.request, "urlopen", counted)
+
+    st = daemon_status(tmp_path)
+    assert dialled == []
+    assert st["gateway"] is None and st["slots"] is None
+
+    marker = gateway_live_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()), encoding="utf-8")
+    daemon_status(tmp_path)
+    assert len(dialled) == 1

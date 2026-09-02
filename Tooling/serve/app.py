@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..state import db
+from . import daemon_cache as _daemon_cache
 from . import data as _data
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -383,7 +384,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     def meta(project: str | None = None) -> dict:
         # `project` scopes the inbox badge to one shelf (§1.4); every
         # other field here is workspace-wide by nature.
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         db_state = "ok"
         inbox_n = 0
         if not (workspace / "asterism.db").exists():
@@ -767,14 +768,14 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     def problems(project: str | None = None) -> dict:
         if not (workspace / "asterism.db").exists():
             return {"problems": []}  # fresh workspace — empty board
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
             return _data.board(conn, daemon=daemon, project=project)
 
     @app.get("/api/problems/{problem}")
     def problem(problem: str) -> dict:
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
             d = _data.problem_detail(conn, workspace, problem,
@@ -1329,7 +1330,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         absent, the whole workspace answers as it always has."""
         if not (workspace / "asterism.db").exists():
             return {"problems": [], "window": "all", "since": None}
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         since = d.get("started_at") if d.get("running") else None
         with _ro(workspace) as conn:
@@ -1458,7 +1459,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
 
     @app.get("/api/daemon")
     def daemon() -> dict:
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         return daemon_status(workspace)
 
     @app.post("/api/problems/{problem}/delete")
@@ -1497,6 +1498,9 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             raise HTTPException(status_code=404,
                                 detail=f"unknown problem {scope!r}")
         code, msg = daemon_start(workspace, scope=scope, once=body.once)
+        # the status just changed under every poller — a memo of the
+        # instant BEFORE the click would show the Run button unmoved
+        _daemon_cache.invalidate(workspace)
         if code != 0:
             raise HTTPException(status_code=409, detail=msg)
         return {"message": msg}
@@ -1505,6 +1509,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     def daemon_stop_ep(body: DaemonStopBody) -> dict:
         from ..core.cli import daemon_stop
         code, msg = daemon_stop(workspace, force=body.force)
+        _daemon_cache.invalidate(workspace)
         if code != 0:
             raise HTTPException(status_code=500, detail=msg)
         return {"message": msg}
@@ -1521,7 +1526,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         toolchain. That is the gap this endpoint exists for; the page
         must be able to name it before it acts.
         """
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         return {
             "daemon": {"running": bool(d.get("running")),
@@ -1565,6 +1570,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                             f" with {int(d.get('in_flight') or 0)} agent(s)"
                             f" in flight — stop the run first, or force"))
             code, msg = daemon_stop(workspace, force=True)
+            _daemon_cache.invalidate(workspace)
             if code != 0:
                 raise HTTPException(status_code=500, detail=msg)
             stopped.append("engine")

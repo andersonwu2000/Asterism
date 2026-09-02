@@ -257,10 +257,18 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     if prow is None:
         return None
 
+    # This problem's goals only. Goal ids are workspace-unique, so the
+    # unfiltered aggregate answered correctly — it just built the whole
+    # workspace's map (649 goals across 373 problems) to read 82 of it
+    # on every 2s poll. The join is the same one `phase2_context`
+    # already uses to attribute a dead attempt to its problem.
     dead_counts: dict[int, int] = {}
     for r in conn.execute(
-            "SELECT target_id, COUNT(*) AS n FROM dead_attempts"
-            " WHERE target_kind = 'Goal' GROUP BY target_id"):
+            "SELECT da.target_id AS target_id, COUNT(*) AS n"
+            " FROM dead_attempts da"
+            " JOIN goals g ON g.id = CAST(da.target_id AS INTEGER)"
+            " WHERE da.target_kind = 'Goal' AND g.problem = ?"
+            " GROUP BY da.target_id", (problem,)):
         dead_counts[int(r["target_id"])] = int(r["n"])
 
     # Live-work signal per goal: a queue row leased BY THE RUNNING

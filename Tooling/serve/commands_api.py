@@ -145,6 +145,8 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                 detail=f"unknown problem(s): {', '.join(sorted(missing))}")
         scope = db.SCOPE_SEP.join(names)
         code, msg = daemon_start(workspace, scope=scope, once=body.once)
+        from .daemon_cache import invalidate as _invalidate_status
+        _invalidate_status(workspace)
         if code != 0:
             raise HTTPException(status_code=409, detail=msg)
         return {"message": msg, "scope": scope, "problems": names}

@@ -68,7 +68,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         is gated on the daemon status the board is gated on."""
         if not (workspace / "asterism.db").exists():
             return {"projects": []}
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         daemon = daemon_status(workspace)
         with ro(workspace) as conn:
             return {"projects": _data.project_rows(conn, daemon=daemon)}

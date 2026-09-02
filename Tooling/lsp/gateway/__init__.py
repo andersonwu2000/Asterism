@@ -960,15 +960,22 @@ def main() -> None:
     # Presence signal for the warm window (HTTP opens only after the
     # pool warms, so /health can't see us yet): daemon-side
     # `start_gateway` waits on this marker instead of spawning a rival.
-    from ..lifecycle import gateway_starting_marker
+    from ..lifecycle import gateway_live_marker, gateway_starting_marker
     _marker = gateway_starting_marker(workspace)
-    try:
-        _marker.parent.mkdir(parents=True, exist_ok=True)
-        _marker.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
-        pass
+    # Presence signal for the WHOLE life (the warm marker is removed as
+    # soon as HTTP opens): status surfaces answer "is a gateway there?"
+    # from this file instead of dialling a port whose connect hangs to
+    # the timeout when nothing listens (2026-09-03).
+    _live = gateway_live_marker(workspace)
+    for _m in (_marker, _live):
+        try:
+            _m.parent.mkdir(parents=True, exist_ok=True)
+            _m.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
     import atexit as _atexit
     _atexit.register(lambda: _marker.unlink(missing_ok=True))
+    _atexit.register(lambda: _live.unlink(missing_ok=True))
 
     threading.Thread(target=_start_workers,
                      args=(workspace, w_count, n_interactive),

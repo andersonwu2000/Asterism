@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 from ...state import db, transitions
@@ -685,7 +686,15 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
 # poll doesn't re-read a hundred stubs (the underlying reader is the
 # engine's context.goal_display_signature — ONE extraction, no serve
 # dialect; #5, 2026-07-18)
-_SIG_CACHE: "dict[str, tuple[float, str | None]]" = {}
+#: {key: (mtime, signature, checked_at)}
+_SIG_CACHE: "dict[str, tuple[float, str | None, float]]" = {}
+
+#: How long a cached reading is trusted WITHOUT re-stat'ing its file.
+#: Being mtime-keyed still cost one `stat()` per goal per request —
+#: 370 syscalls on a 370-goal task, every 2s, to learn that nothing had
+#: changed. A signature is display text: a file that changes reaches
+#: the screen a second later either way.
+_SIG_STAT_TTL = 2.0
 
 
 def _goal_signature(workspace: Path, slug: str,
@@ -697,12 +706,16 @@ def _goal_signature(workspace: Path, slug: str,
     if not lean_path:
         return None
     key = f"{workspace}|{lean_path}"
+    now = time.monotonic()
+    hit = _SIG_CACHE.get(key)
+    if hit is not None and now - hit[2] < _SIG_STAT_TTL:
+        return hit[1]
     try:
         mtime = (workspace / str(lean_path)).stat().st_mtime
     except OSError:
         return None
-    hit = _SIG_CACHE.get(key)
     if hit is not None and hit[0] == mtime:
+        _SIG_CACHE[key] = (mtime, hit[1], now)
         return hit[1]
     from ...agent.context import goal_display_signature
     sig: "str | None" = goal_display_signature(
@@ -710,7 +723,7 @@ def _goal_signature(workspace: Path, slug: str,
     if (not sig or sig == str(statement or "")
             or ":= @" in sig or " : " not in sig):
         sig = None
-    _SIG_CACHE[key] = (mtime, sig)
+    _SIG_CACHE[key] = (mtime, sig, now)
     return sig
 
 

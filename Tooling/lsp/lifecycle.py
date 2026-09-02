@@ -289,8 +289,27 @@ def gateway_starting_marker(workspace: Path) -> Path:
     return workspace / ".asterism" / "gateway-starting.txt"
 
 
-def warming_pid(workspace: Path) -> "int | None":
-    """The pid of a gateway that is mid-warm, or None.
+def gateway_live_marker(workspace: Path) -> Path:
+    """The gateway's presence signal for its WHOLE life, warm and
+    served alike.
+
+    `gateway-starting.txt` covers only the warm window — it is removed
+    the moment HTTP opens — so the one way to learn "is a gateway
+    there?" used to be to dial the port. That is not a cheap question:
+    a connect to a port nothing listens on is not always refused (on
+    Windows the SYN is dropped and the connect hangs to the caller's
+    timeout — measured 1.03s), and `daemon_status` asks it on every
+    poll of every console screen. This file answers it with a stat.
+
+    Written at port-bind by the gateway process and removed by its
+    atexit, next to the warm marker and read the same way: present but
+    naming a dead pid means "nothing is running"."""
+    return workspace / ".asterism" / "gateway-live.txt"
+
+
+def _marker_pid(marker: Path) -> "int | None":
+    """The pid a presence marker names, or None when the marker is
+    absent, unreadable, or names a process that is gone.
 
     The marker is a FILE, so it outlives an abnormal death: present but
     naming a dead pid means "nothing is running", not "still coming".
@@ -299,21 +318,37 @@ def warming_pid(workspace: Path) -> "int | None":
     API call, because this also runs inside the stdio MCP server where
     no subprocess (and therefore no `tasklist`) starts at all."""
     try:
-        pid = int(gateway_starting_marker(workspace)
-                  .read_text(encoding="utf-8").strip())
+        pid = int(marker.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
     try:
         import psutil
         return pid if psutil.pid_exists(pid) else None
-    except Exception:  # noqa: BLE001 — no psutil: assume it is coming
+    except Exception:  # noqa: BLE001 — no psutil: assume it is there
         return pid
+
+
+def warming_pid(workspace: Path) -> "int | None":
+    """The pid of a gateway that is mid-warm, or None."""
+    return _marker_pid(gateway_starting_marker(workspace))
+
+
+def gateway_live_pid(workspace: Path) -> "int | None":
+    """The pid of a gateway process that is up (warming or serving), or
+    None. The cheap half of every gateway question: no socket."""
+    return (_marker_pid(gateway_live_marker(workspace))
+            or _marker_pid(gateway_starting_marker(workspace)))
 
 
 def gateway_phase(workspace: Path) -> str | None:
     """Coarse gateway phase for status surfaces: 'ready' (health OK),
-    'warming' (starting marker names a live pid), else None. Cheap —
-    one short-timeout local probe + a stat."""
+    'warming' (starting marker names a live pid), else None.
+
+    The socket is asked only after the presence marker says there is
+    someone to ask: proving absence by connecting costs the full
+    timeout on a port nothing listens on (Windows drops the SYN)."""
+    if gateway_live_pid(workspace) is None:
+        return None
     h = _ping_health(timeout=0.5)
     if h is not None and h.get("backend_ready"):
         return "ready"

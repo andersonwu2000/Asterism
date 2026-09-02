@@ -464,14 +464,28 @@ def daemon_status(workspace: Path) -> dict:
 
 
 def _gateway_status_once(workspace: Path) -> "tuple[str | None, dict | None]":
-    """(phase, slots) from ONE /health round-trip. The old helper pair
-    asked the same URL twice per status poll (phase, then slots) —
-    pure double load, and on the saturated flagship it fed the very
-    accept backlog the status was trying to observe (frontend finding,
-    2026-08-27). Short timeout — this rides every status poll and must
-    never make the UI wait."""
+    """(phase, slots) from AT MOST ONE /health round-trip. The old
+    helper pair asked the same URL twice per status poll (phase, then
+    slots) — pure double load, and on the saturated flagship it fed the
+    very accept backlog the status was trying to observe (frontend
+    finding, 2026-08-27).
+
+    The socket is asked only once a gateway has SAID it is there
+    (`gateway_live_pid` — the process's own presence marker). Dialling
+    unconditionally cost a full connect timeout whenever no gateway was
+    up: a connect to a dead local port is not refused on Windows, it
+    hangs, and this rides every status poll of every console screen —
+    1.016s of a 1.02s `/api/daemon` (measured 2026-09-03). Absence is a
+    structured signal now, not something to prove with a socket."""
     import json as _json
     import urllib.request
+    try:
+        from ...lsp.lifecycle import gateway_live_pid
+        present = gateway_live_pid(workspace) is not None
+    except Exception:  # noqa: BLE001 — status must not crash
+        present = False
+    if not present:
+        return None, None
     h = None
     try:
         from ...lsp.lifecycle import _gateway_port

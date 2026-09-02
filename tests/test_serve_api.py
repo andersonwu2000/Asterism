@@ -230,6 +230,11 @@ def _fake_daemon(monkeypatch, *, pid: int = 4321,
                 "started_at": started_at or db.now(), "stopping": False,
                 "in_flight_leases": 0}
     monkeypatch.setattr(_cli, "daemon_status", fake_status)
+    # this helper stands in for "the engine's state is now X"; in the
+    # product every such transition goes through a chokepoint that
+    # clears the serve-side reading, so the stand-in does too
+    from Tooling.serve import daemon_cache as _daemon_cache
+    _daemon_cache.invalidate()
 
 
 def test_board_proving_requires_live_daemon_on_scope(
@@ -2186,6 +2191,15 @@ def _rollout(workspace: Path, name: str, *, primary: dict | None,
     return p
 
 
+def _prime_log_meter(workspace: Path) -> None:
+    """`log_quota` serves the last reading and refreshes on a thread of
+    its own — a request must never wait on a meter. A test that wants
+    THIS workspace's reading takes it synchronously first, which is what
+    the running process has done within a second of boot."""
+    from Tooling.serve.run import _read_log_quota
+    _read_log_quota(workspace)
+
+
 def test_session_log_quota_names_windows_by_their_own_length(
         workspace: Path) -> None:
     """codex reports one weekly window on some accounts and 5-hour +
@@ -2198,6 +2212,7 @@ def test_session_log_quota_names_windows_by_their_own_length(
                       "resets_at": 1788272023},
              secondary={"used_percent": 8.0, "window_minutes": 10080,
                         "resets_at": 1788472023})
+    _prime_log_meter(workspace)
     rows = log_quota(workspace)
     assert [r["provider"] for r in rows] == ["codex"]
     assert [(w["minutes"], w["utilization"]) for w in rows[0]["windows"]] == [
@@ -2227,6 +2242,7 @@ def test_session_log_quota_takes_the_newest_reading(workspace: Path) -> None:
     os.utime(new, (now - 60, now - 60))
     os.utime(empty, (now, now))       # newest, and it says nothing
     reset_quota_memo()
+    _prime_log_meter(workspace)
     rows = log_quota(workspace)
     assert rows[0]["windows"][0]["utilization"] == 41.0
     reset_quota_memo()
@@ -2239,6 +2255,7 @@ def test_run_payload_carries_the_logged_meter(workspace: Path) -> None:
              primary={"used_percent": 8.0, "window_minutes": 10080,
                       "resets_at": 1788272023})
     reset_quota_memo()
+    _prime_log_meter(workspace)
     d = _client(workspace).get("/api/run").json()
     assert d["quota_logged"][0]["provider"] == "codex"
     reset_quota_memo()
@@ -2914,3 +2931,77 @@ def test_create_problem_on_a_missing_project_is_404_and_makes_nothing(
         json={"name": "Erdos.p3", "charter": _CHARTER, "project": "ghost"})
     assert r.status_code == 404, r.text
     assert not (workspace / "Problems" / "Erdos" / "p3").exists()
+
+
+# ---------------------------------------------------------------------
+# the status poll — one read for every poller (2026-09-03)
+# ---------------------------------------------------------------------
+
+def _fake_status(monkeypatch, state: dict, calls: list) -> None:
+    """Stand in for the real `daemon_status`, counting the reads."""
+    import Tooling.core.cli as _cli
+
+    def counted(ws):  # noqa: ANN001
+        calls.append(ws)
+        return dict(state)
+    monkeypatch.setattr(_cli, "daemon_status", counted)
+
+
+def test_the_status_read_is_shared_by_every_poller(
+        workspace: Path, monkeypatch) -> None:
+    """`daemon_status()` rides EIGHT endpoints, and the console polls
+    all of them at once — so one screen paid for the same reading five
+    times a second. It is a snapshot of one instant either way: read it
+    once and hand the same instant to everyone inside the TTL."""
+    from Tooling.serve import daemon_cache
+    daemon_cache.invalidate()
+    calls: list = []
+    _fake_status(monkeypatch, {"running": False, "pid": None}, calls)
+    c = _client(workspace)
+    for _ in range(5):
+        assert c.get("/api/daemon").status_code == 200
+    assert c.get("/api/meta").status_code == 200
+    assert len(calls) == 1, calls
+
+
+def test_stopping_the_engine_is_never_answered_from_the_cache(
+        workspace: Path, monkeypatch) -> None:
+    """A cached status is a stale status the instant the reader CHANGES
+    it. Start/stop are the writes that make it stale, so they clear the
+    memo rather than leaving the Run button lying for a TTL."""
+    import Tooling.core.cli as _cli
+    from Tooling.serve import daemon_cache
+    daemon_cache.invalidate()
+    state = {"running": True, "pid": 4321}
+    calls: list = []
+    _fake_status(monkeypatch, state, calls)
+    c = _client(workspace)
+    assert c.get("/api/daemon").json()["running"] is True
+    monkeypatch.setattr(_cli, "daemon_stop",
+                        lambda ws, force=False: (0, "stopped"))
+    state["running"], state["pid"] = False, None
+    _fake_status(monkeypatch, state, calls)
+    assert c.post("/api/daemon/stop", json={"force": True}).status_code == 200
+    assert c.get("/api/daemon").json()["running"] is False
+
+
+def test_a_goal_signature_is_not_re_stat_ed_on_every_poll(
+        workspace: Path) -> None:
+    """The display signature was mtime-keyed, which still costs one
+    `stat()` per goal per request — 370 syscalls on a 370-goal task,
+    every 2s. The cached reading is trusted for a TTL: a goal file that
+    changes is on screen a second later either way, and the poll stops
+    walking the tree to learn nothing."""
+    from Tooling.serve.data import timeline as _t
+    _t._SIG_CACHE.clear()
+    d = workspace / "Problems" / "X" / "proofs"
+    d.mkdir(parents=True)
+    rel = "Problems/X/proofs/g.lean"
+    (workspace / rel).write_text(
+        "theorem g_slug (n : Nat) : n = n := by rfl\n", encoding="utf-8")
+    first = _t._goal_signature(workspace, "g_slug", rel, "n = n")
+    assert first == "theorem g_slug (n : Nat) : n = n"
+    # the file is gone: only a fresh stat could notice, and inside the
+    # TTL there is none
+    (workspace / rel).unlink()
+    assert _t._goal_signature(workspace, "g_slug", rel, "n = n") == first

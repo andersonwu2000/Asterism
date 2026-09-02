@@ -626,7 +626,7 @@ _WATERMARKS = {
     # IS the HTTP surface — eleven `@mcp.custom_route` handlers, the
     # session-header middleware, `main()` and the facade — so this
     # number stops falling here.
-    "Tooling/lsp/gateway/__init__.py": 1113,  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
+    "Tooling/lsp/gateway/__init__.py": 1130,  # +8 2026-09-03 the live presence marker (a status reader must not have to dial the port to learn a gateway is absent)  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 320,  # born 2026-08-29 from the gateway split (A1-1); +65 2026-08-30 build leases — the second tenant lives beside the semaphore it borrows from
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
@@ -656,7 +656,7 @@ _WATERMARKS = {
     # systemd unit, installer/launch.ps1).
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/run.py": 780,  # +8 2026-09-03 daemon_status names the schema-behind case instead of counting -1 agents (the SchemaBehind branch + why it is not a measurement)  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/run.py": 800,  # +13 2026-09-03 _gateway_status_once asks the socket only after the presence marker says there is someone to ask  # +8 2026-09-03 daemon_status names the schema-behind case instead of counting -1 agents (the SchemaBehind branch + why it is not a measurement)  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
@@ -717,7 +717,7 @@ _WATERMARKS = {
     # helper both `edges.py` and `timeline.py` call.
     "Tooling/serve/data/__init__.py": 200,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/status.py": 200,  # born 2026-08-28 from the data.py split (B3)
-    "Tooling/serve/data/edges.py": 550,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/edges.py": 570,  # +8 2026-09-03 the dead-attempt tally is scoped to the problem being read (it built the whole workspace's map to use 12% of it, every poll)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/verdict.py": 100,  # born 2026-08-29 — one revision's judge verdict
@@ -756,7 +756,7 @@ _WATERMARKS = {
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,
     "Tooling/pipeline/forward.py": 1200,
-    "Tooling/lsp/lifecycle.py": 1160,  # 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
+    "Tooling/lsp/lifecycle.py": 1200,  # +28 2026-09-03 gateway_live_marker/_pid — the gateway's presence as a file, so no reader proves absence with a connect that hangs; 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
     "Tooling/llm/antigravity_cli.py": 1150,
 }
 

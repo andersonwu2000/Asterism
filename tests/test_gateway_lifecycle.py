@@ -593,3 +593,27 @@ def test_kill_stale_gateway_raises_when_zombie_immortal(monkeypatch):
     monkeypatch.setattr(gwl.time, "monotonic", fake_monotonic)
     with pytest.raises(RuntimeError, match="did not release port"):
         gwl._kill_stale_gateway(4242)
+
+
+def test_gateway_live_marker_names_a_live_pid(tmp_path: Path) -> None:
+    """A gateway's presence must be readable WITHOUT dialling it.
+
+    The warm marker only covers the warm window (it is removed the
+    moment HTTP opens), so every status reader had to prove absence by
+    connecting to the port — and a connect to a port nothing listens on
+    is not refused on this machine, it hangs to the timeout. The live
+    marker is the structured signal: a file naming the gateway's pid
+    for the whole of its life. Present but naming a DEAD pid means
+    "nothing is running", exactly as `warming_pid` reads its own."""
+    import os
+
+    from Tooling.lsp.lifecycle import gateway_live_marker, gateway_live_pid
+
+    assert gateway_live_pid(tmp_path) is None
+    marker = gateway_live_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()), encoding="utf-8")
+    assert gateway_live_pid(tmp_path) == os.getpid()
+    # residue of an abnormal death: a file naming nobody
+    marker.write_text("999999999", encoding="utf-8")
+    assert gateway_live_pid(tmp_path) is None

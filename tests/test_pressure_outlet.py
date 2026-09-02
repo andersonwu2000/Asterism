@@ -196,11 +196,20 @@ def test_reuse_gate_refuses_a_rival_on_an_occupied_silent_port(
 
 def test_daemon_status_asks_health_exactly_once(monkeypatch, tmp_path):
     """The old phase/slots helper pair fetched the same /health twice
-    per status poll — pure double load on a drowning accept queue."""
+    per status poll — pure double load on a drowning accept queue.
+
+    The socket is dialled at all only once the gateway's presence
+    marker says there is someone to ask (2026-09-03), so the gateway
+    this test is about writes one."""
     import io
     import json
+    import os
     import urllib.request
     from Tooling.core import cli
+    from Tooling.lsp.lifecycle import gateway_live_marker
+    marker = gateway_live_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()), encoding="utf-8")
     calls = {"n": 0}
 
     class _Resp(io.BytesIO):

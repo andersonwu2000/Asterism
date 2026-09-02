@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -218,10 +219,47 @@ def _scratch_drafts(conn, workspace: Path) -> "list[tuple[str, str, float, Path,
 # limits. Read-only against the user's own account; the token never
 # appears in any response or log. Memoized 60s (failures 30s) — the
 # console polls every 2s and the endpoint 429s eagerly.
+#
+# The reading is refreshed OFF the request (2026-09-03): a TTL miss
+# used to happen inside `/api/run`, so once a minute one poll paid a
+# 1.1s HTTPS round-trip to api.anthropic.com — and the log meter walked
+# the preserved rollouts inside another. A meter is garnish; the
+# request serves the last reading and a thread of its own goes to get
+# the next one. `measured_at` was already the contract for exactly this
+# ("the last reading a spawn left behind, not a live one").
 # ---------------------------------------------------------------------
 
 _quota_memo: "dict[str, object]" = {
     "at": 0.0, "value": None, "ttl": 0.0, "last_good": None}
+
+#: single-flight guard per meter: a stale reading kicks ONE refresh,
+#: however many pollers notice it is stale.
+_meter_lock = threading.Lock()
+_meter_busy: "dict[str, bool]" = {}
+
+
+def _kick_meter(name: str, work) -> None:  # noqa: ANN001
+    """Refresh a meter on a thread of its own, at most one at a time.
+
+    The thread is NAMED so the "never on the request path" rule is
+    observable from outside — a meter that reads on the request thread
+    is the bug this exists to prevent, not a slow request to tune."""
+    with _meter_lock:
+        if _meter_busy.get(name):
+            return
+        _meter_busy[name] = True
+
+    def _run() -> None:
+        try:
+            work()
+        except Exception:  # noqa: BLE001 — a meter is never a failure
+            pass
+        finally:
+            with _meter_lock:
+                _meter_busy[name] = False
+
+    threading.Thread(target=_run, name=f"asterism-meter-{name}",
+                     daemon=True).start()
 
 
 def reset_quota_memo() -> None:
@@ -238,16 +276,10 @@ def reset_quota_memo() -> None:
 _log_quota_memo: "dict[str, object]" = {"at": 0.0, "value": []}
 
 
-def log_quota(workspace: "Path | str") -> "list[dict]":
-    """Session-log meters, in the console's wire shape (epochs become
-    ISO, as the endpoint's already are).
-
-    Every entry carries `measured_at`, and the console is required to
-    show it: this is the last reading a spawn left behind, not a live
-    one, and the two are the same number with different meanings."""
-    now = time.monotonic()
-    if now - float(_log_quota_memo["at"]) < 45.0:  # type: ignore[arg-type]
-        return _log_quota_memo["value"]  # type: ignore[return-value]
+def _read_log_quota(workspace: "Path | str") -> None:
+    """The session-log walk itself — off the request path (`_kick_meter`
+    owns the thread). Walks the preserved rollouts, so it is filesystem
+    work, not a lookup."""
     rows: "list[dict]" = []
     try:
         for row in usage_quota.session_log_usage(workspace):
@@ -263,8 +295,21 @@ def log_quota(workspace: "Path | str") -> "list[dict]":
             })
     except Exception:  # noqa: BLE001 — a meter is garnish, never a failure
         rows = []
-    _log_quota_memo.update(at=now, value=rows)
-    return rows
+    _log_quota_memo.update(at=time.monotonic(), value=rows)
+
+
+def log_quota(workspace: "Path | str") -> "list[dict]":
+    """Session-log meters, in the console's wire shape (epochs become
+    ISO, as the endpoint's already are).
+
+    Every entry carries `measured_at`, and the console is required to
+    show it: this is the last reading a spawn left behind, not a live
+    one, and the two are the same number with different meanings — so a
+    reading served from the memo while a fresher one is on its way says
+    nothing this surface was not already saying."""
+    if time.monotonic() - float(_log_quota_memo["at"]) >= 45.0:  # type: ignore[arg-type]
+        _kick_meter("log-quota", lambda: _read_log_quota(workspace))
+    return _log_quota_memo["value"]  # type: ignore[return-value]
 
 
 def _iso(epoch: "object") -> "str | None":
@@ -282,10 +327,21 @@ def _fetch_oauth_usage() -> "dict | None":
 
 def quota() -> "dict | None":
     """{five_hour, seven_day, scoped[]} or None (no login file, expired
-    token, rate-limited, offline — the console simply omits the meter)."""
-    now = time.monotonic()
-    if now - float(_quota_memo["at"]) < float(_quota_memo["ttl"]):  # type: ignore[arg-type]
-        return _quota_memo["value"]  # type: ignore[return-value]
+    token, rate-limited, offline — the console simply omits the meter).
+
+    Served from the memo, always: the refresh happens on its own thread
+    (`_read_quota`). A cold process therefore omits the meter for one
+    round-trip, which is the same face it wears when the token is
+    expired — and the alternative was making one poll a minute wait
+    1.1s on api.anthropic.com."""
+    if (time.monotonic() - float(_quota_memo["at"])  # type: ignore[arg-type]
+            >= float(_quota_memo["ttl"])):  # type: ignore[arg-type]
+        _kick_meter("quota", _read_quota)
+    return _quota_memo["value"]  # type: ignore[return-value]
+
+
+def _read_quota() -> None:
+    """One refresh of the subscription meter — off the request path."""
     value = None
     try:
         raw = _fetch_oauth_usage()
@@ -311,13 +367,15 @@ def quota() -> "dict | None":
                      "scoped": scoped}
     except Exception:  # noqa: BLE001 — quota is garnish, never a failure
         value = None
+    # the TTL runs from when the reading LANDED, not from when the
+    # fetch started — a slow round-trip must not shorten its own window
+    now = time.monotonic()
     if value is not None:
         _quota_memo.update(at=now, value=value, ttl=120.0, last_good=value)
     else:
         # stale-while-error: a 429/offline blip keeps the last good
         # reading on the meter instead of blanking it
         _quota_memo.update(at=now, value=_quota_memo["last_good"], ttl=60.0)
-    return _quota_memo["value"]  # type: ignore[return-value]
 
 
 def _proposal_cycle(workarea: Path) -> "dict | None":
@@ -684,7 +742,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         """`problem` = the UI's lens pick when a pattern scope runs
         several problems at once (ignored unless it's a live
         candidate)."""
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         if not (workspace / "asterism.db").exists():
             return {"daemon": d, "problem": None, "problems": [],
@@ -712,7 +770,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         makes, so the slots and the log can never disagree about which
         run they are describing.
         """
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         if not (workspace / "asterism.db").exists():
             return {"events": [], "log_since": None, "groups": [],

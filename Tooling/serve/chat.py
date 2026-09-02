@@ -216,7 +216,7 @@ def _board_context(conn: sqlite3.Connection, workspace: Path) -> str:
             " ORDER BY last_strategist_at DESC LIMIT 8")]
     daemon: dict = {}
     try:
-        from ..core.cli import daemon_status
+        from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         daemon = {"running": d.get("running"), "scope": d.get("scope"),
                   "started_at": d.get("started_at")}

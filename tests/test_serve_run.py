@@ -68,6 +68,11 @@ def _fake_daemon(monkeypatch, *, running: bool = True, pid: int = 4321,
                 "stopping": False, "in_flight_leases": 0,
                 "last_exit": last_exit}
     monkeypatch.setattr(_cli, "daemon_status", fake_status)
+    # this helper stands in for "the engine's state is now X"; in the
+    # product every such transition goes through a chokepoint that
+    # clears the serve-side reading, so the stand-in does too
+    from Tooling.serve import daemon_cache as _daemon_cache
+    _daemon_cache.invalidate()
 
 
 def test_run_fresh_workspace_is_quiet(workspace: Path) -> None:
@@ -740,3 +745,43 @@ def test_the_recent_feed_says_who_decided(workspace: Path,
     _fake_daemon(monkeypatch, scope="p")
     body = _client(workspace).get("/api/run").json()
     assert body["recent"][0]["actor"] == "human"
+
+
+# ---------------------------------------------------------------------
+# the meters never ride the request (2026-09-03)
+# ---------------------------------------------------------------------
+
+def test_the_meters_refresh_off_the_request_thread(
+        workspace: Path, monkeypatch) -> None:
+    """A quota miss made `/api/run` wait on api.anthropic.com (+1.1s
+    once a minute), and the session-log meter walked the preserved
+    rollouts inside the same request. Both are garnish: the request
+    serves what the meter last read and the reading is refreshed on a
+    thread of its own — a request must never wait on a meter."""
+    import threading
+
+    from Tooling.core import usage_quota
+    from Tooling.serve import run as _run
+
+    names: "list[str]" = []
+    done = threading.Event()
+
+    def fetch():
+        names.append(threading.current_thread().name)
+        done.set()
+        return None
+
+    def walk(ws):  # noqa: ANN001
+        names.append(threading.current_thread().name)
+        return []
+
+    monkeypatch.setattr(_run, "_fetch_oauth_usage", fetch)
+    monkeypatch.setattr(usage_quota, "session_log_usage", walk)
+    _run.reset_quota_memo()
+
+    r = _client(workspace).get("/api/run")
+    assert r.status_code == 200
+    assert r.json()["quota"] is None
+    assert done.wait(10.0), "the meter never refreshed"
+    assert names, "the meter was never read at all"
+    assert all(n.startswith("asterism-meter") for n in names), names
