@@ -121,6 +121,38 @@ _SCOPE_NOTE = {
 }
 
 
+def tools_mcp_config(workspace: Path) -> Path:
+    """Write (fresh each launch) the Assistant's `asterism_tools` entry.
+
+    The SAME server the workers get, seat-scoped to `explainer` — HID
+    §3.5's "the Assistant's capabilities go through the envelope/MCP
+    whitelist the workers already use". A second permission surface
+    would be two answers to "what may this agent do", and the copy is
+    what drifts.
+
+    Under `.asterism/` beside the agy home, for the same reason: it
+    depends on this machine, not on the repo.
+    """
+    from ..pipeline import tools_mcp_entry
+    path = workspace / ".asterism" / "explainer_mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"mcpServers": {
+            "asterism_tools": tools_mcp_entry(workspace, KIND)}}, indent=2),
+        encoding="utf-8")
+    return path
+
+
+def tool_allow_patterns() -> "list[str]":
+    """claude's allow patterns for this seat's tools, derived from the
+    seat table. Enumerating them by hand is how a registered tool comes
+    to be silently unreachable (claude prompts on an unmatched MCP call
+    and headless auto-denies the prompt)."""
+    from .envelope import asterism_tools_for
+    return [f"mcp__asterism_tools__{t}"
+            for t in sorted(asterism_tools_for(KIND))]
+
+
 @dataclass(frozen=True)
 class Turn:
     """One question's resume state.
@@ -242,6 +274,11 @@ class ClaudeExplainer(_Backend):
             f"Read({ws}/docs/**/*.md)", f"Grep({ws}/docs/**)",
             f"Glob({ws}/**)",
             f"WebFetch(domain:{self.notes_domain})",
+            # The framework's own tools, seat-scoped (HID §3.5). The
+            # server registers only this seat's table, so this list is
+            # the COVERAGE half: an MCP call with no matching pattern
+            # prompts, and headless auto-denies the prompt.
+            *tool_allow_patterns(),
         ]
         return " ".join(patterns)
 
@@ -271,6 +308,12 @@ class ClaudeExplainer(_Backend):
             "Read(**/.env)", "Read(**/.env.*)",
             *_operator_state_deny_rules(),
             "--settings", str(_spawn_guard_settings_path()),
+            # The framework's tool server, seat-scoped. `--strict-mcp-
+            # config` keeps any globally configured MCP server of the
+            # operator's out of the Assistant's surface — the seat table
+            # is the whole grant, not a floor on it.
+            "--mcp-config", str(tools_mcp_config(workspace)),
+            "--strict-mcp-config",
             # no turn cap flag in this CLI — the endpoint's wall timeout is
             # the runaway stop
             "--output-format", "stream-json", "--verbose",
@@ -383,8 +426,20 @@ class AntigravityExplainer(_Backend):
         home = workspace / ".asterism" / "explainer_agy_home"
         (home / ".gemini" / "antigravity-cli").mkdir(parents=True,
                                                      exist_ok=True)
+        (home / ".gemini" / "config").mkdir(parents=True, exist_ok=True)
         (home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
             json.dumps(self.permissions(workspace), indent=2),
+            encoding="utf-8")
+        # The tool server, in agy's dialect: it resolves MCP servers from
+        # a FILE under HOME (`antigravity_cli.mcp_config_path`), not from
+        # a flag. Written here because the capability matrix belongs to
+        # the SEAT, not to the backend — an agy Assistant with no tools
+        # would be a different product wearing the same panel.
+        from ..pipeline import tools_mcp_entry
+        (home / ".gemini" / "config" / "mcp_config.json").write_text(
+            json.dumps({"mcpServers": {
+                "asterism_tools": tools_mcp_entry(workspace, KIND)}},
+                indent=2),
             encoding="utf-8")
         return home
 
@@ -411,7 +466,14 @@ class AntigravityExplainer(_Backend):
         """
         return {
             "permissions": {
-                "allow": [],
+                # `mcp(*)` and nothing else. An action with no allow rule
+                # is auto-denied headless, so this single grant IS the
+                # capability matrix — and what it grants is only what the
+                # server registers for this seat (per-server scoping
+                # `mcp(<name>)` does NOT match on agy, measured
+                # 2026-07-30; it costs nothing, because the server is
+                # ours and already filtered).
+                "allow": ["mcp(*)"],
                 "deny": ["command(*)", "read_url(*)", "write_file(*)",
                          f"write_file({workspace})"],
             },
@@ -491,6 +553,11 @@ BACKENDS: "dict[str, _Backend]" = {
 #: the same chain every other seat does (`<kind>.provider` →
 #: `ASTERISM_<KIND>_PROVIDER` → `ASTERISM_LLM_PROVIDER` → claude) and an
 #: installer that writes a provider default reaches it.
+#:
+#: It is also the SEAT name in `envelope.SEAT_ASTERISM_TOOLS`, which is
+#: what makes the Assistant's capability matrix (HID §1.1) the same
+#: mechanism the workers' is: one table, one server, `ASTERISM_SEAT` in
+#: the server's env deciding which tools exist at all.
 KIND = "explainer"
 
 

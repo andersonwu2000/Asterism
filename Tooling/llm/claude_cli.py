@@ -51,6 +51,7 @@ from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
 from . import capabilities
 from .base import LLMRequest, SpawnRC
+from .envelope import SEAT_ASTERISM_TOOLS
 from .stream_parser import StreamParser
 
 
@@ -898,13 +899,20 @@ DEFAULT_BASH_ALLOWED = ""
 #: and the brick it had been told to cite was a same-batch sibling with
 #: no file yet — and so rebuilt a brick another worker was minting in
 #: parallel, then ran out of clock. `test_mcp_tools` pins the coverage.
-_TOOLS_MCP_PATTERNS = ("mcp__asterism_tools__loogle",
-                       "mcp__asterism_tools__validate_json",
-                       "mcp__asterism_tools__inspect",
-                       "mcp__asterism_tools__compute",
-                       "mcp__asterism_tools__paper_search",
-                       "mcp__asterism_tools__paper_fetch",
-                       "mcp__asterism_tools__write_file")
+#: Allow patterns for the framework's tool server, DERIVED from the seat
+#: table rather than typed here (2026-09-02, when the console Assistant
+#: became a seat and this list would otherwise have had to be remembered
+#: a second time). The gate that decides what a spawn can actually call
+#: is server-side — `mcp_tools` reads ASTERISM_SEAT and registers only
+#: that seat's tools — so this list's job is COVERAGE: a tool registered
+#: on the server but missing here prompts, and headless auto-denies the
+#: prompt, which is the silent capability gap that cost g7491's worker
+#: its `inspect` (see test_loogle_left_the_shell_allowlist). Deriving it
+#: from the union also makes a tool no seat declares fail that test —
+#: a tool nobody can call is dead surface, not a grant.
+_TOOLS_MCP_PATTERNS = tuple(
+    f"mcp__asterism_tools__{name}"
+    for name in sorted(set().union(*SEAT_ASTERISM_TOOLS.values())))
 
 
 def resolve_model(kind: str | None) -> str:

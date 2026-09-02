@@ -49,6 +49,12 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
         # in the tools server's process, outside that sandbox, and only
         # into the spawn's own attempts dir.
         "write_file",
+        # The Assistant's surface (2026-09-02, HID §1.1/§3.5/§3.8). The
+        # seat gate keeps these off every worker and keeps the workers'
+        # write/compute channels off the Assistant; this list is the
+        # union, which is why they appear here.
+        "write_project_doc", "list_project_docs", "read_project_doc",
+        "prepare_command", "daemon_status",
     }
 
 
@@ -350,3 +356,152 @@ def test_empty_capabilities_are_not_advertised() -> None:
         NotificationOptions(), {})
     assert caps.resources is None and caps.prompts is None
     assert caps.tools is not None
+
+
+# ---------------------------------------------------------------------
+# The Assistant's surface (HID §1.1 capability matrix, §3.5, §3.8)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def assistant_ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A workspace the tools resolve to, the way a spawn does: the
+    Assistant's cwd IS the workspace (`serve/chat.py` passes it), and
+    `workspace_of` walks up to the directory owning Problems+Tooling."""
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / "Tooling").mkdir()
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def _seed_project(workspace: Path, problem: str = "Erdos.p1") -> int:
+    from Tooling.state import db
+    conn = db.connect(workspace / "asterism.db")
+    db.init_schema(conn)
+    now = db.now()
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Erdos', '', ?)", (now,))
+    conn.execute("INSERT INTO problems (name, project, created_at)"
+                 " VALUES (?, 'Erdos', ?)", (problem, now))
+    conn.execute(
+        "INSERT INTO goals (problem, slug, statement, status, kind,"
+        " origin, depth, lean_path, created_at, updated_at)"
+        " VALUES (?, 'deficit', 'theorem d : True', 'open', 'theorem',"
+        " 'root', 0, 'proofs/d.lean', ?, ?)", (problem, now, now))
+    gid = int(conn.execute("SELECT id FROM goals").fetchone()["id"])
+    conn.commit()
+    conn.close()
+    return gid
+
+
+def test_the_assistant_seat_is_declared_and_carries_no_act_channel(
+) -> None:
+    """§1.1's matrix as a table, not a comment. The Assistant reads and
+    prepares; the workers' write/compute/fetch channels are theirs, and
+    a seat that inherited them would make the matrix advisory."""
+    from Tooling.llm.envelope import asterism_tools_for
+
+    seat = asterism_tools_for("explainer")
+    assert {"write_project_doc", "list_project_docs", "read_project_doc",
+            "prepare_command", "daemon_status", "inspect"} <= seat
+    for banned in ("write_file", "compute", "paper_fetch"):
+        assert banned not in seat, banned
+
+
+def test_write_project_doc_lands_under_agent(assistant_ws: Path) -> None:
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    out = mcp_tools.write_project_doc(
+        project="Erdos", path="agent/summary.md", content="# what I read\n")
+    assert "agent/summary.md" in out
+    assert project_docs.read(assistant_ws, "Erdos", "agent/summary.md") \
+        == b"# what I read\n"
+
+
+def test_write_project_doc_refuses_the_persons_area(
+    assistant_ws: Path,
+) -> None:
+    """The Assistant's whole write surface. A refusal that did not name
+    `agent/` would be a refusal it routes around."""
+    from Tooling.knowledge import mcp_tools
+
+    out = mcp_tools.write_project_doc(
+        project="Erdos", path="user/notes.md", content="x")
+    assert "agent/notes.md" in out
+    assert not (assistant_ws / "Problems" / "Erdos" / "_docs" / "user"
+                ).exists()
+
+
+def test_list_and_read_project_docs(assistant_ws: Path) -> None:
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    project_docs.write(assistant_ws, "Erdos", "user/plan.md", "the plan\n")
+    listing = mcp_tools.list_project_docs(project="Erdos")
+    assert "user/plan.md" in listing
+    assert "the plan" in mcp_tools.read_project_doc(
+        project="Erdos", path="user/plan.md")
+
+
+def test_read_project_doc_names_the_way_out_when_it_misses(
+    assistant_ws: Path,
+) -> None:
+    from Tooling.knowledge import mcp_tools
+
+    out = mcp_tools.read_project_doc(project="Erdos", path="user/ghost.md")
+    assert "list_project_docs" in out
+
+
+def test_prepare_command_previews_and_never_enqueues(
+    assistant_ws: Path,
+) -> None:
+    """§3.8: the Assistant PREPARES. The person presses the button, and
+    that is not a policy the prompt enforces — no queue row exists after
+    this call, on any path."""
+    import sqlite3
+
+    gid = _seed_project(assistant_ws)
+    from Tooling.knowledge import mcp_tools
+
+    out = json.loads(mcp_tools.prepare_command(
+        problem="Erdos.p1", kind="ConfirmShelve",
+        payload={"target_goal_id": gid, "reason": "the route is dead"}))
+    assert out["kind"] == "ConfirmShelve"
+    assert out["problem"] == "Erdos.p1"
+    assert out["payload"]["target_goal_id"] == gid
+    assert out["preview"]["affected"][0]["slug"] == "deficit"
+    conn = sqlite3.connect(assistant_ws / "asterism.db")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM human_commands").fetchone()[0] == 0
+    conn.close()
+
+
+def test_prepare_command_refuses_what_the_post_would_refuse(
+    assistant_ws: Path,
+) -> None:
+    """One validator, two doors: a payload the POST would 422 must not
+    be handed to the person as a ready command."""
+    gid = _seed_project(assistant_ws)
+    from Tooling.knowledge import mcp_tools
+
+    out = mcp_tools.prepare_command(
+        problem="Erdos.p1", kind="ConfirmShelve",
+        payload={"target_goal_id": gid})
+    assert "reason" in out and "preview" not in out
+
+
+def test_prepare_command_refuses_an_unknown_kind(assistant_ws: Path) -> None:
+    _seed_project(assistant_ws)
+    from Tooling.knowledge import mcp_tools
+
+    out = mcp_tools.prepare_command(problem="Erdos.p1", kind="DropTable",
+                                    payload={})
+    assert "ConfirmShelve" in out
+
+
+def test_daemon_status_is_read_only(assistant_ws: Path) -> None:
+    from Tooling.knowledge import mcp_tools
+
+    out = json.loads(mcp_tools.daemon_status())
+    assert out["running"] is False

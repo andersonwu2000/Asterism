@@ -116,3 +116,42 @@ decision vocabulary verbatim, and they must not drift apart.
 Same line, same replacement as above. The Adversary judges a batch against
 the same contract the Strategist wrote to; a field the judge's copy does
 not list reads as a schema violation.
+
+## Tooling/serve/chat.py — `_SYSTEM_PROMPT` (the Assistant's rule 1, and one new rule)
+
+Package E3 gave the console Assistant a tool surface (HID §1.1's capability
+matrix, §3.5, §3.8): it may write documents into the Project's `agent/`
+shelf, list and read that Project's documents, prepare a framework command
+for the person to confirm, and read the engine's status. The tools are
+wired and seat-scoped (`envelope.SEAT_ASTERISM_TOOLS["explainer"]`), but
+rule 1 of the live prompt still says the opposite — **it will decline to
+use them**, which is the correct behaviour for a prompt that has not been
+told. Nothing here is loaded; the tools stay inert until this is approved
+and moved by hand.
+
+The prompt is not a file under `Tooling/prompts/` — it is the
+`_SYSTEM_PROMPT` string literal at the top of `Tooling/serve/chat.py`.
+
+Replace:
+
+```
+1. READ-ONLY, always. You explain; you never act. If asked to change, approve, reject, run, or delete anything, decline in one sentence and point at the UI control that does it. No exceptions — acting would break the system's soundness boundary.
+```
+
+With:
+
+```
+1. YOU DO NOT ACT ON THE RUN. You never change a proof, a goal, the database or a running engine, and you never approve or sign anything — that boundary is what makes the results trustworthy, and there is no exception to it. Two things you MAY do, both through your tools: write documents into the Project's own `agent/` shelf (`write_project_doc`; `user/` is the person's and is not yours to write), and PREPARE a framework command (`prepare_command`) — which checks the command and shows what it would affect, and then stops. You never run it; the person presses the button in the console. If asked to shelve, delegate, mark or inject, prepare the command, say plainly what it would close, and hand it over.
+```
+
+And add, after rule 4:
+
+```
+5. Tools. `inspect` reads files and the framework's own record; `loogle` searches Mathlib; `paper_search` finds papers; `daemon_status` says what the engine is doing; `list_project_docs` / `read_project_doc` / `write_project_doc` are the Project's documents. Read the person's `user/` notes before writing beside them. Documents are for a mathematician: English prose, LaTeX for the mathematics.
+```
+
+Note for the reviewer: rule 1's replacement is deliberately longer than
+the line it replaces. The rule now has to draw a boundary in a place the
+model can find — "never act" was one word to obey, "never act on the run,
+but here are two things that are yours" needs the two named, or the model
+resolves the tension by refusing the tools it was given.

@@ -565,6 +565,203 @@ def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
     return out
 
 
+# ── The console Assistant's surface (HID §1.1, §3.5, §3.8) ───────────
+#
+# Registered only for the `explainer` seat (`envelope._ASSISTANT_TOOLS`),
+# which is why they can be written here beside the workers' tools without
+# widening anyone's surface: the server reads ASTERISM_SEAT and registers
+# the seat's table.
+#
+# The write is ONE call into `state/project_docs.write(area='agent')`.
+# Everything the Assistant may ever write goes through that function, and
+# the area is its argument — so "the Assistant cannot write outside
+# `_docs/agent/`" is a property of the call, not of the prompt.
+
+
+def _project_docs_error(e: Exception, *, tool: str, project: str) -> str:
+    """A refusal a model can act on. `KeyError` = the thing is not there,
+    `ValueError` = it is refused and the message already names the way
+    out (`state/project_docs` owes that); this only adds the tool-level
+    next step."""
+    if isinstance(e, KeyError):
+        return (f"{tool}: {e.args[0]!r} is not in {project}'s documents "
+                f"— call list_project_docs(project=\"{project}\") to see "
+                f"what is.")
+    return f"{tool}: {e}"
+
+
+@_seat_tool(structured_output=False)
+def write_project_doc(project: str = "", path: str = "",
+                      content: str = "") -> str:
+    """Write a document into the Project's `agent/` shelf.
+
+    This is your ONLY write. `path` is relative to the Project's
+    document root and must start with `agent/` — `user/` is the
+    person's own shelf and you cannot write there. Full-file overwrite:
+    send the whole text.
+
+    Extensions: .md .tex .txt .lean .png .jpg .svg .pdf. Write the
+    mathematics in LaTeX; a document a mathematician reads is the point.
+
+        write_project_doc(project="Erdos", path="agent/p1_summary.md",
+                          content="# What the route proves\\n…")
+    """
+    from ..state import project_docs
+    if not (project or "").strip() or not (path or "").strip():
+        return _ARG_HELP.format(
+            tool="write_project_doc",
+            hint='the parameters are `project`, `path` and `content`, '
+                 'e.g. write_project_doc(project="Erdos", '
+                 'path="agent/notes.md", content="# …")')
+    if not content:
+        return _ARG_HELP.format(
+            tool="write_project_doc",
+            hint='`content` is empty — the whole document body goes in '
+                 '`content` (a mis-spelled parameter name lands here)')
+    try:
+        rel = project_docs.write(_workspace_root(), project, path,
+                                 content, area=project_docs.AREA_AGENT)
+    except (KeyError, ValueError, OSError) as e:
+        return _project_docs_error(e, tool="write_project_doc",
+                                   project=project)
+    return f"wrote {rel} ({len(content)} chars) in {project}'s documents"
+
+
+@_seat_tool(structured_output=False)
+def list_project_docs(project: str = "") -> str:
+    """List the Project's documents — both shelves.
+
+    `user/` is what the person wrote, `agent/` is what you wrote. One
+    line per entry: path, kind, size.
+    """
+    from ..state import project_docs
+    if not (project or "").strip():
+        return _ARG_HELP.format(
+            tool="list_project_docs",
+            hint='the parameter is `project`, e.g. '
+                 'list_project_docs(project="Erdos")')
+    try:
+        entries = project_docs.tree(_workspace_root(), project)
+    except (ValueError, OSError) as e:
+        return f"list_project_docs: {e}"
+    if not entries:
+        return (f"{project} has no documents yet. Write one with "
+                f"write_project_doc(project=\"{project}\", "
+                f"path=\"agent/<name>.md\", content=…).")
+    lines = [f"{e['path']}{'/' if e['kind'] == 'dir' else ''}"
+             + ("" if e["kind"] == "dir" else f"  {e['size']}B")
+             for e in entries]
+    out = "\n".join(lines)
+    return out if len(out) <= MAX_CHARS else out[:MAX_CHARS] + "\n… (truncated)"
+
+
+@_seat_tool(structured_output=False)
+def read_project_doc(project: str = "", path: str = "") -> str:
+    """Read one of the Project's documents, from either shelf.
+
+    `path` is relative to the document root (`user/…` or `agent/…`).
+    Read the person's own notes before writing beside them.
+    """
+    from ..state import project_docs
+    if not (project or "").strip() or not (path or "").strip():
+        return _ARG_HELP.format(
+            tool="read_project_doc",
+            hint='the parameters are `project` and `path`, e.g. '
+                 'read_project_doc(project="Erdos", path="user/plan.md")')
+    if project_docs.is_binary(path):
+        return (f"read_project_doc: {path} is an image or a pdf — the "
+                f"person can see it; you cannot read it here.")
+    try:
+        raw = project_docs.read(_workspace_root(), project, path)
+    except (KeyError, ValueError, OSError) as e:
+        return _project_docs_error(e, tool="read_project_doc",
+                                   project=project)
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) > MAX_CHARS:
+        return text[:MAX_CHARS] + "\n… (truncated; the file is longer)"
+    return text
+
+
+@_seat_tool(structured_output=False)
+def prepare_command(problem: str = "", kind: str = "",
+                    payload: dict = None) -> str:
+    """Prepare a framework command for the person to confirm.
+
+    THIS DOES NOT RUN ANYTHING. It checks the command's own fields and
+    returns what it WOULD affect, so the person can press the button in
+    the console — running it is theirs to decide, always (§3.8).
+
+    `kind` is one of Delegate, ReturnToParent, MarkDeliverable,
+    ConfirmShelve, Inject. `payload` carries that decision's own fields,
+    the same ones a Strategist writes:
+
+        ConfirmShelve   target_goal_id, reason (a person's park is final)
+        ReturnToParent  group_id, reason
+        MarkDeliverable target_goal_id, optional reason
+        Delegate        charter, or target_goal_id to take one from
+        Inject          target_goal_id, proof (the `## Proof` to settle)
+
+    Returns JSON: `preview.affected` is every node the command would
+    close, `revision` is the state the person is acting on, and
+    `payload` is the command as it would be submitted.
+    """
+    import json as _json
+
+    from ..state import commands as _commands
+    from ..state import db as _db
+    if not (problem or "").strip() or not (kind or "").strip():
+        return _ARG_HELP.format(
+            tool="prepare_command",
+            hint='the parameters are `problem`, `kind` and `payload`, '
+                 'e.g. prepare_command(problem="Erdos.p1", '
+                 'kind="ConfirmShelve", payload={"target_goal_id": 12, '
+                 '"reason": "the route is dead"})')
+    body = payload if isinstance(payload, dict) else {}
+    if kind not in _commands.KINDS:
+        return (f"prepare_command: {kind!r} is not a command. The kinds "
+                f"are {', '.join(sorted(_commands.KINDS))}.")
+    try:
+        _commands.validate_fields(kind, body)
+    except ValueError as e:
+        return f"prepare_command: {e}"
+    path = _workspace_root() / "asterism.db"
+    if not path.exists():
+        return "prepare_command: this workspace has no database yet."
+    # READ-ONLY connection: "never enqueues" is then a property of the
+    # handle, not of this function's good behaviour.
+    try:
+        conn = _db.connect_readonly(path)
+    except Exception as e:  # noqa: BLE001 — schema behind / locked
+        return f"prepare_command: cannot read the database ({e})."
+    try:
+        if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                        (problem,)).fetchone() is None:
+            return (f"prepare_command: no problem named {problem!r} — "
+                    f"check the name on the problem's own page.")
+        preview = _commands.preview(conn, problem=problem, kind=kind,
+                                    payload=body)
+    finally:
+        conn.close()
+    return _json.dumps({"preview": preview, "payload": body, "kind": kind,
+                        "problem": problem}, ensure_ascii=False)
+
+
+@_seat_tool(structured_output=False)
+def daemon_status() -> str:
+    """What the engine is doing right now — running, scope, in flight.
+
+    Read-only: nothing here starts, stops or steers a run.
+    """
+    import json as _json
+
+    from ..core.cli import daemon_status as _status
+    try:
+        return _json.dumps(_status(_workspace_root()), ensure_ascii=False,
+                           default=str)
+    except Exception as e:  # noqa: BLE001 — a status must never raise
+        return f"daemon_status: could not read the engine's state ({e})."
+
+
 def _workspace_root():
     """The workspace, resolved the same way `inspect` resolves it — the
     Scholar's cwd is its own problem directory, and `fetch` needs the

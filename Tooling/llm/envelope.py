@@ -58,6 +58,33 @@ _LIBRARY_EDITING_KINDS = ("librarian", "migrate", "classify", "alias")
 _NL_TOOLS = frozenset({"inspect", "write_file", "compute", "loogle",
                        "validate_json"})
 
+#: The console Assistant (HID §1.1's capability matrix, §3.5). It is a
+#: seat like any other, which is the point: its capabilities arrive
+#: through THIS table and the same MCP server the workers use, not a
+#: second permission system that would drift from this one.
+#:
+#: What it may do, and the reason each line is where it is:
+#:   inspect / loogle       reading the workspace and Mathlib — the
+#:                          matrix's 可讀 row, already fenced by the
+#:                          server's own deny roots
+#:   paper_search           finding papers. `FetchPaper` retired with the
+#:                          Scholar (§3.3 ruling), and the Assistant is
+#:                          what took that errand over — SEARCH only:
+#:                          `paper_fetch` shelves a file and writes a DB
+#:                          binding, which is outside `_docs/agent/`
+#:   *_project_doc(s)       its one write surface, and it is `agent/`
+#:                          only (state/project_docs enforces the area)
+#:   prepare_command        §3.8: it PREPARES; the person confirms
+#:   daemon_status          the matrix's daemon 狀態 row, read-only
+#: Deliberately absent: `write_file` (writes a worker's attempts dir —
+#: a directory the Assistant does not have), `compute` (an execution
+#: channel the matrix does not grant), `validate_json` (validates a
+#: worker's own hand-in), and every act channel there has never been.
+_ASSISTANT_TOOLS = frozenset({
+    "inspect", "loogle", "paper_search",
+    "write_project_doc", "list_project_docs", "read_project_doc",
+    "prepare_command", "daemon_status"})
+
 SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "strategist": _NL_TOOLS | {"paper_search", "paper_fetch"},
     "adversary": _NL_TOOLS,
@@ -65,6 +92,7 @@ SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "formalizer": _NL_TOOLS,     # intake/mint turns; Lean phase adds
                                  # the lsp server via _write_mcp_config
     "librarian": _NL_TOOLS,
+    "explainer": _ASSISTANT_TOOLS,
 }
 
 

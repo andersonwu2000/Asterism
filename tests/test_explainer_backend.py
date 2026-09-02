@@ -71,11 +71,18 @@ def test_claude_allowed_tools_scoped_to_workspace(tmp_path: Path) -> None:
 
 
 def test_agy_permissions_refuse_every_act_channel(tmp_path: Path) -> None:
-    """Write, shell and outbound fetch are denied; nothing is granted at
-    all, which on agy IS the fence (an unmatched action defaults to Ask
-    and headless auto-denies)."""
+    """Write, shell and outbound fetch are denied, and the ONLY grant is
+    the framework's own MCP server — which on agy is the fence, because
+    an unmatched action defaults to Ask and headless auto-denies.
+
+    (2026-09-02: `allow` used to be empty. The console Assistant became
+    a seat with a declared tool table (HID §1.1, §3.5), so the grant is
+    now exactly `mcp(*)` — what that admits is decided server-side by
+    `ASTERISM_SEAT`, not here, and per-server scoping does not match on
+    agy anyway. The invariant this test protects is unchanged: nothing
+    that ACTS is granted.)"""
     perms = explainer.ANTIGRAVITY.permissions(tmp_path)["permissions"]
-    assert perms["allow"] == []
+    assert perms["allow"] == ["mcp(*)"]
     for action in ("command", "read_url", "write_file"):
         assert any(r.startswith(f"{action}(") for r in perms["deny"]), action
 
@@ -214,3 +221,59 @@ def test_every_backend_is_a_provider_the_registry_can_resolve() -> None:
         assert caps.canonical(name) == name
         assert name in caps.CAPABILITIES
         get_provider  # resolution chain shares `capabilities.canonical`
+
+
+# -- the Assistant's tool surface, in both dialects (HID §3.5) ------------
+
+
+def _tools_config(cmd: "list[str]") -> dict:
+    path = Path(cmd[cmd.index("--mcp-config") + 1])
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_explainer_mounts_the_framework_tool_server(
+    tmp_path: Path,
+) -> None:
+    """§3.5: the Assistant's capabilities all arrive through the same
+    MCP server the workers use, seat-scoped. A second permission system
+    is how two answers to "what may this agent do" start to drift."""
+    cmd = _claude_argv(tmp_path)
+    assert "--strict-mcp-config" in cmd
+    entry = _tools_config(cmd)["mcpServers"]["asterism_tools"]
+    assert entry["args"] == ["-m", "Tooling.knowledge.mcp_tools"]
+    assert entry["env"]["ASTERISM_SEAT"] == explainer.KIND
+
+
+def test_the_allowed_tools_are_exactly_the_seats_own(
+    tmp_path: Path,
+) -> None:
+    """Derived from the seat table, never re-typed: a hand-written
+    pattern list is a second copy of the whitelist, and the copy is
+    what rots."""
+    from Tooling.llm.envelope import asterism_tools_for
+
+    allowed = explainer.CLAUDE.allowed_tools(tmp_path).split()
+    seat = asterism_tools_for(explainer.KIND)
+    for tool in seat:
+        assert f"mcp__asterism_tools__{tool}" in allowed, tool
+    assert "mcp__asterism_tools__write_file" not in allowed
+
+
+def test_the_agy_explainer_gets_the_same_server_and_may_call_it(
+    tmp_path: Path,
+) -> None:
+    """The capability matrix is the seat's, not the backend's. agy reads
+    its MCP servers from a file under HOME and auto-denies an action
+    with no allow rule, so BOTH have to be written or the agy Assistant
+    silently has no tools."""
+    home = explainer.ANTIGRAVITY.home(tmp_path)
+    cfg = json.loads(
+        (home / ".gemini" / "config" / "mcp_config.json").read_text(
+            encoding="utf-8"))
+    assert cfg["mcpServers"]["asterism_tools"]["env"]["ASTERISM_SEAT"] \
+        == explainer.KIND
+    perms = explainer.ANTIGRAVITY.permissions(tmp_path)["permissions"]
+    assert "mcp(*)" in perms["allow"]
+    # …and the act channels stay shut.
+    assert "command(*)" in perms["deny"]
+    assert "write_file(*)" in perms["deny"]
