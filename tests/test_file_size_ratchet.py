@@ -721,6 +721,8 @@ _WATERMARKS = {
     "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/verdict.py": 100,  # born 2026-08-29 — one revision's judge verdict
+    "Tooling/serve/data/projects.py": 150,  # born 2026-09-02 — the Project cards (HID §1.4)
+    "Tooling/serve/data/human_inbox.py": 150,  # born 2026-09-02 — inbox/inbox_count moved out of timeline.py
     # ── 2026-08-29 default-cap sweep ─────────────────────────────────
     # The ratchet used to be an OPT-IN list: gateway.py reached 5,886
     # lines and cli.py 3,307 with no entry at all, because nobody had

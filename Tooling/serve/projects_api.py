@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from ..state import db
 from ..state import projects as _projects
+from . import data as _data
 
 
 class ProjectBody(BaseModel):
@@ -61,11 +62,16 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
     @app.get("/api/projects")
     def projects_list() -> dict:
         """A fresh workspace has none, and an empty Project is legal —
-        the count is what a card shows, not a filter."""
+        the count is what a card shows, not a filter. The card's three
+        live numbers (running / attention / last_event) come from
+        `data/projects.py`; `running` is an engine-liveness claim, so it
+        is gated on the daemon status the board is gated on."""
         if not (workspace / "asterism.db").exists():
             return {"projects": []}
+        from ..core.cli import daemon_status
+        daemon = daemon_status(workspace)
         with ro(workspace) as conn:
-            return {"projects": _projects.list_projects(conn)}
+            return {"projects": _data.project_rows(conn, daemon=daemon)}
 
     @app.post("/api/projects")
     def create_project(body: ProjectBody) -> dict:

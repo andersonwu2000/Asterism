@@ -46,6 +46,13 @@ and `timeline.py`'s `_goal_arguments`/`goal_detail`/`strategy_detail`
 all call it — so it stays here in the package header rather than
 picking a side.
 
+Two modules joined later, both for the Project shell (HID §1.4):
+`projects.py` (the Project cards behind `/api/projects` — the shelf's
+live running / attention / last_event numbers) and `human_inbox.py`
+(`inbox` + `inbox_count`, moved out of `timeline.py` when the Project
+filter arrived — see that module's header for why it is not named
+`inbox.py`).
+
 A module-level `from .x import name` COPIES the binding, so the patch
 target of a shared name is the CONSUMING module, not the defining one
 — there are no recorded `monkeypatch.setattr(data, ...)` (or any alias
@@ -88,7 +95,10 @@ from .status import (
     _status_chip,
     _working,
     board,
+    last_event_map,
 )
+from .projects import project_rows, _running_problems
+from .human_inbox import inbox, inbox_count
 from .timeline import (
     _already_said,
     _asked_for,
@@ -123,8 +133,6 @@ from .timeline import (
     goal_workarea_draft,
     group_card,
     groups_of,
-    inbox,
-    inbox_count,
     library,
     problem_events,
     programme,

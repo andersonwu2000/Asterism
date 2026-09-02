@@ -5,8 +5,10 @@ own "Timeline" section marker: Programme reads (`programme`,
 position between `problem_detail` and this section, see the package
 docstring), the discussion-group tree (`groups_of` and kin),
 goal/strategy drill-down (`goal_detail`, `strategy_detail`), and the
-inbox/review/bridged-library-index leaves that happened to sit in the
-same span (`inbox`, `review`, `signoff_with_seal`, `library`).
+review/bridged-library-index leaves that happened to sit in the same
+span (`review`, `signoff_with_seal`, `library`). `inbox`/`inbox_count`
+sat here too until 2026-09-02, when they moved (unchanged) to
+`human_inbox.py`.
 
 Split out of `data.py` 2026-08-28 (Phase B, B3). `edges.py`'s
 `problem_detail` imports several names back from here
@@ -1122,71 +1124,6 @@ def strategy_detail(conn: sqlite3.Connection, problem: str,
         "subgoals": subgoals,
         "dead_attempts": dead,
     }
-
-
-def inbox(conn: sqlite3.Connection, workspace: Path) -> dict:
-    """Everything awaiting a human decision: unresolved amends (with the
-    current on-disk file for the side-by-side diff) + paused ingest
-    sign-offs (with snapshot summary)."""
-    from ...state import amend as _amend
-    amends = []
-    for a in _amend.pending_amends(conn):
-        current = ""
-        if a["file"] == "charter":
-            # v40: the charter is DB-resident — reading a disk path here
-            # showed the operator an EMPTY current goal beside the
-            # proposal (the knows-but-flattens family).
-            try:
-                from ...state import intent as _intent
-                pi = _intent.read(conn, a["problem"])
-                current = pi.charter if pi is not None else ""
-            except Exception:  # noqa: BLE001 — display only
-                pass
-        else:
-            fpath = db.problem_dir(workspace, a["problem"]) / a["file"]
-            try:
-                current = fpath.read_text(encoding="utf-8")
-            except OSError:
-                pass
-        amends.append({**a, "current_body": current})
-
-    signoffs = []
-    for r in conn.execute(
-            "SELECT name, ingested_at FROM problems"
-            " WHERE ingest_signoff_pending = 1 ORDER BY name"):
-        problem = str(r["name"])
-        snap = None
-        loaded = None
-        try:
-            from ...quality import review as _review
-            loaded = _review.load_review_snapshot(conn, problem)
-        except Exception:  # noqa: BLE001 — snapshot is best-effort
-            loaded = None
-        if loaded is not None:
-            data, stored_at = loaded
-            delivs = data.get("deliverables", [])
-            snap = {
-                "stored_at": stored_at,
-                "deliverable_count": len(delivs),
-                "ok_count": sum(1 for d in delivs if d.get("ok")),
-            }
-        signoffs.append({
-            "problem": problem,
-            "ingested_at": r["ingested_at"],
-            "snapshot": snap,
-        })
-    return {"amends": amends, "signoffs": signoffs}
-
-
-def inbox_count(conn: sqlite3.Connection) -> int:
-    n = conn.execute(
-        "SELECT COUNT(*) FROM strategist_decisions"
-        " WHERE decision_kind = 'RequestUserAmend'"
-        "   AND outcome = 'awaiting_human'").fetchone()[0]
-    m = conn.execute(
-        "SELECT COUNT(*) FROM problems"
-        " WHERE ingest_signoff_pending = 1").fetchone()[0]
-    return int(n) + int(m)
 
 
 def review(conn: sqlite3.Connection, problem: str) -> dict | None:

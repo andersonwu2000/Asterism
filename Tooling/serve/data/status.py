@@ -85,15 +85,44 @@ def _awaiting_set(conn: sqlite3.Connection) -> set[str]:
         " WHERE outcome = 'awaiting_human'")}
 
 
-def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
+def last_event_map(conn: sqlite3.Connection) -> "dict[str, str]":
+    """Per problem, the timestamp of its most recent activity: the newest
+    Strategist decision, else the newest goal birth. One home, so the
+    board row and the Project card (`data/projects.py`) cannot disagree
+    about what "last event" means."""
+    last_event: dict[str, str] = {}
+    for r in conn.execute(
+            "SELECT problem, MAX(updated_at) AS t FROM strategist_decisions"
+            " GROUP BY problem"):
+        if r["t"]:
+            last_event[str(r["problem"])] = str(r["t"])
+    for r in conn.execute(
+            "SELECT problem, MAX(created_at) AS t FROM goals"
+            " GROUP BY problem"):
+        if r["t"] and str(r["t"]) > last_event.get(str(r["problem"]), ""):
+            last_event[str(r["problem"])] = str(r["t"])
+    return last_event
+
+
+def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
+          project: "str | None" = None) -> dict:
     """Campaign-board aggregation: one row per problem, batch queries
     (no per-problem N+1 except the shared stall predicate). `daemon` is
     the `daemon_status()` dict — status chips and in-flight counts are
     engine-liveness claims, so they must be gated on it (None = treat
-    as not running)."""
+    as not running).
+
+    `project` narrows the board to one shelf by the `problems.project`
+    FK, matched EXACTLY (§3.1): the name's first segment is only the
+    default at registration, and a rename makes the two diverge — a
+    prefix match would hand a renamed shelf its old problems back."""
+    where, args = "", ()
+    if project is not None:
+        where, args = " WHERE project = ?", (project,)
     problems = conn.execute(
-        "SELECT name, created_at, ingest_signoff_pending, ingested_at,"
-        " library_bridged_at FROM problems ORDER BY name").fetchall()
+        "SELECT name, project, created_at, ingest_signoff_pending,"
+        " ingested_at, library_bridged_at FROM problems"
+        + where + " ORDER BY name", args).fetchall()
 
     goal_counts: dict[str, dict[str, int]] = {}
     for r in conn.execute(
@@ -117,17 +146,7 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
             "SELECT problem, COUNT(*) AS n FROM queue GROUP BY problem"):
         queued[str(r["problem"])] = int(r["n"])
 
-    last_event: dict[str, str] = {}
-    for r in conn.execute(
-            "SELECT problem, MAX(updated_at) AS t FROM strategist_decisions"
-            " GROUP BY problem"):
-        if r["t"]:
-            last_event[str(r["problem"])] = str(r["t"])
-    for r in conn.execute(
-            "SELECT problem, MAX(created_at) AS t FROM goals"
-            " GROUP BY problem"):
-        if r["t"] and str(r["t"]) > last_event.get(str(r["problem"]), ""):
-            last_event[str(r["problem"])] = str(r["t"])
+    last_event = last_event_map(conn)
 
     awaiting = _awaiting_set(conn)
     stalled = set(db.problems_stalled(conn))
@@ -152,6 +171,8 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
             progressed=progressed, queued=queued.get(name, 0))
         rows.append({
             "name": name,
+            # the shelf as FILED (§3.1) — never re-derived from the name
+            "project": None if p["project"] is None else str(p["project"]),
             "status": chip,
             "goals": {
                 "open": counts.get("open", 0) + counts.get("attempting", 0),

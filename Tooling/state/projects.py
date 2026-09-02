@@ -77,6 +77,15 @@ def list_projects(conn: sqlite3.Connection) -> "list[dict]":
                 "  FROM projects p ORDER BY p.name")]
 
 
+def problems_of(conn: sqlite3.Connection, project: str) -> "set[str]":
+    """The problem names on one shelf — the FK, matched exactly. Callers
+    that scope a workspace-wide read to a Project (the Inbox, §1.4) ask
+    HERE instead of filtering on the name's first segment, which stops
+    being the Project the moment someone renames one."""
+    return {str(r[0]) for r in conn.execute(
+        "SELECT name FROM problems WHERE project = ?", (project,))}
+
+
 def create_project(conn: sqlite3.Connection, name: str,
                    description: str = "") -> str:
     """Mint a Project. Creating over a live one is a CONFLICT, not an

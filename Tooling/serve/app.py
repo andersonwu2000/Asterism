@@ -389,7 +389,9 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     loaded_version = _read_version()
 
     @app.get("/api/meta")
-    def meta() -> dict:
+    def meta(project: str | None = None) -> dict:
+        # `project` scopes the inbox badge to one shelf (§1.4); every
+        # other field here is workspace-wide by nature.
         from ..core.cli import daemon_status
         db_state = "ok"
         inbox_n = 0
@@ -398,7 +400,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         else:
             try:
                 with _ro(workspace) as conn:
-                    inbox_n = _data.inbox_count(conn)
+                    inbox_n = _data.inbox_count(conn, project)
             except HTTPException as e:
                 detail = str(e.detail)
                 if detail.startswith("UPGRADE_REQUIRED"):
@@ -771,13 +773,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     # -- reads ----------------------------------------------------------
 
     @app.get("/api/problems")
-    def problems() -> dict:
+    def problems(project: str | None = None) -> dict:
         if not (workspace / "asterism.db").exists():
             return {"problems": []}  # fresh workspace — empty board
         from ..core.cli import daemon_status
         daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
-            return _data.board(conn, daemon=daemon)
+            return _data.board(conn, daemon=daemon, project=project)
 
     @app.get("/api/problems/{problem}")
     def problem(problem: str) -> dict:
@@ -1138,11 +1140,11 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         return refresh_jobs.get(problem, {"state": "none"})
 
     @app.get("/api/inbox")
-    def inbox() -> dict:
+    def inbox(project: str | None = None) -> dict:
         if not (workspace / "asterism.db").exists():
             return {"amends": [], "signoffs": []}
         with _ro(workspace) as conn:
-            return _data.inbox(conn, workspace)
+            return _data.inbox(conn, workspace, project)
 
     @app.get("/api/papers/{pid}/section")
     def paper_sec(pid: str, anchor: str | None = None) -> dict:

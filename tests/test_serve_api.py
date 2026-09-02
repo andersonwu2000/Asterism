@@ -2274,8 +2274,10 @@ def test_projects_endpoint_lists_what_the_backfill_filed(
     conn.close()
     r = _client(workspace).get("/api/projects")
     assert r.status_code == 200, r.text
+    # the card's three live numbers ride the same row (§1.4)
     assert r.json()["projects"] == [
-        {"name": "Erdos", "description": "the shelf", "problems": 1}]
+        {"name": "Erdos", "description": "the shelf", "problems": 1,
+         "running": 0, "attention": 0, "last_event": None}]
 
 
 def test_create_project_conflicts_instead_of_clobbering(
@@ -2310,7 +2312,8 @@ def test_patch_project_renames_and_the_problems_follow(
                 json={"name": "ErdosProblems", "description": "the shelf"})
     assert r.status_code == 200, r.text
     assert c.get("/api/projects").json()["projects"] == [
-        {"name": "ErdosProblems", "description": "the shelf", "problems": 1}]
+        {"name": "ErdosProblems", "description": "the shelf", "problems": 1,
+         "running": 0, "attention": 0, "last_event": None}]
     assert c.patch("/api/projects/ghost",
                    json={"description": "x"}).status_code == 404
 
@@ -2333,6 +2336,113 @@ def test_delete_project_refuses_while_a_problem_names_it(
     conn.close()
     assert c.delete("/api/projects/Erdos").status_code == 200
     assert c.get("/api/projects").json()["projects"] == []
+
+
+def _two_shelves(conn: sqlite3.Connection, *names: str) -> None:
+    """Mint Projects `names` with empty descriptions."""
+    for n in names:
+        conn.execute("INSERT INTO projects (name, description, created_at)"
+                     " VALUES (?, '', ?)", (n, db.now()))
+    conn.commit()
+
+
+def test_board_row_carries_the_project_column_and_filters_on_it(
+        workspace: Path) -> None:
+    """§3.1: the shelf is `problems.project`, never the name's first
+    segment — a rename makes the two diverge, so the board must ship the
+    column AND `?project=` must match it exactly. A prefix filter would
+    hand `Erd` the whole Erdos shelf."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    _add_problem(conn, "Comb.uc")
+    _two_shelves(conn, "Renamed", "Comb")
+    conn.execute("UPDATE problems SET project = 'Renamed'"
+                 " WHERE name = 'Erdos.p1'")
+    conn.execute("UPDATE problems SET project = 'Comb'"
+                 " WHERE name = 'Comb.uc'")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    rows = {p["name"]: p for p in c.get("/api/problems").json()["problems"]}
+    assert rows["Erdos.p1"]["project"] == "Renamed"
+    assert rows["Comb.uc"]["project"] == "Comb"
+    assert [p["name"] for p in
+            c.get("/api/problems?project=Renamed").json()["problems"]] \
+        == ["Erdos.p1"]
+    # exact match: neither the stale name prefix nor a prefix OF the
+    # Project name selects anything
+    assert c.get("/api/problems?project=Erdos").json()["problems"] == []
+    assert c.get("/api/problems?project=Ren").json()["problems"] == []
+
+
+def test_project_rows_carry_running_attention_and_last_event(
+        workspace: Path, monkeypatch) -> None:
+    """The picker's card needs the three live numbers (§1.4). `running`
+    is an engine-liveness claim — a 'running' pipelines row with no live
+    daemon behind it is residue from a crashed run, the same reading the
+    board gives a dead owner's lease."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "A.one")
+    _add_problem(conn, "A.two", ingest_signoff_pending=1)
+    _two_shelves(conn, "A", "B")
+    conn.execute("UPDATE problems SET project = 'A' WHERE name LIKE 'A.%'")
+    gid = db.insert_goal(conn, problem="A.one", slug="main",
+                         lean_path="Problems/A.one/proofs/main.lean",
+                         statement="True", origin="root")
+    _add_decision(conn, "A.one", kind="RequestUserAmend",
+                  outcome="awaiting_human")
+    db.record_pipeline_start(conn, pipeline_id="pipe-1", kind="Backward",
+                             target_id=str(gid), target_kind="Goal")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    rows = {p["name"]: p for p in c.get("/api/projects").json()["projects"]}
+    assert rows["A"]["problems"] == 2          # the existing keys stay
+    assert rows["A"]["description"] == ""
+    assert rows["A"]["running"] == 0           # no daemon: residue
+    assert rows["A"]["attention"] == 2         # awaiting_human + sign-off
+    assert rows["A"]["last_event"] is not None
+    assert rows["B"] == {"name": "B", "description": "", "problems": 0,
+                         "running": 0, "attention": 0, "last_event": None}
+    # a daemon scoped ELSEWHERE did not start this pipeline: startup
+    # recovery only reaps its own scope, so an unscoped crash leaves
+    # 'running' rows a scoped successor never touches
+    _fake_daemon(monkeypatch, scope="B.other")
+    scoped = {p["name"]: p for p in c.get("/api/projects").json()["projects"]}
+    assert scoped["A"]["running"] == 0
+    _fake_daemon(monkeypatch)
+    rows2 = {p["name"]: p for p in c.get("/api/projects").json()["projects"]}
+    assert rows2["A"]["running"] == 1
+
+
+def test_inbox_and_its_badge_scope_to_one_project(workspace: Path) -> None:
+    """The Inbox is a Project-level menu (§1.4): both halves and the
+    badge take the same filter, and no filter keeps today's
+    workspace-wide answer."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "A.one")
+    _add_problem(conn, "B.one", ingest_signoff_pending=1)
+    _two_shelves(conn, "A", "B")
+    conn.execute("UPDATE problems SET project = 'A' WHERE name LIKE 'A.%'")
+    conn.execute("UPDATE problems SET project = 'B' WHERE name LIKE 'B.%'")
+    _add_decision(conn, "A.one", kind="RequestUserAmend",
+                  outcome="awaiting_human",
+                  payload={"file": "charter", "proposed_body": "# new\n",
+                           "question": "apply this?"})
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    whole = c.get("/api/inbox").json()
+    assert len(whole["amends"]) == 1 and len(whole["signoffs"]) == 1
+    a = c.get("/api/inbox?project=A").json()
+    assert [x["problem"] for x in a["amends"]] == ["A.one"]
+    assert a["signoffs"] == []
+    b = c.get("/api/inbox?project=B").json()
+    assert b["amends"] == []
+    assert [s["problem"] for s in b["signoffs"]] == ["B.one"]
+    assert c.get("/api/meta").json()["inbox_count"] == 2
+    assert c.get("/api/meta?project=A").json()["inbox_count"] == 1
+    assert c.get("/api/meta?project=B").json()["inbox_count"] == 1
 
 
 # ---------------------------------------------------------------------
