@@ -430,11 +430,13 @@ export interface RunWorker {
   problem?: string | null
   /** the dispatched pipeline this lane IS (`pipelines.id`) — what a
    * §3.7 kill signal names, since a kill is aimed at one worker and
-   * never at a kind or a name. Optional because `/api/run` does not
-   * carry it yet: the lane comes from the queue lease, which holds no
-   * pipeline id, and no endpoint exposes the in-flight `pipelines`
-   * rows. Without it the console cannot address a worker, and says so
-   * rather than guessing one out of a path. */
+   * never at a kind or a name. Carried since `f84f1828`: the lane
+   * comes from the queue lease, which holds no pipeline id, so serve
+   * joins it to the running `pipelines` row by the dispatcher's own
+   * in-flight identity. NULL when no running row answers to the lease
+   * — the console then says it cannot address that worker rather than
+   * aiming at a neighbour's id. Optional for a serve older than that
+   * commit, which reads the same way. */
   pipeline_id?: string | null
   /** the discussion group this agent speaks for (Strategist seats are
    * per group since v35); null = not a group seat */

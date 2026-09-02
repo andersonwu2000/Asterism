@@ -4,6 +4,7 @@ import {
   affectedSummary,
   commandTitle,
   fieldFromDetail,
+  laneSignal,
   newIdempotencyKey,
   payloadFor,
   receiptLine,
@@ -12,6 +13,7 @@ import {
   splitPrepared,
 } from './commands'
 import type { CommandRow } from './commands'
+import type { RunWorker } from './types'
 
 /*
  * The command path's decidable parts (human_interface_design.md §1.3 /
@@ -283,5 +285,54 @@ describe('splitPrepared', () => {
     }`
     const out = splitPrepared(two)
     expect(out.commands.map((c) => c.kind)).toEqual(['ConfirmShelve', 'MarkDeliverable'])
+  })
+})
+
+describe('laneSignal', () => {
+  const lane = (over: Partial<RunWorker> = {}): RunWorker =>
+    ({
+      kind: 'Formalizer',
+      slug: 'lemma_a',
+      problem: 'Erdos.p1',
+      pipeline_id: 'pl-7',
+      statement: null,
+      leased_at: null,
+      mode: null,
+      path: null,
+      file: null,
+      ...over,
+    }) as RunWorker
+
+  it('offers the stop control when the feed names the worker', () => {
+    expect(laneSignal(lane(), null)).toEqual({
+      move: 'stop',
+      pipelineId: 'pl-7',
+      problem: 'Erdos.p1',
+    })
+  })
+
+  it('the lane own problem outranks the console lens', () => {
+    const r = laneSignal(lane({ problem: 'Erdos.p10' }), 'Erdos.p1')
+    expect(r).toEqual({ move: 'stop', pipelineId: 'pl-7', problem: 'Erdos.p10' })
+  })
+
+  it('falls back to the lens when the lane names no problem', () => {
+    const r = laneSignal(lane({ problem: null }), 'Erdos.p1')
+    expect(r).toEqual({ move: 'stop', pipelineId: 'pl-7', problem: 'Erdos.p1' })
+  })
+
+  it('says it cannot address a Formalizer whose pipeline is null', () => {
+    expect(laneSignal(lane({ pipeline_id: null }), null)).toEqual({ move: 'unaddressable' })
+    expect(laneSignal(lane({ pipeline_id: '  ' }), null)).toEqual({ move: 'unaddressable' })
+    // a bundle older than the field reads the same way: no id, no aim
+    expect(laneSignal(lane({ pipeline_id: undefined }), null)).toEqual({
+      move: 'unaddressable',
+    })
+  })
+
+  it('offers nothing on a kind the applier refuses, even with an id', () => {
+    expect(laneSignal(lane({ kind: 'Strategist' }), null)).toEqual({ move: 'none' })
+    // and nothing on a lane belonging to no problem the console knows
+    expect(laneSignal(lane({ problem: null }), null)).toEqual({ move: 'none' })
   })
 })

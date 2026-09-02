@@ -54,9 +54,10 @@ are exactly two frames and no sidebar.
   for promotion builds `in_flight` cannot see), each provider's quota
   bars, this Project's ledger, and the engine log. The one thing it can
   do rather than watch is stop ONE running Formalizer — the three
-  signals of §3.7, through the same confirm window. (It needs the
-  worker's `pipelines.id`, which `/api/run` does not yet carry; until it
-  does, the lane says so instead of offering a button.)
+  signals of §3.7, through the same confirm window, aimed at the
+  `pipelines.id` the lane now carries. A lane no running pipeline
+  answers to says so instead of offering a button: a kill names one
+  worker, never a kind or a name.
 - **Timeline** — what happened, newest first; every row names an object,
   and the name opens it on the Sky. With no task in the address it is
   the whole shelf's history, each row stamped with its task and paged by

@@ -24,6 +24,8 @@
  * the input it names.
  */
 
+import type { RunWorker } from './types'
+
 export const GOAL_COMMANDS = ['ConfirmShelve', 'MarkDeliverable', 'Inject', 'Delegate'] as const
 
 export const COMMAND_KINDS = [
@@ -66,6 +68,42 @@ export const COMMAND_NOTE: Record<CommandKind, string> = {
   ReturnToParent:
     'closes this group and hands its charter back up. Every line still open under it is retired with it.',
   Signal: 'stops one worker that is running right now.',
+}
+
+// ---------------------------------------------------------------------
+// which lane may be signalled
+
+/** What the engine room offers on one worker lane.
+ *
+ * A kill is aimed at ONE `pipelines.id` — never at a kind and never at
+ * a name (CLAUDE.md's broad-filter rule, in the engine). `/api/run`
+ * carries that id since `f84f1828`: the lane is built from the queue
+ * LEASE, which has no pipeline column, so serve joins it to the
+ * running `pipelines` row by the dispatcher's own in-flight identity.
+ *
+ * The id is null when no running row matches — a lease claimed before
+ * its dispatch opened a row, or after it closed one. That is a lane
+ * whose worker this console cannot see, and it must say so rather than
+ * aim at a neighbour's id, so the three answers stay separate:
+ * `stop` (aim here), `unaddressable` (a Formalizer with no id), `none`
+ * (a kind the applier refuses, or a lane belonging to no problem).
+ */
+export type LaneSignal =
+  | { move: 'stop'; pipelineId: string; problem: string }
+  | { move: 'unaddressable' }
+  | { move: 'none' }
+
+export function laneSignal(
+  w: Pick<RunWorker, 'kind' | 'problem' | 'pipeline_id'>,
+  lens: string | null,
+): LaneSignal {
+  // the lane's OWN problem outranks the console's lens — a pattern
+  // scope runs agents across several problems at once
+  const problem = w.problem ?? lens
+  if (w.kind !== 'Formalizer' || !problem) return { move: 'none' }
+  const pipelineId = (w.pipeline_id ?? '').trim()
+  if (pipelineId === '') return { move: 'unaddressable' }
+  return { move: 'stop', pipelineId, problem }
 }
 
 // ---------------------------------------------------------------------
