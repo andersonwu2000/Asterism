@@ -117,6 +117,8 @@ function LeanBanner({ meta }: { meta: Meta | null }) {
  * (§3.1: the name's first segment is a default, not the answer) — so
  * the redirect asks, rather than splitting the name and guessing. */
 function LegacyProblem({ name, goal }: { name: string; goal: number | null }) {
+  // one read, not a loop: this component exists to answer a single
+  // question (which shelf is this task on?) and then navigate away
   const { data, error } = usePoll<BoardResponse>('/api/problems', 0)
   useEffect(() => {
     if (!data) return

@@ -248,8 +248,14 @@ export default function Sky({
   /** deep link: a timeline row's name click lands on its star */
   initialGoal?: number | null
 }) {
+  // the biggest read the console makes (~800KB on a 500-goal task).
+  // It took the 2s default and moved the whole payload every time; the
+  // request is conditional now (`pollGet` sends the ETag, the server
+  // answers 304 with no body) and 5s is a constellation's cadence, not
+  // a stopwatch's.
   const { data, error, loading } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(problem)}`,
+    5000,
   )
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [view, setView] = useState<'map' | 'list'>('map')

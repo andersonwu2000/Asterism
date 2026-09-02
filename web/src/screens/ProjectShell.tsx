@@ -241,6 +241,13 @@ export default function ProjectShell({
             onToggle={onToggleRail}
           />
         )}
+        {/* `key={current}` on the task-scoped screens is deliberate and
+            stays: it is what guarantees no task's camera, selection or
+            open sheet survives into another task. The flash it used to
+            cost is gone by another route — `lib/pollCache` hands the
+            fresh mount the reading already in hand when the task was
+            visited inside its own poll interval, so a switch back paints
+            from data rather than from a spinner. */}
         <main className="min-w-0 flex-1 overflow-y-auto">
           {section === 'tasks' ? (
             <Tasks project={project} rows={rows} problem={problem} />

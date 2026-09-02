@@ -3066,3 +3066,37 @@ def test_meta_says_whether_this_process_runs_the_code_on_disk(
     assert after["disk"] == "deadbeefcafe"
     assert after["loaded"] == body["code"]["loaded"]
     assert after["loaded"] != after["disk"]
+
+
+def test_the_problem_detail_moves_only_when_it_changed(
+        workspace: Path) -> None:
+    """The Sky polls `/api/problems/{p}` and the payload is ~800KB on a
+    500-goal task. The body carries its own ETag — the hash of exactly
+    what was sent, so the tag cannot lie about a field nobody thought
+    to include in a version key — and a matching `If-None-Match` gets
+    304 with no body at all."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.insert_goal(conn, problem="p", slug="main",
+                   lean_path="Problems/p/proofs/main.lean",
+                   statement="True", origin="root")
+    conn.close()
+    c = _client(workspace)
+    first = c.get("/api/problems/p")
+    assert first.status_code == 200
+    tag = first.headers.get("etag")
+    assert tag, "the detail read carries no ETag"
+
+    again = c.get("/api/problems/p", headers={"If-None-Match": tag})
+    assert again.status_code == 304, again.text
+    assert not again.content
+
+    # something moved: the tag must not
+    conn = db.connect(workspace / "asterism.db")
+    db.insert_goal(conn, problem="p", slug="second",
+                   lean_path="Problems/p/proofs/second.lean",
+                   statement="True", origin="backward")
+    conn.close()
+    moved = c.get("/api/problems/p", headers={"If-None-Match": tag})
+    assert moved.status_code == 200
+    assert moved.headers.get("etag") != tag

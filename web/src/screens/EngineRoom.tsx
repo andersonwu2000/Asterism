@@ -72,6 +72,22 @@ function wallClock(startedAt: string | null | undefined): string | null {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+/** The run clock, and the only thing on this page that needs a second
+ * hand. The tick used to live at the top of the screen, so every lane,
+ * every file tail and every ghost card re-rendered once a second to
+ * advance six digits; everything else here already moves with the 2s
+ * poll. */
+function RunClock({ startedAt }: { startedAt: string | null | undefined }) {
+  useTick(1000)
+  const t = wallClock(startedAt)
+  if (!t) return null
+  return (
+    <span className="tnum text-ink-faint" title="how long this run has been going">
+      {t}
+    </span>
+  )
+}
+
 /** Idle wears three faces: clean finish, force stop, crash. */
 function lastExitLine(e: RunStatus['daemon']['last_exit']): string {
   if (!e) return 'the engine has not run yet'
@@ -554,7 +570,6 @@ export default function EngineRoom({
     `/api/meta?project=${encodeURIComponent(project)}`,
     15000,
   )
-  useTick(1000)
   const [logOpen, setLogOpen] = useState(false)
   const logPulse = useLogPulse(Boolean(data?.daemon.running))
 
@@ -645,11 +660,7 @@ export default function EngineRoom({
         />
         <span className="text-ink">{phase}</span>
         {data.problem && <span className="font-mono text-ink-dim">{data.problem}</span>}
-        {running && d.started_at && (
-          <span className="tnum text-ink-faint" title="how long this run has been going">
-            {wallClock(d.started_at)}
-          </span>
-        )}
+        {running && <RunClock startedAt={d.started_at} />}
         {!running && (
           <span className="text-ink-faint">{lastExitLine(d.last_exit)}</span>
         )}

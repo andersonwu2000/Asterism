@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isStopped } from './shutdown'
+import { clearPollCache, etagOf, kept, peek, put, shared, touch } from './pollCache'
 
 /*
  * API client + polling hook. All engine communication is plain HTTP to
@@ -34,6 +35,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function apiGet<T>(path: string): Promise<T> {
   return request<T>(path)
+}
+
+/**
+ * The GET a poll makes: conditional, and it remembers what came back.
+ *
+ * The Sky's problem detail is ~800KB and almost always identical to the
+ * last one, so the request carries the ETag the server sent and a 304
+ * hands back the body already in hand — the megabyte moves only when it
+ * changed. `cache: 'no-store'` keeps the browser's own cache out of it:
+ * with two validators in play a 304 can arrive as an opaque 200 and the
+ * conditional becomes untestable folklore.
+ */
+export async function pollGet<T>(path: string): Promise<T> {
+  const etag = etagOf(path)
+  const res = await fetch(path, {
+    cache: 'no-store',
+    headers: etag ? { 'If-None-Match': etag } : undefined,
+  })
+  if (res.status === 304) {
+    const held = kept<T>(path)
+    if (held !== undefined) {
+      touch(path)
+      return held
+    }
+    // the server says unchanged and we hold nothing — an etag outlived
+    // its body (a cleared cache). Ask again, plainly.
+    return apiGet<T>(path)
+  }
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const body = await res.json()
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(res.status, detail)
+  }
+  const data = (await res.json()) as T
+  put(path, data, res.headers.get('ETag'))
+  return data
 }
 
 export function apiPost<T>(path: string, body?: unknown): Promise<T> {
@@ -90,13 +132,23 @@ export interface PollOpts {
  * Poll a GET endpoint on an interval (default 2s). Keeps the last good
  * data on transient errors so the UI doesn't flicker; `error` reflects
  * the most recent attempt.
+ *
+ * `intervalMs <= 0` means ONCE — read it and stop. It used to mean
+ * `setTimeout(run, 0)`, which is a hot loop wearing a number.
+ *
+ * Every read goes through `lib/pollCache`, so components polling the
+ * same URL cost one request between them rather than one each, and a
+ * screen re-entered inside its own interval paints from the reading
+ * already in hand instead of a spinner.
  */
 export function usePoll<T>(
   path: string | null,
   intervalMs = 2000,
   opts: PollOpts = {},
 ): PollState<T> {
-  const [data, setData] = useState<T | null>(null)
+  const [data, setData] = useState<T | null>(
+    () => (path === null ? null : (peek<T>(path, intervalMs) ?? null)),
+  )
   const [error, setError] = useState<ApiError | Error | null>(null)
   const [loading, setLoading] = useState(true)
   const [stale, setStale] = useState(false)
@@ -112,7 +164,13 @@ export function usePoll<T>(
     if (lastPath.current !== path) {
       lastPath.current = path
       setError(null)
-      if (opts.keepPrevious) setStale(true)
+      // A reading of the NEW resource, already in hand and younger than
+      // this poll's own interval, is not the old subject's data — it is
+      // this one's, taken a moment ago by whoever else is watching. The
+      // reset stands for everything else.
+      const held = peek<T>(path, intervalMs)
+      if (held !== undefined) setData(held)
+      else if (opts.keepPrevious) setStale(true)
       else setData(null)
     }
     // Cancellation is per effect run — a shared ref would be resurrected
@@ -124,7 +182,10 @@ export function usePoll<T>(
       // deliberate shutdown as a failed update
       if (isStopped()) return
       try {
-        const d = await apiGet<T>(path)
+        // a reading younger than this poll's own cadence is one this
+        // loop would not have improved on — take it and skip the wire
+        const fresh = peek<T>(path, intervalMs)
+        const d = fresh ?? (await shared(path, () => pollGet<T>(path)))
         if (cancelled) return
         setData(d)
         setStale(false)
@@ -135,7 +196,9 @@ export function usePoll<T>(
       } finally {
         if (!cancelled && !isStopped()) {
           setLoading(false)
-          timer = setTimeout(run, intervalMs)
+          // `intervalMs <= 0` = read it once. The old code scheduled a
+          // 0ms timeout, which is a hot loop, not a one-shot.
+          if (intervalMs > 0) timer = setTimeout(run, intervalMs)
         }
       }
     }
@@ -150,6 +213,11 @@ export function usePoll<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, intervalMs, tick])
 
-  const refresh = useCallback(() => setTick((t) => t + 1), [])
+  // `refresh` is the caller saying "I just changed this" — it must not
+  // be answered from the reading taken before the change.
+  const refresh = useCallback(() => {
+    if (path !== null) clearPollCache(path)
+    setTick((t) => t + 1)
+  }, [path])
   return { data, error, loading, stale, refresh }
 }

@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from ..state import db
 from . import code_version as _code_version
+from .conditional import conditional_json as _conditional
 from . import daemon_cache as _daemon_cache
 from . import data as _data
 
@@ -311,6 +312,7 @@ def _model_groups(workspace: Path, *, probe: bool = False) -> "list[dict]":
     if probe:
         _models_memo.update(at=now, value=out)
     return out
+
 
 
 def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
@@ -784,7 +786,18 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             return _data.board(conn, daemon=daemon, project=project)
 
     @app.get("/api/problems/{problem}")
-    def problem(problem: str) -> dict:
+    def problem(problem: str, request: Request):  # noqa: ANN201
+        """The Sky's read, and the biggest one the console polls —
+        ~800KB on a 500-goal task, every few seconds, almost always
+        byte-identical to the last one.
+
+        So it is conditional. The ETag is the hash of exactly what was
+        sent, not a version key assembled from columns somebody
+        remembered: this payload folds in live worker leases, on-disk
+        signatures and the daemon's own state, and a tag built from a
+        chosen subset would eventually freeze a screen on a field the
+        key forgot. Hashing the body cannot be wrong about the body.
+        """
         from .daemon_cache import daemon_status
         daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
@@ -793,7 +806,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         if d is None:
             raise HTTPException(status_code=404,
                                 detail=f"unknown problem {problem!r}")
-        return d
+        return _conditional(request, d)
 
     @app.get("/api/problems/{problem}/goals/{goal_id}")
     def goal(problem: str, goal_id: int) -> dict:
