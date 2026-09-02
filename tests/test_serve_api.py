@@ -444,6 +444,27 @@ def test_cited_subgoal_is_a_reuse_not_a_branch(workspace: Path) -> None:
     assert c.get("/api/problems/p/goals/99999").status_code == 404
 
 
+def test_goal_locate_resolves_a_bare_goal_id(workspace: Path) -> None:
+    """Prose across the reading layer names goals as `g<id>` and nothing
+    else — no problem, no group. `locate` turns that id into a link
+    target (HID §3.4); an id nobody minted is a 404, not an empty page."""
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    top = _groups.ensure_top_group(conn, "p", charter="# c")
+    gid = db.insert_goal(conn, problem="p", slug="lemma_a",
+                         lean_path="Problems/p/proofs/lemma_a.lean",
+                         statement="1 = 1", origin="backward")
+    db.update_goal_status(conn, gid, "attempting")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    assert c.get(f"/api/goals/{gid}/locate").json() == {
+        "id": gid, "problem": "p", "slug": "lemma_a",
+        "status": "attempting", "group_id": top}
+    assert c.get("/api/goals/99999/locate").status_code == 404
+
+
 def test_strategy_detail_endpoint(workspace: Path) -> None:
     conn = _open_db(workspace)
     _add_problem(conn, "p")

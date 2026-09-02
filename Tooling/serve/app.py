@@ -788,6 +788,25 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                                 detail=f"no goal {goal_id} in {problem!r}")
         return d
 
+    @app.get("/api/goals/{goal_id}/locate")
+    def goal_locate(goal_id: int) -> dict:
+        """Where the goal a text names as `g<id>` lives — the link
+        target for every prose mention (HID §3.4). Problem-agnostic on
+        purpose: the prose carries the id alone, and asking the reader
+        to already know the problem is what makes such a mention dead
+        text. Group is derived (`groups.group_for_goal`), never stored."""
+        from ..state import groups as _groups
+        with _ro(workspace) as conn:
+            row = db.get_goal(conn, goal_id)
+            if row is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"no goal {goal_id}")
+            problem = str(row["problem"])
+            group = _groups.group_for_goal(conn, problem, goal_id)
+        return {"id": int(row["id"]), "problem": problem,
+                "slug": str(row["slug"]), "status": str(row["status"]),
+                "group_id": None if group is None else int(group["id"])}
+
     @app.get("/api/problems/{problem}/strategies/{strategy_id}")
     def strategy(problem: str, strategy_id: int) -> dict:
         with _ro(workspace) as conn:
