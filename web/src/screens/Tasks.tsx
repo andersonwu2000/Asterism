@@ -154,7 +154,18 @@ function RunBar({
     },
     [],
   )
-  if (!d) return null
+  // never nothing: the control is the reason this card exists, and a
+  // vanished button for the beat before the first poll answers reads as
+  // "you cannot run this" (screenshot pass, 2026-09-03)
+  if (!d)
+    return (
+      <div className="flex items-center gap-3">
+        <Button variant="primary" disabled>
+          Run
+        </Button>
+        <span className="text-[11px] text-ink-faint">asking the engine what it is doing…</span>
+      </div>
+    )
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true)
     setMsg(null)

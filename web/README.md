@@ -6,71 +6,83 @@ workspace. Vite + React + TypeScript + Tailwind, self-hosted fonts
 display voice). No router/state libraries — a hand-rolled hash router
 and one polling hook.
 
-## Screens
+## Shape
 
-- **Board** (`#/`) — the survey sheet. Problems in attention order:
-  needs you / in motion / recent (incl. just-created) / archive with
-  namespace clusters. `/` focuses the filter; "New problem" lives here.
-- **New problem** (`#/new`) — a name + a natural-language description,
-  paper checkboxes to ground the run, and two advanced folds (pinned
-  Defs.lean/Root.lean; engine constraints: axiom whitelist / forbidden
-  lemmas / lemma hints). Everything lands in the DB via the
-  chokepoint: the description IS the goal, and an optional standing
-  word rides along.
-- **Problem** (`#/problems/<name>`) — the cockpit. Run/Stop for THIS
-  problem in the header (single-problem runs are the only mode); a
-  run strip while the engine works it (phase in plain words, wall
-  clock, per-agent roster, weighted burn); health line whose named
-  blocker opens its star. The constellation is a two-region sky:
-  what grew from the root above the horizon, other forward work
-  below, citation threads crossing where it is used; while anything
-  is live the unproved stars carry the light and the proved mass
-  recedes (a finished sky flips back to trophy). Intent tab = the
-  goal + your standing word (the engine may propose a change to the
-  first and can never touch the second) + settings controls
-  (DB-backed, hot-reloaded) + paper bindings; Goals / Timeline /
-  Files.
-- **Papers** (`#/papers`) — the shelf. Add a PDF (or .md/.tex) by
-  path; each paper lists its size, citing problems, and index state;
-  opening one renders the original document beside a rail for
-  switching papers. Delete is refused while cited.
-- **Library** (`#/library`) — the atlas. Each harvested problem is a
-  constellation of its real declarations; search lights matching
-  stars; click a star to copy its citation (shift: with import).
-  Opening a constellation reads its **chapter**
-  (`#/library/<problem>`), three views: Highlights (the short list
-  worth reading — vouched claims or, where ingest wore the flags off,
-  the keystones other modules demonstrably reach for, plus the
-  vocabulary), Map (modules and their imports), and Modules (the full
-  curated text, one file at a time — docstrings as prose, kernel-true
-  signatures). The engine record (goals, attempts) stays on the
-  problem page, one link away.
-- **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
-  diffs + age escalation; ingest sign-offs show every vouchable
-  statement in full (defs with their bodies — the construction is
-  what you vouch for) and carry the Library decision: approve as
-  "harvest to Library" or "archive only" — a human signs, nothing is
-  harvested automatically.
-- **Run** (`#/run`) — mission control. Status light + phase in plain
-  words (warming / planning / proving / harvesting / stopping), the
-  scoped problem's progress bar, one lane per live agent (its unit,
-  its statement, the tail of the file it is writing — spawn writes go
-  through to the real path), burn against the trailing-5h
-  subscription window, recent decisions, and Stop. Idle, it keeps
-  telling the last run's story (clean / force-stopped / crashed).
-- **Settings** (`#/settings`) — the machine room: per-pipeline model
-  selects + engine knobs (comment-preserving yaml edits), the
-  all-time usage ledger (weighted burn, cache hit share), and a
-  developer-log fold.
+A **Project** is a shelf of tasks (`human_interface_design.md` §1.4). It
+is the first screen, and every other screen lives inside one, so there
+are exactly two frames and no sidebar.
+
+- **Projects** (`#/`) — the picker. One large tile per shelf: its name,
+  its description, a quiet count of tasks and of anything running, and a
+  warn dot when something on it waits on you. No menu — a gear, a help
+  glyph, and a tile that mints a new shelf.
+- **Inside a Project** (`#/p/<project>/<section>[/<task>]`) — one header
+  row: the wordmark (back to the picker), the six sections, and exactly
+  two corner glyphs (gear, Assistant). Beside the content, a collapsible
+  task column; it is hidden when the shelf holds one task, and on the
+  Tasks shelf itself, which IS the list. No section carries a title of
+  its own: the menu has said which one you are reading.
+
+### The six sections
+
+- **Tasks** — the shelf, and the engine control that acts on it. Tick
+  tasks and Run (an explicit list, never a pattern); Stop, with its
+  force step; and the run parameters folded beside them — models per
+  seat, time budget, shelve threshold, quota behaviour. What waits on
+  you rides at the top of the shelf: amend requests with word-level
+  diffs, ingest sign-offs with every vouchable statement in full.
+  A task name opens that task's own page: Run, the parameters, then
+  **the goal** and **your standing word** (the engine may propose a
+  change to the first and can never touch the second), settings and
+  paper bindings, and the delete confirm.
+- **Sky** — the task's constellation: what grew from the root above the
+  horizon, other forward work below, citation threads crossing. While
+  anything is live the unproved stars carry the light and the proved
+  mass recedes. `map` / `list` is the same data read two ways, not two
+  pages; clicking a star opens its panel (routes, subgoals, dead
+  attempts), and a route's file link lands in Documents.
+- **Groups** — the discussion tree: each group by code and charter, its
+  Programme, the round it is arguing right now, and the bricks it handed
+  back. One renderer, live or archived.
+- **Engine room** — read-only observation: slots (one lane per agent,
+  its unit, its statement, the tail it is writing, plus `cold-building
+  sN` rows for promotion builds `in_flight` cannot see), each provider's
+  quota bars, the all-time ledger, and the engine log.
+- **Timeline** — what happened to this task, newest first; every row
+  names an object, and the name opens it on the Sky.
+- **Documents** — two roots in one file column: `proofs` (what the
+  engine wrote for a task) and `documents` (the Project's own `_docs/`
+  shelf). Read-only until the documents package.
+
+### Outside a Project
+
+- **Settings** (`#/settings`) — the one gear page, shared by the picker
+  and every Project: the accounts the engine spends and what is left of
+  them, the machine's parameters, appearance, and quit. Run parameters
+  are deliberately NOT here.
+- **New task** (`#/new`) — a name and a natural-language description,
+  paper bindings, and two advanced folds (pinned Defs/Root; axiom
+  whitelist, forbidden lemmas, lemma hints). The description IS the
+  goal.
+- **Papers** (`#/papers`) — the shelf a task binds its sources from.
+- **Assistant** — the right-hand drawer, opened by the corner glyph or
+  `Ctrl+/`. It is handed the Project and the task on screen.
+- `#/problems/<name>` still opens: it asks the DB which shelf the task
+  is on and redirects. The name's first segment is only a default at
+  registration (§3.1), so it is never split to guess.
 
 ## Development
 
 ```
 npm install
 npm run dev        # http://localhost:5173, proxies /api to :8642
+                   # ASTERISM_API=http://127.0.0.1:8643 npm run dev
+                   #   points it at a second serve instead
 npm run build      # tsc + vite; production is served by FastAPI
 npm run lint       # oxlint
-npm run smoke      # Playwright suite against a live `asterism serve`
+npm run test       # vitest — the pure route/IA/data laws
+npm run smoke      # Playwright against a live `asterism serve`
+                   # SMOKE_URL=http://localhost:5173 to hit the dev server
 ```
 
 The UI is read-only against the engine database; every mutation goes

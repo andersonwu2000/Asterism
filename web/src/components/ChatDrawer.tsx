@@ -434,7 +434,9 @@ export default function ChatDrawer({
       {/* header: what this is + model + clear (QPaper shape: the model
           picker is a first-class header control, not footer fine print) */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
-        <span className="text-[13px] font-medium text-ink">ask</span>
+        {/* the Assistant's word (§1.1): the drawer keeps Ask's mark and
+            its behaviour, and loses its name */}
+        <span className="text-[13px] font-medium text-ink">assistant</span>
         <span
           className="truncate text-[11px] text-ink-faint"
           // the backend states its own reach — a fixed sentence here
