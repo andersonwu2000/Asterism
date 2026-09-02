@@ -47,6 +47,40 @@ USER_AMEND_FILES: frozenset[str] = frozenset(
 #: moves that wording into the live prompts.
 INGEST_REPORT_REQUIRED = False
 
+#: The report's shape (owner ruling 2026-09-02): a short PAPER, and a
+#: paper has these four parts in this order. Structure is the whole of
+#: what a gate can check — a length floor buys padding and a banned-word
+#: list buys synonyms, and neither can tell whether the prose is any
+#: good. The four headings are what a reader navigates by, and they are
+#: mechanical: present, exact, at line start, in order.
+INGEST_REPORT_SECTIONS = ("## Introduction", "## Main Result",
+                          "## Proof Sketch", "## What Remains")
+
+
+def _ingest_report_defect(report: str) -> str:
+    """'' when `report` carries the four headings in order, else the
+    refusal — naming the heading at fault AND quoting the whole order,
+    because a gate that only says "wrong" costs a wake to guess."""
+    order = ", then ".join(f"`{h}`" for h in INGEST_REPORT_SECTIONS)
+    at: dict[str, int] = {}
+    for i, ln in enumerate(report.splitlines()):
+        h = ln.rstrip()
+        if h in INGEST_REPORT_SECTIONS and h not in at:
+            at[h] = i
+    missing = [h for h in INGEST_REPORT_SECTIONS if h not in at]
+    if missing:
+        return (f"Ingest.report is missing "
+                f"{', '.join(f'`{h}`' for h in missing)} — the report is a "
+                f"short paper for a mathematician who has never seen this "
+                f"system, with these four headings, each alone on its "
+                f"line, in this order: {order}")
+    seen = [at[h] for h in INGEST_REPORT_SECTIONS]
+    jumped = next((h for h, prev, cur in zip(
+        INGEST_REPORT_SECTIONS[1:], seen, seen[1:]) if cur < prev), "")
+    return "" if not jumped else (
+        f"Ingest.report has `{jumped}` out of order — the four headings "
+        f"must appear in this order: {order}")
+
 
 # ---------------------------------------------------------------------
 # Schema validation (self_verify stage)
@@ -580,15 +614,11 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # Last, on purpose: the mechanical blockers above name work that
         # must happen before the terminal is even arguable, and asking
         # for the write-up first would put the report ahead of the proof.
-        if INGEST_REPORT_REQUIRED and not str(
-                decision.payload.get("report") or "").strip():
-            return ("Ingest requires `report` — the human-readable "
-                    "summary of what this problem settled, in English "
-                    "markdown with LaTeX for the mathematics: the "
-                    "statement, the route in prose, which bricks carry "
-                    "it, what was refuted, and what is left open. It is "
-                    "the only part of this result a mathematician who "
-                    "has not read the Programme can read")
+        if INGEST_REPORT_REQUIRED:
+            defect = _ingest_report_defect(
+                str(decision.payload.get("report") or ""))
+            if defect:
+                return defect
         return ""
 
     if k == "RequestUserAmend":

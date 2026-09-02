@@ -464,10 +464,17 @@ def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
 # Phase 4b: the human-readable Ingest report (HID 1.2 / 3.4)
 # ---------------------------------------------------------------------------
 
-_REPORT = ("# What was proved\n\n"
-           r"The bound $B(n) \le 2n$ holds for every $n$, carried by "
-           "`L_bound` and `L_step`. The uniform variant was refuted; "
-           "the limiting case is left open.\n")
+_REPORT = ("## Introduction\n\n"
+           "How large can the gcd gap be? The question is the last open "
+           "case of the counting problem.\n\n"
+           "## Main Result\n\n"
+           r"The bound $B(n) \le 2n$ holds for every $n$." "\n\n"
+           "## Proof Sketch\n\n"
+           "Induct on $n$, splitting at the largest gap: `L_bound` "
+           "carries the base and `L_step` the induction.\n\n"
+           "## What Remains\n\n"
+           "The uniform variant was refuted; the limiting case is left "
+           "open.\n")
 
 
 def test_ingest_report_rides_the_decision_and_lands_in_the_db(conn, tmp_path):
@@ -538,6 +545,47 @@ def test_ingest_report_gate_exists_in_both_positions(conn, tmp_path,
     assert verify_decision(
         Decision(kind="Ingest", payload={"report": _REPORT}),
         conn, problem="P.a") == ""
+
+
+def test_ingest_report_gate_names_the_missing_heading(conn, tmp_path,
+                                                      monkeypatch):
+    """Owner ruling 2026-09-02: the report is a short PAPER, so the gate
+    checks its four headings and nothing else — no length, no word bans.
+    A gate message must show the way out, so it names what is missing
+    and quotes the order in full."""
+    from Tooling.pipeline.strategist import Decision, verify_decision
+    from Tooling.pipeline.strategist import verify as _verify
+    g = _seed_goal(conn, "P.a", "foo")
+    _db.mark_deliverable(conn, g)
+    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
+    err = verify_decision(
+        Decision(kind="Ingest",
+                 payload={"report": _REPORT.replace("## Proof Sketch",
+                                                    "## How we did it")}),
+        conn, problem="P.a")
+    assert "## Proof Sketch" in err
+    assert "## Introduction" in err and "## What Remains" in err
+
+
+def test_ingest_report_gate_names_the_order_when_shuffled(conn, tmp_path,
+                                                          monkeypatch):
+    """All four present but out of order: a reader navigates by them, so
+    the refusal names the heading that jumped and quotes the order."""
+    from Tooling.pipeline.strategist import Decision, verify_decision
+    from Tooling.pipeline.strategist import verify as _verify
+    g = _seed_goal(conn, "P.a", "foo")
+    _db.mark_deliverable(conn, g)
+    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
+    shuffled = ("## Main Result\nThe bound holds.\n"
+                "## Introduction\nThe question.\n"
+                "## Proof Sketch\nInduct on $n$.\n"
+                "## What Remains\nThe limiting case.\n")
+    err = verify_decision(
+        Decision(kind="Ingest", payload={"report": shuffled}),
+        conn, problem="P.a")
+    assert "order" in err and "## Introduction" in err
+    assert "## Main Result" in err and "## What Remains" in err
+
 
 # ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
