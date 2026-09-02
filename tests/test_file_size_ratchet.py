@@ -639,7 +639,7 @@ _WATERMARKS = {
     # systemd unit, installer/launch.ps1).
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/run.py": 758,  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/run.py": 764,  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)

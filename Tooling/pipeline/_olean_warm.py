@@ -22,10 +22,13 @@ ledger; the failing module names the culprit for housekeeping.
 """
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import _lake
@@ -49,6 +52,32 @@ LOG_DIR = Path(".asterism") / "logs" / "promotion_gate"
 #: that stays full.
 REQUEUE_PAUSE_SEC = 30.0
 
+#: Where the gate publishes what it is building, for readers OUTSIDE the
+#: daemon process (`daemon status`, the cockpit). `daemon status`'s
+#: `in_flight` counts running pipelines; the gate is a background thread,
+#: so a 10-minute promotion cold build read as `in_flight: 0` and the
+#: operator saw "nobody on the field" while the machine was busy
+#: (2026-09-01). Same write shape as `core/degraded.py`: tmp +
+#: os.replace, never raises. Missing file = idle.
+STATE_FILE = Path(".asterism") / "promotion_gate.json"
+
+
+def state_path(workspace: Path) -> Path:
+    return workspace / STATE_FILE
+
+
+def inflight_builds(workspace: Path) -> list[dict]:
+    """The promotion builds in flight: `[{strategy_id, modules,
+    started_at}]`, oldest first. `[]` when idle (or unreadable — a
+    reading aid never fails a status call)."""
+    try:
+        data = json.loads(state_path(workspace).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    builds = data.get("builds") if isinstance(data, dict) else None
+    return [b for b in builds if isinstance(b, dict)] \
+        if isinstance(builds, list) else []
+
 
 class PromotionGate:
     """Serial background cold build for promotions.
@@ -68,12 +97,42 @@ class PromotionGate:
         self._lock = threading.Lock()
         self._pending: set[int] = set()
         self._results: dict[int, BuildResult] = {}
+        #: sid -> the published row; mirrors STATE_FILE (see `_publish`)
+        self._inflight: dict[int, dict] = {}
         self._cv = threading.Condition(self._lock)
         self._thread: threading.Thread | None = None
         if enabled:
             self._thread = threading.Thread(
                 target=self._loop, name="promotion-gate", daemon=True)
             self._thread.start()
+
+    # ── the published in-flight set (readers outside this process) ──
+
+    def _publish(self, sid: int, modules: "list[str] | None") -> None:
+        """Record (`modules` given) or clear (`None`) one build, then
+        write the whole set to STATE_FILE. Never raises: a reading aid
+        must not become a new failure path for the build it describes."""
+        try:
+            with self._lock:
+                if modules is None:
+                    self._inflight.pop(sid, None)
+                else:
+                    self._inflight[sid] = {
+                        "strategy_id": sid, "modules": list(modules),
+                        # this attempt's start — a requeued (capped) build
+                        # restamps, so the reader never shows a build as
+                        # running for the hours it spent waiting for room
+                        "started_at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds")}
+                builds = [dict(b) for b in self._inflight.values()]
+            path = state_path(self._workspace)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+            tmp.write_text(json.dumps({"builds": builds}, ensure_ascii=False,
+                                      indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:  # noqa: BLE001 — visibility must not raise
+            pass
 
     # ── main-thread side ──
 
@@ -89,6 +148,7 @@ class PromotionGate:
                                                  modules=list(modules))
                 self._pending.discard(sid)
             return
+        self._publish(sid, modules)
         self._queue.put((sid, list(modules)))
 
     def has_pending(self) -> bool:
@@ -171,6 +231,7 @@ class PromotionGate:
                     # housekeeping, and runs again when there is room.
                     print(f"[promotion-gate] s{sid} capped — no room on the "
                           f"machine; requeued", flush=True)
+                    self._publish(sid, modules)  # still in flight, restamped
                     time.sleep(REQUEUE_PAUSE_SEC)
                     self._queue.put((sid, list(modules)))
                     continue
@@ -184,6 +245,9 @@ class PromotionGate:
                 else:
                     print(f"[promotion-gate] s{sid} built "
                           f"{len(modules)} module(s)", flush=True)
+                # off the field BEFORE the result is handed over, so a
+                # caller woken by `wait_result` never reads a stale row
+                self._publish(sid, None)
                 with self._cv:
                     self._results[sid] = BuildResult(
                         sid, bool(ok), failing, detail or "", modules=list(modules))

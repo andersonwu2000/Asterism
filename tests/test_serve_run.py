@@ -80,6 +80,20 @@ def test_run_fresh_workspace_is_quiet(workspace: Path) -> None:
     assert body["quota"] is None
 
 
+def test_run_shows_the_promotion_gate_builds(workspace: Path) -> None:
+    """A promotion cold build is a machine-occupying job that no pipeline
+    row describes — the console said "nobody on the field" through a
+    10-minute one (owner, 2026-09-01). It rides the daemon block of the
+    run payload, beside `in_flight` (human_interface_design.md §3.4)."""
+    (workspace / ".asterism").mkdir()
+    (workspace / ".asterism" / "promotion_gate.json").write_text(
+        '{"builds": [{"strategy_id": 7,'
+        ' "modules": ["Problems.p.proofs.L_a"],'
+        ' "started_at": "2026-09-01T10:00:00+00:00"}]}', encoding="utf-8")
+    body = _client(workspace).get("/api/run").json()
+    assert [b["strategy_id"] for b in body["daemon"]["promotion_builds"]] == [7]
+
+
 def test_run_quota_reads_the_oauth_windows(workspace: Path,
                                            monkeypatch) -> None:
     """The subscription meter: five_hour/seven_day utilization + the

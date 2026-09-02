@@ -734,6 +734,24 @@ def test_daemon_status_no_daemon(tmp_path, monkeypatch, capsys):
     assert out["running"] is False and out["pid"] is None
 
 
+def test_daemon_status_carries_the_promotion_builds(tmp_path):
+    """The promotion gate is a background THREAD, not a pipeline, so
+    `in_flight` reads 0 through a 10-minute cold build and the operator
+    saw "nobody on the field" (2026-09-01). Status carries the gate's
+    own in-flight file (`.asterism/promotion_gate.json`); no file = idle."""
+    import json
+    from Tooling.core.cli import daemon_status
+    assert daemon_status(tmp_path)["promotion_builds"] == []
+    (tmp_path / ".asterism").mkdir()
+    (tmp_path / ".asterism" / "promotion_gate.json").write_text(
+        json.dumps({"builds": [
+            {"strategy_id": 7, "modules": ["Problems.p.proofs.L_a"],
+             "started_at": "2026-09-01T10:00:00+00:00"}]}), encoding="utf-8")
+    builds = daemon_status(tmp_path)["promotion_builds"]
+    assert [b["strategy_id"] for b in builds] == [7]
+    assert builds[0]["modules"] == ["Problems.p.proofs.L_a"]
+
+
 def test_daemon_status_starting_window(tmp_path):
     """The boot window between daemon_start and the child's lock claim:
     a fresh anti-double-spawn marker must read as starting (with the

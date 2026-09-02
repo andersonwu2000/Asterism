@@ -292,3 +292,65 @@ def test_a_capped_promotion_build_is_requeued_not_delivered_as_failure(
     assert calls == [["Problems.p.proofs.L_a"]] * 2, "the same job ran again"
     log = tmp_path / ".asterism" / "logs" / "promotion_gate" / "s11.txt"
     assert not log.exists(), "a capped build is not a failure record"
+
+
+# ────────── the in-flight file: the gate is visible to readers (2026-09-02) ──────────
+
+def test_the_in_flight_build_is_published_for_the_status_readers(
+        tmp_path, gate, monkeypatch):
+    """`daemon status`'s `in_flight` counts running PIPELINES; the gate is
+    a background thread, so a 10-minute promotion cold build read as
+    `in_flight: 0` — "nobody on the field" while the machine was busy
+    (owner, 2026-09-01). The gate publishes its own in-flight set."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_build(ws, mods):
+        started.set()
+        release.wait(10)
+        return _lake.BuildOutcome(True, "Build completed")
+    monkeypatch.setattr(_lake, "lake_build_modules", fake_build)
+    gate._workspace = tmp_path
+    assert warm.inflight_builds(tmp_path) == [], "idle → empty"
+    gate.submit(5, ["Problems.p.proofs.L_a", "Problems.p.proofs._strategy_x"])
+    assert started.wait(10)
+    builds = warm.inflight_builds(tmp_path)
+    assert [b["strategy_id"] for b in builds] == [5]
+    assert builds[0]["modules"] == ["Problems.p.proofs.L_a",
+                                    "Problems.p.proofs._strategy_x"]
+    assert builds[0]["started_at"].endswith("+00:00"), "UTC, DB clock"
+    release.set()
+    assert gate.wait_result(5, timeout=10).ok is True
+    assert warm.inflight_builds(tmp_path) == [], "emptied on completion"
+
+
+def test_a_requeued_capped_build_stays_on_the_in_flight_list(
+        tmp_path, gate, monkeypatch):
+    """A capped build waits for room and runs again — it never left the
+    field, so the reader must keep seeing it."""
+    seen = []
+
+    def fake_build(ws, mods):
+        seen.append([b["strategy_id"] for b in warm.inflight_builds(tmp_path)])
+        if len(seen) == 1:
+            r = _lake.BuildOutcome(False, "build capped — no room")
+            r.capped = True
+            return r
+        return _lake.BuildOutcome(True, "Build completed")
+    monkeypatch.setattr(_lake, "lake_build_modules", fake_build)
+    monkeypatch.setattr(warm, "REQUEUE_PAUSE_SEC", 0.01)
+    gate._workspace = tmp_path
+    gate.submit(12, ["Problems.p.proofs.L_a"])
+    assert gate.wait_result(12, timeout=10).ok is True
+    assert seen == [[12], [12]], "in flight across the requeue"
+    assert warm.inflight_builds(tmp_path) == []
+
+
+def test_a_disabled_gate_publishes_nothing(tmp_path):
+    """`enabled=False` answers "built" on the caller's thread — there is
+    no build, so there is nothing to show (and no file to write into a
+    workspace the gate never builds in)."""
+    g = warm.PromotionGate(tmp_path, enabled=False)
+    g.submit(3, ["Problems.p.proofs.L_a"])
+    assert not warm.state_path(tmp_path).exists()
+    assert warm.inflight_builds(tmp_path) == []

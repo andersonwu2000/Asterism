@@ -404,6 +404,7 @@ def daemon_status(workspace: Path) -> dict:
             code_stale = False
     gw_phase, gw_slots = _gateway_status_once(workspace)
     from .. import degraded as _degraded
+    from ...pipeline import _olean_warm as _promotion
     return {
         "running": pid is not None,
         # the boot window between daemon_start and the child's lock claim
@@ -425,6 +426,11 @@ def daemon_status(workspace: Path) -> dict:
         # refusals etc. Per run (reset at daemon boot); {} = nothing
         # degraded. The patrol reads this instead of grepping logs.
         "degraded": _degraded.snapshot(workspace),
+        # promotion cold builds in flight (pipeline/_olean_warm.py). The
+        # gate is a background thread, not a pipeline, so `in_flight`
+        # says 0 while it holds the machine for ten minutes — the
+        # operator read that as "nobody on the field" (2026-09-01).
+        "promotion_builds": _promotion.inflight_builds(workspace),
         # gateway phase ('warming'/'ready'/None): the first minutes of
         # a cold run are Lean warm-up — without this the user stares
         # at dead air (Test.Test3 run, 2026-07-07)
