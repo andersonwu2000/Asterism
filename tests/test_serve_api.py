@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -3212,3 +3213,128 @@ def test_the_problem_detail_moves_only_when_it_changed(
     moved = c.get("/api/problems/p", headers={"If-None-Match": tag})
     assert moved.status_code == 200
     assert moved.headers.get("etag") != tag
+
+
+# ---------------------------------------------------------------------
+# .tex render panel (human_interface_design.md §1.2-2 — Overleaf-like)
+# ---------------------------------------------------------------------
+
+
+def test_tex_render_says_no_engine_when_there_is_none(
+        workspace: Path, monkeypatch) -> None:
+    """SP7 has no TeX. The panel must say so plainly rather than fail —
+    and nothing may be spawned to find that out."""
+    from Tooling.serve import tex_render as tr
+    monkeypatch.setattr(tr.shutil, "which", lambda name: None)
+
+    def _no_spawn(*a, **k):  # pragma: no cover — the assertion is that
+        raise AssertionError("no engine, so nothing may be run")
+
+    monkeypatch.setattr(tr.subprocess, "run", _no_spawn)
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/paper.tex",
+          json={"content": r"\documentclass{article}\begin{document}x\end{document}"})
+    r = c.post("/api/projects/Erdos/tex", json={"path": "user/paper.tex"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "no_engine", "engine": None,
+                        "detail": tr.NO_ENGINE_DETAIL}
+
+
+def _fake_latex(workspace: Path, monkeypatch, *, rc: int = 0,
+                pdf: bytes = b"%PDF-1.5 fake", log: str = "") -> list:
+    """A TeX engine that is on PATH and writes what a TeX engine writes.
+    Never the real one: a test suite that shells out to pdflatex is a
+    test suite that fails on a machine without it."""
+    from Tooling.serve import tex_render as tr
+    calls: list = []
+    monkeypatch.setattr(
+        tr.shutil, "which",
+        lambda name: f"/usr/bin/{name}" if name == "latexmk" else None)
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "cwd": kw.get("cwd"),
+                      "env": kw.get("env") or {}})
+        d = Path(kw["cwd"])
+        if log:
+            (d / f"{tr.JOBNAME}.log").write_text(log, encoding="utf-8")
+        if rc == 0:
+            (d / f"{tr.JOBNAME}.pdf").write_bytes(pdf)
+        return subprocess.CompletedProcess(cmd, rc, "out", "err")
+
+    monkeypatch.setattr(tr.subprocess, "run", fake_run)
+    return calls
+
+
+def test_tex_render_returns_a_pdf_the_panel_can_point_at(
+        workspace: Path, monkeypatch) -> None:
+    from Tooling.serve import tex_render as tr
+    calls = _fake_latex(workspace, monkeypatch)
+    _with_project(workspace)
+    c = _client(workspace)
+    body = r"\documentclass{article}\begin{document}hello\end{document}"
+    c.put("/api/projects/Erdos/docs/user/ch/paper.tex", json={"content": body})
+    r = c.post("/api/projects/Erdos/tex", json={"path": "user/ch/paper.tex"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["status"] == "ok" and d["engine"] == "latexmk"
+    assert d["sha1"] and d["pdf"].endswith(f"/tex/{d['sha1']}.pdf")
+    # the flags the owner named, and the build ran in .asterism/tmp
+    assert calls[0]["cmd"][1:4] == ["-pdf", "-interaction=nonstopmode",
+                                    "-halt-on-error"]
+    assert ".asterism" in calls[0]["cwd"] and "tmp" in calls[0]["cwd"]
+    # a sibling `\input` resolves — the document's own folder is on the
+    # engine's search path
+    assert "ch" in calls[0]["env"]["TEXINPUTS"]
+    pdf = c.get(d["pdf"])
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"].startswith("application/pdf")
+    assert pdf.content == b"%PDF-1.5 fake"
+    # cached by content: a second ask does not run the engine again
+    assert c.post("/api/projects/Erdos/tex",
+                  json={"path": "user/ch/paper.tex"}).json()["sha1"] == d["sha1"]
+    assert len(calls) == 1
+    # …unless the reader asks for it
+    c.post("/api/projects/Erdos/tex",
+           json={"path": "user/ch/paper.tex", "force": True})
+    assert len(calls) == 2
+    assert tr.JOBNAME == "main"
+
+
+def test_tex_render_hands_back_the_log_tail_when_it_fails(
+        workspace: Path, monkeypatch) -> None:
+    log = "\n".join(f"line {i}" for i in range(200)) + "\n! Undefined control sequence."
+    _fake_latex(workspace, monkeypatch, rc=1, log=log)
+    _with_project(workspace)
+    c = _client(workspace)
+    r = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/paper.tex", json={"content": "broken"})
+    resp = c.post("/api/projects/Erdos/tex", json={"path": "user/paper.tex"})
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["status"] == "failed" and d["engine"] == "latexmk"
+    assert "Undefined control sequence" in d["log_tail"]
+    assert "line 0" not in d["log_tail"]      # a TAIL, not the whole log
+    assert r.get("/api/projects/Erdos/tex/deadbeef.pdf").status_code == 404
+
+
+def test_tex_render_renders_unsaved_text_and_fences_the_path(
+        workspace: Path, monkeypatch) -> None:
+    """The panel follows the editor, so it renders what is in the box —
+    and the path it is told about goes through the docs fence like every
+    other path this console sends."""
+    from Tooling.serve import tex_render as tr
+    calls = _fake_latex(workspace, monkeypatch)
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/paper.tex", json={"content": "saved"})
+    r = c.post("/api/projects/Erdos/tex",
+               json={"path": "user/paper.tex", "content": "unsaved draft"})
+    assert r.json()["status"] == "ok"
+    built = Path(calls[0]["cwd"]) / f"{tr.JOBNAME}.tex"
+    assert built.read_text(encoding="utf-8") == "unsaved draft"
+    assert c.post("/api/projects/Erdos/tex",
+                  json={"path": "../../escape.tex",
+                        "content": "x"}).status_code == 422
+    assert c.post("/api/projects/Erdos/tex",
+                  json={"path": "agent/theirs.tex"}).status_code == 404

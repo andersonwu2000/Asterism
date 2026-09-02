@@ -5,6 +5,7 @@ import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
 import LeanDoc from './LeanDoc'
+import TexDoc from './TexDoc'
 import { Button } from './ui'
 
 /*
@@ -36,9 +37,10 @@ const COLUMN_KEY = 'asterism.docColumnOpen'
 const TEXT_EXT = ['.md', '.tex', '.txt', '.lean']
 const IMAGE_EXT = ['.png', '.jpg', '.svg']
 /** The kinds whose right half is a panel of its own while you write
- * (§1.2-2: 左編輯、右面板) — Lean's Info view. `.md` keeps the
- * read/edit toggle: its render is the whole page, not a companion. */
-const SPLIT_EXT = ['.lean']
+ * (§1.2-2: 左編輯、右面板) — Lean's Info view, TeX's compiled pdf.
+ * `.md` keeps the read/edit toggle: its render is the whole page, not
+ * a companion to writing it. */
+const SPLIT_EXT = ['.lean', '.tex']
 
 const ext = (p: string): string => {
   const i = p.lastIndexOf('.')
@@ -55,9 +57,10 @@ const MIME: Record<string, string> = {
   '.pdf': 'application/pdf',
 }
 
-/** A `.tex` file, read. There is no LaTeX engine here and there will
- * not be one: the file is shown as its own text, line for line, with
- * `$…$` typeset — which is the half a mathematician actually reads. */
+/** A `.tex` file, READ — the Assistant's area, where there is nothing
+ * to write and so no compile panel beside it. The file is shown as its
+ * own text, line for line, with `$…$` typeset: the half a
+ * mathematician actually reads, and no engine needed to show it. */
 function TexBody({ content }: { content: string }) {
   return (
     <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
@@ -267,6 +270,9 @@ export default function DocShelf({
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  /** bumped each time a document lands on disk — a companion panel that
+   * compiles the file follows the SAVE, not every keystroke */
+  const [savedAt, setSavedAt] = useState(0)
   const [note, setNote] = useState<string | null>(null)
   const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
   const [newName, setNewName] = useState('')
@@ -369,6 +375,7 @@ export default function DocShelf({
       setDoc((x) => (x === null ? x : { ...x, content: body }))
       setEditing(false)
       setNote('saved')
+      setSavedAt((n) => n + 1)
       refresh()
     } catch (e) {
       setNote(e instanceof ApiError ? e.detail : String((e as Error).message))
@@ -652,11 +659,22 @@ export default function DocShelf({
           </div>
         )}
         {split && open !== null && doc !== null && body !== undefined ? (
-          <LeanDoc
-            key={open}
-            value={body}
-            onChange={(v) => setDrafts((d) => ({ ...d, [open]: v }))}
-          />
+          ext(open) === '.tex' ? (
+            <TexDoc
+              key={open}
+              project={project}
+              path={open}
+              value={body}
+              savedAt={savedAt}
+              onChange={(v) => setDrafts((d) => ({ ...d, [open]: v }))}
+            />
+          ) : (
+            <LeanDoc
+              key={open}
+              value={body}
+              onChange={(v) => setDrafts((d) => ({ ...d, [open]: v }))}
+            />
+          )
         ) : (
         <div className="min-w-0 flex-1 overflow-auto p-4">
           {loadError && <div className="text-xs text-warn">{loadError}</div>}

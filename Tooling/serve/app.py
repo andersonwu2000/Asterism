@@ -364,6 +364,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     from .docs_api import register as _register_docs
     _register_docs(app, workspace, _ro)
 
+    # a .tex document, compiled (/api/projects/{p}/tex, HID §1.2-2)
+    from .tex_render import register as _register_tex
+    _register_tex(app, workspace, _ro)
+
     # problem authoring (POST /api/problems/create)
     from .authoring_api import register as _register_authoring
     _register_authoring(app, workspace)

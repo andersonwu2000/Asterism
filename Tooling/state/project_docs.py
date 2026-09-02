@@ -186,6 +186,21 @@ def tree(workspace: Path, project: str) -> "list[dict]":
     return out
 
 
+def locate(workspace: Path, project: str, path: str, *,
+           area: "str | None" = None) -> Path:
+    """The absolute path one document address names, fenced.
+
+    For callers that need the file's PLACE rather than its bytes — the
+    TeX render puts the document's own folder on the engine's search
+    path so a sibling `\\input` resolves. It must go through the same
+    three checks `read` does: a caller that joins the strings itself is
+    a caller that compiles `../../escape.tex`. Existence is NOT implied;
+    ask the filesystem, or use `read`.
+    """
+    target, _rel = _resolve(workspace, project, path, area=area)
+    return target
+
+
 def read(workspace: Path, project: str, path: str) -> bytes:
     """The file's bytes. Text or not is the caller's decision to make
     from `is_binary` — this layer does not guess an encoding."""

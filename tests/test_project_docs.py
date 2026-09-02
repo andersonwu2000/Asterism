@@ -218,3 +218,12 @@ def test_move_refuses_a_folder_into_its_own_descendant(ws: Path) -> None:
 def test_move_of_a_missing_document_is_a_keyerror(ws: Path) -> None:
     with pytest.raises(KeyError):
         pd.move(ws, "Erdos", "user/ghost.md", "user/other.md")
+
+
+def test_locate_fences_the_place_as_well_as_the_bytes(ws: Path) -> None:
+    """A caller that needs the folder a document sits in (the TeX
+    render's search path) must not join the strings itself."""
+    assert pd.locate(ws, "Erdos", "user/ch/paper.tex") == (
+        pd.root(ws, "Erdos") / "user" / "ch" / "paper.tex")
+    with pytest.raises(ValueError):
+        pd.locate(ws, "Erdos", "../../escape.tex")
