@@ -5,6 +5,9 @@ line to replace, and the replacement. Same line in the three mirrors
 (`strategist/inject_batch_done.md`, `strategist/pending_review.md`,
 `adversary/_contract.md`) must stay verbatim-identical.
 
+(`## Summary` on the proposal: dropped — owner 09-02, the Programme is
+already prose a mathematician reads.)
+
 ---
 
 ## `RequestUserAmend` gains `title`
@@ -18,23 +21,6 @@ Replace `… proposed_body`, `question`, `reason`.` with:
 
 (rest of the line unchanged)
 
-## `## Summary` on the proposal
-Files: `strategist/inject_batch_done.md` layout block (42-56), `strategist/pending_review.md` layout block (43-57)
-
-Add after the `## Conventions` line:
-
-```
-    ## Summary      Optional. One short paragraph for a mathematician who has not
-                    read this Programme: what this revision changes and why.
-                    English, LaTeX for math. Not judged.
-```
-
-File: `adversary/adversary.md:15` — append to the end of the line:
-
-```
-An optional `## Summary` may appear anywhere; it is not under judgment.
-```
-
 ## `Ingest` gains `report`
 Files: `strategist/inject_batch_done.md:76`, `strategist/pending_review.md:77`, `adversary/_contract.md:17`
 
@@ -47,10 +33,11 @@ Replace `- `Ingest` — optional `reason`.` with:
 and append to the end of that line:
 
 ```
-`report`: English markdown, LaTeX for math — the statement settled, the route in prose, the bricks that carry it, what was refuted, what is left open. It becomes `REPORT.md`.
+`report`: a short paper in English markdown, LaTeX for math, written for a mathematician who has never seen this system — no framework words (goal, brick, batch, Programme). Sections, in this order: `## Introduction` (the question and why it matters), `## Main Result` (the statement as proved, or the counterexample), `## Proof Sketch` (the route in prose, citing the formal lemma names in backticks where a reader would look them up), `## What Remains` (what was refuted or left open). It becomes `REPORT.md`.
 ```
 
-Flip `verify.INGEST_REPORT_REQUIRED` to `True` in the same commit.
+Flip `verify.INGEST_REPORT_REQUIRED` to `True` in the same commit; the gate
+checks the four headings exist, nothing else.
 
 ## Assistant system prompt
 File: `Tooling/serve/chat.py`, `_SYSTEM_PROMPT` (a string literal, not a prompt file)
