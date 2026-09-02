@@ -38,15 +38,13 @@ USER_AMEND_FILES: frozenset[str] = frozenset(
 
 
 #: HID §1.2: the terminal must hand a mathematician a readable summary
-#: (`Ingest.report` → `problems.ingest_report` → `REPORT.md`). The gate
-#: is written and tested in both positions NOW and armed LATER: the
-#: wording that asks for the field is staged in
-#: `Tooling/prompts/_staged/hid_prompt_changes.md` and is not live, and a
-#: gate that refuses a field the Strategist was never asked for teaches
-#: nothing — it just burns the wake. Flip to True in the same commit that
-#: moves that wording into the live prompts.
-INGEST_REPORT_REQUIRED = False
-
+#: (`Ingest.report` → `problems.ingest_report` → `REPORT.md`), so an
+#: Ingest without one does not close a problem. Unconditional since
+#: 2026-09-02, when the wording that asks for the field went live in the
+#: three wake prompts — a gate that refuses a field the Strategist was
+#: never asked for teaches nothing, which is what the retired
+#: `INGEST_REPORT_REQUIRED` flag was holding back.
+#:
 #: The report's shape (owner ruling 2026-09-02): a short PAPER, and a
 #: paper has these four parts in this order. Structure is the whole of
 #: what a gate can check — a length floor buys padding and a banned-word
@@ -614,11 +612,10 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # Last, on purpose: the mechanical blockers above name work that
         # must happen before the terminal is even arguable, and asking
         # for the write-up first would put the report ahead of the proof.
-        if INGEST_REPORT_REQUIRED:
-            defect = _ingest_report_defect(
-                str(decision.payload.get("report") or ""))
-            if defect:
-                return defect
+        defect = _ingest_report_defect(
+            str(decision.payload.get("report") or ""))
+        if defect:
+            return defect
         return ""
 
     if k == "RequestUserAmend":

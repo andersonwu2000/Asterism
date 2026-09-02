@@ -345,7 +345,11 @@ def test_ingest_verify_requires_deliverable(conn):
         Decision(kind="Ingest"), conn, problem="P.a")
     g = _seed_goal(conn, "P.a", "bar")
     _db.mark_deliverable(conn, g)
-    assert verify_decision(Decision(kind="Ingest"), conn, problem="P.a") == ""
+    # The report is required too (2026-09-02), so a passing Ingest now
+    # carries one — this test is about the deliverable gate, not it.
+    assert verify_decision(
+        Decision(kind="Ingest", payload={"report": _REPORT}),
+        conn, problem="P.a") == ""
 
 
 def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
@@ -503,9 +507,10 @@ def test_ingest_report_rides_the_decision_and_lands_in_the_db(conn, tmp_path):
 
 def test_ingest_renders_report_md_beside_the_problem(conn, tmp_path):
     """Rendered like PROGRAMME.md — the DB row is the SoT, the file is a
-    read-only render nobody hand-writes. No report, no file: the prompt
-    that asks for one is not live yet, and an absent report is not a
-    failure."""
+    read-only render nobody hand-writes. No report, no file: the commit
+    path renders what it is handed, and the gate — not this writer — is
+    where a missing report is refused (rows ingested before the field
+    existed still have none)."""
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.state import report as _report
     conn.execute("INSERT INTO problems(name,created_at) VALUES ('P.a',?)",
@@ -526,38 +531,53 @@ def test_ingest_renders_report_md_beside_the_problem(conn, tmp_path):
                 / _report.REPORT_BASENAME).exists()
 
 
-def test_ingest_report_gate_exists_in_both_positions(conn, tmp_path,
-                                                     monkeypatch):
-    """1.2 asks the terminal to carry a human-readable summary. The gate
-    is written now and armed with the prompt: `INGEST_REPORT_REQUIRED`
-    stays False until the wording is live, so today's Strategist is never
-    refused for a field it was never asked for."""
+def test_ingest_without_a_report_is_refused(conn, tmp_path):
+    """1.2 asks the terminal to carry a human-readable summary, and the
+    wording that asks for it went live 2026-09-02 — so the gate is
+    unconditional: an `Ingest` with no `report` never closes a problem.
+    (Until the prompts carried the ask, this ran behind a
+    `INGEST_REPORT_REQUIRED` flag; the flag is gone with its reason.)
+    The refusal names the four headings, because a refusal that does not
+    show the way out costs the whole wake."""
     from Tooling.pipeline.strategist import Decision, verify_decision
-    from Tooling.pipeline.strategist import verify as _verify
     g = _seed_goal(conn, "P.a", "foo")
     _db.mark_deliverable(conn, g)
-    assert _verify.INGEST_REPORT_REQUIRED is False
-    assert verify_decision(Decision(kind="Ingest"), conn, problem="P.a") == ""
-
-    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
     err = verify_decision(Decision(kind="Ingest"), conn, problem="P.a")
     assert "report" in err
+    for heading in ("## Introduction", "## Main Result", "## Proof Sketch",
+                    "## What Remains"):
+        assert heading in err, err
     assert verify_decision(
         Decision(kind="Ingest", payload={"report": _REPORT}),
         conn, problem="P.a") == ""
 
 
-def test_ingest_report_gate_names_the_missing_heading(conn, tmp_path,
-                                                      monkeypatch):
+def test_the_prompts_ask_for_the_report_the_gate_demands() -> None:
+    """A gate for a field nobody was asked for teaches nothing — it just
+    burns the wake. The `Ingest` bullet in both wake prompts (and the
+    judge's verbatim copy) must name `report` and every heading the gate
+    checks, so the ask and the refusal cannot drift apart."""
+    from Tooling.pipeline.strategist import verify as _verify
+    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    files = [root / "strategist" / "inject_batch_done.md",
+             root / "strategist" / "pending_review.md",
+             root / "adversary" / "_contract.md"]
+    for f in files:
+        line = next(ln for ln in f.read_text(encoding="utf-8").splitlines()
+                    if ln.startswith("- `Ingest` —"))
+        assert "`report`" in line, f.name
+        for heading in _verify.INGEST_REPORT_SECTIONS:
+            assert f"`{heading}`" in line, (f.name, heading)
+
+
+def test_ingest_report_gate_names_the_missing_heading(conn, tmp_path):
     """Owner ruling 2026-09-02: the report is a short PAPER, so the gate
     checks its four headings and nothing else — no length, no word bans.
     A gate message must show the way out, so it names what is missing
     and quotes the order in full."""
     from Tooling.pipeline.strategist import Decision, verify_decision
-    from Tooling.pipeline.strategist import verify as _verify
     g = _seed_goal(conn, "P.a", "foo")
     _db.mark_deliverable(conn, g)
-    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
     err = verify_decision(
         Decision(kind="Ingest",
                  payload={"report": _REPORT.replace("## Proof Sketch",
@@ -567,15 +587,12 @@ def test_ingest_report_gate_names_the_missing_heading(conn, tmp_path,
     assert "## Introduction" in err and "## What Remains" in err
 
 
-def test_ingest_report_gate_names_the_order_when_shuffled(conn, tmp_path,
-                                                          monkeypatch):
+def test_ingest_report_gate_names_the_order_when_shuffled(conn, tmp_path):
     """All four present but out of order: a reader navigates by them, so
     the refusal names the heading that jumped and quotes the order."""
     from Tooling.pipeline.strategist import Decision, verify_decision
-    from Tooling.pipeline.strategist import verify as _verify
     g = _seed_goal(conn, "P.a", "foo")
     _db.mark_deliverable(conn, g)
-    monkeypatch.setattr(_verify, "INGEST_REPORT_REQUIRED", True)
     shuffled = ("## Main Result\nThe bound holds.\n"
                 "## Introduction\nThe question.\n"
                 "## Proof Sketch\nInduct on $n$.\n"

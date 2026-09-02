@@ -138,6 +138,14 @@ def test_fresh_schema_accepts_the_refuted_state(tmp_path):
     assert conn.execute("SELECT state FROM problems").fetchone()[0] == "refuted"
 
 
+#: Every Ingest carries the paper a mathematician reads (2026-09-02):
+#: four headings, in order, or the gate refuses the terminal.
+_REPORT = ("## Introduction\nThe conjecture, and why anyone asked.\n"
+           "## Main Result\nIt is false.\n"
+           "## Proof Sketch\nA counterexample at $n = 5$.\n"
+           "## What Remains\nThe weakened form is open.\n")
+
+
 def test_ingest_on_a_disproved_root_closes_the_problem_as_refuted(tmp_path):
     conn = _conn(tmp_path)
     p = "Test.dp"
@@ -151,10 +159,11 @@ def test_ingest_on_a_disproved_root_closes_the_problem_as_refuted(tmp_path):
     top = groups.ensure_top_group(conn, p)
     conn.commit()
     S = _S()
-    err = S.verify_decisions([S.Decision(kind="Ingest")], conn, problem=p,
+    ingest = S.Decision(kind="Ingest", payload={"report": _REPORT})
+    err = S.verify_decisions([ingest], conn, problem=p,
                              group_id=top, workspace=tmp_path)
     assert err == "", err
-    S.commit_decisions([S.Decision(kind="Ingest")], conn, problem=p, tick=0,
+    S.commit_decisions([ingest], conn, problem=p, tick=0,
                        trigger_kind="routine", workspace=tmp_path, group_id=top)
     row = conn.execute("SELECT state, ingested_at FROM problems WHERE name = ?",
                        (p,)).fetchone()

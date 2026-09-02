@@ -165,7 +165,15 @@ def test_e2e_root_proved_through_dispatcher(
             import json as _json
             (attempts / "decision.json").write_text(
                 _json.dumps({"kind": "Ingest",
-                             "reason": "root proved; manifest satisfied"}),
+                             "reason": "root proved; manifest satisfied",
+                             # The terminal carries the paper the person
+                             # reads — four headings, in order, or the
+                             # gate refuses it (2026-09-02).
+                             "report": (
+                                 "## Introduction\nWhether True holds.\n"
+                                 "## Main Result\nIt does.\n"
+                                 "## Proof Sketch\n`main` is `trivial`.\n"
+                                 "## What Remains\nNothing.\n")}),
                 encoding="utf-8")
             # Research mode: an Ingest batch is route-moving, so it
             # carries a Programme proposal (endgame batches are exempt
