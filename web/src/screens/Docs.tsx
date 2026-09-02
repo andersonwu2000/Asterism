@@ -64,14 +64,27 @@ function ProofsView({
     `/api/problems/${encodeURIComponent(problem)}`,
     30000,
   )
+  // REPORT.md heads the list when the Ingest terminal wrote one (HID
+  // §3.4): it is the only file here written FOR a reader, so it is
+  // also what the column opens on. `ingest_report` is the DB's SoT and
+  // the file is its render, so listing on the column can never offer a
+  // file that is not there.
+  const hasReport = Boolean((detail?.ingest_report ?? '').trim())
   const files = detail
-    ? ['Root.lean', 'Defs.lean', ...detail.proof_files.map((f) => `proofs/${f}`)]
+    ? [
+        ...(hasReport ? ['REPORT.md'] : []),
+        'Root.lean',
+        'Defs.lean',
+        ...detail.proof_files.map((f) => `proofs/${f}`),
+      ]
     : []
-  // Root.lean heads the list because it is the statement — but a v40
-  // task may not have one on disk, and opening on "not found" is a
+  // Root.lean heads the Lean list because it is the statement — but a
+  // v40 task may not have one on disk, and opening on "not found" is a
   // poor first sentence. The proof files are listed FROM disk, so the
   // first of those is a file that certainly exists.
-  const fallback = files.find((f) => f.startsWith('proofs/')) ?? files[0] ?? null
+  const fallback = hasReport
+    ? 'REPORT.md'
+    : (files.find((f) => f.startsWith('proofs/')) ?? files[0] ?? null)
   const selected = file && files.includes(file) ? file : fallback
   const { data, error } = usePoll<{ path: string; content: string }>(
     selected

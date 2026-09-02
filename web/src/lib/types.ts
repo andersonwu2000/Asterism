@@ -141,6 +141,10 @@ export interface ProblemDetail {
   ingested_at: string | null
   library_bridged_at: string | null
   strategist_directive: string | null
+  /** the Ingest terminal's short paper (HID §3.4) — null until the
+   * problem is ingested, and on any row written before v48. Its render
+   * on disk is the task's own REPORT.md. */
+  ingest_report?: string | null
   goals: Goal[]
   strategies: Strategy[]
   strategy_edges: StrategyEdge[]
@@ -339,6 +343,10 @@ export interface Amend {
   /** what the strategist asks to change: 'charter' (the problem's
    * goal, DB-resident) or a pinned Lean file (Defs.lean / Root.lean) */
   file: string
+  /** the ask's own one-line heading (HID §3.4). Older rows carry none
+   * — the request predates the field, so the card falls back rather
+   * than inventing one. */
+  title?: string | null
   proposed_body: string
   current_body: string
   question: string

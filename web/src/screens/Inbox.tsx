@@ -1,12 +1,13 @@
-import { useState } from 'react'
-import { apiPost, usePoll } from '../lib/api'
+import { useEffect, useState } from 'react'
+import { apiGet, apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
+import { projectPath } from '../lib/projectRoute'
 import { Button, SectionLabel } from '../components/ui'
 import DiffView from '../components/DiffView'
 import ReviewTree from '../components/ReviewTree'
-import type { Amend, InboxResponse, Signoff } from '../lib/types'
+import type { Amend, InboxResponse, ProblemDetail, Signoff } from '../lib/types'
 
 /** The human decision inbox (charter §3.2): amend requests with a
  * side-by-side diff, and paused ingest sign-offs with the anchor
@@ -44,12 +45,17 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
   const isGoal = a.file === 'charter'
   const target = isGoal ? 'the goal' : a.file
 
-  // Decision-first anatomy (design review): headline = the short ask
-  // (reason when present — it's the strategist's TL;DR), actions above
-  // the fold, the long reasoning wall collapsed, diff = changed hunks.
+  // Decision-first anatomy (design review): headline = the short ask,
+  // actions above the fold, the long reasoning wall collapsed, diff =
+  // changed hunks. The ask's OWN title outranks everything (HID §3.4:
+  // RequestUserAmend is title + body now) — the strategist writes it as
+  // the heading for exactly this list; `reason` is its row-level
+  // rationale and stands in only where no title was written.
   const longQuestion = a.question.length > 280
-  const headline = a.reason || (longQuestion ? `Amend ${target} — decision needed` : a.question)
-  const [showReasoning, setShowReasoning] = useState(!longQuestion && !a.reason)
+  const title = (a.title ?? '').trim()
+  const headline =
+    title || a.reason || (longQuestion ? `Amend ${target} — decision needed` : a.question)
+  const [showReasoning, setShowReasoning] = useState(!longQuestion && !a.reason && !title)
 
   return (
     <div className="rounded-xl border border-warn/40 bg-surface p-4">
@@ -134,7 +140,9 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         unpauses the problem.
       </div>
 
-      {(longQuestion || a.reason) && (
+      {/* the title is a heading, not the ask — with one on the card the
+          body has to stay reachable even when it is short */}
+      {(longQuestion || a.reason || title) && (
         <button
           className="mb-2 text-xs text-ink-dim transition-colors hover:text-ink"
           onClick={() => setShowReasoning((v) => !v)}
@@ -142,7 +150,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           {showReasoning ? '▾ hide' : '▸ show'} the strategist's full reasoning
         </button>
       )}
-      {showReasoning && (longQuestion || a.reason) && (
+      {showReasoning && (longQuestion || a.reason || title) && (
         <div className="mb-3 max-w-[75ch] rounded-lg border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed text-ink-dim">
           {/* strategist-authored markdown — the shared prose engine
               joins its hard-wrapped lines and renders lists/code */}
@@ -164,7 +172,28 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
   )
 }
 
-function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
+function SignoffCard({
+  s,
+  project,
+  onDone,
+}: {
+  s: Signoff
+  project: string
+  onDone: () => void
+}) {
+  // whether the terminal wrote its short paper (HID §3.4). One read,
+  // not a poll: an ingested problem's report does not change while you
+  // read the card, and the detail payload is the biggest one there is.
+  const [report, setReport] = useState(false)
+  useEffect(() => {
+    let gone = false
+    apiGet<ProblemDetail>(`/api/problems/${encodeURIComponent(s.problem)}`)
+      .then((d) => !gone && setReport(Boolean((d.ingest_report ?? '').trim())))
+      .catch(() => undefined)
+    return () => {
+      gone = true
+    }
+  }, [s.problem])
   const [rejecting, setRejecting] = useState(false)
   const [confirmingHarvest, setConfirmingHarvest] = useState(false)
   const [reason, setReason] = useState('')
@@ -212,8 +241,19 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
         >
           {s.problem}
         </Link>
-        <span className="text-[11px] text-ink-faint">
-          ingest judged {relTime(s.ingested_at)}
+        <span className="flex items-baseline gap-3 text-[11px] text-ink-faint">
+          {/* what a mathematician reads FIRST: the terminal's own short
+              paper, in prose, before the anchor closure below it */}
+          {report && (
+            <Link
+              to={`${projectPath(project, 'docs')}/proofs/REPORT.md`}
+              className="underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
+              title="the report this task wrote when it finished — statement, argument, what remains"
+            >
+              read the report
+            </Link>
+          )}
+          <span>ingest judged {relTime(s.ingested_at)}</span>
         </span>
       </div>
       <div className="mb-3">
@@ -341,7 +381,12 @@ export default function Inbox({ project }: { project: string }) {
               <SectionLabel>ingest sign-offs ({data.signoffs.length})</SectionLabel>
               <div className="flex flex-col gap-3">
                 {data.signoffs.map((s) => (
-                  <SignoffCard key={s.problem} s={s} onDone={refresh} />
+                  <SignoffCard
+                    key={s.problem}
+                    s={s}
+                    project={project}
+                    onDone={refresh}
+                  />
                 ))}
               </div>
             </section>

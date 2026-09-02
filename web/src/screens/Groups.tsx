@@ -2,8 +2,11 @@ import { useRef, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
 import { projectPath } from '../lib/projectRoute'
+import { charterTitle } from '../lib/groupTree'
+import { groupLabel } from '../lib/format'
 import { CycleLine } from './EngineRoom'
 import ProgrammeView from '../components/ProgrammeView'
+import { GroupCommandSheet } from '../components/CommandSheet'
 import { ErrorState } from '../components/ui'
 import type { Programme, RunStatus } from '../lib/types'
 
@@ -30,6 +33,8 @@ export default function Groups({
   // null = the reader chose the task's own argument, a number = that
   // group
   const [pick, setPick] = useState<number | null | undefined>(undefined)
+  // the command sheet for the group on screen (§1.3-2)
+  const [acting, setActing] = useState(false)
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
   // a group id belongs to ONE task — carrying a stale one across would
   // 404 the whole read
@@ -37,6 +42,7 @@ export default function Groups({
   if (shownRef.current !== problem) {
     shownRef.current = problem
     if (pick !== undefined) setPick(undefined)
+    if (acting) setActing(false)
   }
   // sibling groups run CONCURRENTLY (that is what the tree buys), so
   // "the seated strategist" can be several — the selection and cycle
@@ -68,6 +74,13 @@ export default function Groups({
   const cycle = cycleForGroup(workers, data?.group_id)
   if (error) return <ErrorState error={error} />
   if (!data) return null
+  // which group the reader is standing on — the server's own answer,
+  // never the picker's, so the sheet and the argument on screen are
+  // about the same charter
+  const shown =
+    (data.groups ?? []).find((g) => g.id === data.group_id) ??
+    (data.groups ?? []).find((g) => g.is_top) ??
+    null
   return (
     <div className="px-2 py-4">
       <ProgrammeView
@@ -82,14 +95,38 @@ export default function Groups({
         // shell can show is the defect the link audit removed
         brickHome={projectPath(project, 'sky', problem)}
         extra={
-          cycle ? (
-            <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
-              <div className="text-[11px] tracking-wider text-ink-faint uppercase">
-                being revised right now
+          <>
+            {cycle && (
+              <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
+                <div className="text-[11px] tracking-wider text-ink-faint uppercase">
+                  being revised right now
+                </div>
+                <CycleLine cycle={cycle} />
               </div>
-              <CycleLine cycle={cycle} />
-            </div>
-          ) : null
+            )}
+            {shown &&
+              (acting ? (
+                <GroupCommandSheet
+                  problem={problem}
+                  groupId={shown.id}
+                  isTop={shown.is_top}
+                  label={groupLabel(shown.id, charterTitle(shown))}
+                  onClose={() => setActing(false)}
+                />
+              ) : (
+                <button
+                  className="mb-4 cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+                  onClick={() => setActing(true)}
+                  title={
+                    shown.is_top
+                      ? "the task's own argument — what a person may do to it"
+                      : 'hand this charter back to the group above it'
+                  }
+                >
+                  act on this group…
+                </button>
+              ))}
+          </>
         }
       />
     </div>

@@ -13,6 +13,7 @@ import {
   strategyStatusLabel,
 } from '../lib/vocab'
 import { SectionLabel } from './ui'
+import { GoalCommandSheet } from './CommandSheet'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
 
@@ -131,6 +132,8 @@ export default function GoalPanel({
   )
   /** routes whose subgoal name-list is unfolded */
   const [openRoutes, setOpenRoutes] = useState<Set<number>>(new Set())
+  /** the command sheet (§1.3): a star is where a person acts on a goal */
+  const [acting, setActing] = useState(false)
   // a lit star must not outlive the panel (or the hovered row)
   useEffect(() => () => onHoverGoals?.(null), [onHoverGoals])
   // Esc closes — every other panel honors it and QA tripped over the
@@ -142,11 +145,17 @@ export default function GoalPanel({
       const t = e.target as Element | null
       if (t?.closest('input, textarea, [contenteditable], aside[aria-label="explainer chat"]'))
         return
+      // the sheet is the innermost thing open — Escape closes what is
+      // in front of you, not the panel behind it
+      if (acting) {
+        setActing(false)
+        return
+      }
       onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, acting])
 
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
@@ -422,6 +431,29 @@ export default function GoalPanel({
           </>
         )}
       </div>
+      {/* the act (§1.4-2: "點擊星星後可下達相關命令"). It sits below the
+          reading, in a strip of its own: acting on a goal must be
+          reachable without scrolling past thirty dead attempts, and it
+          must not compete with the statement for the first glance. */}
+      {data &&
+        (acting ? (
+          <GoalCommandSheet
+            problem={problem}
+            goalId={data.id}
+            slug={data.slug}
+            onClose={() => setActing(false)}
+          />
+        ) : (
+          <div className="shrink-0 border-t border-edge px-4 py-2">
+            <button
+              className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+              onClick={() => setActing(true)}
+              title="park it, mark it delivered, hand it a proof, or hand it to a new group"
+            >
+              act on this goal…
+            </button>
+          </div>
+        ))}
     </div>
   )
 }
