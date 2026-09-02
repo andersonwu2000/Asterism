@@ -1,3 +1,4 @@
+import { ApiError } from './api'
 import type { DaemonStatus } from './types'
 
 /*
@@ -15,10 +16,23 @@ import type { DaemonStatus } from './types'
  * numbers are real. Absent must therefore read as "ok", never as the
  * degraded state — the opposite default would put this line over every
  * console talking to a bundle that predates the field.
+ *
+ * The same fact reaches the console by TWO doors, and the second is
+ * the one that fires in production: `_ro` (serve/app.py) refuses a
+ * read-only connection to a behind schema, so every endpoint that
+ * opens one — `/api/run` included — answers 503 UPGRADE_REQUIRED
+ * before its body (and its `daemon.schema` field) is ever built. Both
+ * doors are read here so no surface has to spell the predicate itself:
+ * ui.tsx's ErrorState had the only copy, and a second one is how two
+ * screens start disagreeing about what a 503 meant.
  */
 
 export const SCHEMA_BEHIND_LINE = 'engine on an older schema — restart it'
 
 export function schemaBehind(d: DaemonStatus | null | undefined): boolean {
   return d?.schema === 'behind'
+}
+
+export function schemaBehindError(e: unknown): boolean {
+  return e instanceof ApiError && e.detail.startsWith('UPGRADE_REQUIRED')
 }

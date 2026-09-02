@@ -1,6 +1,7 @@
 ﻿import type { ButtonHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
 import type { ProblemStatus } from '../lib/types'
 import { ApiError } from '../lib/api'
+import { schemaBehindError } from '../lib/daemon'
 import { Link } from '../lib/router'
 
 /* ------------------------------------------------------------------ */
@@ -226,7 +227,7 @@ export function ErrorState({ error }: { error: Error }) {
       </EmptyState>
     )
   }
-  if (error instanceof ApiError && error.detail.startsWith('UPGRADE_REQUIRED')) {
+  if (schemaBehindError(error)) {
     return (
       <EmptyState title="Database needs a migration">
         The engine's schema is newer than this database. Start the engine once to migrate, then

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SCHEMA_BEHIND_LINE, schemaBehind } from './daemon'
+import { ApiError } from './api'
+import { SCHEMA_BEHIND_LINE, schemaBehind, schemaBehindError } from './daemon'
 import type { DaemonStatus } from './types'
 
 /*
@@ -42,5 +43,28 @@ describe('schemaBehind', () => {
     // the line has to tell the reader what to DO; a gate that only
     // states a fact leaves them nothing to press
     expect(SCHEMA_BEHIND_LINE).toContain('restart')
+  })
+})
+
+describe('schemaBehindError', () => {
+  it('reads the 503 the read-only connection raises', () => {
+    // `_ro` (serve/app.py) refuses the whole endpoint before the body
+    // is built, so on /api/run the fact arrives as an error, not a field
+    const e = new ApiError(
+      503,
+      'UPGRADE_REQUIRED: database schema v3 < expected v49; run the engine once to migrate',
+    )
+    expect(schemaBehindError(e)).toBe(true)
+  })
+
+  it('is not every degraded answer — only this one', () => {
+    expect(schemaBehindError(new ApiError(404, 'NO_DATABASE'))).toBe(false)
+    expect(schemaBehindError(new ApiError(503, 'DB_UNAVAILABLE: locked'))).toBe(false)
+  })
+
+  it('a transport failure is not a schema answer', () => {
+    expect(schemaBehindError(new Error('Failed to fetch'))).toBe(false)
+    expect(schemaBehindError(null)).toBe(false)
+    expect(schemaBehindError(undefined)).toBe(false)
   })
 })

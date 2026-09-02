@@ -13,9 +13,9 @@ import { renderInline, renderProse } from '../lib/prose'
 import { LeanProbe } from '../components/LeanProbe'
 import LogTail from '../components/LogTail'
 import { laneSignal } from '../lib/commands'
-import { SCHEMA_BEHIND_LINE, schemaBehind } from '../lib/daemon'
+import { SCHEMA_BEHIND_LINE, schemaBehind, schemaBehindError } from '../lib/daemon'
 import { SignalSheet } from '../components/CommandSheet'
-import { SectionLabel } from '../components/ui'
+import { ErrorState, SectionLabel } from '../components/ui'
 import { UsageLedger } from './Usage'
 import type { Meta, RunStatus, RunWorker } from '../lib/types'
 
@@ -31,6 +31,18 @@ import type { Meta, RunStatus, RunWorker } from '../lib/types'
  * the goal tallies (the shelf states them per task), and the lens pills
  * (the task column IS the lens).
  */
+
+/** The whole room, when nothing on it could be counted. Two callers,
+ * because the fact has two doors — and one sentence, because a reader
+ * meeting it twice must not have to decide whether they are the same
+ * condition. */
+function SchemaLine() {
+  return (
+    <div className="mx-auto max-w-4xl px-6 py-6 text-xs text-ink-dim">
+      {SCHEMA_BEHIND_LINE}
+    </div>
+  )
+}
 
 /** A departed agent's 30s receipt — completions used to simply
  * evaporate between polls (design round). */
@@ -536,7 +548,7 @@ export default function EngineRoom({
   pin: string | null
   rows: { name: string }[]
 }) {
-  const { data } = usePoll<RunStatus>(
+  const { data, error } = usePoll<RunStatus>(
     pin ? `/api/run?problem=${encodeURIComponent(pin)}` : '/api/run',
     2000,
   )
@@ -573,19 +585,20 @@ export default function EngineRoom({
     prevWorkersRef.current = ws
   }, [data])
 
+  // a first read that never lands is not "loading": every other
+  // section says what went wrong (Sky, Groups, Papers, Projects all
+  // read `error && !data`), and this one waited forever on a spinner.
+  // A behind schema arrives HERE rather than as a field: `_ro` refuses
+  // the connection, so /api/run 503s before its daemon block exists.
+  if (!data && error)
+    return schemaBehindError(error) ? <SchemaLine /> : <ErrorState error={error} />
   if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
   const d = data.daemon
-  // nothing on this page was counted: the status read a DB whose schema
-  // trails this engine's code, which a read-only consumer may not
-  // migrate. Slots, lanes and the ledger would all be instruments over
-  // a dial nobody turned — one line that names the action instead.
-  if (schemaBehind(d))
-    return (
-      <div className="mx-auto max-w-4xl px-6 py-6 text-xs text-ink-dim">
-        {SCHEMA_BEHIND_LINE}
-      </div>
-    )
+  // the other door: the status answered, and says it counted nothing.
+  // Slots, lanes and the ledger would all be instruments over a dial
+  // nobody turned — one line that names the action instead.
+  if (schemaBehind(d)) return <SchemaLine />
   const running = d.running
   const starting = !running && d.starting
   const workers = data.workers
