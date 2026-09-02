@@ -89,17 +89,23 @@ _proc_jobs: "dict[int, object]" = {}
 def track_proc(proc: subprocess.Popen, job=None) -> None:
     """Register a live spawn (and its Job Object, when one was made) so
     every kill path can reap the TREE. Providers call this instead of
-    touching `_live_procs` directly."""
+    touching `_live_procs` directly, and it is also where the spawn is
+    filed under the pipeline whose worker thread made it — the only
+    place both facts are in scope (`core/spawn_registry`, HID §3.7)."""
+    from ..core import spawn_registry   # cycle: the registry imports us
     with _live_procs_lock:
         _live_procs.add(proc)
         if job is not None:
             _proc_jobs[id(proc)] = job
+    spawn_registry.register(proc)
 
 
 def untrack_proc(proc: subprocess.Popen) -> None:
+    from ..core import spawn_registry
     with _live_procs_lock:
         _live_procs.discard(proc)
         _proc_jobs.pop(id(proc), None)
+    spawn_registry.unregister(proc)
 
 
 # Windows' `signal` module has no `SIGKILL` attribute at all — there is
@@ -1699,15 +1705,11 @@ class ClaudeCliProvider:
         # the proc.wait below blocks for up to req.timeout_sec (~960s)
         # even after the dispatcher main loop has returned, dragging
         # daemon shutdown out 16min × pool_size.
-        with _live_procs_lock:
-            _live_procs.add(proc)
-            _proc_jobs[id(proc)] = job
+        track_proc(proc, job)
         try:
             return self._run_proc(req, proc, watchdog_eligible)
         finally:
-            with _live_procs_lock:
-                _live_procs.discard(proc)
-                _proc_jobs.pop(id(proc), None)
+            untrack_proc(proc)
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
                   watchdog_eligible: bool) -> int:

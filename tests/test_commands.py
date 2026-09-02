@@ -433,3 +433,300 @@ def test_preview_of_a_non_cascading_kind_is_empty(
                            payload={"target_goal_id": gid})
     assert out == {"affected": [], "cascade": False,
                    "revision": out["revision"]}
+
+
+# ---------------------------------------------------------------------
+# the kill signal (§3.7) — the one command that reaches an OS process
+# ---------------------------------------------------------------------
+
+class _FakeSink:
+    """The daemon's spawn registry, without a daemon. It records what it
+    was asked to kill; the real one turns the same call into a kill of
+    the process TREE recorded for that pipeline id."""
+
+    def __init__(self, killed: int = 1, error: "Exception | None" = None):
+        self.calls: "list[tuple[str, str]]" = []
+        self._killed = killed
+        self._error = error
+
+    def deliver(self, pipeline_id: str, signal: str) -> int:
+        self.calls.append((pipeline_id, signal))
+        if self._error is not None:
+            raise self._error
+        return self._killed
+
+
+def _running_formalizer(conn: sqlite3.Connection, goal_id: int,
+                        pipeline_id: str = "pipe-1") -> str:
+    db.record_pipeline_start(conn, pipeline_id=pipeline_id,
+                             kind="Formalizer", target_id=str(goal_id),
+                             target_kind="Goal")
+    return pipeline_id
+
+
+@pytest.mark.parametrize("payload,word", [
+    ({"signal": "shelve"}, "pipeline_id"),
+    ({"pipeline_id": "pipe-1"}, "signal"),
+    ({"pipeline_id": "pipe-1", "signal": "explode"}, "signal"),
+    ({"pipeline_id": "pipe-1", "signal": "return_to_parent"}, "reason"),
+])
+def test_enqueue_refuses_a_malformed_signal(
+        conn: sqlite3.Connection, payload: dict, word: str) -> None:
+    """§3.7's payload is `{pipeline_id, signal, reason}` and `reason` is
+    owed for `return_to_parent` — closing a group from under a running
+    worker retires every line beneath it, and the parent is owed the
+    why. Refused at the POST like every other command's own fields."""
+    with pytest.raises(ValueError) as e:
+        _q(conn, "Signal", payload, key=f"bad-{word}-{len(payload)}")
+    assert word in str(e.value)
+
+
+def test_a_signal_needs_no_reason_unless_it_returns_to_the_parent(
+        conn: sqlite3.Connection) -> None:
+    for sig in ("shelve", "return_to_nl"):
+        assert _q(conn, "Signal", {"pipeline_id": "pipe-1", "signal": sig},
+                  key=f"ok-{sig}")
+
+
+def test_signal_preview_names_the_worker_and_what_stopping_it_does(
+        conn: sqlite3.Connection) -> None:
+    """§1.3: a command that cascades pops a confirm window, and a window
+    can only be honest if it names what it is about to kill. For a
+    signal that is the pipeline itself — kind, target and how long it
+    has been running, which is most of what tells a person whether they
+    mean it — plus the effect the chosen signal will have."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    _running_formalizer(conn, gid)
+    out = commands.preview(conn, problem="p", kind="Signal",
+                           payload={"pipeline_id": "pipe-1",
+                                    "signal": "shelve"})
+    assert out["pipeline"]["kind"] == "Formalizer"
+    assert out["pipeline"]["target_id"] == str(gid)
+    assert out["pipeline"]["started_at"]
+    assert "park" in out["effect"].lower()
+    assert [e["id"] for e in out["affected"]] == [gid]
+
+    ghost = commands.preview(conn, problem="p", kind="Signal",
+                             payload={"pipeline_id": "nope",
+                                      "signal": "shelve"})
+    assert ghost["pipeline"] is None
+
+
+@pytest.mark.parametrize("kind,status,word", [
+    ("Strategist", "running", "Strategist"),
+    ("Formalizer", "succeeded", "succeeded"),
+])
+def test_a_signal_is_refused_unless_it_aims_at_a_running_formalizer(
+        workspace: Path, conn: sqlite3.Connection, kind: str, status: str,
+        word: str) -> None:
+    """§3.7: only an in-flight Formalizer. The refusal NAMES the state it
+    actually found — a person whose kill did nothing must not be left
+    guessing which half of the sentence was wrong."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    db.record_pipeline_start(conn, pipeline_id="p9", kind=kind,
+                             target_id=str(gid), target_kind="Goal")
+    if status != "running":
+        db.finish_pipeline(conn, pipeline_id="p9", status=status,
+                           outcome="ok")
+    sink = _FakeSink()
+    cid = _q(conn, "Signal", {"pipeline_id": "p9", "signal": "shelve"},
+             key=f"wrong-{kind}-{status}")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+    row = commands.get(conn, cid)
+    assert row["status"] == "rejected"
+    assert word in row["outcome"]
+    assert sink.calls == [], "a refused signal must not reach a process"
+
+
+def test_a_signal_against_a_pipeline_nobody_knows_is_refused(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    sink = _FakeSink()
+    cid = _q(conn, "Signal", {"pipeline_id": "ghost", "signal": "shelve"},
+             key="ghost")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+    row = commands.get(conn, cid)
+    assert row["status"] == "rejected"
+    assert "ghost" in row["outcome"]
+    assert sink.calls == []
+
+
+def test_a_signal_applied_without_a_registry_is_refused_not_faked(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """The registry belongs to the daemon that owns the spawn. An
+    applier without one cannot kill anything, and an `applied` receipt
+    for a worker still running would be the worst answer available."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    _running_formalizer(conn, gid)
+    cid = _q(conn, "Signal", {"pipeline_id": "pipe-1",
+                              "signal": "return_to_nl"}, key="nosink")
+    commands.apply_pending(conn, workspace)
+    row = commands.get(conn, cid)
+    assert row["status"] == "rejected"
+    assert "registry" in row["outcome"]
+    assert str(db.get_goal(conn, gid)["status"]) != "shelved"
+
+
+def test_a_signal_that_cannot_be_delivered_files_no_decision(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """If the kill did not happen the park must not happen either: a
+    parked goal whose worker is still writing into the workspace is the
+    2026-08-15 failure with a human signature on it."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    _running_formalizer(conn, gid)
+    sink = _FakeSink(error=RuntimeError("no live spawn process registered"))
+    cid = _q(conn, "Signal", {"pipeline_id": "pipe-1", "signal": "shelve"},
+             key="undeliverable")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+    row = commands.get(conn, cid)
+    assert row["status"] == "rejected"
+    assert "no live spawn process registered" in row["outcome"]
+    assert str(db.get_goal(conn, gid)["status"]) != "shelved"
+
+
+def test_a_shelve_signal_kills_the_worker_and_parks_the_goal_as_a_human(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """§3.7: `shelve` = a human park, and a human park is TERMINAL — the
+    same `ConfirmShelve` the static command files, through the same
+    applier, with `actor='human'`, so `is_confirm_shelve_parked` reads
+    it as a decision rather than as a promise of a paired Inject."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    _running_formalizer(conn, gid)
+    sink = _FakeSink()
+    cid = _q(conn, "Signal", {"pipeline_id": "pipe-1", "signal": "shelve",
+                              "reason": "this line is a dead end"},
+             key="sig-shelve")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+
+    row = commands.get(conn, cid)
+    assert row["status"] == "applied", row["outcome"]
+    assert sink.calls == [("pipe-1", "shelve")]
+    assert str(db.get_goal(conn, gid)["status"]) == "shelved"
+    assert db.is_confirm_shelve_parked(conn, gid) is True
+    d = conn.execute(
+        "SELECT decision_kind, actor FROM strategist_decisions WHERE id = ?",
+        (row["decision_id"],)).fetchone()
+    assert (str(d["decision_kind"]), str(d["actor"])) == ("ConfirmShelve",
+                                                          "human")
+
+
+def test_a_return_to_parent_signal_closes_the_group_with_the_reason(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """§3.7: the group that owns the killed worker's goal returns to its
+    parent — the existing group-return path, carrying the person's own
+    reason."""
+    top = groups.ensure_top_group(conn, "p")
+    gid = _goal(conn, "brick", "B", origin="forward")
+    # A group owns a goal by DERIVATION (`groups.group_for_goal`); the
+    # anchor is the most specific of those edges.
+    kid = groups.open_group(conn, problem="p", parent_group_id=top,
+                            charter="the sub-charter", anchor_goal_id=gid)
+    _running_formalizer(conn, gid)
+    sink = _FakeSink()
+    cid = _q(conn, "Signal",
+             {"pipeline_id": "pipe-1", "signal": "return_to_parent",
+              "reason": "the charter was wrong"}, key="sig-rtp")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+
+    row = commands.get(conn, cid)
+    assert row["status"] == "applied", row["outcome"]
+    d = conn.execute(
+        "SELECT decision_kind, actor, group_id FROM strategist_decisions"
+        " WHERE id = ?", (row["decision_id"],)).fetchone()
+    assert (str(d["decision_kind"]), str(d["actor"]),
+            int(d["group_id"])) == ("ReturnToParent", "human", kid)
+    assert str(groups.get(conn, kid)["status"]) != groups.ACTIVE
+
+
+def test_a_return_to_nl_signal_kills_and_files_no_decision(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """§3.7: `return_to_nl` needs no decision row — the goal going back
+    to the NL layer IS the killed pipeline's own cascade, and the
+    existing outcome token says so. Nothing is re-dispatched by the
+    signal itself."""
+    gid = _goal(conn, "brick", "B", origin="forward")
+    _running_formalizer(conn, gid)
+    sink = _FakeSink()
+    before = conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions").fetchone()[0]
+    cid = _q(conn, "Signal", {"pipeline_id": "pipe-1",
+                              "signal": "return_to_nl"}, key="sig-nl")
+    commands.apply_pending(conn, workspace, signal_sink=sink)
+
+    row = commands.get(conn, cid)
+    assert row["status"] == "applied", row["outcome"]
+    assert sink.calls == [("pipe-1", "return_to_nl")]
+    assert row["decision_id"] is None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions").fetchone()[0] == before
+    assert conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0] == 0
+
+
+def test_the_signal_cascade_map_reuses_the_frameworks_own_tokens() -> None:
+    """The killed pipeline is finalised by the EXISTING completion path,
+    so each signal names an outcome that path already understands.
+    `return_to_nl` is the Formalizer's own decline token; the other two
+    are settled by the decision the applier just filed, so their own
+    cascade must decide nothing further — `moot` is the framework's word
+    for exactly that."""
+    from Tooling import pipeline as _pipeline
+    assert commands.SIGNAL_CASCADE["return_to_nl"] == (
+        "failed",
+        _pipeline.DECLINE_TO_FAILURE_REASON[_pipeline.DECLINE_RETURN_TO_NL])
+    assert commands.SIGNAL_CASCADE["shelve"][0] == "moot"
+    assert commands.SIGNAL_CASCADE["return_to_parent"][0] == "moot"
+    assert set(commands.SIGNAL_CASCADE) == set(commands.SIGNALS)
+
+
+def test_a_killed_pipelines_ending_is_the_persons_signal_not_its_own(
+        conn: sqlite3.Connection) -> None:
+    """§3.7's dispatcher half. A killed worker reports whatever its death
+    looked like from inside — a broken stream, a non-zero rc — and
+    finalised on that the pipeline reads as an infra failure, with the
+    person's decision nowhere in the record. So the armed signal is
+    substituted: the row's own outcome says who stopped it, and the pair
+    handed to the EXISTING cascade is `SIGNAL_CASCADE`'s."""
+    db.record_pipeline_start(conn, pipeline_id="pipe-1", kind="Formalizer",
+                             target_id="1", target_kind="Goal")
+
+    class _Sink:
+        def __init__(self):
+            self.armed = {"pipe-1": "shelve"}
+
+        def take(self, pid):
+            return self.armed.pop(pid, None)
+
+    sink = _Sink()
+    assert commands.finalise_signalled(
+        conn, sink, "pipe-1", "failed", "unclassified_spawn_failure") == (
+        "moot", "")
+    row = conn.execute(
+        "SELECT status, outcome FROM pipelines WHERE id = 'pipe-1'"
+    ).fetchone()
+    assert (str(row["status"]), str(row["outcome"])) == ("failed",
+                                                         "human_signal:shelve")
+    # Spent: a signal decides exactly one ending.
+    assert commands.finalise_signalled(
+        conn, sink, "pipe-1", "failed", "agent_error") == ("failed",
+                                                           "agent_error")
+
+
+def test_an_unsignalled_pipeline_keeps_its_own_ending(
+        conn: sqlite3.Connection) -> None:
+    """All but a handful of completions. Nothing is rewritten and the
+    `pipelines` row the worker already finalised is not touched again."""
+    db.record_pipeline_start(conn, pipeline_id="pipe-2", kind="Formalizer",
+                             target_id="1", target_kind="Goal")
+    db.finish_pipeline(conn, pipeline_id="pipe-2", status="succeeded",
+                       outcome="proved")
+
+    class _Empty:
+        def take(self, pid):
+            return None
+
+    assert commands.finalise_signalled(
+        conn, _Empty(), "pipe-2", "succeeded", "") == ("succeeded", "")
+    assert commands.finalise_signalled(
+        conn, None, "pipe-2", "succeeded", "") == ("succeeded", "")
+    assert str(conn.execute(
+        "SELECT outcome FROM pipelines WHERE id = 'pipe-2'"
+    ).fetchone()["outcome"]) == "proved"

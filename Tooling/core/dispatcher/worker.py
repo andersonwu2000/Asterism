@@ -19,7 +19,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ... import agent, pipeline
-from .. import config, fsutil, gateway_health, network_wait, quota, quota_wait
+from .. import (config, fsutil, gateway_health, network_wait, quota,
+                quota_wait, spawn_registry)
 from ..admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                          DENY_TARGET_COOLED, admission)
 from ..librarian_sched import _lib_decode, _derive_librarian_work  # noqa: E402
@@ -351,6 +352,11 @@ def _run_pipeline(workspace: Path,
     NB: opens its own DB conn (sqlite3 thread safety)."""
     import json as _json
     conn = db.connect()
+    # Claim this thread for this pipeline BEFORE anything below can
+    # spawn: it is what lets a person's kill signal (HID §3.7) find the
+    # process tree of THIS worker and no other. Pool threads are reused,
+    # so the release in the `finally` is not optional.
+    spawn_registry.bind(pipeline_id)
     try:
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
@@ -640,6 +646,7 @@ def _run_pipeline(workspace: Path,
             return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                     r.outcome, r.failure_reason)
     finally:
+        spawn_registry.unbind()
         conn.close()
 
 

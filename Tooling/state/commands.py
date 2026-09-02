@@ -36,7 +36,58 @@ from . import db
 #: anything else before the DB has to.
 KINDS: frozenset[str] = frozenset({
     "Delegate", "ReturnToParent", "MarkDeliverable",
-    "ConfirmShelve", "FetchPaper", "Inject"})
+    "ConfirmShelve", "FetchPaper", "Inject", "Signal"})
+
+#: §3.7's three kill signals. `Signal` is the one DYNAMIC command: every
+#: other kind acts on a row, this one reaches an OS process — a person
+#: stopping ONE in-flight Formalizer.
+SIGNALS: frozenset[str] = frozenset({
+    "return_to_parent", "shelve", "return_to_nl"})
+
+#: What the killed pipeline's completion is cascaded as. §3.7: the kill
+#: records the pipeline's outcome as its signal and lets the EXISTING
+#: completion path finalise it — it invents no cascade of its own.
+#:
+#:   return_to_nl  the Formalizer's OWN decline token, reused verbatim.
+#:                 The goal goes back to the Strategist as an NL question
+#:                 (`transitions.cascade_one` → `_enqueue_strategist_
+#:                 review`), which is exactly what the worker's own
+#:                 `-- decline: return_to_nl` does.
+#:   shelve /      already settled, by the human decision the applier
+#:   return_to_parent
+#:                 files below. Their pipeline's own result must
+#:                 therefore decide NOTHING further, and `moot` is the
+#:                 framework's existing word for that: `cascade_one`
+#:                 returns on it — no attempts++, no dead_attempts row,
+#:                 no state touched.
+SIGNAL_CASCADE: "dict[str, tuple[str, str]]" = {
+    "return_to_nl": ("failed", "return_to_nl"),
+    "shelve": ("moot", ""),
+    "return_to_parent": ("moot", ""),
+}
+
+#: signal → the static command that finalises it, filed by the applier
+#: through the SAME appliers §3.3 uses, with `actor='human'`.
+#: `return_to_nl` files none: the cascade IS its whole semantics.
+SIGNAL_DECISION: "dict[str, str]" = {
+    "shelve": "ConfirmShelve",
+    "return_to_parent": "ReturnToParent",
+}
+
+#: What the confirm window tells the person each signal will do.
+SIGNAL_EFFECT: "dict[str, str]" = {
+    "return_to_nl": ("the worker is killed and its goal goes back to the "
+                     "Strategist as a natural-language question; the Lean "
+                     "attempt in flight is lost and the goal's attempt "
+                     "count rises by one"),
+    "shelve": ("the worker is killed and you park the goal — a person's "
+               "park is TERMINAL: nothing revives it and no paired "
+               "Inject is owed"),
+    "return_to_parent": ("the worker is killed and the group that owns "
+                         "its goal returns to its parent with your "
+                         "reason; every line under that charter is "
+                         "retired with it"),
+}
 
 #: Stamped into `outcome` immediately BEFORE the appliers run. They
 #: commit as they go (each `_commit_*` helper calls `conn.commit()`), so
@@ -197,6 +248,23 @@ def validate_fields(kind: str, payload: dict) -> None:
     elif kind == "MarkDeliverable":
         if tid is None:
             raise ValueError("MarkDeliverable requires target_goal_id")
+    elif kind == "Signal":
+        # §3.7. A kill is aimed at ONE pipeline id, never at a name or a
+        # kind — that is the whole difference between this command and
+        # the broad-filter sweep CLAUDE.md rule 8 exists about.
+        if not str(payload.get("pipeline_id") or "").strip():
+            raise ValueError(
+                "Signal requires `pipeline_id` — a kill names the one "
+                "worker it stops (§3.7)")
+        sig = str(payload.get("signal") or "").strip()
+        if sig not in SIGNALS:
+            raise ValueError(
+                f"Signal requires `signal` to be one of "
+                f"{sorted(SIGNALS)}; got {sig!r}")
+        if sig == "return_to_parent":
+            _needs("reason", "closing a group from under a running "
+                             "worker retires every line beneath it, and "
+                             "the parent is owed the why")
     elif kind == "Delegate":
         # With a `target_goal_id` a person owes NEITHER charter nor
         # reason (§1.3): the goal's own statement is the charter, and a
@@ -278,6 +346,41 @@ def _group_entry(row, effect: str) -> dict:
             "status": str(row["status"]), "effect": effect}
 
 
+def _preview_signal(conn: sqlite3.Connection, out: dict,
+                    payload: dict) -> dict:
+    """§3.7's confirm window: WHICH worker is about to be killed, and
+    what stopping it does.
+
+    The row is the pipeline's own — kind, target and `started_at`. The
+    elapsed time is most of what tells a person whether they mean it: a
+    Formalizer four minutes in and one forty minutes in are the same row
+    and not the same decision. A pipeline id nobody knows returns
+    `pipeline: None` rather than an error — the window says "there is no
+    such worker", which is the answer.
+    """
+    pid = str(payload.get("pipeline_id") or "").strip()
+    sig = str(payload.get("signal") or "").strip()
+    out["effect"] = SIGNAL_EFFECT.get(sig, "")
+    row = conn.execute(
+        "SELECT id, kind, target_id, target_kind, status, started_at"
+        " FROM pipelines WHERE id = ?", (pid,)).fetchone()
+    if row is None:
+        out["pipeline"] = None
+        return out
+    out["pipeline"] = {
+        "id": str(row["id"]), "kind": str(row["kind"]),
+        "target_id": str(row["target_id"]),
+        "target_kind": str(row["target_kind"]),
+        "status": str(row["status"]),
+        "started_at": str(row["started_at"])}
+    if str(row["target_kind"]) == "Goal":
+        entry = _goal_entry(conn, int(row["target_id"]),
+                            SIGNAL_CASCADE.get(sig, ("", ""))[1] or sig)
+        if entry is not None:
+            out["affected"] = [entry]
+    return out
+
+
 def preview(conn: sqlite3.Connection, *, problem: str, kind: str,
             payload: dict) -> dict:
     """What this command would close, without closing anything.
@@ -301,6 +404,8 @@ def preview(conn: sqlite3.Connection, *, problem: str, kind: str,
 
     out: "dict" = {"affected": [], "cascade": False,
                    "revision": revision(conn, kind=kind, payload=payload)}
+    if kind == "Signal":
+        return _preview_signal(conn, out, payload)
     tid = target_of(kind, payload)
     if tid is None:
         return out
@@ -432,13 +537,155 @@ def _finish(conn: sqlite3.Connection, command_id: int, *, status: str,
     return get(conn, command_id)  # type: ignore[return-value]
 
 
-def apply_pending(conn: sqlite3.Connection, workspace: Path) -> "list[dict]":
+def finalise_signalled(conn: sqlite3.Connection, sink, pipeline_id: str,
+                       outcome: str,
+                       failure_reason: str) -> "tuple[str, str]":  # noqa: ANN001
+    """The dispatcher's side of §3.7, called once per completed pipeline.
+
+    A killed worker does not know it was killed: it reports whatever its
+    own death looked like from inside (a broken stream, a non-zero rc),
+    and finalised on that the pipeline reads as an infra failure — the
+    person's decision would be nowhere in the record. So the signal that
+    was armed at kill time is taken here and substituted:
+
+      * the `pipelines` row's OUTCOME becomes the signal, which is what
+        makes "why did this stop?" answerable months later from the row
+        itself rather than from a log nobody kept;
+      * the (outcome, failure_reason) the EXISTING cascade is given
+        becomes `SIGNAL_CASCADE`'s — no new transition, no new code path.
+
+    Returns the pair to cascade with; unchanged for every pipeline no
+    signal was armed for, which is all but a handful."""
+    sig = None if sink is None else sink.take(str(pipeline_id))
+    if sig is None:
+        return outcome, failure_reason
+    db.finish_pipeline(conn, pipeline_id=str(pipeline_id), status="failed",
+                       outcome=f"human_signal:{sig}")
+    return SIGNAL_CASCADE[sig]
+
+
+def _stamp_attempt(conn: sqlite3.Connection, command_id: int) -> None:
+    """Mark the row as being applied, in its own transaction. See
+    `ATTEMPT_MARK`: the appliers commit as they go, so a crash between
+    the mark and the effects must read as residue, not as work to redo."""
+    conn.execute("UPDATE human_commands SET outcome = ? WHERE id = ?",
+                 (f"{ATTEMPT_MARK} {db.now()}", int(command_id)))
+    conn.commit()
+
+
+def _apply_signal(conn: sqlite3.Connection, row: dict, *, workspace: Path,
+                  sink) -> dict:  # noqa: ANN001 — a SignalSink, duck-typed
+    """§3.7's kill: check, kill, finalise — in that order, and no other.
+
+    `sink` is the daemon's spawn registry (`core/spawn_registry.
+    SignalSink`), passed DOWN from the dispatcher loop rather than
+    imported: the applier runs inside that loop and the two facts it
+    needs — is this pipeline in THIS daemon's flight, and what process
+    tree belongs to it — are the loop's, not the state layer's.
+
+    The order is the whole safety property. If the kill did not happen,
+    the park must not happen either: a goal a person has parked while its
+    worker keeps writing into the workspace is the 2026-08-15 failure
+    (a spawn recorded as dead went on calling gateway tools for five
+    minutes) with a person's signature on it. So every refusal below
+    returns before the decision is filed.
+    """
+    from ..pipeline.strategist import commit as _commit
+    from . import groups as _groups
+
+    cid = row["id"]
+    payload = row["payload"]
+    try:
+        validate_fields("Signal", payload)
+    except ValueError as e:
+        return _finish(conn, cid, status="rejected",
+                       outcome=str(e.args[0] if e.args else e))
+    pid = str(payload["pipeline_id"]).strip()
+    sig = str(payload["signal"]).strip()
+
+    p = conn.execute("SELECT * FROM pipelines WHERE id = ?",
+                     (pid,)).fetchone()
+    if p is None:
+        return _finish(conn, cid, status="rejected", outcome=(
+            f"no pipeline {pid!r} — nothing has ever run under that id"))
+    # NAME the state actually found. A person whose kill did nothing must
+    # not be left to guess which half of the sentence was wrong.
+    if str(p["kind"]) != "Formalizer" or str(p["status"]) != "running":
+        detail = (f" (finished {p['finished_at']})"
+                  if p["finished_at"] else "")
+        return _finish(conn, cid, status="rejected", outcome=(
+            f"a signal stops an in-flight Formalizer; pipeline {pid} is a "
+            f"{p['kind']} with status {p['status']!r}{detail}"))
+    if sink is None:
+        return _finish(conn, cid, status="rejected", outcome=(
+            "no spawn registry on this applier — a kill signal can only "
+            "be applied by the daemon that owns the spawn"))
+
+    _stamp_attempt(conn, cid)
+    try:
+        killed = sink.deliver(pid, sig)
+    except Exception as e:  # noqa: BLE001 — one row, never the loop
+        return _finish(conn, cid, status="rejected",
+                       outcome=str(e.args[0] if e.args else e))
+    note = f"{sig}: killed {killed} process tree(s)"
+
+    decision_kind = SIGNAL_DECISION.get(sig)
+    if decision_kind is None:
+        # `return_to_nl`: the goal's return to the NL layer IS the killed
+        # pipeline's own cascade (`SIGNAL_CASCADE`). Nothing to file, and
+        # nothing re-dispatched by the signal itself (§3.7).
+        return _finish(conn, cid, status="applied", outcome=note)
+
+    if str(p["target_kind"]) != "Goal":
+        return _finish(conn, cid, status="rejected", outcome=(
+            f"{note}; but pipeline {pid} targets a {p['target_kind']}, "
+            f"not a Goal — {decision_kind} has nothing to act on"))
+    goal_id = int(p["target_id"])
+    reason = (str(payload.get("reason") or "").strip()
+              or f"stopped in flight by a human {sig} signal (§3.7)")
+    if decision_kind == "ConfirmShelve":
+        sub = {"target_goal_id": goal_id, "reason": reason}
+    else:
+        grp = _groups.group_for_goal(conn, row["problem"], goal_id)
+        if grp is None:
+            return _finish(conn, cid, status="rejected", outcome=(
+                f"{note}; but no group owns goal {goal_id}, so there is "
+                f"no charter to return"))
+        sub = {"group_id": int(grp["id"]), "reason": reason}
+    try:
+        decision = _decision_for(conn, problem=row["problem"],
+                                 kind=decision_kind, payload=sub)
+        outcome = _commit.commit_decisions(
+            [decision], conn, problem=row["problem"], tick=0,
+            trigger_kind="human", workspace=workspace,
+            group_id=_group_for(conn, problem=row["problem"],
+                                kind=decision_kind, payload=sub),
+            actor=_commit.ACTOR_HUMAN)[0]
+    except Exception as e:  # noqa: BLE001 — one row, never the loop
+        # Loud and specific: the worker IS dead, and the finalisation is
+        # not. That is a half-applied command and the receipt says so.
+        return _finish(conn, cid, status="rejected", outcome=(
+            f"{note}; but the {decision_kind} did not land — "
+            f"{type(e).__name__}: {e}"))
+    return _finish(conn, cid, status="applied",
+                   outcome=f"{note}; {decision_kind} filed",
+                   decision_id=int(outcome.decision_row_id))
+
+
+def apply_pending(conn: sqlite3.Connection, workspace: Path,
+                  *, signal_sink=None) -> "list[dict]":  # noqa: ANN001
     """Apply every queued command; returns the finished rows.
 
     Called once per dispatcher tick. A single row's failure is a
     `rejected` row carrying the reason, never an exception out of this
     function: the queue is a guest in the daemon's loop and must not be
     able to wedge it.
+
+    `signal_sink` is the daemon's spawn registry (`core/spawn_registry.
+    SignalSink`), handed DOWN by the loop — §3.7's kill needs a process
+    tree and an answer to "is this pipeline in THIS daemon's flight?",
+    and neither is a thing `state/` may reach up for. None means no
+    registry, and a `Signal` is then refused rather than faked.
     """
     from ..pipeline.strategist import commit as _commit
 
@@ -459,6 +706,13 @@ def apply_pending(conn: sqlite3.Connection, workspace: Path) -> "list[dict]":
                 out.append(_finish(conn, cid, status="rejected",
                                    outcome="stale"))
                 continue
+        if row["kind"] == "Signal":
+            # §3.7: the one command whose effect is an OS process, so it
+            # has its own applier — the appliers below all take a
+            # `Decision` and a target row, and a signal has neither.
+            out.append(_apply_signal(conn, row, workspace=workspace,
+                                     sink=signal_sink))
+            continue
         try:
             decision = _decision_for(conn, problem=row["problem"],
                                      kind=row["kind"], payload=row["payload"])
@@ -468,10 +722,7 @@ def apply_pending(conn: sqlite3.Connection, workspace: Path) -> "list[dict]":
             out.append(_finish(conn, cid, status="rejected",
                                outcome=str(e.args[0] if e.args else e)))
             continue
-        conn.execute(
-            "UPDATE human_commands SET outcome = ? WHERE id = ?",
-            (f"{ATTEMPT_MARK} {db.now()}", cid))
-        conn.commit()
+        _stamp_attempt(conn, cid)
         try:
             outcome = _commit.commit_decisions(
                 [decision], conn, problem=row["problem"], tick=0,

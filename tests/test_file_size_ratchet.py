@@ -284,9 +284,17 @@ _WATERMARKS = {
     "Tooling/core/dispatcher/__init__.py": 250,
     "Tooling/core/dispatcher/refill.py": 300,
     "Tooling/core/dispatcher/triggers.py": 632,  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
-    "Tooling/core/dispatcher/worker.py": 650,
+    # 650→660: +7 2026-09-02 HID §3.7 — `_run_pipeline` binds its thread to
+    # its pipeline id (`core/spawn_registry`), which is what lets a
+    # person's kill signal find THIS worker's process tree by pid rather
+    # than by name — conscious bump.
+    "Tooling/core/dispatcher/worker.py": 660,
     "Tooling/core/dispatcher/lock.py": 300,
-    "Tooling/core/dispatcher/loop.py": 1325,  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
+    # 1325→1340: +12 2026-09-02 HID §3.7 — the loop builds the kill
+    # signal's sink over its own futures map, hands it to the command
+    # applier, and substitutes a killed pipeline's ending with the
+    # person's signal before the existing cascade — conscious bump.
+    "Tooling/core/dispatcher/loop.py": 1340,  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -722,7 +730,13 @@ _WATERMARKS = {
     "Tooling/pipeline/backward.py": 2370,  # +20 2026-08-30 certified negation lands as <slug>_disproof
     "Tooling/quality/dedupe.py": 1950,
     "Tooling/llm/zen_shim.py": 1950,
-    "Tooling/llm/claude_cli.py": 1900,
+    # 1900→1910: +2 2026-09-02 HID §3.7 — `track_proc`/`untrack_proc` also
+    # file a spawn under its pipeline (`core/spawn_registry`), so a
+    # person's kill signal aims at one worker by pid. The provider's own
+    # spawn was routed through those two functions at the same time (it
+    # touched `_live_procs` directly, against its own docstring), which
+    # paid four of the six lines back — conscious bump.
+    "Tooling/llm/claude_cli.py": 1910,
     "Tooling/agent/context.py": 1815,  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's

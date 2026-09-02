@@ -19,7 +19,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ... import agent, pipeline
-from .. import config, fsutil, gateway_health, network_wait, quota, quota_wait
+from .. import (config, fsutil, gateway_health, network_wait, quota,
+                quota_wait, spawn_registry as _spawn_registry)
 from ..admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                          DENY_TARGET_COOLED, admission)
 from ..warmup import LEAN_QUEUE_KINDS, NL_QUEUE_KINDS  # noqa: E402
@@ -245,6 +246,12 @@ def run(workspace: Path, *, once: bool = False,
     promotion_gate = PromotionGate(workspace, enabled=olean_warm_enabled)
     atexit.register(lambda: promotion_gate.shutdown(wait=False))
     futures: dict[Future, tuple[str, str, str, str]] = {}
+    # HID §3.7 — the kill signal's daemon half. `apply_pending` runs in
+    # this loop and needs two facts only the loop has (is that pipeline in
+    # THIS daemon's flight, and what process tree is it), so they are
+    # handed down rather than reached up for.
+    signals = _spawn_registry.SignalSink(
+        _spawn_registry.in_flight_over(futures))
     # In-memory live set of (target_id, kind) pairs currently executing in
     # this daemon. Passive trigger means at most one of each kind per
     # target, so the pair is a unique key. Daemon crash → set vanishes →
@@ -459,6 +466,10 @@ def run(workspace: Path, *, once: bool = False,
                 try:
                     done: WorkerDone = fut.result()
                     pid, kind, tid, tk, outcome, reason = done
+                    # A worker a person killed does not know it was
+                    # killed; §3.7's signal is what its ending means.
+                    outcome, reason = _commands.finalise_signalled(
+                        conn, signals, pid, outcome, reason)
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
@@ -960,7 +971,8 @@ def run(workspace: Path, *, once: bool = False,
         # instead of waiting for the next one. Guarded: the queue is a
         # guest in this loop and must never be able to wedge it.
         try:
-            _human = _commands.apply_pending(conn, workspace)
+            _human = _commands.apply_pending(conn, workspace,
+                                             signal_sink=signals)
             for _c in _human:
                 print(f"[commands] #{_c['id']} {_c['kind']} → "
                       f"{_c['status']}: {_c['outcome']}", flush=True)

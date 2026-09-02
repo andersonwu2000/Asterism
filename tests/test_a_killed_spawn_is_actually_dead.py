@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.core import process_group
+from Tooling.core import process_group, spawn_registry
 from Tooling.llm import claude_cli
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,3 +150,150 @@ def test_terminate_job_is_what_a_tracked_job_uses(
     claude_cli.track_proc(p, job="job-handle")
     claude_cli.kill_proc_tree(p)
     assert called == ["job-handle"]
+
+
+# ---------------------------------------------------------------------
+# which pid runs which pipeline (HID §3.7 — a person's kill signal)
+# ---------------------------------------------------------------------
+
+def test_a_spawn_is_recorded_against_the_pipeline_that_owns_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A kill aimed at one worker needs a PID, and the two halves of that
+    fact are held by different layers: the dispatcher's worker thread
+    knows the pipeline id, the provider knows the Popen. The binding is
+    per-THREAD because that is the only thing they share."""
+    monkeypatch.setattr(claude_cli, "_live_procs", set())
+    monkeypatch.setattr(claude_cli, "_proc_jobs", {})
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+
+    class _Proc:
+        def kill(self):
+            pass
+
+    p = _Proc()
+    spawn_registry.bind("pipe-1")
+    try:
+        claude_cli.track_proc(p, job=None)
+    finally:
+        spawn_registry.unbind()
+    assert spawn_registry.procs_for("pipe-1") == [p]
+    assert spawn_registry.procs_for("pipe-2") == []
+    claude_cli.untrack_proc(p)
+    assert spawn_registry.procs_for("pipe-1") == []
+
+
+def test_an_unbound_spawn_is_recorded_nowhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spawn nobody bound (a probe, a rescue turn outside a pipeline)
+    must not land under some other pipeline's id — an empty answer is
+    the honest one, and the signal refuses on it."""
+    monkeypatch.setattr(claude_cli, "_live_procs", set())
+    monkeypatch.setattr(claude_cli, "_proc_jobs", {})
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+    claude_cli.track_proc(object(), job=None)
+    assert spawn_registry._procs == {}
+
+
+def test_the_signal_sink_kills_the_tree_and_arms_the_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sink is what `state/commands` is handed: it kills by the
+    process tree recorded for THAT pipeline, then remembers the signal so
+    the dispatcher's own completion path cascades it as that outcome."""
+    killed: list = []
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+    monkeypatch.setattr(spawn_registry, "kill_proc_tree",
+                        lambda p: killed.append(p) or True)
+    proc = object()
+    spawn_registry._procs["pipe-1"] = [proc]
+    sink = spawn_registry.SignalSink(lambda pid: pid == "pipe-1")
+
+    assert sink.deliver("pipe-1", "shelve") == 1
+    assert killed == [proc]
+    assert sink.take("pipe-1") == "shelve"
+    assert sink.take("pipe-1") is None, "a signal is spent when taken"
+
+
+def test_the_sink_refuses_a_pipeline_this_daemon_does_not_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `running` row can outlive the daemon that wrote it. Killing on
+    the strength of that row alone would be a kill aimed at nothing —
+    or, with a reused pid, at somebody else."""
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+    sink = spawn_registry.SignalSink(lambda pid: False)
+    with pytest.raises(KeyError):
+        sink.deliver("pipe-1", "shelve")
+    assert sink.take("pipe-1") is None
+
+
+def test_the_sink_refuses_when_no_process_was_ever_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In flight, but with nothing to kill by pid (a provider that spawns
+    through `subprocess.run`, or a worker still assembling its context).
+    Refusing is the loud answer: the alternative is a receipt that says
+    the worker was stopped while it goes on writing into the workspace —
+    the 2026-08-15 failure with a person's name on it. Killing by NAME is
+    not an alternative (CLAUDE.md rule 8)."""
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+    sink = spawn_registry.SignalSink(lambda pid: True)
+    with pytest.raises(RuntimeError) as e:
+        sink.deliver("pipe-1", "shelve")
+    assert "pipe-1" in str(e.value)
+    assert sink.take("pipe-1") is None
+
+
+def test_the_sink_still_arms_when_the_tree_had_already_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registered but already dead: the spawn IS this pipeline's, its
+    completion is moments away, and the signal must still decide how that
+    completion cascades. Zero trees reaped is a count, not a refusal."""
+    monkeypatch.setattr(spawn_registry, "_procs", {})
+    monkeypatch.setattr(spawn_registry, "kill_proc_tree", lambda p: False)
+    spawn_registry._procs["pipe-1"] = [object()]
+    sink = spawn_registry.SignalSink(lambda pid: True)
+    assert sink.deliver("pipe-1", "return_to_nl") == 0
+    assert sink.take("pipe-1") == "return_to_nl"
+
+
+def test_the_worker_binds_its_pipeline_before_it_spawns_anything() -> None:
+    """The enumeration IS the audit, like the `proc.kill()` scan above: a
+    dispatch path that stops binding leaves every spawn it makes
+    unkillable by id, and nothing else would notice."""
+    src = (ROOT / "Tooling" / "core" / "dispatcher"
+           / "worker.py").read_text("utf-8")
+    assert "spawn_registry.bind(pipeline_id)" in src
+    assert "spawn_registry.unbind()" in src
+
+
+def test_in_flight_is_read_off_the_live_futures_map() -> None:
+    """The predicate the dispatcher hands the sink. It must read the map
+    at CALL time: the loop pops a future before it cascades, so a
+    pipeline whose worker has just finished is already not in flight —
+    and killing on a pid the OS may have reassigned is the whole failure
+    this aims away from."""
+    class _Meta:
+        def __init__(self, pipeline_id):
+            self.pipeline_id = pipeline_id
+
+    futures = {"fut-a": _Meta("pipe-1")}
+    in_flight = spawn_registry.in_flight_over(futures)
+    assert in_flight("pipe-1") is True
+    assert in_flight("pipe-2") is False
+    futures.pop("fut-a")
+    assert in_flight("pipe-1") is False
+
+
+def test_the_loop_hands_the_sink_to_the_command_applier() -> None:
+    """The wiring, as an enumeration: without it every `Signal` on a live
+    daemon is refused for want of a registry, and only a person trying to
+    stop a worker would ever find out."""
+    src = (ROOT / "Tooling" / "core" / "dispatcher"
+           / "loop.py").read_text("utf-8")
+    assert "_spawn_registry.SignalSink(" in src
+    assert "signal_sink=signals" in src
+    assert "_commands.finalise_signalled(" in src

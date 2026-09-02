@@ -692,14 +692,17 @@ def prepare_command(problem: str = "", kind: str = "",
     the console — running it is theirs to decide, always (§3.8).
 
     `kind` is one of Delegate, ReturnToParent, MarkDeliverable,
-    ConfirmShelve, Inject. `payload` carries that decision's own fields,
-    the same ones a Strategist writes:
+    ConfirmShelve, Inject, Signal. `payload` carries that decision's own
+    fields, the same ones a Strategist writes:
 
         ConfirmShelve   target_goal_id, reason (a person's park is final)
         ReturnToParent  group_id, reason
         MarkDeliverable target_goal_id, optional reason
         Delegate        charter, or target_goal_id to take one from
         Inject          target_goal_id, proof (the `## Proof` to settle)
+        Signal          pipeline_id, signal (return_to_parent | shelve |
+                        return_to_nl) — stops ONE in-flight Formalizer;
+                        `reason` is required for return_to_parent
 
     Returns JSON: `preview.affected` is every node the command would
     close, `revision` is the state the person is acting on, and
