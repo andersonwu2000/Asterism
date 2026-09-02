@@ -35,14 +35,27 @@ from . import db
 # never machine-amendable, so it has no entry here.
 _ALLOWED_FILES = ("Defs.lean", "Root.lean", "charter")
 
+#: An inbox row is ONE line. Longer titles (and every pre-`title` row,
+#: whose question is a paragraph) are cut here rather than in each
+#: reader, so the CLI and the cockpit name the same ask the same way.
+_TITLE_CAP = 80
+
+
+def _title(payload: dict) -> str:
+    """The one-line name of this ask: the Strategist's `title` when it
+    gave one (HID §3.4), else the question's first line."""
+    raw = str(payload.get("title") or payload.get("question") or "").strip()
+    return raw.splitlines()[0].strip()[:_TITLE_CAP] if raw else ""
+
 
 def pending_amends(conn: sqlite3.Connection,
                    *, problem: str | None = None) -> list[dict]:
     """All unresolved RequestUserAmend rows, oldest first.
 
-    Each entry: {id, problem, file, proposed_body, question, reason,
-    created_at}. `reason` is the Strategist's row-level rationale;
-    `question` is the specific ask carried in the payload.
+    Each entry: {id, problem, file, title, proposed_body, question,
+    reason, created_at}. `reason` is the Strategist's row-level
+    rationale; `question` is the specific ask carried in the payload,
+    and `title` is its one-line heading for a list.
     """
     q = ("SELECT id, problem, reason, payload, created_at"
          " FROM strategist_decisions"
@@ -63,6 +76,7 @@ def pending_amends(conn: sqlite3.Connection,
             "id": int(row["id"]),
             "problem": str(row["problem"]),
             "file": str(payload.get("file", "")),
+            "title": _title(payload),
             "proposed_body": str(payload.get("proposed_body", "")),
             "question": str(payload.get("question", "")),
             "reason": str(row["reason"] or ""),

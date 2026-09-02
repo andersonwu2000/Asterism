@@ -542,6 +542,41 @@ def test_inbox_lists_amend_with_both_bodies(workspace: Path) -> None:
     assert meta["inbox_count"] == 1
 
 
+def _amend_row(workspace: Path, payload: dict) -> None:
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    _add_decision(conn, "p", kind="RequestUserAmend",
+                  outcome="awaiting_human", payload=payload)
+    conn.close()
+
+
+def test_inbox_amend_title_comes_from_the_decision_payload(
+        workspace: Path) -> None:
+    """The reader's list needs one line naming the ask. A `title` the
+    Strategist wrote in decision.json rides the payload the parser built
+    (HID §3.4) — nothing between it and the inbox drops the field."""
+    from Tooling.pipeline.strategist.model import parse_decision
+    d, err = parse_decision(json.dumps({
+        "kind": "RequestUserAmend", "problem": "p", "file": "charter",
+        "proposed_body": "# proposed\n", "question": "apply this?",
+        "title": "Charter omits the n = 0 case"}))
+    assert err == "" and d is not None
+    _amend_row(workspace, d.payload)
+    a = _client(workspace).get("/api/inbox").json()["amends"][0]
+    assert a["title"] == "Charter omits the n = 0 case"
+
+
+def test_inbox_amend_title_falls_back_to_the_question(
+        workspace: Path) -> None:
+    """Absent (every row written before the field existed), the question's
+    FIRST line stands in, capped at 80 chars — a list row is one line, and
+    a question is a paragraph."""
+    _amend_row(workspace, {"file": "charter", "proposed_body": "# proposed\n",
+                           "question": "Q" * 100 + "\nand the reasoning\n"})
+    a = _client(workspace).get("/api/inbox").json()["amends"][0]
+    assert a["title"] == "Q" * 80
+
+
 def test_amend_accept_writes_charter_and_resumes(workspace: Path) -> None:
     did, pdir = _amend_fixture(workspace)
     c = _client(workspace)
