@@ -475,10 +475,10 @@ _WATERMARKS = {
     # every symbol so `db.X` call sites are unaffected. See the born-
     # 2026-08-29 entries below.
     "Tooling/state/db/__init__.py": 200,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/core.py": 970,  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/core.py": 971,  # +1 2026-09-03 strategist_decisions.report_carried_at: the batch-report carry-over mark the clock ratchet cannot express  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
     "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/goals.py": 650,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/problems.py": 1200,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/problems.py": 1209,  # +9 2026-09-03 `unacknowledged_inject_batches` also honours the carry-over mark (a mid-debate batch nobody acted on is still owed its report)  # born 2026-08-29 from the db.py split
     "Tooling/state/db/reach.py": 200,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/strategies.py": 400,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/pipelines.py": 165,  # born 2026-08-29 from the db.py split  # +routine audit 2026-08-30
@@ -529,7 +529,7 @@ _WATERMARKS = {
     # for the `Signal` kind, + the ladder-level FK re-arm its constraint
     # test exposed (every rebuild's own `finally` re-arm is a no-op
     # inside the rebuild's transaction) — conscious bump.
-    "Tooling/state/db_migrations.py": 3140,  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 3147,  # +7 2026-09-03 report_carried_at ALTER (additive nullable, no user_version bump)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
@@ -674,8 +674,8 @@ _WATERMARKS = {
     "Tooling/pipeline/strategist/__init__.py": 100,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/verify.py": 1200,  # 1150→1200 2026-09-02: the Ingest report gate checks the four paper headings (owner ruling) — conscious bump  # +32 2026-09-02 HID D2: the Ingest-report structural gate (unconditional since the wake prompts ask for the field)  # +9 2026-08-30 two-part brick shape gate on Inject proof  # +17 2026-08-30 refuted needs the gate-born brick; Ingest accepts a disproved root  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30; +7 2026-08-30 action gate reads target_id, shelved roots not in flight (3e61beb9 shipped red here — caught 05:59Z)
-    "Tooling/pipeline/strategist/commit.py": 1070,  # +15 2026-09-02 HID D2: the Ingest report stored + rendered on the problem-terminal path  # +39 2026-09-02 HID §3.2/§3.3: `actor` threaded through every INSERT + the human Inject's dispatch band  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
-    "Tooling/pipeline/strategist/wake.py": 936,  # 918→936 2026-09-03: the rebuttal names which files are fresh + the per-round delta pack (the pack itself is rendered in `round_materials`) — conscious bump  # 906→918 2026-09-03: the author's round-fresh record — `round_materials.refresh` into the attempts dir at every rebuttal round (the new module holds the rendering) — conscious bump  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/commit.py": 1079,  # +9 2026-09-03 the acknowledgment law runs before the clock bump (`batch_ack.settle`; the law itself is a new module)  # +15 2026-09-02 HID D2: the Ingest report stored + rendered on the problem-terminal path  # +39 2026-09-02 HID §3.2/§3.3: `actor` threaded through every INSERT + the human Inject's dispatch band  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/wake.py": 941,  # +5 2026-09-03 the wake hands its commit the batch roster it DELIVERED  # 918→936 2026-09-03: the rebuttal names which files are fresh + the per-round delta pack (the pack itself is rendered in `round_materials`) — conscious bump  # 906→918 2026-09-03: the author's round-fresh record — `round_materials.refresh` into the attempts dir at every rebuttal round (the new module holds the rendering) — conscious bump  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
     # here) split move-only into `Tooling/agent/phase2_context/` along the
     # file's own section breaks (task B2): `dossier.py` is the pending-

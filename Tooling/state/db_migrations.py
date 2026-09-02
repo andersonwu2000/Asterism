@@ -190,6 +190,13 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         ("outcome_detail",
          "ALTER TABLE strategist_decisions ADD COLUMN outcome_detail TEXT"
          " NULL DEFAULT NULL"),
+        # The batch-report carry-over mark (see the SCHEMA comment).
+        # Additive nullable, no user_version bump: NULL everywhere is
+        # exactly the pre-2026-09-03 behaviour, so an unmigrated read and
+        # a migrated one answer the same on every existing row.
+        ("report_carried_at",
+         "ALTER TABLE strategist_decisions ADD COLUMN report_carried_at"
+         " TEXT NULL DEFAULT NULL"),
         # anchor+claim architecture — top-level deliverable marker set by
         # the Strategist. Additive defaulted (CHECK only enforced for
         # fresh DBs; `mark_deliverable` is the sole writer and passes

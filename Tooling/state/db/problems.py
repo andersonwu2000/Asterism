@@ -126,9 +126,18 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
     commit acknowledges a sibling's completed batch on the sibling's
     behalf, and the batch-done wake that forces a real advance is simply
     skipped.
+
+    2026-09-03 — the clock is no longer the whole answer. A batch that
+    finished MID-DEBATE reached the author as a delta line, not as a
+    report, and the commit's bump would swallow it; `strategist.
+    batch_ack` marks such a batch `report_carried_at` and it stays
+    unacknowledged until a wake actually delivers or acts on it. NULL
+    (every legacy row, every batch a wake received normally) means the
+    clock decides, exactly as before.
     """
     sql = ("SELECT batch_id,"
            "       SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
+           "       MAX(report_carried_at) AS carried,"
            "       MAX(updated_at) AS last_update"
            " FROM strategist_decisions"
            " WHERE problem = ? AND batch_id IS NOT NULL")
@@ -152,7 +161,7 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
             " WHERE name = ?", (problem,)).fetchone()
     lsa = str(lsa_row["lsa"]) if lsa_row else '1970-01-01T00:00:00+00:00'
     return [str(r["batch_id"]) for r in rows
-            if str(r["last_update"]) > lsa]
+            if r["carried"] is not None or str(r["last_update"]) > lsa]
 
 
 # Phase 6 — `problems_needing_t0` (root `frozen` → first_launch wake) is

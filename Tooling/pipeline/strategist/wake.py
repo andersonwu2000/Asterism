@@ -181,6 +181,11 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             ),
         )
 
+    # The batch reports this wake DELIVERS: the Context below renders
+    # exactly these, and its commit may acknowledge only what it
+    # delivered or acted on (`batch_ack`). Captured before the compile,
+    # so a batch that lands during it is carried, not silently swallowed.
+    delivered = db.unacknowledged_inject_batches(conn, problem, group_id)
     # Stage 1 — Context.md
     compile_strategist_context(
         conn, problem=problem, trigger_kind=trigger_kind,
@@ -645,7 +650,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             commit_decisions(
                 decisions, conn, problem=problem, tick=tick,
                 trigger_kind=trigger_kind, workspace=workspace,
-                group_id=group_id,
+                group_id=group_id, delivered_batches=delivered,
             )
         except Exception as e:
             return PipelineResult(
@@ -668,7 +673,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         outcomes = commit_decisions(
             decisions, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, workspace=workspace,
-            group_id=group_id,
+            group_id=group_id, delivered_batches=delivered,
         )
     except Exception as e:
         # Commit must succeed once verify passed; any error here is

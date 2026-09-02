@@ -2360,6 +2360,230 @@ def test_commit_decisions_inject_forward_plus_confirmshelve(
     assert db.get_goal(conn, root)["status"] == "shelved"
 
 
+# ---------------------------------------------------------------------
+# The acknowledgment law — which completed Inject batches a commit is
+# allowed to swallow (2026-09-03).
+#
+# Since the per-round refresh (1c942b70 / ff9e9a6a) a Strategist learns
+# mid-debate that a batch it did not wake for has finished, and may act
+# on it in the batch it is about to land. The clock ratchet
+# (`last_strategist_at`) could not tell those two apart: bumped at
+# commit, it swallowed EVERY completed batch, acted on or not — so a
+# batch whose whole report the author had seen as one delta LINE was
+# marked as delivered and its outcomes never reached any wake.
+# ---------------------------------------------------------------------
+
+def _seed_done_batch(conn: sqlite3.Connection, *, batch_id: str,
+                     group_id: int, produced_goal_id: "int | None" = None,
+                     produced_strategy_id: "int | None" = None,
+                     problem: str = "p") -> str:
+    """One Inject batch that has fully terminated — every row's `outcome`
+    filled, which is the shape `unacknowledged_inject_batches` looks
+    for."""
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, brief, reason,"
+        " payload, batch_id, produced_goal_id, produced_strategy_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Inject', ?, NULL, 'brief', NULL, '{}',"
+        "         ?, ?, ?, 'success', ?, ?)",
+        (problem, int(group_id), batch_id, produced_goal_id,
+         produced_strategy_id, ts, ts))
+    conn.commit()
+    return batch_id
+
+
+def _landed_row(conn: sqlite3.Connection, *, kind: str, group_id: int,
+                target_id: "int | None", problem: str = "p") -> int:
+    """A committed decision row of `kind` naming `target_id`."""
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, brief, reason,"
+        " payload, outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', ?, ?, ?, NULL, 'r', '{}', 'success',"
+        "         ?, ?)",
+        (problem, kind, int(group_id), target_id, ts, ts))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_a_landed_decision_acknowledges_the_batch_it_touches(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """THE scenario. Batch A produced g123 and finished mid-debate — the
+    author saw it as a delta line, never as a report. This wake lands an
+    Inject targeting g123: it ACTED on A, so A is acknowledged and never
+    comes back. That Inject is batch B; when B finishes, the next wake's
+    batch section carries B's outcome and only B's.
+
+    The acknowledgment is keyed by batch_id, never by goal id: B is not
+    acknowledged for containing g123's work, it is simply not finished
+    yet, and A is not un-acknowledged by B landing on the same goal."""
+    from Tooling.state import groups as _groups
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    g123 = db.insert_goal(
+        conn, problem="p", slug="brick_a",
+        lean_path="Problems/p/proofs/L_brick_a.lean", statement="A",
+        origin="forward", depth=1)
+    _seed_done_batch(conn, batch_id="A", group_id=top,
+                     produced_goal_id=g123)
+    assert db.unacknowledged_inject_batches(conn, "p", top) == ["A"]
+
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Backward", "target_goal_id": g123,
+         "proof": "Theorem. split the brick\nProof. as argued."},
+    ]))
+    assert strategist.verify_decisions(
+        ds, conn, problem="p", group_id=top) == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace, group_id=top, delivered_batches=[])
+    b = outcomes[0].batch_id
+    assert b is not None and b != "A"
+    assert db.unacknowledged_inject_batches(conn, "p", top) == []
+
+    # B terminates later — only B is owed a report.
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome='return_to_nl',"
+        " updated_at = ? WHERE batch_id = ?", (db.now(), b))
+    conn.commit()
+    assert db.unacknowledged_inject_batches(conn, "p", top) == [b]
+
+
+def test_a_batch_seen_only_in_the_delta_stays_unacknowledged(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Same setup, but nothing this wake lands touches g123. A delta LINE
+    is not the report: the next wake still owes the author A's outcomes,
+    so A survives the commit that would previously have swallowed it."""
+    from Tooling.state import groups as _groups
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    g123 = db.insert_goal(
+        conn, problem="p", slug="brick_b",
+        lean_path="Problems/p/proofs/L_brick_b.lean", statement="A",
+        origin="forward", depth=1)
+    _seed_done_batch(conn, batch_id="A", group_id=top,
+                     produced_goal_id=g123)
+
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "proof": "Theorem. ## Need\nan unrelated lemma\nProof. as argued."},
+    ]))
+    assert strategist.verify_decisions(
+        ds, conn, problem="p", group_id=top) == ""
+    strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace, group_id=top, delivered_batches=[])
+    assert db.unacknowledged_inject_batches(conn, "p", top) == ["A"]
+
+
+@pytest.mark.parametrize("kind", ["ConfirmShelve", "MarkDeliverable",
+                                  "ReturnToParent", "Delegate", "Inject"])
+def test_any_landed_kind_naming_a_goal_of_the_batch_acknowledges_it(
+    conn: sqlite3.Connection, kind: str,
+) -> None:
+    """The law reads the COMMITTED ROWS' `target_id` / produced goal, not
+    a per-kind allowlist: every decision kind that can name a goal
+    acknowledges the batch that produced it, and a kind added tomorrow
+    joins by construction."""
+    from Tooling.state import groups as _groups
+    from Tooling.pipeline.strategist import batch_ack
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    g = db.insert_goal(
+        conn, problem="p", slug=f"brick_{kind.lower()}",
+        lean_path=f"Problems/p/proofs/L_{kind.lower()}.lean",
+        statement="A", origin="forward", depth=1)
+    _seed_done_batch(conn, batch_id="A", group_id=top, produced_goal_id=g)
+    rid = _landed_row(conn, kind=kind, group_id=top, target_id=g)
+    acked, carried = batch_ack.settle(
+        conn, problem="p", group_id=top, delivered=[],
+        landed_row_ids=[rid])
+    assert (acked, carried) == (["A"], [])
+    # Acknowledged = not carried past the clock bump the commit does next.
+    _groups.touch_strategist(conn, top, routine=False)
+    assert db.unacknowledged_inject_batches(conn, "p", top) == []
+
+
+def test_the_batch_goal_set_reaches_its_minted_descendants(
+    conn: sqlite3.Connection,
+) -> None:
+    """"Its goals" means the batch's produced goals AND the sub-goals
+    minted under them — a Strategist acting on a grandchild is acting on
+    the batch. A CITED sibling is not descent: it has its own life and
+    its own producing batch."""
+    from Tooling.state import groups as _groups
+    from Tooling.pipeline.strategist import batch_ack
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    parent = db.insert_goal(
+        conn, problem="p", slug="anc", lean_path="Problems/p/proofs/anc.lean",
+        statement="A", origin="forward", depth=1)
+    kid = db.insert_goal(
+        conn, problem="p", slug="kid", lean_path="Problems/p/proofs/kid.lean",
+        statement="B", origin="backward", depth=2)
+    outsider = db.insert_goal(
+        conn, problem="p", slug="out", lean_path="Problems/p/proofs/out.lean",
+        statement="C", origin="backward", depth=2)
+    sid = db.insert_strategy(
+        conn, goal_id=parent, lean_path="Problems/p/proofs/anc.lean",
+        proposal_md="split", created_by="backward")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=kid, position=0)
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=outsider, position=1,
+                    link_kind="cited")
+    _seed_done_batch(conn, batch_id="A", group_id=top,
+                     produced_goal_id=parent)
+    assert batch_ack.batch_goal_ids(conn, "A") == {parent, kid}
+
+    rid = _landed_row(conn, kind="ConfirmShelve", group_id=top,
+                      target_id=kid)
+    acked, _ = batch_ack.settle(conn, problem="p", group_id=top,
+                                delivered=[], landed_row_ids=[rid])
+    assert acked == ["A"]
+
+
+def test_acknowledging_a_batch_leaves_the_pending_review_standing(
+    conn: sqlite3.Connection,
+) -> None:
+    """The law touches batch reports and nothing else. A goal parked in
+    `pending_strategist_review` by a `return_to_nl` decline is the T2
+    trigger's persistent state — answered by a decision about THAT goal,
+    never by a batch acknowledgment happening beside it. So after the
+    acknowledgment the review row still stands and still classifies the
+    next wake."""
+    from Tooling.state import groups as _groups
+    from Tooling.pipeline.strategist import batch_ack
+    from Tooling.core.dispatcher.triggers import _derive_strategist_trigger
+    _insert_root(conn)
+    top = _groups.ensure_top_group(conn, "p")
+    g123 = db.insert_goal(
+        conn, problem="p", slug="brick_c",
+        lean_path="Problems/p/proofs/L_brick_c.lean", statement="A",
+        origin="forward", depth=1)
+    reviewed = db.insert_goal(
+        conn, problem="p", slug="returned",
+        lean_path="Problems/p/proofs/L_returned.lean", statement="R",
+        origin="forward", depth=1, status="pending_strategist_review")
+    _seed_done_batch(conn, batch_id="A", group_id=top,
+                     produced_goal_id=g123)
+    rid = _landed_row(conn, kind="Inject", group_id=top, target_id=g123)
+
+    acked, carried = batch_ack.settle(
+        conn, problem="p", group_id=top, delivered=[],
+        landed_row_ids=[rid])
+    _groups.touch_strategist(conn, top, routine=False)
+    assert (acked, carried) == (["A"], [])
+    assert db.unacknowledged_inject_batches(conn, "p", top) == []
+    assert (db.get_goal(conn, reviewed)["status"]
+            == "pending_strategist_review")
+    assert _derive_strategist_trigger(
+        conn, "p", group_id=top) == ("pending_review", reviewed)
+
+
 def test_run_strategist_noop_only_batch_maps_to_strategist_noop(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

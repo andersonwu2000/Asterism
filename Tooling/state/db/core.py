@@ -584,6 +584,15 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             REFERENCES groups(id) ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
     outcome_detail      TEXT NULL DEFAULT NULL,
+    -- report_carried_at (2026-09-03): this batch finished mid-debate and
+    -- the wake in flight neither received nor acted on it, so its REPORT
+    -- has reached no Strategist. The clock ratchet (`last_strategist_at`)
+    -- cannot say that — bumped at commit, it swallows every batch older
+    -- than itself — so this mark carries the batch past it to the next
+    -- wake. Written per batch, cleared on acknowledgement, by
+    -- `strategist.batch_ack`; NULL = "the ratchet decides" (legacy rows,
+    -- and every batch a wake received normally).
+    report_carried_at   TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );

@@ -495,6 +495,7 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      workspace: Path,
                      group_id: "int | None" = None,
                      actor: str = ACTOR_STRATEGIST,
+                     delivered_batches: "list[str] | None" = None,
                      ) -> list[CommitOutcome]:
     """Execute a multi-decision batch in declared order.
 
@@ -518,6 +519,12 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     fires `inject_batch_done` exactly once — when the LAST of the
     Forward / Backward / Builder injects reaches terminal. Each kind
     has its own completion signal (see `_commit_inject_batch`).
+
+    `delivered_batches` is the batch roster the wake's Context actually
+    carried; the clock bump below may swallow only those and the ones
+    this batch acts on (`batch_ack`). Omitted (a direct caller, a test,
+    a human command) it reads as "everything was delivered" — the
+    pre-2026-09-03 behaviour.
 
     Returns one CommitOutcome per decision (same order).
     """
@@ -604,6 +611,13 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # the next routine out by up to a full interval, silently buying the
     # machine quiet with the human's action.
     if actor != ACTOR_HUMAN:
+        # …and the bump is not allowed to swallow a batch this wake
+        # never received and never acted on (2026-09-03). Runs FIRST:
+        # it reads the pre-bump unacknowledged set.
+        from . import batch_ack
+        batch_ack.settle(conn, problem=problem, group_id=int(gid),
+                         delivered=delivered_batches,
+                         landed_row_ids=[o.decision_row_id for o in out])
         db.update_problem_last_strategist_at(conn, problem)
         _groups.touch_strategist(conn, int(gid),
                                  routine=(trigger_kind == "routine"))
