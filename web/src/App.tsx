@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { RouterProvider, useRoute, navigate } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
 import { parseProjectRoute, projectPath } from './lib/projectRoute'
+import { stalePair } from './lib/freshness'
 import Projects from './screens/Projects'
 import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
@@ -24,23 +25,25 @@ import { isStopped, onStopped } from './lib/shutdown'
  * speak wherever the reader is standing.
  */
 
-/** An update was unzipped over a LIVE console: the pages now come from
- * the new release while this process still answers with the old
- * endpoints. Nothing else can say so — the stale process cannot know on
- * its own which of its answers are lies. */
+/** Newer code is on disk than this process is running: an update
+ * unzipped over a LIVE console, or — in a dev workspace, where there is
+ * no release stamp at all — a serve started before the last edit. Either
+ * way the pages come from the newer bundle while this process answers
+ * with its older endpoints. Nothing else can say so: the stale process
+ * cannot know on its own which of its answers are lies, only that it is
+ * no longer the code on disk (`lib/freshness`). */
 function UpdateBanner({ meta }: { meta: Meta | null }) {
-  const v = meta?.version ?? null
-  const disk = meta?.disk_version ?? null
-  if (!v || !disk || v === disk) return null
+  const pair = stalePair(meta)
+  if (!pair) return null
   return (
     <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
       <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
       <span className="text-ink">
-        a newer Asterism is on disk — quit from Settings, then open Asterism.exe again to
-        finish the update
+        this console is answering with older code than is on disk — quit from Settings,
+        then start Asterism again
       </span>
       <span className="font-mono text-[10px] text-ink-faint">
-        {v.slice(0, 8)} → {disk.slice(0, 8)}
+        {pair[0]} → {pair[1]}
       </span>
     </div>
   )

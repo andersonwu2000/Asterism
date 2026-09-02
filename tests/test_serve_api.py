@@ -3037,3 +3037,32 @@ def test_the_board_does_not_test_other_shelves_for_stall(
     conn.close()
     assert [r["name"] for r in rows] == ["Mine.a"]
     assert asked == ["Mine.a"], asked
+
+
+def test_meta_says_whether_this_process_runs_the_code_on_disk(
+        workspace: Path, monkeypatch) -> None:
+    """The stale-console banner compared `version` to `disk_version` —
+    the release VERSION file. A dev workspace has none, so both were
+    null and the banner could never fire: a serve started before a
+    commit went on quietly answering with its old endpoints under the
+    new bundle's pages (which is how another Project's inbox reached
+    this one). The truthful pair is what THIS PROCESS loaded against
+    what is on disk now, and the fingerprint is the daemon's own
+    (`lifecycle.code_fingerprint`) so the two surfaces cannot drift."""
+    from Tooling.lsp import lifecycle as _gw
+    from Tooling.serve import code_version
+    code_version.reset()
+    c = _client(workspace)
+    body = c.get("/api/meta").json()
+    assert body["version"] is None and body["disk_version"] is None
+    assert body["code"]["loaded"] and body["code"]["disk"]
+    assert body["code"]["loaded"] == body["code"]["disk"]
+
+    # a source edit under a live console: the disk moves, what this
+    # process loaded cannot
+    monkeypatch.setattr(_gw, "code_fingerprint", lambda: "deadbeefcafe")
+    code_version.reset()
+    after = c.get("/api/meta").json()["code"]
+    assert after["disk"] == "deadbeefcafe"
+    assert after["loaded"] == body["code"]["loaded"]
+    assert after["loaded"] != after["disk"]

@@ -757,6 +757,12 @@ export interface Meta {
    * now — differing means an update landed under a live console */
   version?: string | null
   disk_version?: string | null
+  /** the same question with evidence a dev workspace also has: the
+   * fingerprint of the Tooling source tree THIS process loaded, and
+   * the one on disk now. A release stamp only exists in an installed
+   * build, so `version`/`disk_version` were null-vs-null in dev and a
+   * serve older than its own bundle could never say so. */
+  code?: { loaded: string; disk: string } | null
   db: 'ok' | 'missing' | 'behind'
   daemon: DaemonStatus
   inbox_count: number

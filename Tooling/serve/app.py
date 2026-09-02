@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..state import db
+from . import code_version as _code_version
 from . import daemon_cache as _daemon_cache
 from . import data as _data
 
@@ -409,6 +410,15 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             # stale console before opening it
             "version": loaded_version,
             "disk_version": _read_version(),
+            # the same question with evidence that exists in EVERY
+            # workspace: a dev tree has no VERSION file, so the pair
+            # above was null-vs-null and the banner could never fire
+            # while this process served old endpoints under a new
+            # bundle. `serve/code_version` reads the daemon's own
+            # fingerprint, so console and engine mean one thing by
+            # "stale code".
+            "code": {"loaded": _code_version.loaded(),
+                     "disk": _code_version.on_disk()},
             "db": db_state,
             "daemon": daemon_status(workspace),
             "inbox_count": inbox_n,
