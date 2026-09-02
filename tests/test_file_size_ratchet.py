@@ -517,7 +517,7 @@ _WATERMARKS = {
     # strategist_decisions rebuild for `actor` all live in the ladder by
     # design (a SCHEMA-declared column would order differently on a fresh
     # DB than on a migrated one) — conscious bump.
-    "Tooling/state/db_migrations.py": 3020,  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 3050,  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

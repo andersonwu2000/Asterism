@@ -10,6 +10,7 @@ migration), and assert post-conditions.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -1178,7 +1179,13 @@ def _rewind_to_v47(conn: sqlite3.Connection) -> None:
     """Undo exactly the v48 surface on a current-schema DB so a following
     `init_schema` runs the real forward step. The FK child goes first:
     SQLite refuses to drop a parent table while a live column still
-    references it."""
+    references it.
+
+    The `trigger_kind` CHECK is rewound too (2026-09-02). Dropping the
+    `actor` column alone left `'human'` in the enum, so the forward
+    step's rebuild short-circuited on its own probe and NO fixture ever
+    executed the `DROP TABLE strategist_decisions` every real disk takes
+    — the blind spot that let the FK-armed rebuild ship."""
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("ALTER TABLE problems DROP COLUMN project")
@@ -1186,6 +1193,27 @@ def _rewind_to_v47(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE strategist_decisions DROP COLUMN actor")
     conn.execute("ALTER TABLE programme_revisions DROP COLUMN summary")
     conn.executescript("DROP TABLE human_commands; DROP TABLE projects;")
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'").fetchone()[0]
+    idx = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index'"
+        " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
+    # The SCHEMA text carries `'human'` in a COMMENT as well as in the
+    # enum, and the forward step's probe is a substring test — so the
+    # comments go too, or the rewind is a no-op the probe cannot see.
+    sql = "\n".join(ln for ln in sql.splitlines()
+                    if not ln.strip().startswith("--"))
+    sql = sql.replace("'routine_fired','human'", "'routine_fired'")
+    assert "'human'" not in sql, "rewind did not remove 'human' from the enum"
+    conn.execute(re.sub(
+        r"CREATE TABLE\s+\"?strategist_decisions\"?", "CREATE TABLE _sd_v47",
+        sql, count=1))
+    conn.execute("INSERT INTO _sd_v47 SELECT * FROM strategist_decisions")
+    conn.execute("DROP TABLE strategist_decisions")
+    conn.execute("ALTER TABLE _sd_v47 RENAME TO strategist_decisions")
+    for s in idx:
+        conn.execute(s)
     conn.execute("PRAGMA user_version = 47")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
@@ -1219,6 +1247,41 @@ def test_v48_backfills_every_problem_into_a_project(tmp_path: Path) -> None:
         "union_closed": "union_closed"}
     assert {str(r["name"]) for r in conn.execute(
         "SELECT name FROM projects")} == {"Erdos", "union_closed"}
+    assert list(conn.execute("PRAGMA foreign_key_check")) == []
+    conn.close()
+
+
+def test_v48_completes_on_a_populated_disk(tmp_path: Path) -> None:
+    """The shape every real workspace has, and the one no fixture had.
+
+    The backfill writes rows, and Python's sqlite3 opens a transaction on
+    the first DML statement. `PRAGMA foreign_keys = OFF` is a SILENT
+    no-op inside a transaction, so the rebuild that follows reaches
+    `DROP TABLE strategist_decisions` with the constraints still armed;
+    the implicit `DELETE FROM` then trips `queue.decision_id` (NO ACTION)
+    and the whole step dies with `FOREIGN KEY constraint failed` —
+    leaving the disk one version short, with `programme_revisions.summary`
+    (added AFTER the rebuild) never created."""
+    conn = _v47_db(tmp_path / "pop.db", ("Erdos.p1",))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, created_at, updated_at)"
+        " VALUES ('Erdos.p1', 0, 'routine', 'Inject', ?, ?)",
+        (db.now(), db.now()))
+    did = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, decision_id, problem,"
+        " created_at) VALUES ('Formalizer', '1', ?, 'Erdos.p1', ?)",
+        (did, db.now()))
+    conn.commit()
+
+    db.init_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 48
+    assert "summary" in {r[1] for r in conn.execute(
+        "PRAGMA table_info(programme_revisions)")}
+    assert int(conn.execute(
+        "SELECT decision_id FROM queue").fetchone()[0]) == did
     assert list(conn.execute("PRAGMA foreign_key_check")) == []
     conn.close()
 

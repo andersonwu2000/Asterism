@@ -1136,6 +1136,35 @@ def _migrate_to_v48(conn: sqlite3.Connection) -> None:
                      " TEXT NULL DEFAULT NULL")
 
 
+def _disarm_foreign_keys(conn: sqlite3.Connection, step: str) -> None:
+    """Enter a table rebuild at autocommit, with foreign keys really OFF.
+
+    `PRAGMA foreign_keys` is a SILENT no-op inside a transaction, and
+    Python's sqlite3 opens one implicitly on the first DML statement. A
+    ladder step that WRITES ROWS before rebuilding a table therefore
+    reaches `DROP TABLE` with the constraints still armed — v48 shipped
+    exactly that shape (its Project backfill runs before the
+    `strategist_decisions` rebuild), and every populated disk died on
+    `DROP TABLE strategist_decisions` with `FOREIGN KEY constraint
+    failed` via `queue.decision_id`, leaving the ladder one version short
+    and `programme_revisions.summary` — added AFTER the rebuild — never
+    created (2026-09-02).
+
+    So: commit first, then VERIFY the pragma took. Every other rebuild in
+    this file is already reached at autocommit (each ladder step commits
+    at its end, and no other step writes rows before its own rebuild —
+    audited 2026-09-02); this makes that precondition checked instead of
+    assumed, so a step that breaks it says so here rather than at the
+    DROP two dozen statements later."""
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    if conn.execute("PRAGMA foreign_keys").fetchone()[0]:
+        raise RuntimeError(
+            f"{step}: foreign_keys stayed ON — a transaction is still "
+            f"open, so the rebuild would drop a referenced table with "
+            f"the constraints armed")
+
+
 def _v48_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
     """Widen `trigger_kind` with 'human' and append `actor` — the v45
     live-DDL rebuild one value further, plus the column the human channel
@@ -1143,7 +1172,7 @@ def _v48_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
     probe would short-circuit on the rebuilt DDL, so hanging `actor` off
     it would strand the column forever if a crash landed between them."""
     conn.execute("DROP TABLE IF EXISTS _sd_v48")
-    conn.execute("PRAGMA foreign_keys = OFF")
+    _disarm_foreign_keys(conn, "v48 strategist_decisions rebuild")
     try:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table'"
