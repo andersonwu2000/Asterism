@@ -8,6 +8,7 @@ import {
 } from '../lib/commands'
 import type { CommandFields, CommandKind, SignalKind } from '../lib/commands'
 import { goalLabel } from '../lib/format'
+import BenchConfirm from './BenchConfirm'
 import CommandConfirm from './CommandConfirm'
 import { Button } from './ui'
 
@@ -185,25 +186,31 @@ export function GoalCommandSheet({
 }
 
 /** A group node's commands (§1.3-2). A sub-group returns its charter
- * upward with a reason; the problem's own argument has no parent to
- * return to, and the two things §1.3-2 imagines for it — stop the task,
- * or regenerate the top group from a reason — have no command in the
- * queue's own CHECK list. That is stated, not simulated. */
+ * upward with a reason. The problem's own argument has no parent to
+ * return to, so what §1.3-2 asks for there — "stop this task" — is the
+ * BENCH (owner's ruling): the reversible move that takes one task off
+ * the live path while the run keeps going. It is not a queued command,
+ * so it goes through its own window rather than the receipt one. */
 export function GroupCommandSheet({
   problem,
   groupId,
   isTop,
+  benched,
   label,
   onClose,
 }: {
   problem: string
   groupId: number
   isTop: boolean
+  /** top group only: whether the task is already off the live path */
+  benched?: boolean
   label: string
   onClose: () => void
 }) {
   const [reason, setReason] = useState('')
   const [open, setOpen] = useState(false)
+  // the top group's own move: bench, which is not a queued command
+  const [benching, setBenching] = useState(false)
   const [refusal, setRefusal] = useState<{ field: string | null; detail: string } | null>(null)
   const payload = useMemo(
     () => payloadFor('ReturnToParent', { groupId, reason }),
@@ -213,7 +220,7 @@ export function GroupCommandSheet({
     <div className="mb-5 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] tracking-wider text-ink-faint uppercase">
-          {isTop ? 'closing this argument' : commandTitle('ReturnToParent')}
+          {isTop ? 'stopping this task' : commandTitle('ReturnToParent')}
         </span>
         <button
           className="ml-auto cursor-pointer rounded-md px-1.5 text-[13px] text-ink-faint transition-colors hover:text-ink"
@@ -224,12 +231,27 @@ export function GroupCommandSheet({
         </button>
       </div>
       {isTop ? (
-        <p className="mt-1.5 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
-          This is the task’s own argument — it has no parent to hand back to. To stop the
-          engine, use Stop on the Tasks page; to park one line of work for good, open its
-          star and park it there. Closing the top group outright, and regenerating it from a
-          reason, are not commands the engine accepts yet.
-        </p>
+        <>
+          <p className="mt-1.5 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
+            This is the task’s own argument — it has no parent to hand back to.{' '}
+            {benched
+              ? 'It is benched: dispatch skips it until you put it back, and everything it has is kept.'
+              : 'Stopping work on it means benching the task — dispatch skips it until you put it back, and the rest of the run carries on.'}{' '}
+            To park one line of work for good, open its star and park it there.
+          </p>
+          <div className="mt-2.5">
+            <Button variant="outline" onClick={() => setBenching(true)}>
+              {benched ? 'Put this task back…' : 'Stop this task…'}
+            </Button>
+          </div>
+          {benching && (
+            <BenchConfirm
+              problem={problem}
+              benched={benched !== true}
+              onClose={() => setBenching(false)}
+            />
+          )}
+        </>
       ) : (
         <>
           <p className="mt-1.5 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">

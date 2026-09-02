@@ -30,7 +30,8 @@ are exactly two frames and no sidebar.
   force step; and the run parameters folded beside them — models per
   seat, time budget, shelve threshold, quota behaviour. What waits on
   you rides at the top of the shelf: amend requests with word-level
-  diffs, ingest sign-offs with every vouchable statement in full.
+  diffs, ingest sign-offs with every vouchable statement in full; a row
+  a person has benched says so, and Groups is where it goes back.
   A task name opens that task's own page: Run, the parameters, then
   **the goal** and **your standing word** (the engine may propose a
   change to the first and can never touch the second), settings and
@@ -48,7 +49,13 @@ are exactly two frames and no sidebar.
 - **Groups** — the discussion tree: each group by code and charter, its
   Programme, the round it is arguing right now, and the bricks it handed
   back. One renderer, live or archived. A sub-group can be handed back
-  to its parent from here, with a reason, through the same window.
+  to its parent from here, with a reason, through the same window. The
+  task's OWN argument has no parent to hand back to, so what it offers
+  instead is the bench — stop this task without stopping the run:
+  dispatch skips it until it is put back, nothing in flight is killed,
+  and everything it has is kept. Its own window, because a bench is not
+  a queued command; the shelf marks a benched row, since the status chip
+  reads "paused" either way.
 - **Engine room** — observation: slots (one lane per agent, its unit,
   its statement, the tail it is writing, plus `cold-building sN` rows
   for promotion builds `in_flight` cannot see), each provider's quota

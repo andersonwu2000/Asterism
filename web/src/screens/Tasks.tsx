@@ -106,6 +106,18 @@ function Row({
               {p.in_flight}
             </span>
           )}
+          {/* exception ink only: a benched task reads "paused"/"idle"
+              like any other quiet one, so the chip cannot say a PERSON
+              took it off the live path — this is the only mark that
+              tells the two apart */}
+          {p.benched === true && (
+            <span
+              className="shrink-0 font-sans text-[11px] text-ink-faint"
+              title="you took this task off the live path — dispatch skips it until you put it back"
+            >
+              benched
+            </span>
+          )}
         </span>
       </td>
       <td className="pr-4">

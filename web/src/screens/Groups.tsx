@@ -26,9 +26,15 @@ import type { Programme, RunStatus } from '../lib/types'
 export default function Groups({
   project,
   problem,
+  benched,
 }: {
   project: string
   problem: string
+  /** the shelf row's own flag — the top group's sheet offers the bench
+   * (stop this task) and has to know which direction to offer. The
+   * shell already polls the board, so this rides down rather than
+   * opening a second poll of the same rows. */
+  benched?: boolean
 }) {
   // three states, not two: undefined = follow whoever is seated,
   // null = the reader chose the task's own argument, a number = that
@@ -114,6 +120,7 @@ export default function Groups({
                   problem={problem}
                   groupId={shown.id}
                   isTop={shown.is_top}
+                  benched={benched}
                   label={groupLabel(shown.id, charterTitle(shown))}
                   onClose={() => setActing(false)}
                 />

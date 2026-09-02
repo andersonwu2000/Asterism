@@ -18,6 +18,12 @@ export interface BoardProblem {
   goals: { open: number; proved: number; shelved: number; total: number }
   in_flight: number
   queued: number
+  /** taken off the live path by a person (`problems.benched`, v47):
+   * dispatch skips it until it is put back, and nothing else about it
+   * changes. The status chip cannot say this — a benched task reads
+   * "paused"/"idle" like any other quiet one — so the row carries the
+   * flag. Optional for a serve older than `743a234d`. */
+  benched?: boolean
   last_event: string | null
   created_at: string
 }

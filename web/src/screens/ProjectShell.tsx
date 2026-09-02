@@ -257,7 +257,12 @@ export default function ProjectShell({
             )
           ) : section === 'groups' ? (
             current ? (
-              <Groups key={current} project={project} problem={current} />
+              <Groups
+                key={current}
+                project={project}
+                problem={current}
+                benched={rows.find((p) => p.name === current)?.benched}
+              />
             ) : (
               <Empty project={project} />
             )
