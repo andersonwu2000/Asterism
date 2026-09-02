@@ -58,7 +58,10 @@ export const ASSISTANT = (
 
 /** A circular glyph button — the shape the two corner affordances
  * share. `live` is a state dot on the mark itself (identity is the
- * shape, state is the brightness: DESIGN.md's two channels). */
+ * shape, state is the brightness: DESIGN.md's two channels), and
+ * `pulse` is the same dot blinking — §1.4-2 asks the closed Assistant
+ * glyph to carry two states, and brightness/blink is the axis that
+ * carries them without touching the mark's identity. */
 export function IconButton({
   children,
   title,
@@ -66,6 +69,7 @@ export function IconButton({
   to,
   active,
   live,
+  pulse,
 }: {
   children: ReactNode
   title: string
@@ -73,14 +77,22 @@ export function IconButton({
   /** a destination instead of an action — the gear is a page */
   to?: string
   active?: boolean
+  /** something arrived while you were not looking */
   live?: boolean
+  /** it is working right now */
+  pulse?: boolean
 }) {
   const cls = `relative inline-flex cursor-pointer rounded-full p-1.5 transition-colors ${
     active ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:bg-surface-2 hover:text-ink'
   }`
-  const dot = live ? (
-    <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-starlight" />
-  ) : null
+  const dot =
+    pulse || live ? (
+      <span
+        className={`absolute top-1 right-1 h-1.5 w-1.5 rounded-full ${
+          pulse ? 'animate-pulse bg-ink-dim' : 'bg-starlight'
+        }`}
+      />
+    ) : null
   if (to !== undefined)
     return (
       <Link to={to} title={title} className={cls}>

@@ -238,7 +238,15 @@ function AreaRows({
   )
 }
 
-export default function DocShelf({ project }: { project: string }) {
+export default function DocShelf({
+  project,
+  onOpenChange,
+}: {
+  project: string
+  /** which document is under the cursor — the Assistant is told, and
+   * only the screen above may publish it (one focus, one author) */
+  onOpenChange?: (path: string | null) => void
+}) {
   const { data: tree, refresh } = usePoll<{ entries: DocEntry[] }>(
     `/api/projects/${encodeURIComponent(project)}/docs`,
     30000,
@@ -298,6 +306,11 @@ export default function DocShelf({ project }: { project: string }) {
   useEffect(() => {
     setEditing(false)
     setNote(null)
+  }, [open])
+  const openChangeRef = useRef(onOpenChange)
+  openChangeRef.current = onOpenChange
+  useEffect(() => {
+    openChangeRef.current?.(open)
   }, [open])
   useEffect(() => {
     if (creating !== null) inputRef.current?.focus()

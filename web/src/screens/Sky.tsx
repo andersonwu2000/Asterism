@@ -5,6 +5,7 @@ import { goalCode, goalLabel } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { onGoalHover, onGoalOpen, takePendingGoalOpen } from '../lib/goalFocus'
+import { usePublishFocus } from '../lib/focus'
 import { goalStatusLabel } from '../lib/vocab'
 import { scopeCovers } from '../lib/programmeFocus'
 import { projectPath } from '../lib/projectRoute'
@@ -257,6 +258,9 @@ export default function Sky({
   // stars lit by hovering a route in the goal panel (owner: the text
   // and the map must point at each other)
   const [routeHover, setRouteHover] = useState<number[] | null>(null)
+  // the Assistant is told which star is open (§1.4-2): the panel and
+  // this screen are in different subtrees, so it goes through the bus
+  usePublishFocus({ problem, goal_id: selectedGoal })
   // stars lit from elsewhere — a chat answer's citation, a lane in the
   // engine room: hovering lights the star, clicking selects it
   const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)

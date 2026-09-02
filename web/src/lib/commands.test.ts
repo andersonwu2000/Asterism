@@ -9,6 +9,7 @@ import {
   receiptLine,
   receiptStart,
   receiptStep,
+  splitPrepared,
 } from './commands'
 import type { CommandRow } from './commands'
 
@@ -207,5 +208,80 @@ describe('commandTitle', () => {
     expect(commandTitle('Inject')).toBe('hand it a proof')
     expect(commandTitle('Delegate')).toBe('hand it to a new group')
     expect(commandTitle('ReturnToParent')).toBe('return this group to its parent')
+  })
+})
+
+describe('splitPrepared', () => {
+  const block = JSON.stringify({
+    preview: {
+      affected: [
+        { id: 12, kind: 'goal', slug: 'descent_step', status: 'open', effect: 'shelved' },
+      ],
+      cascade: false,
+      revision: 4,
+    },
+    payload: { target_goal_id: 12, reason: 'the route is dead' },
+    kind: 'ConfirmShelve',
+    problem: 'Erdos.p1',
+  })
+
+  it('finds the prepared command in a fenced block and takes it out of the prose', () => {
+    const out = splitPrepared(
+      `I would park g12; here is the command.\n\n\`\`\`json\n${block}\n\`\`\`\n\nIt closes one goal.`,
+    )
+    expect(out.commands).toHaveLength(1)
+    expect(out.commands[0]).toMatchObject({
+      kind: 'ConfirmShelve',
+      problem: 'Erdos.p1',
+      payload: { target_goal_id: 12, reason: 'the route is dead' },
+    })
+    expect(out.commands[0].preview?.revision).toBe(4)
+    // the JSON is machine bookkeeping — the reader gets the affordance
+    expect(out.text).not.toContain('target_goal_id')
+    expect(out.text).toContain('I would park g12')
+    expect(out.text).toContain('It closes one goal.')
+  })
+
+  it('takes a whole answer that is only the JSON', () => {
+    const out = splitPrepared(block)
+    expect(out.commands).toHaveLength(1)
+    expect(out.text.trim()).toBe('')
+  })
+
+  it('leaves ordinary fenced code alone', () => {
+    const src = 'Try this:\n\n```lean\ntheorem x : True := trivial\n```\n'
+    const out = splitPrepared(src)
+    expect(out.commands).toHaveLength(0)
+    expect(out.text).toBe(src)
+  })
+
+  it('a JSON block that is not a command is left in the prose', () => {
+    const src = '```json\n{"hello": 1}\n```'
+    const out = splitPrepared(src)
+    expect(out.commands).toHaveLength(0)
+    expect(out.text).toBe(src)
+  })
+
+  it('refuses a block naming a kind the queue does not take', () => {
+    const src = `\`\`\`json\n${JSON.stringify({
+      kind: 'Frobnicate',
+      problem: 'Erdos.p1',
+      payload: {},
+    })}\n\`\`\``
+    expect(splitPrepared(src).commands).toHaveLength(0)
+  })
+
+  it('several prepared commands in one answer all surface', () => {
+    const two = `${'```json\n' + block + '\n```'}\n\nand also\n\n${
+      '```json\n' +
+      JSON.stringify({
+        kind: 'MarkDeliverable',
+        problem: 'Erdos.p1',
+        payload: { target_goal_id: 13 },
+      }) +
+      '\n```'
+    }`
+    const out = splitPrepared(two)
+    expect(out.commands.map((c) => c.kind)).toEqual(['ConfirmShelve', 'MarkDeliverable'])
   })
 })

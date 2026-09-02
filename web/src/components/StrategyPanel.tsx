@@ -64,7 +64,7 @@ export default function StrategyPanel({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
       const t = e.target as Element | null
-      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="explainer chat"]'))
+      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="assistant"]'))
         return
       onClose()
     }

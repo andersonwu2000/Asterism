@@ -143,7 +143,7 @@ export default function GoalPanel({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
       const t = e.target as Element | null
-      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="explainer chat"]'))
+      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="assistant"]'))
         return
       // the sheet is the innermost thing open — Escape closes what is
       // in front of you, not the panel behind it

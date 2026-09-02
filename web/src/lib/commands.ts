@@ -282,3 +282,81 @@ export function receiptLine(r: Receipt): string {
     return 'the record moved while you were reading it — preview again, then re-issue'
   return `refused — ${r.outcome}`
 }
+
+
+// ---------------------------------------------------------------------
+// what the Assistant prepared (§3.8)
+
+export interface PreparedCommand {
+  kind: CommandKind
+  problem: string
+  payload: Record<string, unknown>
+  /** what `prepare_command` already read — shown while the confirm
+   * window fetches its own, which is the one that decides */
+  preview?: CommandPreview
+}
+
+function asPrepared(raw: unknown): PreparedCommand | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const kind = o.kind
+  if (typeof kind !== 'string' || !(COMMAND_KINDS as readonly string[]).includes(kind))
+    return null
+  if (typeof o.problem !== 'string' || o.problem.trim() === '') return null
+  if (o.payload === null || typeof o.payload !== 'object' || Array.isArray(o.payload))
+    return null
+  const preview =
+    o.preview !== null && typeof o.preview === 'object' && !Array.isArray(o.preview)
+      ? (o.preview as unknown as CommandPreview)
+      : undefined
+  return {
+    kind: kind as CommandKind,
+    problem: o.problem,
+    payload: o.payload as Record<string, unknown>,
+    preview,
+  }
+}
+
+const FENCE_RE = /```[^\n]*\n([\s\S]*?)```/g
+
+/** Pull the Assistant's prepared commands out of an answer, and hand
+ * back the prose with those blocks removed.
+ *
+ * The tool returns JSON (`mcp_tools.prepare_command`) and the answer
+ * carries it through; the console reads the STRUCTURED block and never
+ * the prose around it — "the framework knows but flattens" runs the
+ * other way here, and a console that inferred a command from a sentence
+ * would be inventing one. A block that does not parse into a command
+ * the queue takes is left exactly where it was: it is then ordinary
+ * code, and the reader should see it.
+ */
+export function splitPrepared(text: string): {
+  text: string
+  commands: PreparedCommand[]
+} {
+  const commands: PreparedCommand[] = []
+  const out = text.replace(FENCE_RE, (whole, body: string) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      return whole
+    }
+    const cmd = asPrepared(parsed)
+    if (cmd === null) return whole
+    commands.push(cmd)
+    return ''
+  })
+  if (commands.length > 0) return { text: out.replace(/\n{3,}/g, '\n\n'), commands }
+  // some backends answer with the object and nothing else
+  const bare = text.trim()
+  if (bare.startsWith('{') && bare.endsWith('}')) {
+    try {
+      const cmd = asPrepared(JSON.parse(bare))
+      if (cmd !== null) return { text: '', commands: [cmd] }
+    } catch {
+      /* not JSON — ordinary prose that happens to start with a brace */
+    }
+  }
+  return { text, commands: [] }
+}

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
+import { usePublishFocus } from '../lib/focus'
 import { Link } from '../lib/router'
 import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
@@ -151,7 +152,15 @@ export default function Docs({
   // does not fill the reader's history with one entry per file
   const [sel, setSel] = useState<string | null>(path.slice(1).join('/') || null)
   const [task, setTask] = useState<string | null>(problem)
+  const [docPath, setDocPath] = useState<string | null>(null)
   const shown = task && tasks.includes(task) ? task : problem
+  // ONE author for the screen's focus: the shelf hands its selection up
+  // rather than publishing beside this, so the two cannot overwrite
+  // each other's answer to "what is open"
+  usePublishFocus({
+    problem: root === 'proofs' ? shown : null,
+    doc_path: root === 'shelf' ? docPath : null,
+  })
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
@@ -212,7 +221,7 @@ export default function Docs({
             </p>
           )
         ) : (
-          <DocShelf project={project} />
+          <DocShelf project={project} onOpenChange={setDocPath} />
         )}
       </div>
     </div>

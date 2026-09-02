@@ -7,7 +7,7 @@ import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Settings from './screens/Settings'
-import ChatDrawer from './components/ChatDrawer'
+import AssistantPanel from './components/AssistantPanel'
 import type { BoardResponse, Meta } from './lib/types'
 import { isStopped, onStopped } from './lib/shutdown'
 
@@ -157,10 +157,14 @@ function Shell() {
     () => localStorage.getItem('asterism.chatOpen') === '1',
   )
   const [chatStreaming, setChatStreaming] = useState(false)
+  // an answer that landed while the panel was closed: the glyph says so
+  // until the panel is opened (§1.4-2 — the closed glyph carries state)
+  const [chatUnread, setChatUnread] = useState(false)
   const setChat = useCallback((v: boolean | ((o: boolean) => boolean)) => {
     setChatOpen((o) => {
       const next = typeof v === 'function' ? v(o) : v
       localStorage.setItem('asterism.chatOpen', next ? '1' : '0')
+      if (next) setChatUnread(false)
       return next
     })
   }, [])
@@ -208,6 +212,7 @@ function Shell() {
               onToggleRail={toggleRail}
               chatOpen={chatOpen}
               chatStreaming={chatStreaming}
+              chatUnread={chatUnread}
               onToggleChat={() => setChat((o) => !o)}
             />
           ) : section === 'settings' ? (
@@ -233,10 +238,11 @@ function Shell() {
             <Projects />
           )}
         </main>
-        <ChatDrawer
+        <AssistantPanel
           open={chatOpen}
           onClose={() => setChat(false)}
           onStreamingChange={setChatStreaming}
+          onReplyWaiting={setChatUnread}
         />
       </div>
     </div>

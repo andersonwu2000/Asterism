@@ -2,14 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseProjectRoute } from '../lib/projectRoute'
 import { useRoute } from '../lib/router'
 import { apiGet, apiPost } from '../lib/api'
+import { affectedSummary, commandTitle, splitPrepared } from '../lib/commands'
+import type { PreparedCommand } from '../lib/commands'
+import { focusBody, useScreenFocus } from '../lib/focus'
+import type { ScreenFocus } from '../lib/focus'
 import { renderProse } from '../lib/prose'
-import { Select } from './ui'
+import CommandConfirm from './CommandConfirm'
+import { Button, Select } from './ui'
 
 /*
- * The explainer drawer — ask the engine to explain progress, code and
- * mechanics. Docked flex sibling (content reflows; nothing floats,
- * per the visual charter). READ-ONLY by construction: the backend
- * spawn has no write tools, and this panel never offers an action.
+ * The Assistant (human_interface_design.md §1.1, §1.4, §3.5, §3.8): a
+ * docked right panel, opened by the corner glyph or Ctrl+/. Docked and
+ * not floating on the owner's own reasoning — "左讀右問的姿勢不能被蓋住":
+ * reading on the left while asking on the right is the posture, and a
+ * window over the page destroys it.
+ *
+ * It is handed the Project (which binds the conversation — one
+ * transcript per shelf, §1.1-2) and the FOCUS: the star that was
+ * clicked, the group being read, the document under the cursor. That
+ * is what makes it better than a site-wide Ask.
+ *
+ * It PREPARES commands and never submits them (§3.8). When an answer
+ * carries the `prepare_command` tool's JSON, the panel offers to review
+ * it — and the review is the same confirmation window a person's own
+ * command goes through. The panel never posts to `/api/commands`; the
+ * button in that window does.
  *
  * Field-tested shapes borrowed from QPaper's chat panel (design SoT
  * docs/internal/chat_explainer_design.md "借鑑" section): page context
@@ -44,26 +61,25 @@ interface ChatState {
 
 type Page = { kind: string; name?: string }
 
-/** What the reader is looking at, from the address — frozen per send.
- * Alongside it the drawer sends the Project (which binds the
- * conversation, §1.1-2) and the focus (the task open on that screen),
- * because a shell whose every page lives inside a Project would
- * otherwise hand every question the same workspace-wide overview. */
+/** What the reader is looking at — frozen per send. The PAGE and the
+ * Project come from the address; the FOCUS is the address plus whatever
+ * the mounted section published (`lib/focus`), because a selected star
+ * and an open document are the screen's state, not the URL's. */
 interface Where {
   page: Page
   project: string | null
-  focus: { problem?: string } | null
+  focus: Record<string, unknown> | null
 }
 
-function whereFromRoute(segments: string[]): Where {
+function whereFromRoute(segments: string[], screen: ScreenFocus): Where {
   const r = parseProjectRoute(segments)
   if (r) {
-    const focus = r.problem ? { problem: r.problem } : null
+    const focus = focusBody(r.problem, screen)
     if (r.section === 'engine')
       return { page: { kind: 'engine' }, project: r.project, focus }
     if (r.problem)
       return { page: { kind: 'problem', name: r.problem }, project: r.project, focus }
-    return { page: { kind: 'board' }, project: r.project, focus: null }
+    return { page: { kind: 'board' }, project: r.project, focus }
   }
   const s0 = segments[0] ?? ''
   // the addresses that are not inside a Project
@@ -120,6 +136,51 @@ async function readSse(
   }
 }
 
+/** An answer, with whatever it PREPARED lifted out of the prose (§3.8).
+ *
+ * `prepare_command` returns JSON; the console reads that structured
+ * block and never the sentences around it — a console that inferred a
+ * command from prose would be inventing one. The block itself is
+ * machine bookkeeping and does not belong on a mathematician's screen,
+ * so it is replaced by the one thing it is for: a way to review it.
+ * Submitting is the confirmation window's button, never this panel's. */
+function Answer({
+  text,
+  onReview,
+}: {
+  text: string
+  onReview: (c: PreparedCommand) => void
+}) {
+  const { text: prose, commands } = useMemo(() => splitPrepared(text), [text])
+  return (
+    <>
+      {prose.trim() !== '' && renderProse(prose)}
+      {commands.map((c, i) => (
+        <div
+          key={i}
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-edge bg-wash px-3 py-2"
+        >
+          <span className="text-[12px] text-ink">{commandTitle(c.kind)}</span>
+          {c.preview && (
+            <span className="tnum text-[11px] text-ink-faint">
+              {affectedSummary(c.preview)}
+            </span>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            className="ml-auto"
+            onClick={() => onReview(c)}
+            title="read what it would close, then decide — nothing is queued until you press Confirm"
+          >
+            Review &amp; submit…
+          </Button>
+        </div>
+      ))}
+    </>
+  )
+}
+
 const SUGGESTIONS = [
   'Why is this problem stalled?',
   'What happened in the last few decisions?',
@@ -132,12 +193,22 @@ const SUGGESTIONS = [
 // persistence + restore after refresh bugs bit real users). Session-
 // storage: per-tab, survives F5, dies with the tab — matching the
 // design's "browser session survival" scope. Capped like QPaper's 50.
-const STORE_KEY = 'asterism.chat.transcript'
+//
+// ONE PER PROJECT (§1.1-2): the conversation is bound to the shelf, so
+// switching Project switches transcript, exactly as it switches the
+// engine-side session. The picker page has no Project and keeps the
+// `_global` one, the same key serve uses for it.
+const STORE_PREFIX = 'asterism.chat.transcript'
+const GLOBAL_SESSION = '_global'
 const STORE_MAX = 50
 
-function loadTranscript(): ChatMsg[] {
+function storeKey(project: string | null): string {
+  return `${STORE_PREFIX}:${project ?? GLOBAL_SESSION}`
+}
+
+function loadTranscript(project: string | null): ChatMsg[] {
   try {
-    const raw = sessionStorage.getItem(STORE_KEY)
+    const raw = sessionStorage.getItem(storeKey(project))
     if (!raw) return []
     const v = JSON.parse(raw)
     return Array.isArray(v)
@@ -148,25 +219,33 @@ function loadTranscript(): ChatMsg[] {
   }
 }
 
-function saveTranscript(messages: ChatMsg[]): void {
+function saveTranscript(project: string | null, messages: ChatMsg[]): void {
   try {
-    sessionStorage.setItem(STORE_KEY, JSON.stringify(messages.slice(-STORE_MAX)))
+    sessionStorage.setItem(storeKey(project), JSON.stringify(messages.slice(-STORE_MAX)))
   } catch {
     /* quota / private mode — the transcript just won't survive */
   }
 }
 
-export default function ChatDrawer({
+export default function AssistantPanel({
   open,
   onClose,
   onStreamingChange,
+  onReplyWaiting,
 }: {
   open: boolean
   onClose: () => void
   onStreamingChange: (v: boolean) => void
+  /** an answer finished while the panel was closed — the corner glyph
+   * carries that, and only the panel knows it happened */
+  onReplyWaiting: (v: boolean) => void
 }) {
   const route = useRoute()
-  const [messages, setMessages] = useState<ChatMsg[]>(loadTranscript)
+  const screen = useScreenFocus()
+  // the Project binds the conversation (§1.1-2) — it comes from the
+  // address, and everything session-shaped keys off it
+  const project = parseProjectRoute(route.segments)?.project ?? null
+  const [messages, setMessages] = useState<ChatMsg[]>(() => loadTranscript(project))
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
@@ -190,6 +269,9 @@ export default function ChatDrawer({
     }
   }
   const [meta, setMeta] = useState<ChatState | null>(null)
+  /** the prepared command the reader asked to review — it opens THE
+   * confirmation window, the same one a command from a star opens */
+  const [review, setReview] = useState<PreparedCommand | null>(null)
   const [width, setWidth] = useState(380)
   const [confirmClear, setConfirmClear] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -200,33 +282,58 @@ export default function ChatDrawer({
   // restored transcript + a backend that forgot the session (serve
   // restart) = the display remembers, the engine doesn't; say so once
   const [engineForgot, setEngineForgot] = useState(false)
+  // ONE conversation per Project, on both sides: the transcript on this
+  // one and `has_session` on the engine's are asked about the same
+  // shelf, so the panel can never say the conversation continues when
+  // the reader has walked to another Project.
   useEffect(() => {
-    apiGet<ChatState>('/api/chat/state')
+    let gone = false
+    setMessages(loadTranscript(project))
+    setEngineForgot(false)
+    setConfirmClear(false)
+    apiGet<ChatState>(
+      `/api/chat/state${project ? `?project=${encodeURIComponent(project)}` : ''}`,
+    )
       .then((s) => {
+        if (gone) return
         setMeta(s)
         // a model stored while another provider was seated is not a
         // choice here — claude aliases and agy slugs share no
         // vocabulary, and sending one to the other is a hard error
         setModelState((m) => (m && !(s.models ?? []).includes(m) ? null : m))
         // "the engine forgot" is only news where the engine remembers
-        if (s.conversation_memory !== false && !s.has_session && loadTranscript().length > 0)
+        if (
+          s.conversation_memory !== false &&
+          !s.has_session &&
+          loadTranscript(project).length > 0
+        )
           setEngineForgot(true)
       })
       .catch(() => undefined)
-  }, [])
+    return () => {
+      gone = true
+    }
+  }, [project])
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
+  // the glyph's two states are the panel's to report: it blinks while
+  // the answer is being written (onStreamingChange) and holds a steady
+  // mark once one has landed unseen
+  const openRef = useRef(open)
+  openRef.current = open
 
   // persist: settled states normally, plus beforeunload so a refresh
   // mid-stream keeps the partial answer (first-class, like stop)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
+  const projectRef = useRef(project)
+  projectRef.current = project
   useEffect(() => {
-    if (!streaming) saveTranscript(messages)
-  }, [messages, streaming])
+    if (!streaming) saveTranscript(project, messages)
+  }, [project, messages, streaming])
   useEffect(() => {
-    const flush = () => saveTranscript(messagesRef.current)
+    const flush = () => saveTranscript(projectRef.current, messagesRef.current)
     window.addEventListener('beforeunload', flush)
     return () => window.removeEventListener('beforeunload', flush)
   }, [])
@@ -255,7 +362,9 @@ export default function ChatDrawer({
     async (raw: string) => {
       const text = raw.trim()
       if (text === '' || streamingRef.current) return
-      const { page, project, focus } = whereFromRoute(route.segments) // frozen at send
+      // frozen at send: the answer is about the screen the question was
+      // asked from, not the one it arrives on
+      const { page, project: proj, focus } = whereFromRoute(route.segments, screen)
       setNote(null)
       setConfirmClear(false)
       setInput('')
@@ -283,7 +392,7 @@ export default function ChatDrawer({
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, page, project, focus, model }),
+          body: JSON.stringify({ message: text, page, project: proj, focus, model }),
           signal: ac.signal,
         })
         if (!res.ok) {
@@ -308,6 +417,7 @@ export default function ChatDrawer({
             setStage(ev.stage)
           } else if (t === 'done') {
             finished = true
+            if (!openRef.current) onReplyWaiting(true)
             if (ev.ok !== false) setEngineForgot(false)
             if (ev.ok === false)
               setMessages((m) => {
@@ -353,7 +463,7 @@ export default function ChatDrawer({
         abortRef.current = null
       }
     },
-    [model, route.segments, setStreamingBoth],
+    [model, route.segments, screen, onReplyWaiting, setStreamingBoth],
   )
 
   const stop = useCallback(() => abortRef.current?.abort(), [])
@@ -361,12 +471,13 @@ export default function ChatDrawer({
   const clear = useCallback(async () => {
     if (streamingRef.current) return
     try {
-      await apiPost('/api/chat/clear')
+      // one Project's thread, not all of them (serve's own rule)
+      await apiPost('/api/chat/clear', { project })
       setMessages([])
       setNote(null)
       setEngineForgot(false)
       try {
-        sessionStorage.removeItem(STORE_KEY)
+        sessionStorage.removeItem(storeKey(project))
       } catch {
         /* ignore */
       }
@@ -374,7 +485,7 @@ export default function ChatDrawer({
       setNote(String((e as Error).message))
     }
     setConfirmClear(false)
-  }, [])
+  }, [project])
 
   // width drag — clamped, not persisted
   const dragRef = useRef<{ startX: number; startW: number } | null>(null)
@@ -398,7 +509,10 @@ export default function ChatDrawer({
     }
   }, [])
 
-  const where = useMemo(() => whereFromRoute(route.segments), [route.segments])
+  const where = useMemo(
+    () => whereFromRoute(route.segments, screen),
+    [route.segments, screen],
+  )
 
   // What this backend can and cannot promise. Both notes are exceptions
   // — they appear only when the seated provider is weaker than the
@@ -417,7 +531,7 @@ export default function ChatDrawer({
     <aside
       className={`relative shrink-0 flex-col border-l border-edge bg-surface ${open ? 'flex' : 'hidden'}`}
       style={{ width }}
-      aria-label="explainer chat"
+      aria-label="assistant"
       onKeyDown={(e) => {
         if (e.key === 'Escape') onClose()
       }}
@@ -434,8 +548,6 @@ export default function ChatDrawer({
       {/* header: what this is + model + clear (QPaper shape: the model
           picker is a first-class header control, not footer fine print) */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
-        {/* the Assistant's word (§1.1): the drawer keeps Ask's mark and
-            its behaviour, and loses its name */}
         <span className="text-[13px] font-medium text-ink">assistant</span>
         <span
           className="truncate text-[11px] text-ink-faint"
@@ -537,7 +649,7 @@ export default function ChatDrawer({
                       {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
                     </span>
                   ) : (
-                    renderProse(m.text)
+                    <Answer text={m.text} onReview={setReview} />
                   )}
                   {m.note && (
                     <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>
@@ -632,6 +744,15 @@ export default function ChatDrawer({
           )}
         </div>
       </div>
+      {review !== null && (
+        <CommandConfirm
+          problem={review.problem}
+          kind={review.kind}
+          payload={review.payload}
+          label={review.problem}
+          onClose={() => setReview(null)}
+        />
+      )}
     </aside>
   )
 }

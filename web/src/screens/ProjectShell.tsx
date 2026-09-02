@@ -138,6 +138,7 @@ export default function ProjectShell({
   onToggleRail,
   chatOpen,
   chatStreaming,
+  chatUnread,
   onToggleChat,
 }: {
   route: ProjectRoute
@@ -145,6 +146,7 @@ export default function ProjectShell({
   onToggleRail: () => void
   chatOpen: boolean
   chatStreaming: boolean
+  chatUnread: boolean
   onToggleChat: () => void
 }) {
   const { project, section, problem } = route
@@ -212,10 +214,17 @@ export default function ProjectShell({
             {GEAR}
           </IconButton>
           <IconButton
-            title="assistant — ask about this project (Ctrl+/)"
+            title={
+              chatStreaming && !chatOpen
+                ? 'assistant — thinking (Ctrl+/)'
+                : chatUnread && !chatOpen
+                  ? 'assistant — an answer is waiting (Ctrl+/)'
+                  : 'assistant — ask about this project (Ctrl+/)'
+            }
             onClick={onToggleChat}
             active={chatOpen}
-            live={chatStreaming && !chatOpen}
+            pulse={chatStreaming && !chatOpen}
+            live={chatUnread && !chatOpen}
           >
             {ASSISTANT}
           </IconButton>

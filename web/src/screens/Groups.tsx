@@ -3,6 +3,7 @@ import { usePoll } from '../lib/api'
 import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
 import { projectPath } from '../lib/projectRoute'
 import { charterTitle } from '../lib/groupTree'
+import { usePublishFocus } from '../lib/focus'
 import { groupLabel } from '../lib/format'
 import { CycleLine } from './EngineRoom'
 import ProgrammeView from '../components/ProgrammeView'
@@ -72,6 +73,9 @@ export default function Groups({
   // the cycle shown must belong to the argument ON SCREEN — matched by
   // the group id the server reports, never a sibling's round
   const cycle = cycleForGroup(workers, data?.group_id)
+  // the Assistant is told which group's Programme is on screen — the
+  // server's own answer, so it can never name a sibling's argument
+  usePublishFocus({ problem, group_id: data?.group_id ?? null })
   if (error) return <ErrorState error={error} />
   if (!data) return null
   // which group the reader is standing on — the server's own answer,
