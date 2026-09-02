@@ -46,6 +46,246 @@ import { Button } from './ui'
  * something the engine does not believe.
  */
 
+/** THE floating confirm window's chrome, and nothing else.
+ *
+ * Extracted so a second thing that must be confirmed before it happens
+ * — starting a run over a list of tasks — wears the same window
+ * instead of a lookalike (DESIGN.md: `fixed inset-0 z-50` over
+ * `bg-bg/70`, one centred panel, Escape and backdrop close, focus lands
+ * inside). It carries no idea of what a command IS: the queue's receipt
+ * ladder is `CommandConfirm`'s, and the run's is its own.
+ */
+export function ConfirmWindow({
+  title,
+  subject,
+  badge,
+  badgeTitle,
+  onClose,
+  children,
+}: {
+  title: string
+  /** what this is about, in the reader's terms */
+  subject?: string
+  /** the engine's own name for it, quiet, top right */
+  badge?: string
+  badgeTitle?: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+  // focus lands inside the window on open (DESIGN.md's floating shape)
+  useEffect(() => {
+    panelRef.current?.focus()
+  }, [])
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
+      onClick={onClose}
+    >
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="w-[34rem] max-w-full rounded-xl border border-edge bg-surface p-5 focus:outline-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-medium text-ink">{title}</span>
+          {subject !== undefined && (
+            <span
+              className="min-w-0 truncate font-mono text-[11px] text-ink-faint"
+              title={subject}
+            >
+              {subject}
+            </span>
+          )}
+          {badge !== undefined && (
+            <span
+              className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint/70"
+              title={badgeTitle}
+            >
+              {badge}
+            </span>
+          )}
+        </div>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* starting a run over a list of tasks                                 */
+/* ------------------------------------------------------------------ */
+
+/** One ticked name, and what pressing Run would do to it. */
+export interface RunPreviewRow {
+  name: string
+  found: boolean
+  status: string | null
+  benched: boolean
+  effect: 'start' | 'running' | 'benched' | 'unknown'
+}
+
+export interface RunPreview {
+  problems: RunPreviewRow[]
+  start: string[]
+  blocked: boolean
+  daemon: { running: boolean; scope: string | null }
+}
+
+/** The engine's four answers, in the reader's words. */
+const RUN_EFFECT: Record<RunPreviewRow['effect'], string> = {
+  start: 'would be started',
+  running: 'already running',
+  benched: 'benched — the run would skip it',
+  unknown: 'not a task on this shelf',
+}
+
+/** Starting a run, confirmed the way every other consequential act is.
+ *
+ * The shelf's Run button used to name the ticked tasks as a joined
+ * string beside itself, which says who was ticked and nothing about
+ * what would happen to them: a typo, a benched task and a task the
+ * engine is already on all read the same. This asks the engine first
+ * (§1.3's preview) and lists the answer one row per name.
+ */
+export function RunConfirm({
+  project,
+  problems,
+  once,
+  onClose,
+  onStarted,
+}: {
+  project: string
+  problems: string[]
+  once?: boolean
+  onClose: () => void
+  /** the run is up — the shelf clears its ticks */
+  onStarted: () => void
+}) {
+  const [preview, setPreview] = useState<RunPreview | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const key = problems.join('\n')
+
+  useEffect(() => {
+    let gone = false
+    setPreview(null)
+    setError(null)
+    apiPost<RunPreview>('/api/daemon/start-many/preview', {
+      problems: key === '' ? [] : key.split('\n'),
+      project,
+    })
+      .then((p) => !gone && setPreview(p))
+      .catch((e) => !gone && setError(String((e as Error).message)))
+    return () => {
+      gone = true
+    }
+  }, [project, key])
+
+  const close = useCallback(() => {
+    if (busy) return
+    onClose()
+  }, [busy, onClose])
+
+  const start = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await apiPost('/api/daemon/start-many', { problems, once: once ?? false })
+      onStarted()
+      onClose()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const goes = preview?.start.length ?? 0
+  return (
+    <ConfirmWindow
+      title="run these tasks"
+      subject={`${problems.length} ticked`}
+      badge="start-many"
+      badgeTitle="the engine's own name for this endpoint — an explicit list, never a pattern"
+      onClose={close}
+    >
+      {preview === null && error === null && (
+        <div className="late-fade mt-4 text-xs text-ink-faint">
+          asking the engine what this would start…
+        </div>
+      )}
+      {preview && (
+        <>
+          {preview.blocked && (
+            <p className="mt-3 flex items-baseline gap-2 text-[12px] text-warn">
+              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-warn" />
+              the engine is already running
+              {preview.daemon.scope ? ` on ${preview.daemon.scope}` : ''} — stop it before
+              starting another run.
+            </p>
+          )}
+          <div className="mt-3 max-h-56 overflow-y-auto rounded-xl border border-edge bg-wash">
+            {preview.problems.map((p) => (
+              <div key={p.name} className="flex items-baseline gap-2 px-2.5 py-1 text-[11px]">
+                <span
+                  className={`min-w-0 flex-1 truncate font-mono ${
+                    p.effect === 'start' ? 'text-ink' : 'text-ink-faint'
+                  }`}
+                  title={p.name}
+                >
+                  {p.name}
+                </span>
+                <span className="shrink-0 text-ink-faint">{p.status ?? '—'}</span>
+                <span
+                  className={`shrink-0 ${
+                    p.effect === 'unknown' || p.effect === 'benched'
+                      ? 'text-warn'
+                      : 'text-ink'
+                  }`}
+                >
+                  → {RUN_EFFECT[p.effect]}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-[12px] text-ink-dim">
+            {goes === 0
+              ? 'nothing here would start.'
+              : `${goes} task${goes === 1 ? '' : 's'} would be started, as one run over an explicit list.`}
+          </p>
+        </>
+      )}
+      {error && <div className="mt-3 text-[12px] text-danger">{error}</div>}
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={close} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          disabled={preview === null || busy || preview.blocked || goes === 0}
+          onClick={() => void start()}
+          title="starts the engine on exactly these tasks — the run begins now"
+        >
+          {busy ? 'Starting…' : `Confirm — run ${goes}`}
+        </Button>
+      </div>
+    </ConfirmWindow>
+  )
+}
+
 function Affected({ preview }: { preview: CommandPreview }) {
   if (preview.affected.length === 0) return null
   return (
@@ -112,7 +352,6 @@ export default function CommandConfirm({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
-  const panelRef = useRef<HTMLDivElement | null>(null)
   const appliedRef = useRef(onApplied)
   appliedRef.current = onApplied
 
@@ -144,22 +383,6 @@ export default function CommandConfirm({
     if (submitting) return // a POST is in flight; let it answer
     onClose()
   }, [submitting, onClose])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        close()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [close])
-
-  // focus lands inside the window on open (DESIGN.md's floating shape)
-  useEffect(() => {
-    panelRef.current?.focus()
-  }, [])
 
   // the receipt: 202 is "queued", never "done" — poll until the
   // daemon's tick has answered
@@ -207,30 +430,14 @@ export default function CommandConfirm({
   const settled = receipt !== null && receipt.phase !== 'waiting'
   const cascade = preview?.cascade ?? false
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
-      onClick={close}
+  return (
+    <ConfirmWindow
+      title={commandTitle(kind)}
+      subject={label ?? problem}
+      badge={kind}
+      badgeTitle="the engine's own name for this command"
+      onClose={close}
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className="w-[34rem] max-w-full rounded-xl border border-edge bg-surface p-5 focus:outline-none"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-ink">{commandTitle(kind)}</span>
-          <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={label}>
-            {label ?? problem}
-          </span>
-          <span
-            className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint/70"
-            title="the engine's own name for this command"
-          >
-            {kind}
-          </span>
-        </div>
-
         {preview === null && error === null && (
           <div className="late-fade mt-4 text-xs text-ink-faint">
             reading what this would close…
@@ -309,14 +516,12 @@ export default function CommandConfirm({
             </Button>
           )}
         </div>
-        {receipt === null && preview !== null && (
-          <div className="mt-2 text-right text-[11px] text-ink-faint">
-            read at revision {preview.revision} — the command carries it, so a record that
-            moves in between is refused rather than applied
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body,
+      {receipt === null && preview !== null && (
+        <div className="mt-2 text-right text-[11px] text-ink-faint">
+          read at revision {preview.revision} — the command carries it, so a record that
+          moves in between is refused rather than applied
+        </div>
+      )}
+    </ConfirmWindow>
   )
 }

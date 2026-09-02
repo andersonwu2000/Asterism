@@ -5,6 +5,7 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { projectPath } from '../lib/projectRoute'
 import { scopeCovers } from '../lib/programmeFocus'
+import { RunConfirm } from '../components/CommandConfirm'
 import { Button, StatusBadge } from '../components/ui'
 import IntentEditor from '../components/IntentEditor'
 import RunControl from '../components/RunControl'
@@ -149,9 +150,11 @@ function SectionRow({ label, count, note }: { label: string; count: number; note
  * here too, with the force step, because this is the page that owns the
  * engine's start and end. */
 function RunBar({
+  project,
   picked,
   onClear,
 }: {
+  project: string
   picked: string[]
   onClear: () => void
 }) {
@@ -159,6 +162,9 @@ function RunBar({
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmForce, setConfirmForce] = useState(false)
+  /** the run's confirm window (§1.3): a preview per ticked name, in the
+   * same floating window every other consequential act wears */
+  const [confirmRun, setConfirmRun] = useState(false)
   const timer = useRef<number | null>(null)
   useEffect(
     () => () => {
@@ -241,22 +247,33 @@ function RunBar({
             title={
               picked.length === 0
                 ? 'tick the tasks to run — the engine takes an explicit list, never a pattern'
-                : `run the engine on ${picked.length} task${picked.length === 1 ? '' : 's'}`
+                : `read what running ${picked.length} task${picked.length === 1 ? '' : 's'} would do`
             }
-            onClick={() =>
-              void act(() => apiPost('/api/daemon/start-many', { problems: picked }))
-            }
+            onClick={() => setConfirmRun(true)}
           >
-            {busy ? 'Starting…' : `Run${picked.length > 0 ? ` ${picked.length}` : ''}`}
+            {busy ? 'Starting…' : `Run${picked.length > 0 ? ` ${picked.length}` : ''}…`}
           </Button>
+          {/* the names are no longer the sentence: WHAT would happen to
+              them is, and the window is where that is read */}
           <span className="text-[11px] text-ink-faint">
             {picked.length === 0
               ? 'tick a task to run it — several is one run over an explicit list'
-              : picked.map((p) => p.replace(/^.*\./, '')).join(' · ')}
+              : 'the next step reads what each one would do'}
           </span>
         </>
       )}
       {msg && <span className="text-[11px] text-danger">{msg}</span>}
+      {confirmRun && (
+        <RunConfirm
+          project={project}
+          problems={picked}
+          onClose={() => setConfirmRun(false)}
+          onStarted={() => {
+            onClear()
+            refresh()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -307,7 +324,7 @@ function Shelf({ project, rows }: { project: string; rows: BoardProblem[] }) {
     <div className="mx-auto max-w-4xl px-6 py-6">
       <Inbox project={project} />
       <section className="mb-6 flex flex-col gap-3 rounded-xl border border-edge bg-surface px-4 py-3">
-        <RunBar picked={[...picked]} onClear={() => setPicked(new Set())} />
+        <RunBar project={project} picked={[...picked]} onClear={() => setPicked(new Set())} />
         <RunParameters running={daemon?.running ?? false} />
       </section>
 

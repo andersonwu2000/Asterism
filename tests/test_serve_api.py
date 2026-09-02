@@ -2713,6 +2713,68 @@ def test_start_many_requires_every_problem_to_exist(
     assert db.scope_names(seen["scope"]) == ["a", "b"]
 
 
+def test_start_many_preview_says_what_each_name_would_do(
+        workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§1.3: a command's confirm window shows what it would do BEFORE it
+    does it. For a run that is one row per name — is it a task at all,
+    what state is it in, and would pressing Run actually reach it."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "a")
+    _add_problem(conn, "b")
+    _add_problem(conn, "c", benched=1)
+    conn.close()
+    from Tooling.serve import daemon_cache as _dc
+    monkeypatch.setattr(_dc, "daemon_status",
+                        lambda ws: {"running": False, "scope": None})
+    c = _client(workspace)
+    r = c.post("/api/daemon/start-many/preview",
+               json={"problems": ["a", "b", "c", "ghost", "b%"]})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["problems"] == [
+        {"name": "a", "found": True, "status": "idle", "benched": False,
+         "effect": "start"},
+        {"name": "b", "found": True, "status": "idle", "benched": False,
+         "effect": "start"},
+        # a person took this one off the live path — Run would not
+        # reach it, and a preview that said "start" would be lying
+        {"name": "c", "found": True, "status": "idle", "benched": True,
+         "effect": "benched"},
+        {"name": "ghost", "found": False, "status": None, "benched": False,
+         "effect": "unknown"},
+        # a pattern is not a name, and this endpoint never expands one
+        {"name": "b%", "found": False, "status": None, "benched": False,
+         "effect": "unknown"},
+    ]
+    assert d["start"] == ["a", "b"]
+    assert d["daemon"] == {"running": False, "scope": None}
+    assert d["blocked"] is False
+    # the status is the SHELF's own chip, so the confirm window and the
+    # row the reader ticked cannot disagree
+    board = {p["name"]: p for p in c.get("/api/problems").json()["problems"]}
+    assert [p["status"] for p in d["problems"][:3]] == [
+        board["a"]["status"], board["b"]["status"], board["c"]["status"]]
+
+
+def test_start_many_preview_says_the_engine_is_already_up(
+        workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run cannot start over a running one — `daemon_start` refuses
+    and the POST is a 409. The preview must say so first, or the reader
+    reads a list of tasks that are not going to be started."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "a")
+    conn.close()
+    from Tooling.serve import daemon_cache as _dc
+    monkeypatch.setattr(_dc, "daemon_status",
+                        lambda ws: {"running": True, "scope": "a"})
+    r = _client(workspace).post("/api/daemon/start-many/preview",
+                                json={"problems": ["a"]})
+    d = r.json()
+    assert d["blocked"] is True
+    assert d["daemon"] == {"running": True, "scope": "a"}
+    assert d["problems"][0]["effect"] == "running"
+
+
 def test_detail_decisions_carry_the_actor(workspace: Path) -> None:
     """HID §3.2: `actor` is semantic, so the reading layer carries it —
     a reader who cannot see that a PERSON decided cannot tell a human

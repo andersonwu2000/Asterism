@@ -2,8 +2,8 @@
 multi-problem run (human_interface_design.md §3.3, §1.4).
 
 Its own module on the `projects_api.py` precedent: `app.py` is at its
-size watermark, and a surface with one read, two writes and a shared
-refusal shape is a natural unit. Every write goes through
+size watermark, and a surface with one read, two writes, two previews
+and a shared refusal shape is a natural unit. Every write goes through
 `state/commands`, which owns the SQL; this file only translates the
 refusal types into the honest HTTP answers — the `resolve_amend` shape:
 KeyError = the named thing is not there (404), ValueError = malformed
@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from ..state import commands as _commands
 from ..state import db
+from . import data as _data
 
 
 class CommandBody(BaseModel):
@@ -46,6 +47,14 @@ class PreviewBody(BaseModel):
 class StartManyBody(BaseModel):
     problems: list[str] = []
     once: bool = False
+
+
+class StartManyPreviewBody(BaseModel):
+    """The same list, read rather than run. `project` narrows the board
+    read to one shelf — the chip must be the SHELF's own, or the confirm
+    window and the row the reader ticked disagree about the task."""
+    problems: list[str] = []
+    project: "str | None" = None
 
 
 def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
@@ -105,6 +114,62 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             return _commands.preview(
                 conn, problem=body.problem, kind=body.kind,
                 payload=body.payload or {})
+
+    @app.post("/api/daemon/start-many/preview")
+    def daemon_start_many_preview(body: StartManyPreviewBody) -> dict:
+        """What pressing Run would do to each ticked name (§1.3: every
+        command's confirm window shows the preview first).
+
+        One row per name, in the order they were sent, and the row says
+        the four things a reader needs: is it a task at all, what state
+        is it in, did a person take it off the live path, and would this
+        run actually reach it. Nothing here starts anything — a read on
+        the read-only connection, which is the enforcement.
+
+        A pattern lands in the same place it lands in the real endpoint:
+        `b%` is not a problem name, so it is UNKNOWN rather than quietly
+        expanded (the post-incident defence, kept in the preview so the
+        reader is never shown a list the run would not honour)."""
+        names = [str(n).strip() for n in (body.problems or []) if str(n).strip()]
+        from .daemon_cache import daemon_status
+        daemon = daemon_status(workspace) if (
+            workspace / "asterism.db").exists() else {}
+        running = bool(daemon.get("running"))
+        scope = daemon.get("scope")
+        rows: "list[dict]" = []
+        if (workspace / "asterism.db").exists():
+            with ro(workspace) as conn:
+                known = {str(r["name"]): r for r in
+                         _data.board(conn, daemon=daemon,
+                                     project=body.project)["problems"]}
+                for name in names:
+                    row = known.get(name)
+                    if row is None:
+                        rows.append({"name": name, "found": False,
+                                     "status": None, "benched": False,
+                                     "effect": "unknown"})
+                        continue
+                    benched = bool(row.get("benched"))
+                    if running and db.scope_matches(conn, scope, name):
+                        effect = "running"
+                    elif benched:
+                        effect = "benched"
+                    else:
+                        effect = "start"
+                    rows.append({"name": name, "found": True,
+                                 "status": str(row["status"]),
+                                 "benched": benched, "effect": effect})
+        else:
+            rows = [{"name": n, "found": False, "status": None,
+                     "benched": False, "effect": "unknown"} for n in names]
+        return {
+            "problems": rows,
+            "start": [r["name"] for r in rows if r["effect"] == "start"],
+            # a run cannot start over a running one — `daemon_start`
+            # refuses and the POST is a 409. Said here, before the press.
+            "blocked": running,
+            "daemon": {"running": running, "scope": scope},
+        }
 
     @app.post("/api/daemon/start-many")
     def daemon_start_many(body: StartManyBody) -> dict:
