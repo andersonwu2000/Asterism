@@ -197,23 +197,36 @@ def _problem_context(conn: sqlite3.Connection, name: str) -> str:
               "strategist_plan.md (the strategist's live plan note).")
 
 
-def _board_context(conn: sqlite3.Connection, workspace: Path) -> str:
+def _board_context(conn: sqlite3.Connection, workspace: Path,
+                   project: "str | None" = None) -> str:
     """Board = the overview page, so the context is an overview: state
     counts + the live run + what needs the human + what moved lately.
     (An alphabetical LIMIT slice shipped first and made the model cite
-    whatever early-alphabet problem looked busy — wrong by design.)"""
+    whatever early-alphabet problem looked busy — wrong by design.)
+
+    Inside a Project the overview is THAT shelf's (§1.4, the FK). A
+    workspace-wide "what needs the human" handed the model another
+    shelf's blocked task while the person stood in this one — the same
+    reason `_project_context` lists only its own problems. Only the
+    engine block stays workspace-wide: there is one engine."""
+    where, args = "", ()
+    if project is not None:
+        where, args = " WHERE project = ?", (project,)
     counts = {str(r["state"]): int(r["n"]) for r in conn.execute(
-        "SELECT state, COUNT(*) AS n FROM problems GROUP BY state")}
+        "SELECT state, COUNT(*) AS n FROM problems" + where
+        + " GROUP BY state", args)}
     awaiting = [str(r["name"]) for r in conn.execute(
         "SELECT name FROM problems WHERE state = 'awaiting_human'"
-        " ORDER BY name LIMIT 10")]
+        + (" AND project = ?" if project is not None else "")
+        + " ORDER BY name LIMIT 10", args)]
     recent = [
         {"name": str(r["name"]), "state": str(r["state"]),
          "last_decision_at": r["last_strategist_at"]}
         for r in conn.execute(
             "SELECT name, state, last_strategist_at FROM problems"
             " WHERE last_strategist_at IS NOT NULL"
-            " ORDER BY last_strategist_at DESC LIMIT 8")]
+            + (" AND project = ?" if project is not None else "")
+            + " ORDER BY last_strategist_at DESC LIMIT 8", args)]
     daemon: dict = {}
     try:
         from .daemon_cache import daemon_status
@@ -407,7 +420,8 @@ def _page_context(workspace: Path, page: "dict | None", *,
             # whole-run context (QA: an Engine-page question got "the
             # current view only shows daemon status" because that was
             # literally all we handed over)
-            return key, _decorate(conn, _board_context(conn, workspace))
+            return key, _decorate(
+                conn, _board_context(conn, workspace, project))
         if kind == "papers":
             from . import data as _data
             shelf = _data.papers_list(conn, workspace)["papers"][:30]
@@ -416,7 +430,8 @@ def _page_context(workspace: Path, page: "dict | None", *,
                     for p in shelf]
             return key, _decorate(conn, json.dumps(
                 {"page": "papers", "papers": rows}, ensure_ascii=False))
-        return key, _decorate(conn, _board_context(conn, workspace))
+        return key, _decorate(
+            conn, _board_context(conn, workspace, project))
     except sqlite3.Error:
         return key, f"Page: {kind}. (Context query failed — answer from" \
                     f" files instead.)"

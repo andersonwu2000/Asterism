@@ -3005,3 +3005,35 @@ def test_a_goal_signature_is_not_re_stat_ed_on_every_poll(
     # TTL there is none
     (workspace / rel).unlink()
     assert _t._goal_signature(workspace, "g_slug", rel, "n = n") == first
+
+
+def test_the_board_does_not_test_other_shelves_for_stall(
+        workspace: Path) -> None:
+    """`board(project=X)` returns X's rows, but it computed the stall
+    predicate for EVERY problem in the workspace first — 373 per-problem
+    graph walks to label a shelf of two. A Project surface reads its own
+    shelf, and nothing else."""
+    from Tooling.serve.data import status as _status
+    from Tooling.state.db import problems as _dbp
+    conn = _open_db(workspace)
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Mine', '', ?)", (db.now(),))
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Yours', '', ?)", (db.now(),))
+    _add_problem(conn, "Mine.a", project="Mine")
+    _add_problem(conn, "Yours.b", project="Yours")
+
+    asked: "list[str]" = []
+    real = _dbp.is_problem_stalled
+
+    def spy(c, name, **kw):  # noqa: ANN001
+        asked.append(name)
+        return real(c, name, **kw)
+    _dbp.is_problem_stalled = spy
+    try:
+        rows = _status.board(conn, project="Mine")["problems"]
+    finally:
+        _dbp.is_problem_stalled = real
+    conn.close()
+    assert [r["name"] for r in rows] == ["Mine.a"]
+    assert asked == ["Mine.a"], asked

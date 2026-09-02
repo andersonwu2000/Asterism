@@ -149,7 +149,17 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
     last_event = last_event_map(conn)
 
     awaiting = _awaiting_set(conn)
-    stalled = set(db.problems_stalled(conn))
+    # The stall predicate is a per-problem graph walk, so an unscoped
+    # call costs one walk per problem in the WORKSPACE (373) to label a
+    # shelf of two. Inside a Project it is asked about that shelf only —
+    # the same names the rows above came from, handed on as an explicit
+    # scope so `problems_stalled` keeps owning the translation to SQL.
+    if project is None:
+        stalled = set(db.problems_stalled(conn))
+    else:
+        names = [str(p["name"]) for p in problems]
+        stalled = (set(db.problems_stalled(conn, scope=db.SCOPE_SEP.join(names)))
+                   if names else set())
 
     rows = []
     for p in problems:

@@ -460,13 +460,20 @@ _RUN_EVENT_CAP = 400
 
 def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
                    live_pid: "int | None",
-                   override: "str | None") -> "tuple[str | None, list[str]]":
+                   override: "str | None",
+                   project: "str | None" = None,
+                   ) -> "tuple[str | None, list[str]]":
     """(focus, candidates). A pattern scope (`PutnamCmp.%`) runs
     several problems in one daemon — the console's lens must land on
     REAL problem names, not the raw pattern (which 404'd the detail
     fetch and blanked the sky; owner report, 2026-07-19). Candidates:
     live-leased problems first (most recent lease first), then other
-    pattern matches by recency; `override` is the UI's picker choice."""
+    pattern matches by recency; `override` is the UI's picker choice.
+
+    `project` intersects the whole candidate set with one shelf (§1.4,
+    the FK via `problems_of` — never the name's first segment). The run
+    read is a Project surface: a daemon over another shelf must fill
+    this one's lens with nothing, not with the other shelf's tasks."""
     candidates: "list[str]" = []
     if live_pid is not None:
         for r in conn.execute(
@@ -492,6 +499,10 @@ def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
                     candidates.append(str(r["name"]))
         elif scope not in candidates:
             candidates.append(scope)
+    if project is not None:
+        from ..state import projects as _projects
+        shelf = _projects.problems_of(conn, project)
+        candidates = [n for n in candidates if n in shelf]
     if override and override in candidates:
         return override, candidates
     return (candidates[0] if candidates else None), candidates
@@ -499,7 +510,13 @@ def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
 
 def run_status(conn: sqlite3.Connection, workspace: Path,
                daemon: "dict | None",
-               focus_override: "str | None" = None) -> dict:
+               focus_override: "str | None" = None,
+               project: "str | None" = None) -> dict:
+    """`project` makes this the shelf's read (§1.4): lens, tallies,
+    lanes, feed and burn are that Project's, by the `problems.project`
+    FK. What stays workspace-wide is what IS workspace-wide — the
+    daemon's own state and the account meters; there is one engine and
+    one subscription however many shelves they serve."""
     d = daemon or {}
     running = bool(d.get("running"))
     scope = d.get("scope") or None
@@ -507,7 +524,9 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
 
     out: dict = {
         "daemon": d,
-        "problem": scope,
+        # the lens is a shelf-scoped fact; without a project it is the
+        # daemon's raw scope, as it always was
+        "problem": None if project is not None else scope,
         "problems": [],
         "goals": None,
         "workers": [],
@@ -523,9 +542,11 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     # exists while a run does
     five_h_ago = (datetime.now(timezone.utc)
                   - timedelta(hours=5)).isoformat()
-    out["burn_5h"] = _data.telemetry_usage(conn, since=five_h_ago)
+    out["burn_5h"] = _data.telemetry_usage(conn, since=five_h_ago,
+                                           project=project)
     if running and started:
-        out["burn_run"] = _data.telemetry_usage(conn, since=str(started))
+        out["burn_run"] = _data.telemetry_usage(conn, since=str(started),
+                                                project=project)
 
     # the problem under the lens: the live scope, or the last run's
     # scope when idle (the console keeps telling the last story) —
@@ -533,7 +554,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     live_pid_early = _data._live_daemon_pid(d)
     raw_focus = scope or ((d.get("last_exit") or {}).get("scope"))
     focus, out["problems"] = _resolve_focus(
-        conn, raw_focus, live_pid_early, focus_override)
+        conn, raw_focus, live_pid_early, focus_override, project)
     if focus:
         counts: dict[str, int] = {}
         for r in conn.execute(
@@ -568,6 +589,22 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     if live_pid is not None:
         drafts: "list[tuple[str, str, float, Path]] | None" = None
         running_pipelines = _running_pipelines(conn)
+        # A shelf's lanes are the lanes on ITS tasks. Filtered in SQL on
+        # the queue row's own problem, so a lease that names no task
+        # cannot slip into a Project surface either — inside a shelf, a
+        # lane that cannot say which task it is on is not this shelf's.
+        lane_where, lane_args = "", (live_pid,)
+        if project is not None:
+            from ..state import projects as _projects
+            shelf = sorted(_projects.problems_of(conn, project))
+            if not shelf:
+                shelf_clause, shelf_args = " AND 0", ()
+            else:
+                marks = ",".join("?" for _ in shelf)
+                shelf_clause, shelf_args = f" AND q.problem IN ({marks})", \
+                    tuple(shelf)
+            lane_where = shelf_clause
+            lane_args = (live_pid, *shelf_args)
         for r in conn.execute(
                 "SELECT q.kind AS kind, q.target_kind AS tk,"
                 " q.target_id AS tid, q.leased_at AS leased_at,"
@@ -576,7 +613,8 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 " g.lean_path AS lean_path"
                 " FROM queue q LEFT JOIN goals g ON q.target_kind = 'Goal'"
                 " AND g.id = CAST(q.target_id AS INTEGER)"
-                " WHERE q.owner_pid = ? ORDER BY q.leased_at", (live_pid,)):
+                " WHERE q.owner_pid = ?" + lane_where
+                + " ORDER BY q.leased_at", lane_args):
             # binders+conclusion for the card (statement stores the
             # bare conclusion; same chokepoint as problem_detail)
             sig = _data._goal_signature(
@@ -738,10 +776,13 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
     borrowed so this module inherits the same 404/503 semantics."""
 
     @app.get("/api/run")
-    def run(problem: "str | None" = None) -> dict:
+    def run(problem: "str | None" = None,
+            project: "str | None" = None) -> dict:
         """`problem` = the UI's lens pick when a pattern scope runs
         several problems at once (ignored unless it's a live
-        candidate)."""
+        candidate). `project` = the shelf this read is FOR (§1.4):
+        lanes, tallies, feed and burn are that Project's; the daemon's
+        state and the account meters stay workspace-wide."""
         from .daemon_cache import daemon_status
         d = daemon_status(workspace)
         if not (workspace / "asterism.db").exists():
@@ -751,10 +792,12 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                     "quota_logged": log_quota(workspace),
                     "recent": []}
         with ro(workspace) as conn:
-            return run_status(conn, workspace, d, focus_override=problem)
+            return run_status(conn, workspace, d, focus_override=problem,
+                              project=project)
 
     @app.get("/api/run/events")
-    def run_events(problem: "str | None" = None) -> dict:
+    def run_events(problem: "str | None" = None,
+                   project: "str | None" = None) -> dict:
         """The Timeline, run-flavoured — the same log the problem page
         reads, across every problem under the run's lens.
 
@@ -779,7 +822,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             raw = (d.get("scope")
                    or ((d.get("last_exit") or {}).get("scope")))
             focus, names = _resolve_focus(
-                conn, raw, _data._live_daemon_pid(d), problem)
+                conn, raw, _data._live_daemon_pid(d), problem, project)
             if focus and focus not in names:
                 names = [focus, *names]
             events: "list[dict]" = []

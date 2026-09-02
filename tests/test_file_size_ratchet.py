@@ -716,7 +716,7 @@ _WATERMARKS = {
     # symbol; `_link_kind_expr` stays in the facade itself as the one
     # helper both `edges.py` and `timeline.py` call.
     "Tooling/serve/data/__init__.py": 200,  # born 2026-08-28 from the data.py split (B3)
-    "Tooling/serve/data/status.py": 200,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/status.py": 220,  # +9 2026-09-03 the board asks the stall predicate about ITS shelf only (one graph walk per problem, 373 of them to label a shelf of two)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/edges.py": 570,  # +8 2026-09-03 the dead-attempt tally is scoped to the problem being read (it built the whole workspace's map to use 12% of it, every poll)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)

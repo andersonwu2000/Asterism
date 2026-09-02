@@ -785,3 +785,73 @@ def test_the_meters_refresh_off_the_request_thread(
     assert done.wait(10.0), "the meter never refreshed"
     assert names, "the meter was never read at all"
     assert all(n.startswith("asterism-meter") for n in names), names
+
+
+# ---------------------------------------------------------------------
+# the run read is a PROJECT surface (HID §1.4) — 2026-09-03
+# ---------------------------------------------------------------------
+
+def _shelved_problem(conn: sqlite3.Connection, name: str,
+                     project: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                 " created_at) VALUES (?, '', ?)", (project, db.now()))
+    conn.execute("INSERT INTO problems (name, project, created_at)"
+                 " VALUES (?, ?, ?)", (name, project, db.now()))
+    conn.commit()
+
+
+def _leased_goal(conn: sqlite3.Connection, problem: str, slug: str) -> int:
+    gid = db.insert_goal(conn, problem=problem, slug=slug,
+                         lean_path=f"Problems/{problem}/proofs/{slug}.lean",
+                         statement="True", origin="root")
+    db.enqueue(conn, kind="Builder", target_id=str(gid),
+               target_kind="Goal", problem=problem)
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE target_id = ?", (db.now(), str(gid)))
+    conn.commit()
+    return gid
+
+
+def test_the_run_read_shows_only_the_named_projects_work(
+        workspace: Path, monkeypatch) -> None:
+    """The Engine Room lives INSIDE a Project, and `/api/run` had no
+    project at all — its problem set was the daemon's scope, so a run
+    over another shelf filled this one's lanes, tallies, feed and burn
+    with another Project's work (and the lane links pointed INTO this
+    Project at another Project's task). Everything the shelf shows is
+    scoped by `problems.project`; daemon liveness and the account
+    meters stay workspace-wide, because they are."""
+    conn = _open_db(workspace)
+    _shelved_problem(conn, "Mine.a", "Mine")
+    _shelved_problem(conn, "Yours.b", "Yours")
+    _leased_goal(conn, "Mine.a", "g_mine")
+    _leased_goal(conn, "Yours.b", "g_yours")
+    conn.close()
+    _fake_daemon(monkeypatch, running=True, pid=4321, scope="Mine.a,Yours.b")
+
+    body = _client(workspace).get("/api/run?project=Mine").json()
+    assert body["problems"] == ["Mine.a"]
+    assert body["problem"] == "Mine.a"
+    assert [w["problem"] for w in body["workers"]] == ["Mine.a"]
+    assert body["goals"]["total"] == 1
+    # the engine's own state is not a per-shelf fact
+    assert body["daemon"]["running"] is True
+
+
+def test_the_run_feed_shows_only_the_named_projects_events(
+        workspace: Path, monkeypatch) -> None:
+    """`/api/run/events` resolves its problem set through the same
+    `_resolve_focus`, so it inherited the same leak."""
+    conn = _open_db(workspace)
+    for name, shelf in (("Mine.a", "Mine"), ("Yours.b", "Yours")):
+        _shelved_problem(conn, name, shelf)
+        gid = db.insert_goal(conn, problem=name, slug=f"brick_{shelf}",
+                             lean_path=f"proofs/{name}.lean",
+                             statement="True", origin="forward")
+        db.update_goal_status(conn, gid, "proved", event="builder_proved")
+    conn.close()
+    _fake_daemon(monkeypatch, running=True, pid=4321, scope="Mine.a,Yours.b")
+
+    d = _client(workspace).get("/api/run/events?project=Mine").json()
+    assert d["problems"] == ["Mine.a"]
+    assert {e["problem"] for e in d["events"]} <= {"Mine.a"}

@@ -42,7 +42,13 @@ export default function Groups({
   const [pick, setPick] = useState<number | null | undefined>(undefined)
   // the command sheet for the group on screen (§1.3-2)
   const [acting, setActing] = useState(false)
-  const { data: run } = usePoll<RunStatus>('/api/run', 5000)
+  // this Project's lanes only — the seat lists used to span the whole
+  // fleet and the client filter below was the only thing standing
+  // between another shelf's group-less worker and this tree
+  const { data: run } = usePoll<RunStatus>(
+    `/api/run?project=${encodeURIComponent(project)}`,
+    5000,
+  )
   // a group id belongs to ONE task — carrying a stale one across would
   // 404 the whole read
   const shownRef = useRef(problem)

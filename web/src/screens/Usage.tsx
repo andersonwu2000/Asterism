@@ -163,8 +163,13 @@ function inner(
 /** The run's burn figures — moved here from the console (owner,
  * 2026-07-18): accounting lives with accounting. Weighted units
  * against the subscription window (no USD, no pretend ceiling). */
-function BurnStrip() {
-  const { data } = usePoll<RunStatus>('/api/run', 5000)
+function BurnStrip({ project }: { project?: string }) {
+  // the shelf's burn, not the workspace's — the engine room lives
+  // inside a Project (§1.4) and the run read is scoped by the FK
+  const { data } = usePoll<RunStatus>(
+    `/api/run${project ? `?project=${encodeURIComponent(project)}` : ''}`,
+    5000,
+  )
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   if (!data) return null
   const d = data.daemon
@@ -229,7 +234,7 @@ function BurnStrip() {
 export function UsageLedger({ project }: { project?: string }) {
   return (
     <>
-      <BurnStrip />
+      <BurnStrip project={project} />
       {/* the engine room is a per-Project surface (§1.4), so its ledger
           answers for the shelf the reader is standing on. Membership is
           the FK, not the name's first segment — serve does that half. */}

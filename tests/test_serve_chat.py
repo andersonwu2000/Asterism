@@ -585,3 +585,32 @@ def test_the_page_key_is_unchanged_without_a_project_or_focus(
     key, _ctx = _chat._page_context(workspace, {"kind": "problem",
                                                 "name": "Topology.toy"})
     assert key == "problem:Topology.toy"
+
+
+def test_the_board_context_inside_a_project_names_only_its_own(
+    workspace: Path,
+) -> None:
+    """The Assistant's overview context was workspace-wide even when the
+    person was standing inside a Project: another shelf's blocked task
+    arrived as "what needs the human", one hallucination away from being
+    answered about as if it were this Project's. `_project_context`
+    below it already got this right — the overview did not."""
+    _seed(workspace)
+    conn = _open_db(workspace)
+    now = db.now()
+    for name in ("Erdos.p1", "Other.p9"):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, brief, reason, payload, outcome,"
+            " created_at, updated_at) VALUES (?, 0, 'routine',"
+            " 'RequestUserAmend', '', '', '{}', 'awaiting_human', ?, ?)",
+            (name, now, now))
+        conn.execute("UPDATE problems SET state = 'awaiting_human',"
+                     " last_strategist_at = ? WHERE name = ?", (now, name))
+    conn.commit()
+    conn.close()
+
+    _key, ctx = _chat._page_context(workspace, {"kind": "engine"},
+                                    project="Erdos")
+    assert "Erdos.p1" in ctx
+    assert "Other.p9" not in ctx, "another Project's blocked task is not context"

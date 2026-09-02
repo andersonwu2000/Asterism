@@ -537,13 +537,23 @@ export default function EngineRoom({
   pin: string | null
   rows: { name: string }[]
 }) {
+  // the engine room is a surface INSIDE a Project (§1.4), so the run
+  // read is that shelf's: lanes, tallies, feed and burn come back
+  // filtered by `problems.project`. Without it a run over another
+  // shelf filled this page with another Project's work — and the lane
+  // links pointed into THIS Project at another Project's task.
   const { data, error } = usePoll<RunStatus>(
-    pin ? `/api/run?problem=${encodeURIComponent(pin)}` : '/api/run',
+    `/api/run?project=${encodeURIComponent(project)}` +
+      (pin ? `&problem=${encodeURIComponent(pin)}` : ''),
     2000,
   )
   // which backend each seat rides - the quota strip must NAME whose
-  // window it shows and stay silent about accounts nothing spends
-  const { data: meta } = usePoll<Meta>('/api/meta', 15000)
+  // window it shows and stay silent about accounts nothing spends.
+  // Same URL the shell polls, so the two share one read.
+  const { data: meta } = usePoll<Meta>(
+    `/api/meta?project=${encodeURIComponent(project)}`,
+    15000,
+  )
   useTick(1000)
   const [logOpen, setLogOpen] = useState(false)
   const logPulse = useLogPulse(Boolean(data?.daemon.running))
