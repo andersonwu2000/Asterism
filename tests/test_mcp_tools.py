@@ -396,15 +396,24 @@ def _seed_project(workspace: Path, problem: str = "Erdos.p1") -> int:
 
 def test_the_assistant_seat_is_declared_and_carries_no_act_channel(
 ) -> None:
-    """§1.1's matrix as a table, not a comment. The Assistant reads and
-    prepares; the workers' write/compute/fetch channels are theirs, and
-    a seat that inherited them would make the matrix advisory."""
+    """§1.1's matrix as a table, not a comment.
+
+    `compute` and `paper_fetch` joined the seat by owner ruling
+    2026-09-02: §1.1 lists both as Assistant capabilities (`compute`, and
+    找論文), and neither is an act channel — `compute` runs in the
+    gateway's own sandbox with no filesystem, network or shell, and
+    `paper_fetch` goes through `papers/fetch`, the intake chokepoint,
+    not a raw DB write. What stays out is what would let the Assistant
+    stand in for a worker: `write_file` (a worker's attempts dir, which
+    the Assistant does not have) and `validate_json` (a worker's
+    hand-in), plus every act channel there has never been."""
     from Tooling.llm.envelope import asterism_tools_for
 
     seat = asterism_tools_for("explainer")
     assert {"write_project_doc", "list_project_docs", "read_project_doc",
-            "prepare_command", "daemon_status", "inspect"} <= seat
-    for banned in ("write_file", "compute", "paper_fetch"):
+            "prepare_command", "daemon_status", "inspect",
+            "compute", "paper_fetch"} <= seat
+    for banned in ("write_file", "validate_json"):
         assert banned not in seat, banned
 
 

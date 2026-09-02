@@ -67,21 +67,33 @@ _NL_TOOLS = frozenset({"inspect", "write_file", "compute", "loogle",
 #:   inspect / loogle       reading the workspace and Mathlib — the
 #:                          matrix's 可讀 row, already fenced by the
 #:                          server's own deny roots
-#:   paper_search           finding papers. `FetchPaper` retired with the
-#:                          Scholar (§3.3 ruling), and the Assistant is
-#:                          what took that errand over — SEARCH only:
-#:                          `paper_fetch` shelves a file and writes a DB
-#:                          binding, which is outside `_docs/agent/`
+#:   paper_search /         finding papers, and taking one. `FetchPaper`
+#:   paper_fetch            retired with the Scholar (§3.3 ruling) and
+#:                          the Assistant is what took that errand over,
+#:                          so the fetch half belongs to it too (owner
+#:                          ruling 2026-09-02): §1.1 lists 找論文 as an
+#:                          Assistant capability, and the shelve + bind
+#:                          runs through `papers/fetch` — the intake
+#:                          chokepoint every other caller uses — not a
+#:                          raw DB write, which is the thing the matrix
+#:                          forbids.
+#:   compute                §1.1 lists it (owner ruling 2026-09-02). Not
+#:                          the "execution channel" the matrix bars: the
+#:                          sandbox has no filesystem, no network and no
+#:                          shell, each call is a fresh process, and
+#:                          nothing it prints can establish a claim —
+#:                          only the kernel does that. It is arithmetic
+#:                          the Assistant would otherwise do in its head
+#:                          and get wrong in front of a mathematician.
 #:   *_project_doc(s)       its one write surface, and it is `agent/`
 #:                          only (state/project_docs enforces the area)
 #:   prepare_command        §3.8: it PREPARES; the person confirms
 #:   daemon_status          the matrix's daemon 狀態 row, read-only
 #: Deliberately absent: `write_file` (writes a worker's attempts dir —
-#: a directory the Assistant does not have), `compute` (an execution
-#: channel the matrix does not grant), `validate_json` (validates a
-#: worker's own hand-in), and every act channel there has never been.
+#: a directory the Assistant does not have), `validate_json` (validates
+#: a worker's own hand-in), and every act channel there has never been.
 _ASSISTANT_TOOLS = frozenset({
-    "inspect", "loogle", "paper_search",
+    "inspect", "loogle", "paper_search", "paper_fetch", "compute",
     "write_project_doc", "list_project_docs", "read_project_doc",
     "prepare_command", "daemon_status"})
 
