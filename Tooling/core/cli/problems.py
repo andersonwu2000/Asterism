@@ -238,6 +238,12 @@ def init_problem(workspace: Path, problem: str, *,
             "INSERT INTO problems (name, created_at) VALUES (?, ?)",
             (problem, db.now()),
         )
+    # v48 (human_interface_design.md §3.1) — every problem belongs to a
+    # Project. The dotted prefix is the DEFAULT filing, applied once at
+    # registration; a later rename is the Project table's business and a
+    # re-init must not undo it, so this never overwrites a filed problem.
+    from ...state import projects as _projects
+    _projects.ensure_for_problem(conn, problem)
     # v35 — every problem has a top discussion group, its human-facing
     # one. Unconditional (not gated on `existing`): a problem initialised
     # before v35 and re-inited afterwards must acquire one too, and a

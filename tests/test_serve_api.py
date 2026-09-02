@@ -2253,3 +2253,80 @@ def test_serve_cli_accepts_a_host_override(monkeypatch):
     seen.clear()
     m.main(["serve"])
     assert seen["host"] == "127.0.0.1"
+
+
+# ---------------------------------------------------------------------
+# Projects (human_interface_design.md §3.1)
+# ---------------------------------------------------------------------
+
+
+def test_projects_endpoint_lists_what_the_backfill_filed(
+        workspace: Path) -> None:
+    """A Project is a row, so the board reads it from the DB rather than
+    re-deriving prefixes: registering `Erdos.p1` files it under `Erdos`,
+    and the listing carries the description a card shows."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Erdos', 'the shelf', ?)", (db.now(),))
+    conn.execute("UPDATE problems SET project = 'Erdos'")
+    conn.commit()
+    conn.close()
+    r = _client(workspace).get("/api/projects")
+    assert r.status_code == 200, r.text
+    assert r.json()["projects"] == [
+        {"name": "Erdos", "description": "the shelf", "problems": 1}]
+
+
+def test_create_project_conflicts_instead_of_clobbering(
+        workspace: Path) -> None:
+    """POST goes through the state function, so its refusals arrive as
+    409 (the resolve_amend pattern) rather than as a silent upsert."""
+    _open_db(workspace).close()
+    c = _client(workspace)
+    assert c.post("/api/projects",
+                  json={"name": "Erdos", "description": "the shelf"}
+                  ).status_code == 200
+    assert c.post("/api/projects", json={"name": "Erdos"}).status_code == 409
+    assert c.post("/api/projects", json={"name": "a b"}).status_code == 409
+    assert [p["name"] for p in c.get("/api/projects").json()["projects"]] \
+        == ["Erdos"]
+
+
+def test_patch_project_renames_and_the_problems_follow(
+        workspace: Path) -> None:
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Erdos', '', ?)", (db.now(),))
+    conn.execute("UPDATE problems SET project = 'Erdos'")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    r = c.patch("/api/projects/Erdos",
+                json={"name": "ErdosProblems", "description": "the shelf"})
+    assert r.status_code == 200, r.text
+    assert c.get("/api/projects").json()["projects"] == [
+        {"name": "ErdosProblems", "description": "the shelf", "problems": 1}]
+    assert c.patch("/api/projects/ghost",
+                   json={"description": "x"}).status_code == 404
+
+
+def test_delete_project_refuses_while_a_problem_names_it(
+        workspace: Path) -> None:
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    conn.execute("INSERT INTO projects (name, description, created_at)"
+                 " VALUES ('Erdos', '', ?)", (db.now(),))
+    conn.execute("UPDATE problems SET project = 'Erdos'")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    assert c.delete("/api/projects/Erdos").status_code == 409
+    assert c.delete("/api/projects/ghost").status_code == 404
+    conn = db.connect(workspace / "asterism.db")
+    conn.execute("UPDATE problems SET project = NULL")
+    conn.commit()
+    conn.close()
+    assert c.delete("/api/projects/Erdos").status_code == 200
+    assert c.get("/api/projects").json()["projects"] == []

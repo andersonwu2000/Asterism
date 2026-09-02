@@ -361,6 +361,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     from .chat import register as _register_chat
     _register_chat(app, workspace)
 
+    # the Project shelves (/api/projects, HID §3.1)
+    from .projects_api import register as _register_projects
+    _register_projects(app, workspace, _ro)
+
     # -- meta ---------------------------------------------------------
 
     # The release stamp this PROCESS started from (VERSION rides in the
@@ -1424,13 +1428,15 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         On init failure the created directory is rolled back so the
         form can be corrected and resubmitted."""
         import json as _json
-        import re as _re
         import shutil as _shutil
         from ..core.cli import init_problem
         from ..state import intent as _intent
+        # One spelling of one rule: a problem name is dot-separated
+        # Project-name segments (state/projects.py, v48).
+        from ..state import projects as _projects
         name = body.name.strip()
-        if not _re.fullmatch(
-                r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*", name)                 or len(name) > 120:
+        if not _projects.PROBLEM_NAME_RE.fullmatch(name) \
+                or len(name) > _projects.NAME_MAX:
             raise HTTPException(
                 status_code=422,
                 detail="problem name must be dot-separated identifiers, "

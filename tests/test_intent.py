@@ -419,3 +419,102 @@ def test_prompts_carry_no_manifest_noun() -> None:
     offenders = [p for p in prompts.rglob("*.md")
                  if "Manifest" in p.read_text(encoding="utf-8")]
     assert offenders == [], offenders
+
+
+# ---------------------------------------------------------------------
+# state.projects — Project as a first-class row
+# (human_interface_design.md §3.1)
+# ---------------------------------------------------------------------
+
+
+def test_create_project_rejects_a_name_no_problem_could_carry(
+        conn: sqlite3.Connection) -> None:
+    """A Project name is ONE segment of a problem name, so it answers to
+    the same character rule the problem-name gate applies per segment —
+    dots included: a dotted Project could never be a problem's prefix."""
+    from Tooling.state import projects
+    projects.create_project(conn, "Erdos", description="the shelf")
+    for bad in ("", "  ", "1starts_with_digit", "has space", "Erdos.p1",
+                "semi;colon", "x" * 121):
+        with pytest.raises(ValueError):
+            projects.create_project(conn, bad)
+    assert [p["name"] for p in projects.list_projects(conn)] == ["Erdos"]
+
+
+def test_create_project_is_not_a_silent_upsert(
+        conn: sqlite3.Connection) -> None:
+    """Creating over a live Project would erase its description without
+    saying so — the second call is a conflict, not a write."""
+    from Tooling.state import projects
+    projects.create_project(conn, "Erdos", description="the shelf")
+    with pytest.raises(ValueError):
+        projects.create_project(conn, "Erdos", description="clobbered")
+    assert projects.list_projects(conn)[0]["description"] == "the shelf"
+
+
+def test_rename_project_carries_its_problems(
+        conn: sqlite3.Connection) -> None:
+    """§3.1: rename is a TABLE operation — the FK follows in the same
+    transaction, and neither the problem name nor its directory moves."""
+    from Tooling.state import projects
+    projects.create_project(conn, "Erdos")
+    _seed_problem(conn, "Erdos.p1")
+    conn.execute("UPDATE problems SET project = 'Erdos'")
+    projects.rename_project(conn, "Erdos", "ErdosProblems")
+    assert projects.project_of(conn, "Erdos.p1") == "ErdosProblems"
+    assert [p["name"] for p in projects.list_projects(conn)] \
+        == ["ErdosProblems"]
+    assert conn.execute("SELECT name FROM problems").fetchone()[0] \
+        == "Erdos.p1"
+    assert list(conn.execute("PRAGMA foreign_key_check")) == []
+
+
+def test_delete_project_refuses_while_a_problem_names_it(
+        conn: sqlite3.Connection) -> None:
+    """An empty Project is legal; a populated one is not deletable —
+    otherwise the delete either strands a problem or silently takes it."""
+    from Tooling.state import projects
+    projects.create_project(conn, "Erdos")
+    _seed_problem(conn, "Erdos.p1")
+    conn.execute("UPDATE problems SET project = 'Erdos'")
+    with pytest.raises(ValueError):
+        projects.delete_project(conn, "Erdos")
+    conn.execute("UPDATE problems SET project = NULL")
+    projects.delete_project(conn, "Erdos")
+    assert projects.list_projects(conn) == []
+
+
+def test_set_description_is_the_only_way_the_blurb_changes(
+        conn: sqlite3.Connection) -> None:
+    from Tooling.state import projects
+    projects.create_project(conn, "Erdos")
+    projects.set_description(conn, "Erdos", "the open-problems shelf")
+    assert projects.list_projects(conn)[0]["description"] \
+        == "the open-problems shelf"
+    # An unknown name is a MISSING resource, not a bad request — the two
+    # exception types are what let the write endpoints answer 404 vs 409
+    # without a check-then-act race.
+    with pytest.raises(KeyError):
+        projects.set_description(conn, "ghost", "nobody")
+
+
+def test_init_problem_files_a_new_problem_under_its_prefix(
+        tmp_path: Path) -> None:
+    """Registration MUST set `problems.project` (§3.1: the backfill left
+    no row project-less, and a new registration must not reopen the hole)
+    — minting the Project row when the prefix names none yet."""
+    from Tooling.core.cli import init_problem
+    from Tooling.state import projects
+    pdir = tmp_path / "Problems" / "Erdos" / "p1"
+    pdir.mkdir(parents=True)
+    (pdir / "problem.json").write_text(
+        json.dumps({"problem": "Erdos.p1", "charter": "Settle it."}),
+        encoding="utf-8")
+    rc, msg = init_problem(tmp_path, "Erdos.p1", force=True)
+    assert rc == 0, msg
+    conn = _db.connect(tmp_path / "asterism.db")
+    try:
+        assert projects.project_of(conn, "Erdos.p1") == "Erdos"
+        assert [p["name"] for p in projects.list_projects(conn)] == ["Erdos"]
+    finally:
+        conn.close()
