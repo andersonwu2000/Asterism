@@ -485,8 +485,8 @@ def _session_key(project: "str | None") -> str:
 class ChatBody(BaseModel):
     """One question.
 
-    `page` is the frozen screen ({kind: board|problem|library|engine|
-    papers, name?}). `project` binds the conversation (§1.1-2); omit it
+    `page` is the frozen screen ({kind: board|problem|library|engine,
+    name?}). `project` binds the conversation (§1.1-2); omit it
     on the picker page. `focus` is what the person has OPEN on that
     screen and carries one or more of:
 
@@ -502,7 +502,7 @@ class ChatBody(BaseModel):
     """
 
     message: str
-    page: "dict | None" = None   # {kind: board|problem|library|engine|papers, name?}
+    page: "dict | None" = None   # {kind: board|problem|library|engine, name?}
     model: "str | None" = None   # one of /api/chat/state's `models`
     project: "str | None" = None
     focus: "dict | None" = None

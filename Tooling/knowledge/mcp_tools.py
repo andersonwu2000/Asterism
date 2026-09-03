@@ -534,12 +534,13 @@ def paper_search(query: str = "", doi: str = "") -> str:
 
 @_seat_tool(structured_output=False)
 def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
-    """Download a paper, shelve it, and bind it to the problem.
+    """Download a paper, shelve it on the problem's Project, and bind it.
 
     `target` is an arXiv id or a URL on a whitelisted host — use
     `paper_search` first to resolve a citation to fetchable open
-    copies. Pass `problem` so the paper binds to your problem, and say
-    in `reason` why the work is needed — the binding is audited.
+    copies. `problem` is REQUIRED: it names the Project whose documents
+    hold the paper. Say in `reason` why the work is needed — the
+    binding is audited.
     """
     import io
     from contextlib import redirect_stdout
@@ -550,7 +551,8 @@ def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
         return _ARG_HELP.format(
             tool="paper_fetch",
             hint='the parameter is `target` — an arXiv id or a whitelisted '
-                 'URL, e.g. paper_fetch(target="2211.11504", '
+                 'URL, with the problem it is for, e.g. '
+                 'paper_fetch(target="2211.11504", problem="Erdos.p1", '
                  'reason="cited for the closure bound")')
     argv = [target, "--workspace", str(_workspace_root())]
     if problem:
