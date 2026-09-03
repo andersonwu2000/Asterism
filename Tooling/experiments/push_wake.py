@@ -37,7 +37,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import print_json
+from . import harden_console
 
 #: What the runner keeps from the attempts dir, per turn and once.
 _TURN_ARTEFACTS = ("note.md",)
@@ -125,6 +125,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None,
                     help="directory to copy the artefacts into")
     a = ap.parse_args(argv)
+    harden_console()
 
     workspace = Path(a.workspace).resolve()
     assert_scratch(workspace)
@@ -227,7 +228,7 @@ def main(argv=None) -> int:
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     _snapshot(attempts_dir, out, _WAKE_ARTEFACTS, "")
     _snapshot(attempts_dir, out, ("push_result.json",), "")
-    print_json(result)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if turns and all(t["rc"] == 0 for t in turns) else 1
 
 

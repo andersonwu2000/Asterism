@@ -38,15 +38,16 @@ def test_push_wake_accepts_a_scratch_workspace(tmp_path):
     push_wake.assert_scratch(ws)
 
 
-def test_result_dump_survives_a_console_codec_the_payload_outruns(monkeypatch):
-    """Every experiment runner ends by dumping its result blob to
-    stdout, AFTER the run's own artefacts are on disk. On a cp950
-    console a payload carrying `∉` (Lean prose does) made that last
-    line raise UnicodeEncodeError, so a finished replay reported as a
-    crash (arm C run 1, 2026-09-03). The dump must degrade the
-    characters, never the run."""
+def test_a_runner_hardens_the_console_before_it_enters_the_pipeline(monkeypatch):
+    """These runners are entry points into the same pipeline the CLI
+    enters, and the CLI hardens the console first (`_force_utf8_io`).
+    They did not: on a cp950 console the `⚠` in a length warning raised
+    UnicodeEncodeError INSIDE the wake, and arm C run 2 of the push
+    experiment (2026-09-03) died with its proposal written, its
+    Adversary round spent and nothing committed."""
     monkeypatch.setattr(
         sys, "stdout", io.TextIOWrapper(io.BytesIO(), encoding="cp950"))
-    experiments.print_json({"proof": "i ∉ A"})
+    experiments.harden_console()
+    print("⚠ i ∉ A")          # the two characters that killed the run
     sys.stdout.flush()
-    assert b"proof" in sys.stdout.buffer.getvalue()
+    assert "⚠ i ∉ A" in sys.stdout.buffer.getvalue().decode("utf-8")

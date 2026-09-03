@@ -6,28 +6,24 @@ be re-run with today's prompts and seats (2026-08-30, the fin10 replay).
 """
 from __future__ import annotations
 
-import json
-import sys
 
+def harden_console() -> None:
+    """Force UTF-8 console I/O, the way the CLI's own entry point does.
 
-def print_json(payload) -> None:
-    """Dump a runner's result blob to stdout, whatever the console's
-    codec is.
+    Each runner in this package is an ENTRY POINT into the very pipeline
+    `asterism run` enters — and the CLI calls `_force_utf8_io` before it
+    runs anything, precisely because a framework print carries Lean
+    prose (`∃`, `∉`) and status glyphs (`⚠`) that a locale-default
+    Windows console cannot spell. These runners skipped that step, so
+    the same UnicodeEncodeError arrived one layer in: arm C run 2 of the
+    push experiment (2026-09-03) died at a length warning inside the
+    wake, with its proposal written, its Adversary round spent and
+    nothing committed — the incident `_force_utf8_io` already exists to
+    prevent (BT 2026-05-29 g3410).
 
-    Every runner here ends with this dump, and it runs AFTER the replay
-    has committed and written its own JSON artefact — so a codec that
-    cannot spell the payload must cost characters, not the run. A cp950
-    console met `∉` in an Inject's Lean prose and killed arm C run 1
-    (2026-09-03) on its very last line, with everything already on disk.
-
-    Round-tripping through the console's own encoding with `replace`
-    substitutes exactly the characters it cannot spell and leaves the
-    rest — the operator still reads the blob, and the file beside it is
-    always the faithful copy.
+    Entering the pipeline means entering it the way the CLI does; the
+    import is deferred so it resolves against the workspace the runner
+    has already put on `sys.path`.
     """
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    stream = sys.stdout
-    enc = getattr(stream, "encoding", None) or "utf-8"
-    stream.write(text.encode(enc, "replace").decode(enc, "replace"))
-    stream.write("\n")
-    stream.flush()
+    from ..core.cli import _force_utf8_io
+    _force_utf8_io()

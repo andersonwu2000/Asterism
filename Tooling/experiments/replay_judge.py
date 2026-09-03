@@ -26,7 +26,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from . import print_json
+from . import harden_console
 
 
 def reconstruct_decisions(rows: "list[sqlite3.Row | dict]") -> "list[dict]":
@@ -96,6 +96,7 @@ def main(argv=None) -> int:
                     help="trigger_kind the original wake ran under")
     ap.add_argument("--workspace", default=".", help="the rewound scratch workspace")
     a = ap.parse_args(argv)
+    harden_console()
 
     workspace = Path(a.workspace).resolve()
     os.chdir(workspace)
@@ -141,7 +142,7 @@ def main(argv=None) -> int:
            "err": jerr, "verdict": verdict}
     (attempts_dir / "replay_verdict.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print_json(out)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if rc == 0 and verdict is not None else 1
 
 

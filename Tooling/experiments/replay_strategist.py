@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import print_json
+from . import harden_console
 
 
 def main(argv=None) -> int:
@@ -35,6 +35,7 @@ def main(argv=None) -> int:
                     help="force a trigger_kind instead of deriving it from the scene")
     ap.add_argument("--workspace", default=".", help="the rewound scratch workspace")
     a = ap.parse_args(argv)
+    harden_console()
 
     workspace = Path(a.workspace).resolve()
     os.chdir(workspace)
@@ -90,7 +91,7 @@ def main(argv=None) -> int:
     attempts_dir.mkdir(parents=True, exist_ok=True)
     (attempts_dir / "replay_result.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print_json(out)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if status == "succeeded" else 1
 
 
