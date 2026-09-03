@@ -315,6 +315,51 @@ def classify_tables(conn: sqlite3.Connection) -> "dict[str, str]":
     return out
 
 
+def problem_column_sweep_order(conn: sqlite3.Connection) -> "list[str]":
+    """The `problem`-column tables, ordered so that a table comes
+    BEFORE every table it references — the order a per-problem wipe
+    needs, DERIVED (`classify_tables` + `PRAGMA foreign_key_list`)
+    rather than hand-written.
+
+    A wipe that names its tables by hand cannot notice the ones added
+    after it was written. Twice it did not: `human_commands` (v48) and
+    `routine_verdicts` (2026-08-30) both carry `problem TEXT NOT NULL
+    REFERENCES problems(name)`, and neither reached the reset sweep —
+    a reset on a problem holding either row died on `FOREIGN KEY
+    constraint failed` at `DELETE FROM problems`, before the leftovers
+    report that exists to catch exactly this could even run.
+
+    This is a DERIVATION, not a deletion — what the caller does with
+    the order is the caller's ruling, the same rule the auditors below
+    keep. `SURVIVES_RESET` entries are omitted: their survival is a
+    standing ruling, not a gap in the order.
+
+    A reference cycle (`strategist_decisions` <-> `groups`) is broken
+    wherever the walk enters it. No order is right for both directions,
+    which is why those two edges are `ON DELETE SET NULL` to begin
+    with.
+    """
+    kinds = classify_tables(conn)
+    members = {t for t, k in kinds.items()
+               if k == "problem-column" and t not in SURVIVES_RESET}
+    state: "dict[str, int]" = {}          # 1 = on the stack, 2 = done
+    post: "list[str]" = []
+
+    def visit(t: str) -> None:
+        if state.get(t):
+            return                        # done, or a cycle we just broke
+        state[t] = 1
+        for r in conn.execute(f"PRAGMA foreign_key_list({t})"):
+            if r[2] in members:
+                visit(r[2])
+        state[t] = 2
+        post.append(t)
+
+    for t in sorted(members):
+        visit(t)
+    return list(reversed(post))
+
+
 def db_leftovers(conn: sqlite3.Connection,
                  problem: str) -> "dict[str, int]":
     """Per-problem complement: rows still referencing `problem`, asked

@@ -796,6 +796,21 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # (`knowledge_stats` joins pipelines, `serve.data` groups by
     # problem), so the rows had no reader that outlived their subject.
     conn.execute("DELETE FROM spawn_usage WHERE problem = ?", (problem,))
+    # Schema-DERIVED backstop for everything above. Every DELETE in this
+    # function names its table by hand, and a hand list cannot notice a
+    # table added after it was written — `human_commands` (v48) and
+    # `routine_verdicts` (2026-08-30) both carry `problem ... REFERENCES
+    # problems(name)` and neither was ever added, so a reset on a problem
+    # holding either row died on the FK at the `DELETE FROM problems`
+    # below, before the leftovers report meant to catch this could run.
+    # Naming those two here would fix the instance and keep the class;
+    # asking the schema which tables are problem-keyed (the same
+    # derivation `db_leftovers` audits with) ends it. The passes above
+    # stay — they clear the goal/strategy/group-keyed rows no `problem`
+    # column can express, and they leave this sweep a no-op for every
+    # table they already named.
+    for _t in satellites.problem_column_sweep_order(conn):
+        conn.execute(f"DELETE FROM {_t} WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     return len(gids), len(sids)
 

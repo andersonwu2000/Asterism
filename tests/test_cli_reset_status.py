@@ -206,6 +206,46 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     ).fetchone()[0] == 0
 
 
+def test_reset_clears_every_problem_column_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wipe's problem-keyed sweep is DERIVED, not hand-listed.
+
+    `human_commands` (v48) and `routine_verdicts` (2026-08-30) both
+    carry `problem TEXT NOT NULL REFERENCES problems(name)` and both
+    arrived after the wipe's hand-written DELETE list was written, so
+    neither was ever swept — a reset on a problem holding either row
+    dies on `FOREIGN KEY constraint failed` at `DELETE FROM problems`.
+    That is the exact failure mode the satellite registry exists to end
+    (state/satellites.py: "each operation that must enumerate them
+    carried its own hand-list"), so this test asks the schema rather
+    than a list: EVERY table the classification calls problem-keyed
+    must be empty of this problem afterwards."""
+    from Tooling.state import satellites
+    _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _seed_via_init(tmp_path)
+    conn = db.connect()
+    conn.execute(
+        "INSERT INTO human_commands (problem, kind, payload,"
+        " idempotency_key, status, created_at)"
+        " VALUES ('wilson', 'Signal', '{}', 'k1', 'queued', ?)",
+        (db.now(),))
+    conn.execute(
+        "INSERT INTO routine_verdicts (problem, group_id, pipeline_id,"
+        " verdict_json, created_at) VALUES ('wilson', 1, 'pid-x', '{}', ?)",
+        (db.now(),))
+    conn.commit()
+    conn.close()
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 0
+
+    conn = db.connect()
+    left = satellites.db_leftovers(conn, "wilson")
+    assert left == {}, f"wipe blind spots: {left}"
+
+
 def test_reset_sweeps_drafts_and_presearch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
