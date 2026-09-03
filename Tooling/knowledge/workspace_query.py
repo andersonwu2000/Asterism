@@ -206,15 +206,15 @@ def _resolve(spec: str, cwd: Path) -> Path:
     here = cwd / spec
     if here.exists():
         return here
-    # `.lake` lives at the WORKSPACE root only — the tool taught
-    # ".lake/packages/mathlib/Mathlib" as a relative example while every
-    # spawn's cwd is its problem dir, so the literal example silently
-    # found nothing (37 fleet reports, 2026-08-31). Anchor it where it
-    # actually is.
-    if spec.replace("\\", "/").startswith(".lake/") or spec == ".lake":
-        ws = workspace_of(cwd)
-        if ws is not None and (ws / spec).exists():
-            return ws / spec
+    # The workspace root is the third place a spawn is handed paths
+    # against, and the framework prints them itself: `.lake/packages/
+    # mathlib` (37 fleet reports, 2026-08-31), `Library/`, and since HID
+    # §3.6 `Problems/<project>/_docs/user/`. Only `.lake` was anchored,
+    # by name, so a Context section could point at a file `inspect` then
+    # swore was not there. Resolution, not a grant — `_denied` fences it.
+    ws = workspace_of(cwd)
+    if ws is not None and (ws / spec).exists():
+        return ws / spec
     own = _own_attempt_dir()
     if own is not None:
         # Inside `own`, and STILL inside it after `..` — the second

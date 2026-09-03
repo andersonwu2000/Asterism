@@ -127,3 +127,54 @@ def test_run_queries_cwd_falls_back_to_the_request_context(
     finally:
         TOOL_CWD_CONTEXT.reset(token)
     assert "ctx tree" in out, out
+
+
+def _project_workspace(tmp_path: Path) -> Path:
+    """A workspace `workspace_of` can actually recognise (it wants both
+    `Problems` and `Tooling`), with the live shape: a problem nested
+    under its Project, and the Project's document root beside it."""
+    (tmp_path / "Tooling").mkdir()
+    cwd = tmp_path / "Problems" / "Combinatorics" / "union_closed"
+    cwd.mkdir(parents=True)
+    note = (tmp_path / "Problems" / "Combinatorics" / "_docs" / "user"
+            / "split_note.md")
+    note.parent.mkdir(parents=True)
+    note.write_text("# SPLIT\n\nthe abundance cut\n", encoding="utf-8")
+    return cwd
+
+
+def test_a_workspace_relative_path_reaches_the_workspace_root(
+        tmp_path: Path):
+    """The framework prints workspace-relative paths at its agents —
+    `.lake/packages/mathlib`, `Library/`, and since HID §3.6 the owner's
+    notes under `Problems/<project>/_docs/user/` — while every spawn's
+    cwd is its problem dir, two levels down. Only `.lake` was anchored,
+    by name, so the Context could point at a file `inspect` then swore
+    was not there. The workspace is the second anchor for ALL of them."""
+    cwd = _project_workspace(tmp_path)
+
+    out = wq.run_queries(
+        [{"read": "Problems/Combinatorics/_docs/user/split_note.md"}],
+        cwd=cwd, per_query_chars=2000)
+
+    assert "the abundance cut" in out, out
+    assert "no file at" not in out, out
+
+
+def test_the_workspace_anchor_is_not_a_hole_in_the_read_fence(
+        tmp_path: Path):
+    """Anchoring is resolution, not a grant: what the anchor reaches,
+    `read_deny_roots` still fences. A sibling Project's problem now
+    RESOLVES from a workspace-relative path — and must come back as the
+    operator-private refusal, never as its contents."""
+    cwd = _project_workspace(tmp_path)
+    foreign = tmp_path / "Problems" / "Erdos" / "p1"
+    foreign.mkdir(parents=True)
+    (foreign / "Root.lean").write_text("theorem secret : True := trivial\n",
+                                       encoding="utf-8")
+
+    out = wq.run_queries([{"read": "Problems/Erdos/p1/Root.lean"}],
+                         cwd=cwd, per_query_chars=2000)
+
+    assert "secret" not in out, out
+    assert "operator-private" in out, out
