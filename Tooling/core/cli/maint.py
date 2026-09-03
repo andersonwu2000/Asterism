@@ -556,6 +556,20 @@ def cmd_paper_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_papers_migrate(args: argparse.Namespace) -> int:
+    """Move a pre-§3.9 `Papers/` shelf into the Project document roots.
+    One-shot per workspace, idempotent, `--dry-run` first."""
+    from ...papers import migrate
+    dry = bool(getattr(args, "dry_run", False))
+    plan = migrate.run(Path.cwd(), dry_run=dry)
+    for line in migrate.render(plan, dry_run=dry):
+        print(line, flush=True)
+    if dry:
+        print("[papers-migrate] dry run — nothing moved. Re-run without "
+              "--dry-run to do it.", flush=True)
+    return 0
+
+
 def cmd_kb_migrate(args: argparse.Namespace) -> int:
     """Rebuild the mechanically-derivable KB entries (antipatterns) from
     `.drafts` blockers + `dead_attempts` rationale. Idempotent (source-keyed),

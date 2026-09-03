@@ -22,6 +22,7 @@ from .maint import (
     cmd_approve_ingest,
     cmd_charter,
     cmd_kb_migrate,
+    cmd_papers_migrate,
     cmd_library_backfill_declinfo,
     cmd_paper_add,
     cmd_paper_index,
@@ -375,6 +376,17 @@ def main(argv: list[str] | None = None) -> int:
     p_paper_index.add_argument("--force", action="store_true",
                                help="index even below the small-doc bar")
     p_paper_index.set_defaults(func=cmd_paper_index)
+
+    p_papers_migrate = sub.add_parser(
+        "papers-migrate",
+        help="one-shot: move a pre-§3.9 workspace `Papers/` shelf into "
+             "the Project document roots (bound papers follow their "
+             "problem's Project; unbound ones are set aside, not guessed)",
+    )
+    p_papers_migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="print the plan; move nothing")
+    p_papers_migrate.set_defaults(func=cmd_papers_migrate)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

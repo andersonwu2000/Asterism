@@ -721,3 +721,186 @@ def test_section_paper_index_stale_map_warns(tmp_path: Path) -> None:
         encoding="utf-8")
     joined = "\n".join(ctx._section_paper_index(_pi(), tmp_path, conn))
     assert "older extraction" in joined
+
+
+# ---------------------------------------------------------------------
+# papers-migrate (§3.9: the one-shot move off the workspace-global shelf)
+# ---------------------------------------------------------------------
+
+def _legacy_slot(ws: Path, pid: str, *, added_by: "str | None" = None,
+                 title: "str | None" = None) -> Path:
+    """A pre-§3.9 shelf slot under the retired `Papers/<id>/`."""
+    import json
+    d = ws / "Papers" / pid
+    d.mkdir(parents=True)
+    (d / "paper.md").write_text(f"# {pid}\n", encoding="utf-8")
+    (d / "text.md").write_text(f"body of {pid}\n", encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({
+        "id": pid, "source_name": f"{pid}.md", "pages": 0, "chars": 9,
+        "text_sha": "aaaaaaaaaaaa", "title": title,
+        "added_by": added_by}), encoding="utf-8")
+    return d
+
+
+def _migrate_db(ws: Path, rows: "list[tuple[str, str, str]]") -> None:
+    """A workspace DB holding (problem, project, paper_id) bindings."""
+    from Tooling.state import db as _db
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    for problem, project, pid in rows:
+        conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                     " created_at) VALUES (?, '', ?)", (project, _db.now()))
+        conn.execute("INSERT OR IGNORE INTO problems (name, project,"
+                     " created_at) VALUES (?, ?, ?)",
+                     (problem, project, _db.now()))
+        _db.bind_paper(conn, problem=problem, paper_id=pid, origin="user")
+    conn.commit()
+    conn.close()
+
+
+def test_migrate_files_a_bound_paper_under_its_project(
+        tmp_path: Path) -> None:
+    """§3.9: a paper goes to the Project of the problem that cites it,
+    into the area its own `added_by` names, and the legacy source is
+    removed once the copy has landed."""
+    from Tooling.papers import migrate
+    _legacy_slot(tmp_path, "aaaaaaaaaaaa", added_by="user")
+    _migrate_db(tmp_path, [("Erdos.p1", "Erdos", "aaaaaaaaaaaa")])
+    p = migrate.run(tmp_path)
+    assert p.filed == {"aaaaaaaaaaaa": ["Erdos"]}
+    dst = shelf.paper_dir(tmp_path, "aaaaaaaaaaaa", project="Erdos")
+    assert dst is not None and (dst / "text.md").is_file()
+    assert dst.parent == shelf.papers_root(tmp_path, "Erdos", "user")
+    assert not (tmp_path / "Papers" / "aaaaaaaaaaaa").exists()
+    assert not (tmp_path / "Papers").exists()  # empty root removed
+
+
+def test_migrate_copies_a_paper_cited_by_two_projects(
+        tmp_path: Path) -> None:
+    """One id, two shelves (§3.9): the copies land on BOTH before the
+    source goes, so an interruption leaves it readable, never nowhere."""
+    from Tooling.papers import migrate
+    _legacy_slot(tmp_path, "bbbbbbbbbbbb")
+    _migrate_db(tmp_path, [("Erdos.p1", "Erdos", "bbbbbbbbbbbb"),
+                           ("Topology.t", "Topology", "bbbbbbbbbbbb")])
+    p = migrate.run(tmp_path)
+    assert p.filed == {"bbbbbbbbbbbb": ["Erdos", "Topology"]}
+    for project in ("Erdos", "Topology"):
+        d = shelf.paper_dir(tmp_path, "bbbbbbbbbbbb", project=project)
+        assert d is not None and (d / "meta.json").is_file()
+    # no provenance → the engine's area
+    assert shelf.paper_dir(tmp_path, "bbbbbbbbbbbb",
+                           project="Erdos").parent \
+        == shelf.papers_root(tmp_path, "Erdos", "agent")
+
+
+def test_migrate_never_guesses_an_unbound_papers_project(
+        tmp_path: Path) -> None:
+    """A `reset` deletes bindings and leaves the directory — 22 of the
+    live shelf's 40 papers lost theirs that way. Filing those under a
+    guessed Project would put someone's literature under a heading
+    nobody chose, so the whole directory is set aside and LISTED."""
+    from Tooling.papers import migrate
+    _legacy_slot(tmp_path, "cccccccccccc", title="Frankl's conjecture")
+    _migrate_db(tmp_path, [])
+    p = migrate.run(tmp_path)
+    assert p.filed == {}
+    assert set(p.unfiled) == {"cccccccccccc"}
+    assert p.backup_dir is not None
+    assert p.backup_dir.name.startswith("papers_unfiled_")
+    assert (p.backup_dir / "cccccccccccc" / "text.md").is_file()
+    assert not (tmp_path / "Papers").exists()
+    assert shelf.list_papers(tmp_path) == []
+    printed = "\n".join(migrate.render(p, dry_run=False))
+    assert "cccccccccccc" in printed and "Frankl's conjecture" in printed
+
+
+def test_migrate_removes_only_a_zero_table_residue_db(
+        tmp_path: Path) -> None:
+    """`Papers/asterism.db` was minted by a mis-derived workspace in the
+    map spawn. Removed only when `sqlite_master` really is empty — a
+    file with tables in it is somebody's database, whatever it is doing
+    there."""
+    import sqlite3
+    from Tooling.papers import migrate
+    (tmp_path / "Papers").mkdir()
+    residue = tmp_path / "Papers" / "asterism.db"
+    sqlite3.connect(str(residue)).close()
+    p = migrate.run(tmp_path)
+    assert p.residue == residue and not residue.exists()
+
+    # a populated one is reported and LEFT
+    (tmp_path / "Papers").mkdir(exist_ok=True)
+    conn = sqlite3.connect(str(residue))
+    conn.execute("CREATE TABLE t (x INTEGER)")
+    conn.commit()
+    conn.close()
+    p2 = migrate.run(tmp_path)
+    assert p2.residue is None and p2.residue_kept == residue
+    assert residue.exists()
+    assert "look at it before deleting it" in \
+        "\n".join(migrate.render(p2, dry_run=False))
+
+
+def test_migrate_is_idempotent_and_dry_run_touches_nothing(
+        tmp_path: Path) -> None:
+    """A second run is a no-op — that is what makes it safe to run after
+    a partial one — and `--dry-run` reports the same plan without
+    moving a byte."""
+    from Tooling.papers import migrate
+    _legacy_slot(tmp_path, "dddddddddddd", added_by="user")
+    _migrate_db(tmp_path, [("Erdos.p1", "Erdos", "dddddddddddd")])
+    dry = migrate.run(tmp_path, dry_run=True)
+    assert dry.filed == {"dddddddddddd": ["Erdos"]}
+    assert (tmp_path / "Papers" / "dddddddddddd").is_dir()
+    assert shelf.list_papers(tmp_path) == []
+    assert "would file" in "\n".join(migrate.render(dry, dry_run=True))
+
+    first = migrate.run(tmp_path)
+    assert first.filed == {"dddddddddddd": ["Erdos"]}
+    again = migrate.run(tmp_path)
+    assert again.empty
+    assert "nothing to do" in "\n".join(migrate.render(again, dry_run=False))
+    # and the filed copy survived the second run untouched
+    d = shelf.paper_dir(tmp_path, "dddddddddddd", project="Erdos")
+    assert d is not None and (d / "text.md").is_file()
+
+
+def test_migrate_leaves_a_stray_folder_and_says_so(tmp_path: Path) -> None:
+    """A folder nobody shelved is somebody's, whatever it is doing under
+    `Papers/`. It is left, named, and `Papers/` survives to hold it."""
+    from Tooling.papers import migrate
+    (tmp_path / "Papers" / "notes").mkdir(parents=True)
+    (tmp_path / "Papers" / "notes" / "x.txt").write_text("hi",
+                                                         encoding="utf-8")
+    p = migrate.run(tmp_path)
+    assert [s.name for s in p.strays] == ["notes"]
+    assert (tmp_path / "Papers" / "notes" / "x.txt").is_file()
+    assert "not a shelf slot" in "\n".join(migrate.render(p, dry_run=False))
+
+
+def test_migrate_dry_run_writes_nothing_into_the_shelf(
+        tmp_path: Path) -> None:
+    """A dry run that creates files in the directory it is inspecting is
+    not a dry run: the residue is a WAL database, and reading one the
+    ordinary way MINTS its `-shm` beside it (observed on the live shelf
+    2026-09-03). The residue's sidecars are part of it — reported once,
+    removed with it, never listed as strays."""
+    import sqlite3
+    from Tooling.papers import migrate
+    (tmp_path / "Papers").mkdir()
+    residue = tmp_path / "Papers" / "asterism.db"
+    conn = sqlite3.connect(str(residue))
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.close()
+    before = sorted(p.name for p in (tmp_path / "Papers").iterdir())
+    p = migrate.run(tmp_path, dry_run=True)
+    assert p.residue == residue
+    assert p.strays == []
+    assert sorted(x.name for x in (tmp_path / "Papers").iterdir()) == before
+
+    # the real run takes the sidecars with it
+    (tmp_path / "Papers" / "asterism.db-wal").touch()
+    (tmp_path / "Papers" / "asterism.db-shm").touch()
+    migrate.run(tmp_path)
+    assert not (tmp_path / "Papers").exists()

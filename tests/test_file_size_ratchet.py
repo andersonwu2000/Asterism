@@ -659,8 +659,8 @@ _WATERMARKS = {
     "Tooling/core/cli/run.py": 800,  # +13 2026-09-03 _gateway_status_once asks the socket only after the presence marker says there is someone to ask  # +8 2026-09-03 daemon_status names the schema-behind case instead of counting -1 agents (the SchemaBehind branch + why it is not a measurement)  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/problems.py": 965,  # born 2026-08-28 from the cli.py split (A3)  # +10 2026-09-03 HID §3.9: a seeded paper id may sit on another Project's shelf, so init copies it onto this one before binding — conscious bump
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/main.py": 380,  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/maint.py": 590,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)  # +8 2026-09-03 `papers-migrate` — a thin printer over `papers/migrate.py`, which holds the whole move
+    "Tooling/core/cli/main.py": 395,  # +12 2026-09-03 HID §3.9: `papers-migrate` parser + the Project argument paper-add/paper-index now take  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision
