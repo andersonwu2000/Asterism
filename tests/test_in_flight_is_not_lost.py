@@ -224,3 +224,68 @@ def test_the_companion_files_parked_steps_apart_from_in_flight(
     assert "## In flight — batch `cafe1234`" in companion, companion
     assert "## In flight — batch `dead5678`" not in companion, companion
     assert "Parked" in companion and "dead5678" in companion, companion
+
+
+# ---------------------------------------------------------------------
+# …AND WORK THE OWNER OPENED IS NOT THE PARENT'S WORK (owner ruling
+# 2026-09-03)
+# ---------------------------------------------------------------------
+
+def _owner_delegate_step(conn: sqlite3.Connection, *, batch: str,
+                         parent: int, kid: int) -> None:
+    """What `state/commands.py` writes: a `Delegate` row filed under the
+    parent group, produced group active, `actor='human'`."""
+    from Tooling.state import db
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, brief, reason, payload,"
+        " batch_id, produced_group_id, produced_kind, outcome, actor,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'human', 'Delegate', ?, 'settle it', NULL, '{}',"
+        "         ?, ?, 'group', NULL, 'human', ?, ?)",
+        (parent, batch, kid, ts, ts))
+    conn.commit()
+
+
+def test_an_owner_opened_group_is_not_the_parents_running_work(
+        conn: sqlite3.Connection):
+    """It runs — but not on the parent's line, so "do not re-dispatch"
+    is the wrong instruction and the parent must not read it as a reason
+    to wait. Its own line says what it is (union_closed group 691/693,
+    2026-09-03)."""
+    from Tooling.state import groups as groups_store
+    _problem(conn)
+    top = groups_store.ensure_top_group(conn, "p")
+    kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
+                                  charter="owner's")
+    _owner_delegate_step(conn, batch="owner123beef", parent=top, kid=kid)
+
+    text = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", group_id=top))
+
+    assert "do not re-dispatch" not in text.lower(), text
+    assert "still running" not in text.lower(), text
+    assert "other groups" not in text.lower(), text
+    assert f"Group {kid} was opened by the owner" in text, text
+    assert "independently of your line" in text, text
+    assert "Do not wait for it" in text, text
+
+
+def test_the_companion_files_an_owner_opened_group_apart_from_in_flight(
+        conn: sqlite3.Connection, tmp_path):
+    """`## In flight` is the roster of the reader's OWN dispatched work;
+    a group the owner opened belongs beside it, not in it."""
+    from Tooling.state import groups as groups_store
+    _problem(conn)
+    top = groups_store.ensure_top_group(conn, "p")
+    kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
+                                  charter="owner's")
+    _owner_delegate_step(conn, batch="owner123beef", parent=top, kid=kid)
+
+    phase2_context._section_inject_batch_outcomes(
+        conn, "p", group_id=top, attempts_dir=tmp_path)
+    companion = (tmp_path / "BATCHES.md").read_text(encoding="utf-8")
+
+    assert "## In flight — batch `owner123`" not in companion, companion
+    assert "## Opened by the owner — batch `owner123`" in companion, companion

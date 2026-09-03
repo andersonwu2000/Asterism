@@ -257,14 +257,24 @@ def groups_needing_t1(conn: sqlite3.Connection, *,
     group itself must still be `active` — a delivered / returned / closed
     group has no work and must not hold a seat.
 
-    A group with a live child group is WAITING, and a waiting group's
-    periodic clock is FROZEN (operator ruling 2026-08-03): the parent
-    delegated the work, so a routine there audits nothing and burns a
-    fable wake — three children working seven hours used to buy the
-    parent three empty routines. Event wakes (pending_review, the
-    batch-done relay when the delegate settles) are untouched; on the
-    last child's terminal transition `groups.set_status` restarts the
-    parent's cadence so the frozen time never counts as overdue.
+    A group with a live child group IT DELEGATED is WAITING, and a
+    waiting group's periodic clock is FROZEN (operator ruling
+    2026-08-03): the parent delegated the work, so a routine there audits
+    nothing and burns a fable wake — three children working seven hours
+    used to buy the parent three empty routines. Event wakes
+    (pending_review, the batch-done relay when the delegate settles) are
+    untouched; on the last child's terminal transition
+    `groups.set_status` restarts the parent's cadence so the frozen time
+    never counts as overdue.
+
+    A child the OWNER opened does not freeze it (owner ruling
+    2026-09-03, the same ruling `_NOT_HUMAN_OPENED` carries): a person's
+    Delegate hands over no line, so the parent's own audit cadence is
+    still owed. Group 691 of Combinatorics.union_closed had not run a
+    routine since 2026-09-02T21:52Z for exactly this reason. A child
+    whose `opened_by` row is missing (the pre-v35 backfill, a
+    hand-written row) keeps freezing the parent — the safe direction for
+    a suppressor, as on `_group_clause`.
 
     While only top groups exist this returns exactly one row per problem
     that `problems_needing_t1` would have named, so the switch is
@@ -283,8 +293,11 @@ def groups_needing_t1(conn: sqlite3.Connection, *,
         " FROM groups g JOIN problems p ON p.name = g.problem"
         " WHERE p.ingested_at IS NULL AND g.status = 'active'"
         "   AND NOT EXISTS (SELECT 1 FROM groups ch"
+        "                   LEFT JOIN strategist_decisions sd"
+        "                     ON sd.id = ch.opened_by"
         "                   WHERE ch.parent_group_id = g.id"
-        "                     AND ch.status = 'active')"
+        "                     AND ch.status = 'active'"
+        + _NOT_HUMAN_OPENED + ")"
         f"   AND julianday('now') - {baseline_sql} > ?"
     )
     _sc, _sa = scope_sql(scope, "g.problem")
@@ -620,6 +633,28 @@ def _group_args(problem: str, group_id: "int | None") -> tuple:
     return (problem,) if group_id is None else (problem, int(group_id))
 
 
+# WHOSE LINE THE CHILD IS ON. A `Delegate` the Strategist files hands
+# the parent's own line to the child — the parent stops there, and that
+# is why an active produced group counts as the parent's in-flight work.
+# A `Delegate` a PERSON files (HID §3.2, `state/commands.py`, actor
+# 'human') hands over nothing: the owner opened a line BESIDE the
+# parent's, and the parent still owes its own (owner ruling 2026-09-03).
+#
+# Counting the person's group as the parent's work froze the parent
+# outright: top group 691 of Combinatorics.union_closed went idle at
+# 05:13Z on 2026-09-03, its batch-done wake refused and its T4 stall
+# rescue suppressed, because cond-4 of `is_group_stalled` read decision
+# 5736 — the owner's Delegate, produced group 693 active — as work group
+# 691 was waiting on.
+#
+# The DELIVERY direction is untouched: the child's terminal transition
+# fills this row's outcome and wakes the parent exactly as a machine
+# Delegate's does (`groups.set_status` → `propagate_inject_outcome_from_
+# group` → `maybe_enqueue_inject_batch_done`). What changes is only the
+# waiting.
+_NOT_HUMAN_OPENED = " AND COALESCE(sd.actor, '') <> 'human'"
+
+
 def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
                                group_id: "int | None" = None) -> bool:
     """True iff `problem` has a NULL-outcome batch decision whose produced
@@ -645,6 +680,10 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
     own routine clock, so it always has a next wake — and if its subtree
     collapses, its OWN T4 fires. From the parent's side that is correctly
     still in flight.
+
+    …unless the OWNER opened it (`_NOT_HUMAN_OPENED`): a person's
+    Delegate does not hand the parent's line to the child, so the child
+    working is not the parent waiting.
 
     The precise notion of "an inject batch is still in flight", shared by the
     stall predicate (`is_problem_stalled` condition 4) and the T0 first_launch
@@ -701,7 +740,8 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
         " JOIN groups gr ON gr.id = sd.produced_group_id"
         " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
         "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND gr.status = 'active'" + _group_clause(group_id) + " LIMIT 1",
+        "   AND gr.status = 'active'" + _NOT_HUMAN_OPENED
+        + _group_clause(group_id) + " LIMIT 1",
         _group_args(problem, group_id),
     ).fetchone() is not None
 
@@ -744,13 +784,19 @@ def has_live_inflight_inject(conn: sqlite3.Connection, problem: str, *,
     IS NULL` branch above — that branch means "a worker is still
     producing", which is a different claim that happens to give the same
     answer today and would silently stop doing so the moment a Delegate
-    carried an anchor."""
+    carried an anchor.
+
+    And the group arm reads THIS seat's own delegations only
+    (`_NOT_HUMAN_OPENED`): a group the OWNER opened moves without this
+    Strategist, but it did not take this Strategist's burden with it, so
+    it is not an escape hatch for a `Noop` here."""
     if conn.execute(
         "SELECT 1 FROM strategist_decisions sd"
         " JOIN groups gr ON gr.id = sd.produced_group_id"
         " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
         "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND gr.status = 'active'" + _group_clause(group_id) + " LIMIT 1",
+        "   AND gr.status = 'active'" + _NOT_HUMAN_OPENED
+        + _group_clause(group_id) + " LIMIT 1",
         _group_args(problem, group_id),
     ).fetchone() is not None:
         return True
@@ -865,7 +911,8 @@ def _step_is_running(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
 
 _OPEN_STEP_SQL = (
     "SELECT d.id, d.batch_id, d.group_id AS grp, d.decision_kind,"
-    " d.brief, d.updated_at, d.produced_goal_id, d.produced_strategy_id,"
+    " d.brief, d.updated_at, d.actor, d.produced_goal_id,"
+    " d.produced_strategy_id,"
     " d.produced_group_id, tg.slug AS target_slug,"
     " tg.status AS target_status, pg.slug AS produced_slug,"
     " pg.status AS goal_status, pg.updated_at AS produced_at,"
@@ -886,6 +933,12 @@ def open_batch_steps(conn: sqlite3.Connection,
     classified `running` (work is moving without you) or PARKED (its
     product is shelved / stalled / closed — no worker exists and only
     the Strategist can move it).
+
+    `human_delegate` is a THIRD reading of a running step, not a fourth
+    state: the work moves, but it moves on the OWNER's line, not the
+    reading group's (`_NOT_HUMAN_OPENED`). Kept as a flag rather than
+    folded into `running` because the two surfaces need both halves —
+    "it is not parked" and "it is not yours to wait for".
 
     Problem-wide on purpose: the batch surfaces show a group its own
     hashes and a COUNT of the others', so the caller filters on `grp`.
@@ -914,6 +967,8 @@ def open_batch_steps(conn: sqlite3.Connection,
             "produced_at": None if at is None else str(at),
             "updated_at": str(r["updated_at"] or ""),
             "running": _step_is_running(conn, r),
+            "human_delegate": (r["produced_group_id"] is not None
+                               and str(r["actor"] or "") == "human"),
         })
     steps.sort(key=lambda s: s["updated_at"], reverse=True)
     return steps

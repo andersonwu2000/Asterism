@@ -191,6 +191,31 @@ def _prose_label(decision_kind: "str | None") -> str:
     return "brief"
 
 
+def _bucket(step: dict) -> str:
+    """Which of the three unfinished-step readings this step is: work of
+    yours that MOVES ('run'), work of yours that no worker holds any
+    more ('park'), or a line the OWNER opened beside yours ('owner').
+
+    One function so the inline scoreboard and the `BATCHES.md` companion
+    cannot disagree about a step — the disease this whole section keeps
+    paying for (SP7 2026-09-03)."""
+    if step.get("human_delegate"):
+        return "owner"
+    return "run" if step["running"] else "park"
+
+
+def _owner_opened_lines(steps: "list[dict]") -> list[str]:
+    """The owner's own line, one per group. Deliberately NOT under "do
+    not re-dispatch": there is nothing here for the reader to
+    re-dispatch, and reading it as its own in-flight work is what froze
+    union_closed's top group for two hours (owner ruling 2026-09-03)."""
+    return [f"_{str(r['produced_ref'] or 'A group').capitalize()} was"
+            " opened by the owner; it runs independently of your line —"
+            " its delivery will reach you as a batch-done. Do not wait"
+            " for it._"
+            for r in steps]
+
+
 def _write_batches_companion(conn: sqlite3.Connection,
                              attempts_dir: "Path | None",
                              order: "list[str]",
@@ -226,25 +251,32 @@ def _write_batches_companion(conn: sqlite3.Connection,
     # surfaces don't truncate — inline carries existence + pointer,
     # the substance lives here where inspect reads it by section).
     # Cross-group included: sub-groups see each other by design.
-    # Two headings, not one: a step whose product the Strategist parked
-    # is not running, and filing it under `## In flight` says the false
-    # thing at greater length (SP7 2026-09-03).
-    for running, head in ((True, "In flight"), (False, "Parked, no worker")):
+    # Three headings, not one. A step whose product the Strategist
+    # parked is not running, and filing it under `## In flight` says the
+    # false thing at greater length (SP7 2026-09-03); a group the OWNER
+    # opened is running but on the owner's line, and `## In flight` is
+    # the roster of the reader's OWN dispatched work (owner ruling
+    # 2026-09-03 — `db._NOT_HUMAN_OPENED`).
+    for key, head in (("run", "In flight"), ("park", "Parked, no worker"),
+                      ("owner", "Opened by the owner")):
         by_batch: "dict[str, list[dict]]" = {}
         for r in (open_steps or []):
-            if bool(r["running"]) is running:
+            if _bucket(r) == key:
                 by_batch.setdefault(str(r["batch_id"]), []).append(r)
         for bid, steps in by_batch.items():
             lines.append(f"## {head} — batch `{bid[:8]}` "
                          f"(group {steps[0]['grp']})")
             lines.append("")
             for r in steps:
-                if r["target_slug"]:
+                if key == "owner":
+                    tgt = (f"{r['produced_ref']}, opened by the owner"
+                           " — it runs independently of your line")
+                elif r["target_slug"]:
                     tgt = (f"target `{r['target_slug']}` "
                            f"({r['target_status']})")
                 else:
                     tgt = "mint (a new brick from the brief)"
-                if not running and r["produced_ref"]:
+                if key == "park" and r["produced_ref"]:
                     tgt += (f" — produced {r['produced_ref']}"
                             f" `{r['produced_slug'] or '?'}`, now"
                             f" {r['produced_status']}; yours to reopen,"
@@ -336,13 +368,19 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # `group_id=None` (top-group / legacy callers) keeps the full list.
     mine = [r for r in open_steps
             if group_id is None or r["grp"] == group_id]
+    # …AND WORK THE OWNER OPENED IS NOT THE READER'S WORK. A person's
+    # Delegate is filed under the parent group and its produced group is
+    # active, so it satisfied every "still running, do not re-dispatch"
+    # test — and the parent read a line it never dispatched as a reason
+    # to wait (owner ruling 2026-09-03; union_closed 691/693).
+    handed = [r for r in mine if _bucket(r) == "owner"]
     running_batches: "dict[str, int]" = {}
     for r in mine:
-        if r["running"]:
+        if _bucket(r) == "run":
             running_batches[r["batch_id"]] = (
                 running_batches.get(r["batch_id"], 0) + 1)
-    other_n = len({r["batch_id"] for r in open_steps if r["running"]}
-                  ) - len(running_batches)
+    other_n = len({r["batch_id"] for r in open_steps
+                   if _bucket(r) == "run"}) - len(running_batches)
     in_flight = [f"`{b[:8]}` ({n} step(s))"
                  for b, n in running_batches.items()]
     others_note = (f" (+{other_n} other groups' batch(es) also in flight)"
@@ -354,7 +392,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
               f" `{r['produced_slug'] or '?'}` {r['produced_status']}"
               + (f" since {str(r['produced_at'])[:19]}"
                  if r["produced_at"] else "")
-              for r in mine if not r["running"] and r["produced_ref"]]
+              for r in mine
+              if _bucket(r) == "park" and r["produced_ref"]]
     parked_line = (
         "_Parked, NOT running — no worker exists for these; their step "
         "has no outcome because you parked what it produced, not "
@@ -369,12 +408,14 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     pointer = (" Each one's targets and full briefs: "
                f"`{BATCHES_COMPANION}`, the `## In flight` sections."
                if running_batches else "")
+    owner_lines = _owner_opened_lines(handed)
     if not batch_ids:
-        if in_flight or other_n or parked:
+        if in_flight or other_n or parked or owner_lines:
             _write_batches_companion(conn, attempts_dir, [], {},
                                      lambda r: 0, open_steps=open_steps)
             head = ("## Dispatched, still running" if in_flight or other_n
-                    else "## Dispatched, now parked")
+                    else "## Dispatched, now parked" if parked
+                    else "## Open lines")
             body = ([] if not (in_flight or other_n) else
                     ["Not finished, and therefore not below: "
                      + (", ".join(in_flight) or "(none of yours)")
@@ -383,6 +424,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                        "wake — do not re-dispatch them." + pointer, ""])
             return ([head, ""] + body
                     + ([parked_line, ""] if parked_line else [])
+                    + ([*owner_lines, ""] if owner_lines else [])
                     + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
@@ -392,6 +434,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 + others_note + "._" + pointer, ""]
     if parked_line:
         out += [parked_line, ""]
+    if owner_lines:
+        out += [*owner_lines, ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
     # ConfirmShelve/EmitDirective siblings used to render as brief-less

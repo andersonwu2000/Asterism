@@ -548,10 +548,10 @@ def _S():
 
 
 def _commit(conn, tmp_path, decisions, problem, group_id, *,
-            trigger="routine"):
+            trigger="routine", actor="strategist"):
     return _S().commit_decisions(
         decisions, conn, problem=problem, tick=0, trigger_kind=trigger,
-        workspace=tmp_path, group_id=group_id)
+        workspace=tmp_path, group_id=group_id, actor=actor)
 
 
 def _verify(conn, decision, problem, group_id):
@@ -924,6 +924,136 @@ def test_a_stalled_child_wakes_itself_not_the_whole_problem(tmp_path):
     # The problem-wide reading would have said "not stalled" and woken
     # nobody at all.
     assert db.is_problem_stalled(conn, p) is False
+
+
+# ---------------------------------------------------------------------
+# A group the OWNER opened is not the parent's own in-flight work
+# (owner ruling 2026-09-03)
+# ---------------------------------------------------------------------
+
+def _owner_delegated(conn, tmp_path, problem, parent, *, charter="owner's"):
+    """The human Delegate shape: `state/commands.py` drives the SAME
+    applier with `actor='human'` (HID §3.2)."""
+    from Tooling.pipeline.strategist import commit as _c
+    out = _commit(conn, tmp_path,
+                  [_S().Decision(kind="Delegate", brief=charter)],
+                  problem, parent, actor=_c.ACTOR_HUMAN)[0]
+    kid = int(groups.children(conn, parent)[-1]["id"])
+    return out, kid
+
+
+def _child_is_working(conn, problem, kid):
+    """The child's own line is genuinely moving: a dispatchable goal in
+    ITS slice with a live pipeline over it."""
+    g = _goal(conn, problem, f"live_{kid}")
+    conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (g,))
+    _decision(conn, problem, group_id=kid, produced_goal_id=g)
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES (?, 'Backward', ?, 'Goal', 'running', NULL, ?, NULL)",
+        (f"pid-{kid}", str(g), db.now()))
+    return g
+
+
+def test_an_owner_opened_group_does_not_freeze_its_parent(tmp_path):
+    """The parent still owes its own line. A Strategist's Delegate hands
+    that line to the child, so the parent waits; a person's Delegate
+    opens a line BESIDE it and hands over nothing.
+
+    Live instance (Combinatorics.union_closed, 2026-09-03): top group 691
+    went idle at 05:13Z because cond-4 of `is_group_stalled` read the
+    owner's decision 5736 — an active produced group — as the parent's
+    own in-flight work, so the T4 rescue never fired."""
+    from Tooling.core.dispatcher import strategist_triggers
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.ownerdeleg")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    _out, kid = _owner_delegated(conn, tmp_path, p, top)
+    _child_is_working(conn, p, kid)
+    conn.execute("DELETE FROM queue")          # drop the child's own seat
+    for gid in (top, kid):
+        _stale(conn, gid)
+    conn.execute("UPDATE groups SET last_routine_at = NULL")  # isolate T4
+    conn.execute(
+        "UPDATE problems SET last_routine_at = ? WHERE name = ?",
+        (db.now(), p))
+    conn.commit()
+
+    assert db.has_active_inflight_inject(conn, p, group_id=top) is False
+    assert db.has_live_inflight_inject(conn, p, group_id=top) is False
+    assert db.is_group_stalled(conn, p, top) is True
+    assert db.is_group_stalled(conn, p, kid) is False
+
+    strategist_triggers(conn, running=set(), interval_min=60.0,
+                        daemon_start_iso=db.now())
+    assert (str(top), "Group") in _seats(conn)
+
+
+def test_a_machine_delegate_still_freezes_its_parent(tmp_path):
+    """The existing semantics, pinned beside the new case: when the
+    STRATEGIST delegates, the child takes over the parent's line and the
+    parent correctly waits."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.machinedeleg")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    _commit(conn, tmp_path,
+            [_S().Decision(kind="Delegate", brief="machine's")], p, top)
+    kid = int(groups.children(conn, top)[-1]["id"])
+    _child_is_working(conn, p, kid)
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+
+    assert db.has_active_inflight_inject(conn, p, group_id=top) is True
+    assert db.has_live_inflight_inject(conn, p, group_id=top) is True
+    assert db.is_group_stalled(conn, p, top) is False
+
+
+def test_an_owner_opened_groups_delivery_still_wakes_the_parent(tmp_path):
+    """The delivery path is untouched: the child's terminal transition
+    fills the human `Delegate` row's outcome and enqueues the parent,
+    exactly as a machine Delegate's does."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.ownerdeliver")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    out, kid = _owner_delegated(conn, tmp_path, p, top)
+    conn.execute("DELETE FROM queue")          # drop the child's own seat
+    conn.commit()
+
+    groups.set_status(conn, kid, "delivered")
+
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()["outcome"] == "success"
+    assert (str(top), "Group") in _seats(conn)
+
+
+def test_an_owner_opened_child_does_not_freeze_the_parents_routine_clock(
+        tmp_path):
+    """The other half of the freeze (`groups_needing_t1`): a parent with
+    a live child is WAITING and its periodic clock stops. A person's
+    Delegate hands over no line, so the parent's own audit cadence must
+    keep running — group 691's routine clock had not moved since
+    2026-09-02T21:52Z."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.ownerclock")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    _owner_delegated(conn, tmp_path, p, top)
+    machine_top = groups.ensure_top_group(conn, _problem(conn, "Test.mclock"))
+    _commit(conn, tmp_path,
+            [_S().Decision(kind="Delegate", brief="machine's")],
+            "Test.mclock", machine_top)
+    for gid in (top, machine_top):
+        _stale(conn, gid)
+    conn.commit()
+
+    due = {int(r["id"]) for r in db.groups_needing_t1(conn, max_age_sec=60.0)}
+    assert top in due
+    assert machine_top not in due
 
 
 # ---------------------------------------------------------------------
