@@ -211,41 +211,44 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if str(g["problem"]) != problem:
             return (f"target goal belongs to problem "
                     f"{g['problem']!r}, not {problem!r}")
-        if str(g["status"]) in ("proved", "dead"):
-            return (f"target_goal_id={target} is {g['status']!r}; "
-                    f"Inject cannot redispatch a terminal goal. "
-                    f"proved/dead are hard terminals; "
-                    f"open a different angle on a different goal instead.")
-        # `disproved` passes on purpose (2026-08-18): it is parked on a
-        # CLAIMED counterexample, not a kernel verdict, and an Inject on
-        # it IS the revival route — argue in the proof why the claimed
-        # counterexample fails. The ancestor walk below still blocks
-        # descendants of one (revive the ancestor itself first).
+        if str(g["status"]) == "proved":
+            return (f"target_goal_id={target} is 'proved'; Inject cannot "
+                    f"redispatch a finished proof. Open a different angle "
+                    f"on a different goal instead.")
+        # 2026-09-04 (owner ruling): `disproved` is REFUSED here. The
+        # 08-18 opening treated the mark as a claimed counterexample an
+        # Inject could argue away; the disproof gate has landed since,
+        # so the mark is a kernel-certified refutation and re-arguing it
+        # is exactly the move the gate exists to end. The teaching line
+        # names the reachable action — a refutation is escaped by a
+        # DIFFERENT statement, not a louder proof of the same one.
+        if str(g["status"]) == "disproved":
+            return (
+                f"Inject rejected: goal {target} is 'disproved' — the "
+                f"kernel checked a counterexample, so the statement is "
+                f"false and no argument revives it. Mint a NEW statement "
+                f"that survives that counterexample (Inject with no "
+                f"target, stating the corrected claim), or ConfirmShelve "
+                f"the line. If you believe the refutation itself is "
+                f"wrong, say so in your Roadmap: undoing a kernel "
+                f"verdict is an operator repair, not a decision."
+            )
         # Ancestor safety walk (was Reopen's responsibility pre-2026-05-28;
         # now the goal-targeted Inject takes over as the unified
-        # reactivation mechanism). disproved ancestor = counterexample
-        # already shown for a parent statement; descendant is moot. dead
-        # ancestor is also a hard terminal (parent strategy was wrong);
-        # commit's auto-detach handles `shelved` chains but not these.
+        # reactivation mechanism). A `disproved` ancestor means a
+        # counterexample already stands against a parent statement, so
+        # this descendant is moot; commit's auto-detach handles parked
+        # chains, which do not block.
         bad, anc_kind = _dispatcher._has_hard_terminal_ancestor(
             conn, int(target))
         if bad:
-            if anc_kind == "disproved":
-                return (
-                    f"Inject rejected: goal {target} has a "
-                    f"'disproved' ancestor (a counterexample was "
-                    f"claimed for a parent statement, so this "
-                    f"descendant is moot as long as that stands). "
-                    f"If you believe the parent claim after all, "
-                    f"Inject the disproved ancestor itself — that "
-                    f"revives it. Otherwise ConfirmShelve."
-                )
             return (
                 f"Inject rejected: goal {target} has a "
-                f"'dead' ancestor (parent strategy was wrong; this "
-                f"descendant exists only in that abandoned context). "
-                f"Inject(target=<parent-goal>) to try a "
-                f"different decomposition instead."
+                f"'disproved' ancestor (the kernel checked a "
+                f"counterexample for a parent statement, so this "
+                f"descendant is moot as long as that stands). Re-cut the "
+                f"line from a NEW statement that survives it, or "
+                f"ConfirmShelve this one."
             )
         return ""
 
@@ -292,7 +295,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # a sibling RETURNED is deliberately allowed through — retrying a
         # failed line is legitimate, and judging whether this attempt
         # differs is the Adversary's call, not a string comparison's
-        # (the same reason task #112's dead-twin gate misfires).
+        # (the same reason task #112's dead-twin gate misfired; that gate
+        # is retired, 2026-09-04).
         dup = conn.execute(
             "SELECT id FROM groups WHERE parent_group_id = ?"
             "   AND status = 'active' AND charter = ?",
@@ -563,8 +567,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # A root settled either way is a deliverable: proved closes the
         # problem as ingested, disproved (the gate's `<slug>_disproof`
         # beside it) as refuted — owner ruling 2026-08-30.
-        root_proved = root is not None and str(root["status"]) in (
-            "proved", "disproved")
+        root_proved = (root is not None and str(root["status"])
+                       in transitions.GOAL_HARD_TERMINALS)
         if root is not None and not root_proved:
             return ("Ingest is blocked: this problem has a root goal "
                     f"(status={root['status']!r}) that must be proved "
@@ -868,7 +872,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # SCOPE (2026-07-06, ConfirmShelve 終態): the pairing obligation
     # applies to FIRST-TIME shelves only (target not already 'shelved').
     # A ConfirmShelve re-confirming an already-shelved goal is the
-    # "still dead" verdict — forcing an Inject onto it mints a fresh
+    # "still parked" verdict — forcing an Inject onto it mints a fresh
     # reopen-promise (the shared batch_id), so the confirmation itself
     # re-armed the loop it was answering (feedback ×2: a superseded goal
     # re-fired after every batch, forever). A standalone re-confirm acks
@@ -1010,7 +1014,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 if gid_f is None or int(gid_f) in targets:
                     continue
                 # A fired root that has since left the live set (shelved /
-                # proved / dead by another path) is not a line this batch
+                # proved / disproved by another path) is not a line this batch
                 # can act on — only live roots are required.
                 cur = conn.execute("SELECT status FROM goals WHERE id = ?",
                                    (int(gid_f),)).fetchone()
@@ -1082,10 +1086,9 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # pending_review root is a logical contradiction (Strategist invoked
     # specifically to break the impasse, declines to act).
     #
-    # `disproved` / `dead` roots intentionally NOT covered: those are
-    # genuine dead ends (counterexample / wrong parent context) where
-    # Strategist legitimately cannot recover; Noop is the right
-    # acknowledgement.
+    # `disproved` roots intentionally NOT covered: a kernel-certified
+    # counterexample is a genuine dead end where the Strategist cannot
+    # recover; Noop is the right acknowledgement.
     root_row = conn.execute(
         "SELECT id, status FROM goals"
         " WHERE problem = ? AND origin = 'root'",

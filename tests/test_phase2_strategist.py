@@ -274,16 +274,17 @@ def test_verify_inject_rejected_when_ancestor_disproved(
     assert "disproved" in err.lower()
 
 
-def test_verify_inject_rejected_when_ancestor_dead(
+def test_verify_inject_rejected_when_ancestor_disproved(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6 / 2026-05-28: `dead` ancestor blocks Inject on descendants
-    (parent strategy was wrong, descendant exists only in that
-    abandoned context). Only `shelved` is reopenable via auto-detach."""
+    """A `disproved` ancestor blocks Inject on descendants: the kernel
+    checked a counterexample against a parent statement, so the
+    descendant is moot while that stands. A PARKED ancestor does not
+    block — auto-detach reopens those chains."""
     root = _insert_root(conn)
-    db.update_goal_status(conn, root, "dead")
+    db.update_goal_status(conn, root, "disproved")
     sub = db.insert_goal(
-        conn, problem="p", slug="sub_under_dead",
+        conn, problem="p", slug="sub_under_disproved",
         lean_path="Problems/p/proofs/L_sub_dead.lean", statement="T",
         origin="backward",
     )
@@ -302,9 +303,9 @@ def test_verify_inject_rejected_when_ancestor_dead(
         "target_goal_id": sub, "proof": "Theorem. salvage\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "dead" in err.lower()
-    # Hint suggests the right alternative
-    assert "Inject(Backward" in err or "different decomposition" in err.lower()
+    assert "disproved" in err.lower()
+    # Hint names a reachable alternative
+    assert "new statement" in err.lower() or "confirmshelve" in err.lower()
 
 
 def test_verify_inject_ok_with_shelved_ancestor(
@@ -407,20 +408,20 @@ def test_verify_inject_backward_rejects_terminal_target(
     assert "terminal" in err.lower() or "proved" in err.lower()
 
 
-def test_verify_inject_backward_rejects_dead_target(
+def test_verify_inject_backward_rejects_disproved_target(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: `dead` is a hard terminal (parent_needs_fix), not
-    reopenable. Inject(Backward) on a dead goal must be rejected at
-    verify time."""
+    """`disproved` is a kernel-certified refutation (2026-09-04), so an
+    Inject aimed at it is refused at verify time — the way out is a new
+    statement, not another argument for the refuted one."""
     root = _insert_root(conn)
-    db.update_goal_status(conn, root, "dead")
+    db.update_goal_status(conn, root, "disproved")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
         "target_goal_id": root, "proof": "Theorem. try again\nProof. as argued.",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "dead" in err.lower() or "terminal" in err.lower()
+    assert "disproved" in err.lower()
 
 
 def test_verify_inject_with_target_is_goal_shape(
@@ -813,10 +814,10 @@ def test_set_goal_terminal_refuses_downgrade_of_terminal(
     conn: sqlite3.Connection,
 ) -> None:
     """Class-level backstop: _set_goal_terminal_and_propagate must refuse
-    to flip a proved / disproved / dead goal to shelved (any caller, not
-    just ConfirmShelve). Legitimate transitions still pass."""
+    to flip a proved / disproved goal to shelved (any caller, not just
+    ConfirmShelve). Legitimate transitions still pass."""
     from Tooling.core import dispatcher
-    for terminal in ("proved", "disproved", "dead"):
+    for terminal in ("proved", "disproved"):
         g = db.insert_goal(
             conn, problem="p", slug=f"g_{terminal}",
             lean_path=f"Problems/p/proofs/L_{terminal}.lean", statement="T",
@@ -1492,14 +1493,13 @@ def test_set_inject_decision_produced_goal_dual_set_consistent(
     assert "double-dispatch indicator" not in captured.out
 
 
-def test_propagate_inject_outcome_dead(
+def test_propagate_inject_outcome_disproved(
     conn: sqlite3.Connection,
 ) -> None:
-    """Goal flips to 'dead' (cascade from parent_needs_fix) → decision
-    outcome becomes 'failed:dead'. Without this, 'dead' was silently
-    skipped (Phase 6 added the status; the propagate function was not
-    updated) and inject_batch_done never fired for batches whose
-    produced lemma died from descendant repudiation."""
+    """Goal flips to 'disproved' → decision outcome becomes
+    'failed:disproved', which is what lets inject_batch_done fire for a
+    batch whose produced lemma turned out false. A PARK never settles an
+    inject (it is reopenable), so this is the only failed side."""
     _insert_root(conn)
     fwd = db.insert_goal(
         conn, problem="p", slug="fwd",
@@ -1507,15 +1507,15 @@ def test_propagate_inject_outcome_dead(
         statement="T", origin="forward",
     )
     decision_id = _insert_inject_decision(
-        conn, problem="p", batch_id="batch-dead", step_index=0,
+        conn, problem="p", batch_id="batch-false", step_index=0,
         batch_size=1, brief="## Need\nD",
     )
     db.set_inject_decision_produced_goal(conn, decision_id, fwd)
 
-    db.update_goal_status(conn, fwd, "dead")
+    db.update_goal_status(conn, fwd, "disproved")
     affected = db.propagate_inject_outcome_from_goal(conn, fwd)
     assert affected == decision_id
-    assert _decision_outcome(conn, decision_id) == "failed:dead"
+    assert _decision_outcome(conn, decision_id) == "failed:disproved"
 
 
 def test_propagate_inject_outcome_from_strategy_succeeded(
