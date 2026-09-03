@@ -23,10 +23,15 @@ MAP_TARGET_CHARS = 6_000
 
 
 def generate_index(workspace: Path, pid: str, *, prompt_dir: Path,
+                   project: "str | None" = None,
+                   problem: "str | None" = None,
                    force: bool = False) -> Path | None:
-    """Build/rebuild `Papers/<pid>/map.md`. Returns the map path, or
-    None when exempt (small doc) — loud errors otherwise."""
-    meta = shelf.load_meta(workspace, pid)
+    """Build/rebuild the paper's `map.md`. Returns the map path, or
+    None when exempt (small doc) — loud errors otherwise.
+
+    `project` names the shelf when the caller knows it; without one the
+    id is searched for across every Project (`shelf.paper_dir`)."""
+    meta = shelf.load_meta(workspace, pid, project=project)
     if meta is None:
         raise FileNotFoundError(
             f"no shelved paper {pid!r} (run paper-add first)")
@@ -38,9 +43,9 @@ def generate_index(workspace: Path, pid: str, *, prompt_dir: Path,
         return None
 
     template = prompt_dir / "papers" / "paper_index.md"
-    pdir = shelf.paper_dir(workspace, pid)
-    tpath = shelf.text_path(workspace, pid)
-    mpath = shelf.map_path(workspace, pid)
+    pdir = shelf.paper_dir(workspace, pid, project=project)
+    tpath = pdir / "text.md"
+    mpath = pdir / "map.md"
     sandbox = pdir / ".index_attempt"
     sandbox.mkdir(parents=True, exist_ok=True)
     rendered = (
@@ -64,6 +69,17 @@ def generate_index(workspace: Path, pid: str, *, prompt_dir: Path,
         problem_dir=pdir, attempts_dir=sandbox,
         session_id=str(uuid.uuid4()),
         timeout_sec_override=timeout,
+        # This spawn's sandbox is the paper's own `.index_attempt/`, not
+        # `<workspace>/.attempts/<pid>/`, so the usage recorder's default
+        # `attempts_dir.parent.parent` derivation lands on the papers
+        # FOLDER instead of the workspace. Until 4faff424 that minted a
+        # zero-table `Papers/asterism.db` beside the shelf (still on disk
+        # from 2026-07-07); since the guard landed it silently drops the
+        # spawn's cost instead — the invisible-judge class, and the same
+        # fix the Adversary took: say which workspace this is.
+        usage_workspace=workspace,
+        usage_problem=problem,
+        usage_pipeline_id=f"paper_index-{pid}",
     )
 
     if not mpath.is_file():

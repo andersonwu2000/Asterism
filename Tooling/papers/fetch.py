@@ -64,7 +64,11 @@ def _resolve_url(target: str) -> str:
 def fetch_and_shelve(workspace: Path, target: str, *,
                      problem: str | None, reason: str | None) -> str:
     """Download → shelve → index (size-gated) → bind. Returns the
-    shelf id. Raises ValueError/RuntimeError loudly on refusal."""
+    shelf id. Raises ValueError/RuntimeError loudly on refusal.
+
+    `problem` is REQUIRED now (§3.9): a paper is a document of the
+    Project the problem sits on, and with no workspace-global shelf
+    left there is no third place to put one. The refusal says so."""
     url = _resolve_url(target)
     host = urllib.parse.urlparse(url).hostname or ""
     if host in _DOI_REDIRECTOR_HOSTS:
@@ -82,16 +86,28 @@ def fetch_and_shelve(workspace: Path, target: str, *,
             f"framework asks the human instead.")
 
     from ..state import db
+    from ..state import projects as _projects
+    if not (problem or "").strip():
+        raise ValueError(
+            "a fetched paper is shelved on a Project's document shelf, "
+            "so this needs the problem it is for: pass `problem` (e.g. "
+            "paper_fetch(target=..., problem=\"Erdos.p1\", reason=...)).")
     conn = db.connect(workspace / "asterism.db") \
         if (workspace / "asterism.db").exists() else None
     try:
-        if problem and conn is not None:
+        project = None
+        if conn is not None:
             n = db.scholar_fetch_count(conn, problem)
             if n >= MAX_SCHOLAR_FETCHES_PER_PROBLEM:
                 raise RuntimeError(
                     f"per-problem paper fetch cap reached "
                     f"({n}/{MAX_SCHOLAR_FETCHES_PER_PROBLEM}) — justify "
                     f"further papers to the human instead")
+            project = _projects.project_of(conn, problem)
+        # The Project is the shelf (§3.9). With no DB — an offline
+        # workspace — the problem name's first segment is the same
+        # default registration would have picked (§3.1).
+        project = project or problem.split(".", 1)[0]
 
         req = urllib.request.Request(
             url, headers={"User-Agent": "AsterismScholar/0.1"})
@@ -116,24 +132,27 @@ def fetch_and_shelve(workspace: Path, target: str, *,
                     or "paper")
             if not name.endswith(".pdf"):
                 name += ".pdf"
-        tmp = workspace / "Papers" / ".dl" / name
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(data)
-        try:
-            meta = shelf.add_paper(workspace, tmp, added_by="fetched")
-        finally:
-            try:
-                tmp.unlink()
-                tmp.parent.rmdir()
-            except OSError:
-                pass
-        print(f"[fetch] shelved {url} → Papers/{meta.id}", flush=True)
+        # The staging file is the OS's temp dir, not a corner of the
+        # workspace: the download is not a document until it is shelved,
+        # and a half-written one under `Problems/` is a folder the
+        # console would draw (`Papers/.dl/` was that corner).
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td) / name
+            tmp.write_bytes(data)
+            meta = shelf.add_paper(workspace, tmp, project=project,
+                                   added_by="fetched")
+        rel = shelf.paper_dir(workspace, meta.id, project=project)
+        print(f"[fetch] shelved {url} → "
+              f"{rel.relative_to(workspace).as_posix()}", flush=True)
+        mpath = shelf.map_path(workspace, meta.id, project=project)
         if meta.chars >= shelf.INDEX_MIN_CHARS \
-                and not shelf.map_path(workspace, meta.id).exists():
+                and (mpath is None or not mpath.exists()):
             from ..pipeline import PROMPT_DIR
             paper_index.generate_index(workspace, meta.id,
-                                       prompt_dir=PROMPT_DIR)
-        if problem and conn is not None:
+                                       prompt_dir=PROMPT_DIR,
+                                       project=project, problem=problem)
+        if conn is not None:
             # Provenance = the calling seat (ASTERISM_SEAT travels in the
             # MCP server env; the shim's in-process path has none and
             # lands on 'agent'). 'scholar' used to be hardcoded here and
@@ -141,8 +160,7 @@ def fetch_and_shelve(workspace: Path, target: str, *,
             db.bind_paper(conn, problem=problem, paper_id=meta.id,
                           origin=os.environ.get("ASTERISM_SEAT") or "agent",
                           reason=reason or url)
-            print(f"[fetch] bound Papers/{meta.id} → {problem}",
-                  flush=True)
+            print(f"[fetch] bound {meta.id} → {problem}", flush=True)
         return meta.id
     finally:
         if conn is not None:
@@ -154,7 +172,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="Tooling.papers.fetch")
     ap.add_argument("target", help="whitelisted URL or arXiv id")
     ap.add_argument("--problem", default=None,
-                    help="bind the fetched paper to this problem")
+                    help="the problem this paper is for — it names the "
+                         "Project whose document shelf holds it, and the "
+                         "binding is made there (required)")
     ap.add_argument("--reason", default=None,
                     help="why this paper is needed (binding audit)")
     ap.add_argument("--workspace", default=".",

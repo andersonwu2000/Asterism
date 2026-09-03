@@ -22,10 +22,103 @@ _PROMPT_DIR = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 # shelf
 # ---------------------------------------------------------------------
 
-def _add_text_paper(ws: Path, body: str, name: str = "notes.md"):
+#: Every shelved paper now lives under a Project's document root
+#: (HID §3.9) — there is no workspace-global `Papers/` any more, so
+#: every add names the Project it is shelved for.
+_PROJECT = "Test"
+
+
+def _add_text_paper(ws: Path, body: str, name: str = "notes.md",
+                    project: str = _PROJECT, added_by: "str | None" = None):
     src = ws / name
     src.write_text(body, encoding="utf-8")
-    return shelf.add_paper(ws, src)
+    return shelf.add_paper(ws, src, project=project, added_by=added_by)
+
+
+def test_papers_root_is_under_the_project_docs_root(tmp_path: Path) -> None:
+    """§3.9: the shelf retires into `Problems/<project>/_docs/<area>/
+    papers/`. `<area>` is the write fence §3.6 already owns — the paper
+    root is a folder inside it, not a fourth root beside it."""
+    from Tooling.state import project_docs as pd
+    root = shelf.papers_root(tmp_path, "Erdos", pd.AREA_AGENT)
+    assert root == (pd.root(tmp_path, "Erdos") / pd.AREA_AGENT / "papers")
+    # and the workspace-global shelf is gone
+    assert not hasattr(shelf, "PAPERS_DIRNAME") or \
+        shelf.PAPERS_DIRNAME != "Papers"
+
+
+def test_add_paper_area_follows_added_by(tmp_path: Path) -> None:
+    """`meta.added_by` decides the area (§3.9): a person's upload lands
+    in `user/`, everything the engine fetched in `agent/`. The two are
+    different owners, which is what the area split means."""
+    from Tooling.state import project_docs as pd
+    mine = _add_text_paper(tmp_path, "human\n", name="h.md",
+                           added_by="user")
+    theirs = _add_text_paper(tmp_path, "engine\n", name="e.md",
+                             added_by="fetched")
+    assert shelf.paper_dir(tmp_path, mine.id).parent == \
+        shelf.papers_root(tmp_path, _PROJECT, pd.AREA_USER)
+    assert shelf.paper_dir(tmp_path, theirs.id).parent == \
+        shelf.papers_root(tmp_path, _PROJECT, pd.AREA_AGENT)
+
+
+def test_paper_dir_resolves_a_bare_pid_across_projects(
+        tmp_path: Path) -> None:
+    """A shelf id is still an address on its own: `paper_dir` searches
+    both areas of every Project when no Project is known (papers are
+    few), and answers None for an id nothing shelved."""
+    a = _add_text_paper(tmp_path, "one\n", name="a.md", project="Erdos")
+    b = _add_text_paper(tmp_path, "two\n", name="b.md", project="Topology",
+                        added_by="user")
+    assert shelf.paper_dir(tmp_path, a.id).parts[-5:-2] == \
+        ("Erdos", "_docs", "agent")
+    assert shelf.paper_dir(tmp_path, b.id).parts[-5:-2] == \
+        ("Topology", "_docs", "user")
+    assert shelf.load_meta(tmp_path, a.id).source_name == "a.md"
+    assert shelf.paper_dir(tmp_path, "deadbeef0000") is None
+    assert shelf.load_meta(tmp_path, "deadbeef0000") is None
+
+
+def test_paper_dir_prefers_the_named_project(tmp_path: Path) -> None:
+    """Same bytes shelved under two Projects = two copies with the same
+    id (§3.9: 50MB is not worth a sharing mechanism). Asking with a
+    Project must answer that Project's copy."""
+    src = tmp_path / "same.md"
+    src.write_text("shared body\n", encoding="utf-8")
+    one = shelf.add_paper(tmp_path, src, project="Erdos")
+    two = shelf.add_paper(tmp_path, src, project="Topology")
+    assert one.id == two.id
+    assert shelf.paper_dir(tmp_path, one.id, project="Erdos") != \
+        shelf.paper_dir(tmp_path, one.id, project="Topology")
+    assert shelf.paper_dir(tmp_path, one.id, project="Erdos").is_dir()
+    assert shelf.paper_dir(tmp_path, one.id, project="Topology").is_dir()
+
+
+def test_copy_into_project_is_a_copy_not_a_move(tmp_path: Path) -> None:
+    """Binding a paper to a problem on another shelf copies it there
+    (§3.9) — the Project it came from keeps its own copy, because a
+    move would blind the problems still citing it."""
+    meta = _add_text_paper(tmp_path, "body\n", project="Erdos")
+    src_dir = shelf.paper_dir(tmp_path, meta.id, project="Erdos")
+    dst = shelf.copy_into_project(tmp_path, meta.id, "Topology")
+    assert dst is not None and dst.is_dir()
+    assert src_dir.is_dir()
+    assert (dst / "text.md").read_text(encoding="utf-8") == \
+        (src_dir / "text.md").read_text(encoding="utf-8")
+    # idempotent: a second call is the same directory, not a duplicate
+    assert shelf.copy_into_project(tmp_path, meta.id, "Topology") == dst
+
+
+def test_list_papers_reports_project_and_area(tmp_path: Path) -> None:
+    """The shelf listing the console and the migration both read."""
+    a = _add_text_paper(tmp_path, "one\n", name="a.md", project="Erdos",
+                        added_by="user")
+    b = _add_text_paper(tmp_path, "two\n", name="b.md", project="Topology")
+    rows = {r.pid: r for r in shelf.list_papers(tmp_path)}
+    assert rows[a.id].project == "Erdos" and rows[a.id].area == "user"
+    assert rows[b.id].project == "Topology" and rows[b.id].area == "agent"
+    only = shelf.list_papers(tmp_path, project="Erdos")
+    assert [r.pid for r in only] == [a.id]
 
 
 def test_add_text_paper_identity_and_idempotence(tmp_path: Path) -> None:
@@ -45,9 +138,11 @@ def test_add_paper_provenance_first_add_wins(tmp_path: Path) -> None:
     of the same bytes (any caller) never rewrites it."""
     src = tmp_path / "notes.md"
     src.write_text("body\n", encoding="utf-8")
-    meta = shelf.add_paper(tmp_path, src, added_by="fetched")
+    meta = shelf.add_paper(tmp_path, src, project=_PROJECT,
+                           added_by="fetched")
     assert meta.added_by == "fetched"
-    again = shelf.add_paper(tmp_path, src, added_by="user")
+    again = shelf.add_paper(tmp_path, src, project=_PROJECT,
+                            added_by="user")
     assert again.added_by == "fetched"
     # persisted, not just returned
     assert shelf.load_meta(tmp_path, meta.id).added_by == "fetched"
@@ -60,9 +155,10 @@ def test_force_reextract_keeps_title_and_provenance(tmp_path: Path) -> None:
     from scratch)."""
     src = tmp_path / "notes.md"
     src.write_text("body\n", encoding="utf-8")
-    meta = shelf.add_paper(tmp_path, src, added_by="user")
+    meta = shelf.add_paper(tmp_path, src, project=_PROJECT,
+                           added_by="user")
     shelf.set_title(tmp_path, meta.id, "Residues, applied")
-    meta2 = shelf.add_paper(tmp_path, src, force=True)
+    meta2 = shelf.add_paper(tmp_path, src, project=_PROJECT, force=True)
     assert meta2.title == "Residues, applied"
     assert meta2.added_by == "user"
 
@@ -71,7 +167,7 @@ def test_add_paper_rejects_unknown_format(tmp_path: Path) -> None:
     src = tmp_path / "paper.docx"
     src.write_bytes(b"not a pdf")
     with pytest.raises(ValueError, match="unsupported paper format"):
-        shelf.add_paper(tmp_path, src)
+        shelf.add_paper(tmp_path, src, project=_PROJECT)
 
 
 def test_pdf_extraction_page_anchors(tmp_path: Path) -> None:
@@ -85,7 +181,7 @@ def test_pdf_extraction_page_anchors(tmp_path: Path) -> None:
                              f"Page {i + 1} body line {row}. " * 3)
     doc.save(str(src))
     doc.close()
-    meta = shelf.add_paper(tmp_path, src)
+    meta = shelf.add_paper(tmp_path, src, project=_PROJECT)
     text = shelf.text_path(tmp_path, meta.id).read_text(encoding="utf-8")
     assert meta.pages == 2
     assert "## p.1" in text and "## p.2" in text
@@ -104,12 +200,12 @@ def test_pdf_extraction_strips_nul_bytes(tmp_path: Path) -> None:
         page.insert_text((72, 72 + 14 * row), "clean text line. " * 4)
     doc.save(str(src))
     doc.close()
-    meta = shelf.add_paper(tmp_path, src)
+    meta = shelf.add_paper(tmp_path, src, project=_PROJECT)
     tp = shelf.text_path(tmp_path, meta.id)
     assert b"\x00" not in tp.read_bytes()
     # Simulate a legacy NUL-bearing extraction; --force re-extracts.
     tp.write_bytes(tp.read_bytes() + b"\x00tail")
-    meta2 = shelf.add_paper(tmp_path, src, force=True)
+    meta2 = shelf.add_paper(tmp_path, src, project=_PROJECT, force=True)
     assert meta2.id == meta.id
     assert b"\x00" not in tp.read_bytes()
 
@@ -123,10 +219,9 @@ def test_scanned_pdf_fails_loud(tmp_path: Path) -> None:
     doc.save(str(src))
     doc.close()
     with pytest.raises(shelf.ScannedPdfError, match="scanned"):
-        shelf.add_paper(tmp_path, src)
+        shelf.add_paper(tmp_path, src, project=_PROJECT)
     # Fail-loud means no half-shelved residue.
-    assert not shelf.papers_root(tmp_path).exists() or not any(
-        shelf.papers_root(tmp_path).iterdir())
+    assert shelf.list_papers(tmp_path) == []
 
 
 def test_map_staleness_binding(tmp_path: Path) -> None:
@@ -198,13 +293,17 @@ def _pi(problem: str = "p") -> intent.ProblemIntent:
 
 
 def _bound_conn(problem: str = "p"):
-    """In-memory DB with `problem` registered — bindings live in
-    `problem_papers` (v40: the Manifest `paper:` frontmatter is gone)."""
+    """In-memory DB with `problem` registered on the `_PROJECT` shelf —
+    bindings live in `problem_papers` (v40: the Manifest `paper:`
+    frontmatter is gone), and the Project is what says WHERE the bound
+    paper is (§3.9)."""
     from Tooling.state import db as _db
     conn = _db.connect(":memory:")
     _db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, created_at) VALUES (?, ?)",
-                 (problem, _db.now()))
+    conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                 " created_at) VALUES (?, '', ?)", (_PROJECT, _db.now()))
+    conn.execute("INSERT INTO problems (name, project, created_at)"
+                 " VALUES (?, ?, ?)", (problem, _PROJECT, _db.now()))
     conn.commit()
     return conn
 
@@ -420,6 +519,17 @@ def test_fetch_refuses_non_pdf_response(tmp_path: Path,
                         lambda *a, **k: _R(b"<html>interstitial</html>"))
     with pytest.raises(RuntimeError, match="not a PDF"):
         fetch.fetch_and_shelve(tmp_path, "2605.23679",
+                               problem="Test.px", reason=None)
+
+
+def test_fetch_without_a_problem_names_the_shelf_it_needs(
+        tmp_path: Path) -> None:
+    """§3.9: there is no workspace-global shelf any more, so a fetch
+    with no problem has nowhere to land. The refusal names the argument
+    that makes it work rather than inventing a home."""
+    from Tooling.papers import fetch
+    with pytest.raises(ValueError, match="problem"):
+        fetch.fetch_and_shelve(tmp_path, "2605.23679",
                                problem=None, reason=None)
 
 
@@ -578,7 +688,7 @@ def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
         _pi("Test.px"), tmp_path, conn))
     assert "prim.md" in joined
     assert "### Auxiliary papers" in joined
-    assert f"Papers/{meta2.id}" in joined and "aux.md" in joined
+    assert f"papers/{meta2.id}" in joined and "aux.md" in joined
     conn.close()
 
 

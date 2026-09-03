@@ -120,12 +120,14 @@ Problems/residue_thm/Residue.lean
 *_err.log
 .proposed_Manifest.md
 
-# Paper pipeline bookshelf (docs/internal/paper_pipeline_design.md):
-# originals + full-text extraction stay local (license + size); only
-# the navigation map + meta are commit-eligible.
-Papers/*/paper.*
-Papers/*/text.md
-Papers/*/.index_attempt/
+# Papers, now a folder inside each Project's document root (HID §3.9 —
+# the workspace-global `Papers/` retired 2026-09-03). Originals +
+# full-text extraction + the map spawn's sandbox stay local (license +
+# size). The whole subtree is ignored rather than three globs: under
+# Problems/ git tracks only the three human input files
+# (test_problems_tracking_hygiene), so a tracked meta.json would fail
+# that rule anyway.
+Problems/**/_docs/*/papers/
 
 # setup-stub transcript + live progress tap (regenerate every run)
 installer/bootstrap.log

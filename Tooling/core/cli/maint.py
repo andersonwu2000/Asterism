@@ -520,21 +520,23 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 
 def cmd_paper_add(args: argparse.Namespace) -> int:
-    """Shelve a paper: content-hash identity, PDF → page-anchored
-    normalized text (paper_pipeline_design.md D7/D8). Idempotent."""
+    """Shelve a paper on a Project's document shelf: content-hash
+    identity, PDF → page-anchored normalized text (D7/D8). Idempotent."""
     from ...papers import shelf
     src = Path(args.file)
     if not src.is_file():
         print(f"ERROR: no such file: {src}")
         return 1
     try:
-        meta = shelf.add_paper(Path.cwd(), src, added_by="user",
+        meta = shelf.add_paper(Path.cwd(), src, project=args.project,
+                               added_by="user",
                                force=bool(getattr(args, "force", False)))
     except (shelf.ScannedPdfError, ValueError) as e:
         print(f"ERROR: {e}")
         return 1
-    print(f"OK: paper {meta.id} — bind it to a problem via the UI; "
-          f"build the map with `asterism paper-index {meta.id}`")
+    print(f"OK: paper {meta.id} on {args.project} — bind it to a problem "
+          f"via the UI; build the map with "
+          f"`asterism paper-index {args.project} {meta.id}`")
     return 0
 
 
@@ -546,7 +548,7 @@ def cmd_paper_index(args: argparse.Namespace) -> int:
     try:
         out = paper_index.generate_index(
             Path.cwd(), args.id, prompt_dir=PROMPT_DIR,
-            force=bool(args.force))
+            project=args.project, force=bool(args.force))
     except (FileNotFoundError, RuntimeError) as e:
         print(f"ERROR: {e}")
         return 1

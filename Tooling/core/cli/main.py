@@ -356,9 +356,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_paper_add = sub.add_parser(
         "paper-add",
-        help="shelve a paper under Papers/<content-hash>/ (PDF extracted "
-             "to page-anchored text; .md/.txt/.tex pass through)",
+        help="shelve a paper under Problems/<project>/_docs/user/papers/"
+             "<content-hash>/ (PDF extracted to page-anchored text; "
+             ".md/.txt/.tex pass through)",
     )
+    p_paper_add.add_argument("project", help="the Project it is shelved on")
     p_paper_add.add_argument("file", help="path to the paper file")
     p_paper_add.add_argument("--force", action="store_true",
                              help="re-extract over an existing slot")
@@ -369,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         help="build a shelved paper's navigation map (one-shot LLM; "
              "small docs exempt)",
     )
+    p_paper_index.add_argument("project", help="the Project it is shelved on")
     p_paper_index.add_argument("id", help="shelf id (from paper-add)")
     p_paper_index.add_argument("--force", action="store_true",
                                help="index even below the small-doc bar")
