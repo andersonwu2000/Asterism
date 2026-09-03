@@ -195,6 +195,16 @@ def loogle(pattern: str = "", query: str = "",
     return text
 
 
+def _audit_snapshot_here() -> "list[dict] | None":
+    """The routine audit's roots snapshot for THIS spawn, or None when
+    this spawn is not the auditor. `None` and `[]` mean different
+    things and the caller reads both."""
+    from ..pipeline.strategist import audit as _audit
+    from . import workspace_query as _wq
+    own = _wq._own_attempt_dir()
+    return _audit.read_roots_snapshot(own) if own else None
+
+
 @_seat_tool(structured_output=False)
 def validate_json(text: str = "", file: str = "") -> str:
     """Check your JSON hand-in (decision.json / verdict.json).
@@ -240,17 +250,29 @@ def validate_json(text: str = "", file: str = "") -> str:
         # through as OK" and died a whole round later at the parser
         # (4 judge self-reports, 2026-08-22). Same facts the server
         # parser enforces, surfaced before the hand-in.
-        if "criteria" in obj and isinstance(obj.get("criteria"), dict) \
-                and isinstance(obj["criteria"].get("3"), list) \
-                and "5" not in obj["criteria"]:
-            # The routine AUDIT verdict (criteria 1-4, 3 and 4 per line
-            # in flight). Shape errors are what the hand-in parser would
-            # refuse; coverage notes are advisory — a line left unruled
-            # is recorded as unaudited, never invented as fired.
+        # WHICH verdict this is is decided by OWNERSHIP, never by shape.
+        # The routine AUDIT verdict (criteria 1-4, 3 and 4 per line in
+        # flight) is the one written in a spawn the routine wake seated
+        # as the auditor — and that wake, alone in the framework, drops
+        # `_audit_roots.json` into the attempts dir as the snapshot its
+        # verdict is checked against. Its presence IS the signal.
+        #
+        # The shape guess it replaces ("criterion 3 is a list and there
+        # is no criterion 5") also matched a theory-wake verdict, whose
+        # rubric is criteria "1".."3" or "1".."4" with string bullets:
+        # the tool told the arm3h_r2 judge twice to convert criterion 3
+        # into `{goal_id, verdict, reason}` objects and add a criterion
+        # 4 its rubric does not have, and both tries died on it
+        # (`docs/internal/experiments/theory_wake/runs/arm3h_r2_failed/
+        # RECOVERED.md`). An empty snapshot still dispatches to the
+        # audit parser: a group with no line in flight is an audit with
+        # nothing to rule on per line, not a different document.
+        snap = _audit_snapshot_here() if "criteria" in obj else None
+        if snap is not None and isinstance(obj.get("criteria"), dict):
             from ..pipeline.strategist import audit as _audit
-            from . import workspace_query as _wq
-            own = _wq._own_attempt_dir()
-            snap = (_audit.read_roots_snapshot(own) if own else None) or []
+            # Shape errors are what the hand-in parser would refuse;
+            # coverage notes are advisory — a line left unruled is
+            # recorded as unaudited, never invented as fired.
             _v, err = _audit.parse_verdict(src, snap)
             if err:
                 return f"OK as JSON, but the audit parser will reject it: {err}"

@@ -98,6 +98,39 @@ def test_validate_json_file_mode_reads_the_disk(
     assert "only your attempts directory" in outside
 
 
+def test_validate_json_reads_a_theory_verdict_as_a_theory_verdict(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dispatch by OWNERSHIP, never by shape.
+
+    The routine-audit branch used to claim any verdict whose criterion
+    3 is a list and which has no criterion 5 — which is exactly a
+    theory-wake verdict (criteria "1".."3" or "1".."4", string
+    bullets). So the tool told the arm3h_r2 judge, twice, to turn its
+    criterion 3 into `{goal_id, verdict, reason}` objects and add a
+    criterion 4 it does not have (record:
+    `docs/internal/experiments/theory_wake/runs/arm3h_r2_failed/RECOVERED.md`).
+    The audit parser's own input — `_audit_roots.json`, written into
+    the attempts dir by the routine wake and by nothing else — is the
+    signal that this spawn IS the auditor. No snapshot, not an audit.
+    """
+    from Tooling.knowledge import mcp_tools, workspace_query
+
+    monkeypatch.setattr(workspace_query, "_own_attempt_dir",
+                        lambda: tmp_path)
+    (tmp_path / "verdict.json").write_text(json.dumps({"criteria": {
+        "1": ["clear: the same-universe theorem supplies the bound"],
+        "2": ["clear: I re-enumerated all 2^16 families on four points"],
+        "3": ["clear: the wall is named as the restoration statement"],
+        "4": ["clear: the rank-three conjecture is motivated by Thm 2",
+              "clear: the cross-trace lead follows from the equality"]},
+        "reservations": []}), encoding="utf-8")
+    out = mcp_tools.validate_json(file="verdict.json")
+    assert "audit" not in out.lower(), out
+    assert "criterion 4" not in out, out
+    assert "goal_id" not in out, out
+
+
 def test_loogle_tool_reports_failure_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
