@@ -1,11 +1,19 @@
-"""`compute` — a calculator for the agents, and nothing else.
+"""`compute` — the agents' calculator and counterexample instrument.
 
 WHAT IT IS FOR. The Adversary's job is to attack a proposed lemma, and
 the sharpest attack is a small explicit counterexample: enumerate every
-union-closed family on a 4-element ground set, sweep an inequality over
-a parameter range, check an algebraic identity numerically. 33k shell
+union-closed family on a ground set, sweep an inequality over a
+parameter range, check an algebraic identity numerically. 33k shell
 calls were surveyed to size this (2026-08-10); ~3% were exactly that,
 and it is the only part of the shell with no substitute.
+
+It shipped budgeted as arithmetic — 30s, 256 MB — on the reading that
+a job bigger than that "is searching, and a search that big belongs in
+a designed experiment". Owner ruling 2026-09-03 reverses the reading,
+not the containment: the search IS the experiment, and the exhaustive
+pass over the 1,385,552 union-closed families on 5 points that settles
+a Frankl-shaped question takes ~2.5 min of pure Python. The caps below
+are sized to that; everything under HOW IT IS CONTAINED is unchanged.
 
 WHAT IT PROVES: NOTHING. A Python computation is not a proof, whatever
 it prints and whichever direction the result points. The only thing in
@@ -64,13 +72,23 @@ from pathlib import Path
 from . import provision
 
 #: Wall clock. FRAMEWORK-SET and absent from the tool signature — the
-#: agent cannot see or raise it (owner ruling 2026-08-10). A calculator
-#: that needs more than this is not doing arithmetic, it is searching,
-#: and a search that big belongs in a designed experiment.
-TIMEOUT_SEC = 30
-#: Toy scale by construction: the measured workload's biggest job is
-#: 2**16 candidate families.
-MEMORY_MB = 256
+#: agent still cannot see or raise it, and that half of the 2026-08-10
+#: ruling is untouched. The NUMBER is superseded (owner ruling
+#: 2026-09-03): searching is not an abuse of this tool, it IS the
+#: instrument — the counterexample the Adversary needs is found by
+#: sweeping, and the sweeps that set this size are the exhaustive pass
+#: over all 1,385,552 union-closed families on 5 points (~2.5 min of
+#: pure Python) and a targeted (G, B0) search (~2.5 min). At 30s the
+#: framework was not choosing "calculator over search"; it was refusing
+#: every search the agents actually had to run, and the refusal read as
+#: a tool that was merely slow.
+TIMEOUT_SEC = 600
+#: Sized to the same sweeps: a set of ~1.4M ints is ~100 MB, and the
+#: enumeration that builds it needs room beside it (owner ruling
+#: 2026-09-03). Still a ceiling and not a workstation — a job that
+#: wants more than this materialises what it should be streaming, and
+#: the kill message says so.
+MEMORY_MB = 512
 #: Output ceiling. The agent pays for every byte in its next turn.
 MAX_OUTPUT_CHARS = 8000
 #: Sampling period for the soft (macOS) memory cap.
@@ -109,8 +127,9 @@ class ComputeResult:
                     + f"\n… {dropped} more characters dropped. Print less, "
                       f"or summarise inside the code.")
         if self.killed == "timeout":
-            body += (f"\n[compute] stopped at the {TIMEOUT_SEC}s limit. "
-                     f"Shrink the search — the limit is fixed.")
+            body += (f"\n[compute] stopped at the {TIMEOUT_SEC}s "
+                     f"({TIMEOUT_SEC // 60} min) limit. Shrink the search "
+                     f"or split it across calls — the limit is fixed.")
         elif self.killed == "memory":
             body += (f"\n[compute] stopped at the {MEMORY_MB} MB limit. "
                      f"Enumerate in batches instead of materialising "

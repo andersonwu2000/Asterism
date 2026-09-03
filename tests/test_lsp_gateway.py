@@ -3352,3 +3352,51 @@ def test_interactive_register_claims_off_the_event_loop(monkeypatch, tmp_path):
                         body=b'{"content": "-- x"}')
     asyncio.run(lsp_gateway.interactive_register(req))
     _assert_off_loop(seen, "_register_session_internal")
+
+
+def test_compute_route_runs_at_most_two_sandboxes_at_once(monkeypatch):
+    """Owner ruling 2026-09-03 widened the sandbox wall to 10 minutes,
+    and `sandbox.run` is SYNCHRONOUS — `asyncio.to_thread` parks one
+    default-executor thread for the whole run, in the same pool every
+    other route offloads to. N agents must not become N parked threads
+    and N sandbox interpreters, so the route admits two at a time.
+
+    The third caller WAITS rather than being refused (a queued search
+    still returns an answer) and the reply says how long it waited, so
+    a slow return reads as "the machine was busy" instead of "my code
+    is slow"."""
+    import asyncio
+    import json
+    import threading
+    import time as _time
+
+    from Tooling import sandbox as _sandbox
+
+    live = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def _fake_run(code: str):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        _time.sleep(0.3)
+        with lock:
+            live -= 1
+        return _sandbox.ComputeResult(rc=0, output="ok", seconds=0.3)
+
+    monkeypatch.setattr(_sandbox, "run", _fake_run)
+
+    async def _three():
+        body = json.dumps({"code": "print(1)"}).encode()
+        return await asyncio.gather(*(
+            lsp_gateway.compute_endpoint(
+                _asgi_request("POST", "/compute", {}, body=body))
+            for _ in range(3)))
+
+    resps = asyncio.run(_three())
+    assert peak == 2, f"{peak} sandboxes ran at once; the gate admits two"
+    waited = sorted(json.loads(bytes(r.body))["waited_sec"] for r in resps)
+    assert waited[0] == 0.0 and waited[1] == 0.0
+    assert waited[2] > 0.1, "the third caller was not told that it queued"

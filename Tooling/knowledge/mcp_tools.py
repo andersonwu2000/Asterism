@@ -33,6 +33,7 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
+from ..sandbox import TIMEOUT_SEC as _SANDBOX_TIMEOUT_SEC
 from . import loogle as _loogle
 
 #: Hard ceiling on a single tool's output. An agent pays for every byte in
@@ -387,7 +388,9 @@ def compute(code: str = "") -> str:
     numpy is available. There is no filesystem, no network and no shell:
     put the data you need inline in the code and return results with
     `print()`. Each call is a fresh process, so define everything you
-    use. Time and memory are capped by the framework.
+    use. Time and memory are capped by the framework: 10 minutes of
+    wall clock and 512 MB, which is room for an exhaustive sweep of a
+    few million cases — size the search to fit rather than sampling it.
     """
     if not (code or "").strip():
         return _ARG_HELP.format(
@@ -416,7 +419,16 @@ def compute(code: str = "") -> str:
 #: and `pin_check._gateway_probe` already calls it over plain HTTP from
 #: THIS server on every loogle hit — so both halves of this path were
 #: already proven in production before it carried compute.
-_GATEWAY_TIMEOUT_SEC = 180
+#:
+#: DERIVED, never typed twice: the client must outlive the wall the
+#: sandbox is entitled to run to, plus the interpreter's own startup. A
+#: client that hangs up first turns "stopped at the 600s limit, shrink
+#: the search" — an instruction — into "the compute service did not
+#: answer", which is the wait-vs-report fork with no way to choose. The
+#: import is one stdlib-only module (`sandbox.provision` reaches no
+#: further), so it does not breach this server's rule against pulling
+#: the framework's heavy modules into the stdio process.
+_GATEWAY_TIMEOUT_SEC = _SANDBOX_TIMEOUT_SEC + 60
 
 
 def _gateway_silence_hint() -> str:
@@ -490,8 +502,21 @@ def _compute_via_gateway(code: str) -> str:
     # timed-out sweep came back as the standing header and nothing at
     # all, so it probed with `print("hello", 1+1)` to see whether the
     # tool existed.
+    output = str(data.get("output") or "")
+    # The gateway runs two sandboxes at a time, so a call can be slow
+    # for a reason that has nothing to do with the code in it. Unsaid,
+    # the agent reads the wall clock as its own search being too big
+    # and shrinks a sweep that was the right size.
+    try:
+        waited = float(data.get("waited_sec") or 0.0)
+    except (TypeError, ValueError):
+        waited = 0.0
+    if waited >= 1.0:
+        output += (f"\n[compute] this call queued {waited:.0f}s for a free "
+                   f"sandbox — the framework runs two at a time. Your code "
+                   f"was not the slow part.")
     return ComputeResult(rc=int(data.get("rc", 1)),
-                         output=str(data.get("output") or ""),
+                         output=output,
                          seconds=float(data.get("seconds") or 0.0),
                          killed=str(data.get("killed") or "")).render()
 

@@ -678,6 +678,41 @@ async def verify_session(request: Request):
     return JSONResponse(result, status_code=status)
 
 
+#: How many sandboxes may run at once. `sandbox.run` is synchronous and
+#: its wall clock is 10 minutes since the 2026-09-03 ruling, so every
+#: in-flight call parks one thread of the DEFAULT EXECUTOR — the same
+#: pool `/verify`, `/release` and every `_offload_to_thread` tool share
+#: (min(32, cpu+4) threads; 20 on this workstation, so two is nowhere
+#: near the pool and the pool is not what this bounds). What it bounds
+#: is the machine: N agents calling a 10-minute sweep at once would be
+#: N sandbox interpreters against the Lean workers' RAM.
+#:
+#: A third caller QUEUES; it is never refused. A refusal would reach
+#: the agent as a framework fault it can do nothing about, whereas a
+#: queued search still answers — and `waited_sec` travels back so a
+#: slow return reads as "the machine was busy", not "my sweep is too
+#: big" (the reading that would make it shrink a search needlessly).
+_COMPUTE_SLOTS = 2
+_COMPUTE_SEM: "asyncio.Semaphore | None" = None
+_COMPUTE_SEM_LOOP: object = None
+
+
+def _compute_gate() -> "asyncio.Semaphore":
+    """The semaphore for the RUNNING loop.
+
+    A module-level `asyncio.Semaphore` binds to the first loop that
+    awaits it and then raises on every other one, which would make this
+    gate untestable (each `asyncio.run` is a fresh loop) and would turn
+    a second `main()` in one process into a hang. Called only from the
+    event-loop thread, so the rebind needs no lock."""
+    global _COMPUTE_SEM, _COMPUTE_SEM_LOOP
+    loop = asyncio.get_running_loop()
+    if _COMPUTE_SEM is None or _COMPUTE_SEM_LOOP is not loop:
+        _COMPUTE_SEM = asyncio.Semaphore(_COMPUTE_SLOTS)
+        _COMPUTE_SEM_LOOP = loop
+    return _COMPUTE_SEM
+
+
 @mcp.custom_route("/compute", methods=["POST"])
 async def compute_endpoint(request: Request):
     """Run sandboxed Python here, because the tool server cannot.
@@ -698,7 +733,8 @@ async def compute_endpoint(request: Request):
     proven path rather than a new one.
 
     Body:    {"code": "<python>"}
-    Returns: {"rc": int, "output": str, "seconds": float, "killed": str}
+    Returns: {"rc": int, "output": str, "seconds": float, "killed": str,
+              "waited_sec": float}
 
     `killed` carries the limit that stopped the run ("timeout" /
     "memory" / ""), and it is part of the wire format rather than a
@@ -706,9 +742,14 @@ async def compute_endpoint(request: Request):
     next. It was omitted at first, and the caller rebuilt the result
     with `killed=""`: a timed-out sweep reached the Strategist as the
     standing header and NOTHING else — no output (the kill took the
-    buffer), no "stopped at the 30s limit, shrink the search". The
-    agent's next act was to spend a call on `print("hello", 1+1)` to
-    find out whether the tool was alive at all (2026-08-12).
+    buffer), no "stopped at the limit, shrink the search". The agent's
+    next act was to spend a call on `print("hello", 1+1)` to find out
+    whether the tool was alive at all (2026-08-12).
+
+    `waited_sec` is there for the same reason one step earlier: with
+    `_COMPUTE_SLOTS` in front of the sandbox a call can be slow because
+    it QUEUED, and an agent told only the total would blame its own
+    search and shrink it.
 
     The sandbox's own guarantees are unchanged — separate interpreter,
     no framework on `sys.path`, memory/wall-clock caps, PEP 578 audit
@@ -721,14 +762,19 @@ async def compute_endpoint(request: Request):
         return JSONResponse({"error": f"invalid JSON: {e}"}, status_code=400)
     code = str(data.get("code") or "")
     from ...sandbox import run as _sandbox_run
-    try:
-        res = await asyncio.to_thread(_sandbox_run, code)
-    except Exception as e:  # noqa: BLE001 — reported, never swallowed
-        return JSONResponse(
-            {"rc": 1, "output": f"[compute] gateway-side failure: "
-                                f"{type(e).__name__}: {e}", "seconds": 0.0})
+    t0 = time.monotonic()
+    async with _compute_gate():
+        waited = round(time.monotonic() - t0, 1)
+        try:
+            res = await asyncio.to_thread(_sandbox_run, code)
+        except Exception as e:  # noqa: BLE001 — reported, never swallowed
+            return JSONResponse(
+                {"rc": 1, "output": f"[compute] gateway-side failure: "
+                                    f"{type(e).__name__}: {e}",
+                 "seconds": 0.0, "waited_sec": waited})
     return JSONResponse({"rc": res.rc, "output": res.output,
-                         "seconds": res.seconds, "killed": res.killed})
+                         "seconds": res.seconds, "killed": res.killed,
+                         "waited_sec": waited})
 
 
 @mcp.custom_route("/warm_target", methods=["POST"])

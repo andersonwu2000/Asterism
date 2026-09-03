@@ -56,6 +56,43 @@ def test_limit_kills_name_the_fixed_limit() -> None:
     assert str(sandbox.MEMORY_MB) in m and "batches" in m
 
 
+def test_the_kill_message_names_the_widened_limit() -> None:
+    """Owner ruling 2026-09-03: this sandbox is also the agents'
+    counterexample-search instrument — an exhaustive sweep of all
+    1,385,552 union-closed families on 5 points is ~2.5 min of pure
+    Python, which the 30s cap refused outright. The caps are 600s and
+    512 MB, and the agent SIZES ITS NEXT SEARCH from this message, so
+    the message carries the real numbers and both ways out."""
+    assert (sandbox.TIMEOUT_SEC, sandbox.MEMORY_MB) == (600, 512)
+    t = sandbox.ComputeResult(0, "", 600.0, killed="timeout").render()
+    assert "600s" in t and "10 min" in t
+    assert "Shrink" in t and "split" in t
+    m = sandbox.ComputeResult(0, "", 0.3, killed="memory").render()
+    assert "512 MB" in m and "batches" in m
+
+
+def test_the_tool_docstring_sizes_the_search_from_the_real_caps() -> None:
+    """The caps stay out of the tool SIGNATURE (an agent must not be
+    able to raise them) but not out of its description: an agent that
+    cannot see the budget cannot size a sweep to fit it, and pays the
+    kill message to find out. Pin the RELATION — a widened constant
+    with a stale docstring is the drift this catches."""
+    doc = mcp_tools.compute.__doc__ or ""
+    assert f"{sandbox.TIMEOUT_SEC // 60} minutes" in doc
+    assert f"{sandbox.MEMORY_MB} MB" in doc
+
+
+def test_the_gateway_client_outlives_the_sandbox_wall() -> None:
+    """The HTTP client must never hang up on a run the sandbox is still
+    entitled to finish: it would turn a measured "stopped at the 600s
+    limit, shrink the search" into "the compute service did not
+    answer", which sends the agent to the wait-vs-report fork with no
+    way to choose. Derived from the sandbox's own constant, so widening
+    the wall cannot leave the client behind."""
+    assert (mcp_tools._GATEWAY_TIMEOUT_SEC
+            >= sandbox.TIMEOUT_SEC + 60), "no room for sandbox startup"
+
+
 def test_env_is_an_allowlist_with_no_path_and_no_secrets(monkeypatch) -> None:
     """Allowlist, never a strip: a denylist rots the moment the host
     grows a variable, and with PATH intact a shell has something to
@@ -117,8 +154,9 @@ def test_runaway_time_is_stopped_by_the_wall_clock(
 
     The limit is shrunk to 2s: the kill loop reads the module constant
     each tick, so the enforcement path under test is byte-identical to
-    the production one — waiting out the real 30s bought nothing but a
-    test that was 16% of the whole suite's wall time."""
+    the production one — waiting out the real wall (600s since the
+    2026-09-03 ruling) would be the whole suite's wall time twice
+    over."""
     monkeypatch.setattr(sandbox, "TIMEOUT_SEC", 2)
     r = sandbox.run("while True: pass")
     assert r.killed == "timeout"

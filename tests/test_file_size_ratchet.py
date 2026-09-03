@@ -626,7 +626,7 @@ _WATERMARKS = {
     # IS the HTTP surface — eleven `@mcp.custom_route` handlers, the
     # session-header middleware, `main()` and the facade — so this
     # number stops falling here.
-    "Tooling/lsp/gateway/__init__.py": 1130,  # +8 2026-09-03 the live presence marker (a status reader must not have to dial the port to learn a gateway is absent)  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
+    "Tooling/lsp/gateway/__init__.py": 1170,  # +40 2026-09-03 the /compute concurrency gate (a 10-min sandbox parks a default-executor thread, so two at a time and the third is told it queued)  # +8 2026-09-03 the live presence marker (a status reader must not have to dial the port to learn a gateway is absent)  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 320,  # born 2026-08-29 from the gateway split (A1-1); +65 2026-08-30 build leases — the second tenant lives beside the semaphore it borrows from
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
