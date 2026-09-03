@@ -103,6 +103,126 @@ def hide_owner_notes():
 # the verdict this rubric produces
 # ---------------------------------------------------------------------
 
+#: A judge that renders a bullet as an OBJECT names the ruling and the
+#: prose with one of these. Not a guess: `mcp_tools.validate_json`
+#: mis-routes a three-criterion verdict into the AUDITOR's schema check
+#: (its heuristic is `criteria["3"]` is a list and `"5"` absent), and
+#: `theory_judge.md` tells the judge to validate before finishing — so
+#: the tool told arm3h_r2's judge, twice, to re-render its bullets as
+#: `{"goal_id", "verdict", "reason"}`, and both wakes died on the
+#: rendering of a ruling that was otherwise exactly right (2026-09-04).
+#: The contract is one bullet per objection; the bullet's SHAPE is not
+#: the contract, the same reason the batch parser still takes the
+#: legacy bare string.
+_BULLET_HEAD_KEYS = ("verdict", "ruling", "status", "result")
+_BULLET_TEXT_KEYS = ("reason", "text", "objection", "bullet", "detail",
+                     "note", "comment", "message")
+
+
+def _as_bullet(entry) -> "str | None":
+    """One criterion entry as the `"<head>: <prose>"` line the rest of
+    the parser reads, or None if it is no rendering of a bullet at all.
+
+    An object whose ruling is `clear` and whose prose is empty comes
+    back as the bare word — so the bare-clear refusal below fires on
+    this rendering exactly as it does on the string one.
+    """
+    if isinstance(entry, str):
+        return entry
+    if not isinstance(entry, dict):
+        return None
+    def _pick(keys):
+        for k in keys:
+            v = entry.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    head, body = _pick(_BULLET_HEAD_KEYS), _pick(_BULLET_TEXT_KEYS)
+    if not head:
+        # No ruling key: the prose may already carry it ("fired: …").
+        # If it does not, the head check refuses it, which is right.
+        return body or None
+    return f"{head}: {body}" if body else head
+
+
+def _bullets(val) -> "list[str] | None":
+    """A criterion's value as a flat list of bullet lines: a bare
+    string (legacy, one bullet), a list of strings, a list of objects,
+    or a list nested one level deeper."""
+    if isinstance(val, str):
+        return [val]
+    if not isinstance(val, list) or not val:
+        return None
+    out: list[str] = []
+    for entry in val:
+        if isinstance(entry, list):
+            inner = _bullets(entry)
+            if inner is None:
+                return None
+            out += inner
+            continue
+        line = _as_bullet(entry)
+        if line is None:
+            return None
+        out.append(line)
+    return out or None
+
+
+def describe_verdict_shape(text: str) -> str:
+    """What the judge actually wrote, per criterion, as one log line.
+
+    A rejected verdict is the evidence for why it was rejected, and
+    arm3h_r2 had to be recovered from the codex rollout because the
+    log carried only the refusal. Types and key names, never values —
+    the raw file kept beside it carries those.
+    """
+    try:
+        v = json.loads(text, strict=False)
+    except ValueError as e:
+        return f"not JSON ({e})"
+    if not isinstance(v, dict):
+        return f"top level is {type(v).__name__}, not an object"
+
+    def shape(x) -> str:
+        if isinstance(x, dict):
+            return "dict{" + ",".join(sorted(map(str, x))) + "}"
+        if isinstance(x, list):
+            inner = sorted({shape(i) for i in x})
+            return f"list[{'|'.join(inner) or 'empty'}]({len(x)})"
+        return type(x).__name__
+    criteria = v.get("criteria")
+    if not isinstance(criteria, dict):
+        return (f"top-level keys {sorted(map(str, v))}; "
+                f"`criteria` is {shape(criteria)}")
+    return ("criteria " + ", ".join(
+        f'"{k}"={shape(criteria[k])}' for k in sorted(map(str, criteria)))
+        + f"; reservations={shape(v.get('reservations'))}")
+
+
+def keep_rejected_verdict(vpath: Path, *, round_no: int,
+                          out: "Path | None") -> Path:
+    """Move a refused `verdict.json` aside instead of deleting it.
+
+    It leaves the contract path (the next try must not be read as a
+    verdict this judge did not write) and lands as
+    `verdict_r<n>_raw.json` beside it, copied into the runs dir too. A
+    second refusal in the same round takes `…_raw2.json`, so no
+    rejected file is ever overwritten by a later one.
+    """
+    raw = vpath.read_bytes()
+    for i in range(1, 100):
+        dst = vpath.with_name(
+            f"verdict_r{round_no}_raw{'' if i == 1 else i}.json")
+        if not dst.exists():
+            break
+    dst.write_bytes(raw)
+    vpath.unlink(missing_ok=True)
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / dst.name).write_bytes(raw)
+    return dst
+
+
 def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
     """Validate `theory_judge.md`'s verdict.json and derive the ruling.
 
@@ -112,6 +232,12 @@ def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
     THIS rubric's three criteria. `strict=False` for the same reason
     the batch parser uses it: a literal newline inside a string value
     is not structural damage and has killed a wake over it.
+
+    A bullet may also arrive as an OBJECT carrying the ruling and its
+    prose, or nested one list deeper (`_bullets`): those are renderings
+    of the same one-bullet-per-objection contract, and refusing them
+    cost arm3h_r2 both tries. What is NOT tolerated is a bare `clear` —
+    in any rendering.
 
     Returns `({"verdict", "criticisms", "reservations", "criteria"},
     "")`, or `(None, <what to tell the judge>)`. The criticisms are the
@@ -137,10 +263,8 @@ def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
                       f"`\"fired: <objection>\"`")
     fired: list[str] = []
     for k in CRITERIA_KEYS:
-        val = criteria[k]
-        vals = [val] if isinstance(val, str) else val
-        if not (isinstance(vals, list) and vals
-                and all(isinstance(x, str) for x in vals)):
+        vals = _bullets(criteria[k])
+        if vals is None:
             return None, (f"criterion {k} must be a list of strings "
                           f"(one bullet per objection) or a single "
                           f"string")
@@ -454,18 +578,25 @@ def main(argv=None) -> int:
                 usage_pipeline_id=pipeline_id)
             jwall = time.monotonic() - jt0
             vpath = proj / VERDICT_BASENAME
+            shape = ""
             if jrc != 0:
                 verr = f"judge spawn rc={jrc}"
             elif not vpath.is_file():
                 verr = "judge produced no verdict.json"
             else:
-                verdict, verr = parse_theory_verdict(
-                    vpath.read_text(encoding="utf-8"))
+                raw = vpath.read_text(encoding="utf-8")
+                verdict, verr = parse_theory_verdict(raw)
                 if verdict is None:
-                    vpath.unlink(missing_ok=True)
+                    # The refused file IS the evidence for the refusal;
+                    # it moves aside, it does not vanish.
+                    shape = describe_verdict_shape(raw)
+                    kept = keep_rejected_verdict(
+                        vpath, round_no=revision + 1, out=out)
+                    verr += f" [kept {kept.name}]"
             print(f"[theory] judge r{revision + 1} try {attempt + 1}: "
                   f"rc={jrc} wall={jwall:.0f}s "
-                  f"verdict={(verdict or {}).get('verdict', verr)!r}",
+                  f"verdict={(verdict or {}).get('verdict', verr)!r}"
+                  + (f" wrote: {shape}" if shape else ""),
                   flush=True)
             if verdict is not None:
                 break

@@ -146,3 +146,115 @@ def test_hide_owner_notes_empties_the_context_section(tmp_path):
     finally:
         _ctx._section_owner_notes = original
     assert _ctx._section_owner_notes(who, tmp_path) == control
+
+
+def test_theory_verdict_parser_takes_the_per_bullet_object_rendering():
+    """The shape arm3h_r2's judge actually wrote (2026-09-04, run
+    `arm3h_r2`, rollout `01a068eb`): `validate_json` mis-routes a
+    three-criterion verdict into the AUDITOR's schema check
+    (`mcp_tools.validate_json`: `"3"` is a list and `"5"` absent ⇒
+    audit-shaped), so the judge — told by the prompt to validate before
+    finishing — obeyed the tool and re-rendered its bullets as
+    `{"goal_id", "verdict", "reason"}` objects. Both tries died on
+    "criterion 3 must be a list of strings" and the whole wake was lost
+    over a rendering of the SAME ruling. One bullet per objection is
+    the contract; an object carrying the ruling and its prose satisfies
+    it, exactly as the batch parser tolerates the legacy bare string."""
+    from Tooling.experiments import theory_wake
+
+    objection = ("The rank-three conjecture at report.md:206-207 is "
+                 "stated under hypotheses that omit |H| < |G|, but the "
+                 "falsifier discards every pair with |H| >= |G|.")
+    text = json.dumps({"criteria": {
+        "1": ["clear: Theorem 5's rank-three conclusions are on no record"],
+        "2": ["clear: it reduces the MAIN claim; the wall is Lemma 3"],
+        "3": [{"goal_id": 10670, "verdict": "fired", "reason": objection}],
+        "4": [{"goal_id": 10670, "verdict": "clear",
+               "reason": "no fourth criterion exists in this rubric"}]},
+        "reservations": ["the arbitrary-rank wall remains open"]})
+    v, err = theory_wake.parse_theory_verdict(text)
+    assert err == ""
+    assert v["verdict"] == "rebut"
+    # verbatim, only the criterion label added — and criterion "4",
+    # which this rubric does not have, is not smuggled in as a ruling.
+    assert v["criticisms"] == [f"[criterion 3] {objection}"]
+
+
+def test_theory_verdict_object_rendering_still_refuses_a_bare_clear():
+    """The tolerance must not become a hole: an object whose ruling is
+    `clear` and whose prose is empty is the bare clear the prompt
+    forbids, and it must be refused in this rendering too."""
+    from Tooling.experiments import theory_wake
+
+    text = json.dumps({"criteria": {
+        "1": ["clear: the statement is on no record"],
+        "2": ["clear: it implies main; the wall is Lemma 3"],
+        "3": [{"goal_id": 10670, "verdict": "clear"}]}})
+    v, err = theory_wake.parse_theory_verdict(text)
+    assert v is None
+    assert "bare" in err
+
+
+def test_theory_verdict_parser_flattens_a_nested_bullet_list():
+    """The other reasonable rendering of "a list per criterion, one
+    bullet per objection": the bullets arrive one level deeper."""
+    from Tooling.experiments import theory_wake
+
+    text = json.dumps({"criteria": {
+        "1": ["clear: the statement is on no record"],
+        "2": ["clear: it implies main; the wall is Lemma 3"],
+        "3": [["fired: the n=6 census could not be reproduced"]]}})
+    v, err = theory_wake.parse_theory_verdict(text)
+    assert err == ""
+    assert v["criticisms"] == [
+        "[criterion 3] the n=6 census could not be reproduced"]
+
+
+def test_rejected_verdict_is_kept_never_deleted(tmp_path):
+    """A verdict the parser refuses is the evidence for WHY it was
+    refused: arm3h_r2 unlinked both tries, and the shape had to be dug
+    out of the codex rollout afterwards. The file moves aside — into
+    the attempts dir AND the runs dir — and a second rejection in the
+    same round does not overwrite the first."""
+    from Tooling.experiments import theory_wake
+
+    proj = tmp_path / "attempts" / "review" / "r1"
+    proj.mkdir(parents=True)
+    out = tmp_path / "runs"
+    vpath = proj / theory_wake.VERDICT_BASENAME
+
+    first = '{"criteria": {"3": [{"verdict": "fired"}]}}'
+    vpath.write_text(first, encoding="utf-8")
+    kept = theory_wake.keep_rejected_verdict(vpath, round_no=1, out=out)
+    assert kept.name == "verdict_r1_raw.json"
+    assert kept.read_text(encoding="utf-8") == first
+    assert (out / "verdict_r1_raw.json").read_text(encoding="utf-8") == first
+    # gone from the contract path, so the next try cannot be read as a
+    # verdict the judge did not write this time
+    assert not vpath.exists()
+
+    second = '{"criteria": {"3": 7}}'
+    vpath.write_text(second, encoding="utf-8")
+    kept2 = theory_wake.keep_rejected_verdict(vpath, round_no=1, out=out)
+    assert kept2.name == "verdict_r1_raw2.json"
+    assert kept.read_text(encoding="utf-8") == first
+    assert (out / "verdict_r1_raw2.json").read_text(
+        encoding="utf-8") == second
+
+
+def test_rejected_verdict_log_line_names_the_offending_shape():
+    """The log must say what the judge actually wrote — the type and
+    shape per criterion — so a rejection is diagnosable from the run
+    log without opening the rollout."""
+    from Tooling.experiments import theory_wake
+
+    text = json.dumps({"criteria": {
+        "1": ["clear: on no record"],
+        "3": [{"goal_id": 10670, "verdict": "fired", "reason": "x"}]},
+        "reservations": []})
+    line = theory_wake.describe_verdict_shape(text)
+    assert '"1"' in line and "list[str]" in line
+    assert '"3"' in line and "list[dict" in line
+    assert "goal_id" in line and "verdict" in line and "reason" in line
+    # unparseable bytes still describe themselves rather than throwing
+    assert "not JSON" in theory_wake.describe_verdict_shape("{oops")
