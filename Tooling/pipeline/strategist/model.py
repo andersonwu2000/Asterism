@@ -47,6 +47,21 @@ RETURN_FLAVOURS: frozenset[str] = frozenset(
     {"refuted", "amend", "exhausted"})
 
 
+#: One column, three contracts: the `brief` column's CONTRACT NAME per
+#: kind (`_parse_one` reads the decision.json key of that name into it).
+#: Both the parser and the renderer that shows a decision to the judge
+#: need this mapping, and a second copy is how a rendered label drifts
+#: from the field the contract actually names.
+BRIEF_FIELD_DEFAULT = "brief"
+BRIEF_FIELD_BY_KIND: dict[str, str] = {"Inject": "proof",
+                                       "Delegate": "charter"}
+
+
+def brief_field(kind: str) -> str:
+    """The decision.json key whose value lands in `Decision.brief`."""
+    return BRIEF_FIELD_BY_KIND.get(kind, BRIEF_FIELD_DEFAULT)
+
+
 def _as_bool(v: Any) -> bool:
     """Coerce a config value (yaml bool or string) to bool."""
     return v if isinstance(v, bool) else \
@@ -227,12 +242,7 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
     # each contract teaching the other's meaning; they share a row
     # because a decision carries one piece of prose, not because the
     # prose means one thing.
-    if kind == "Inject":
-        brief = obj.get("proof")
-    elif kind == "Delegate":
-        brief = obj.get("charter")
-    else:
-        brief = obj.get("brief")
+    brief = obj.get(brief_field(kind))
     reason = obj.get("reason")
     # Pull all structured params (anything not already consumed) into
     # payload. Lets agent send either nested-payload or flat shape.

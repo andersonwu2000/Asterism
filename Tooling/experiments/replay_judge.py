@@ -41,8 +41,11 @@ def reconstruct_decisions(rows: "list[sqlite3.Row | dict]") -> "list[dict]":
             obj["target_id"] = int(d["target_id"])
         prose = d.get("brief")
         if prose:
-            obj["proof" if kind == "Inject" else
-                "charter" if kind == "Delegate" else "brief"] = str(prose)
+            # The key the parser reads this column back out of — shared
+            # with `_parse_one` and with the judge-facing renderer, so
+            # a fourth contract cannot drift in behind them.
+            from Tooling.pipeline.strategist.model import brief_field
+            obj[brief_field(kind)] = str(prose)
         if d.get("reason"):
             obj["reason"] = str(d["reason"])
         try:

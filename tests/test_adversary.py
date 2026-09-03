@@ -886,6 +886,110 @@ def test_projection_stages_tree_and_directive_body(
     assert f"→ {gid} (`tgt`, proved)" in dec
 
 
+def test_the_ingest_report_reaches_the_judge(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """`Ingest.report` IS the paper the judge rules on, and criterion 2
+    holds the judge responsible for it — union_closed group 693,
+    2026-09-03: decision.json carried the whole four-section report, the
+    projection rendered a bare `## 2. Ingest`, and three consecutive
+    rounds fired "bare Ingest with no report" at a field the Strategist
+    had already written."""
+    attempts = workspace / ".attempts" / "adv-ingest"
+    attempts.mkdir(parents=True)
+    report = ("## Introduction\nWhy the question matters.\n\n"
+              "## Main Result\nSPLIT is false.\n\n"
+              "## Proof Sketch\nThe frequency vectors separate.\n\n"
+              "## What Remains\nFrankl stays open.\n")
+    decisions, err = strategist.parse_decisions(json.dumps(
+        [{"kind": "Ingest", "report": report, "reason": "charter settled"}]))
+    assert err == "" and decisions is not None
+
+    proj = adversary.build_projection(
+        round_no=2, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=decisions, dialogue=[], proof_warn=None)
+
+    dec = (proj / "decisions.md").read_text(encoding="utf-8")
+    assert "SPLIT is false." in dec
+    assert "Frankl stays open." in dec
+
+
+def test_the_mark_deliverable_paper_ref_reaches_the_judge(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Same batch, same round, second flattened field: the judge fired
+    "MarkDeliverable omits paper_ref" while `paper_ref` sat in
+    decision.json."""
+    attempts = workspace / ".attempts" / "adv-paperref"
+    attempts.mkdir(parents=True)
+    gid = db.insert_goal(conn, problem="p", slug="tgt",
+                         lean_path="Problems/p/proofs/L_tgt.lean",
+                         statement="T", origin="forward", status="proved")
+    conn.commit()
+    decisions, err = strategist.parse_decisions(json.dumps(
+        [{"kind": "MarkDeliverable", "target_goal_id": gid,
+          "paper_ref": "p.1 Theorem 1", "reason": "the counterexample"}]))
+    assert err == "" and decisions is not None
+
+    proj = adversary.build_projection(
+        round_no=2, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=decisions, dialogue=[], proof_warn=None)
+
+    assert "p.1 Theorem 1" in (proj / "decisions.md").read_text(
+        encoding="utf-8")
+
+
+#: One synthetic decision per kind, written in the field names the
+#: Strategist's contract uses (`Tooling/prompts/adversary/_contract.md`
+#: and `Tooling/prompts/strategist/inject_batch_done.md`). `reason` and
+#: `future_field` are added to every kind by the test itself — the
+#: second one is a field no contract knows about, and it must render
+#: too: the projection carries what the author WROTE, so the field
+#: someone adds next month cannot be flattened by an allowlist nobody
+#: remembered to update.
+_SYNTHETIC_FIELDS: "dict[str, dict[str, str]]" = {
+    "Inject": {"proof": "PROOF-SENTINEL"},
+    "Delegate": {"charter": "CHARTER-SENTINEL",
+                 "brief": "GUIDANCE-SENTINEL"},
+    "Ingest": {"report": "REPORT-SENTINEL"},
+    "MarkDeliverable": {"paper_ref": "PAPERREF-SENTINEL"},
+    "RequestUserAmend": {"title": "TITLE-SENTINEL", "file": "Root.lean",
+                         "question": "QUESTION-SENTINEL",
+                         "proposed_body": "PROPOSEDBODY-SENTINEL"},
+    "ReturnToParent": {"flavour": "exhausted",
+                       "proposed_charter": "PROPOSEDCHARTER-SENTINEL"},
+    "CloseGroup": {"target_group_id": "TARGETGROUP-SENTINEL"},
+    "EmitDirective": {"body": "BODY-SENTINEL"},
+    "FetchPaper": {"citation": "CITATION-SENTINEL"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(strategist.DECISION_KINDS))
+def test_no_field_the_strategist_wrote_is_flattened_out(kind: str) -> None:
+    """The projection is the judge's ONLY sight of the batch, so every
+    field that survives the parser must reach it. The expectation is
+    read off the parsed Decision, not off a list in this test: brief,
+    reason and every payload entry."""
+    raw = {"kind": kind, "reason": "REASON-SENTINEL",
+           "future_field": "FUTURE-SENTINEL"}
+    raw.update(_SYNTHETIC_FIELDS.get(kind, {}))
+    decisions, err = strategist.parse_decisions(json.dumps([raw]))
+    assert err == "" and decisions is not None
+    d = decisions[0]
+
+    text = adversary._decisions_digest(decisions)
+
+    written = [("brief", d.brief), ("reason", d.reason)]
+    written += [(k, v) for k, v in d.payload.items()]
+    for name, value in written:
+        if isinstance(value, str) and value.strip():
+            assert value in text, f"{kind}.{name} was flattened out"
+
+
 def _rendered_subgroup_section() -> str:
     """The conditional `## Your group` Context section as a sub-group
     actually receives it — the other half of the Strategist's contract

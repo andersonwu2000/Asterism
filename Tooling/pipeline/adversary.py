@@ -58,20 +58,78 @@ INFRA_SPAWN_RETRIES = 2
 INFRA_RETRY_BACKOFF_SEC = 15.0
 
 
+#: Fields the head line already carries — skipped by the field dump so
+#: the judge does not read the same value twice. This is the whole of
+#: the exclusion list, and it exists because the value is rendered
+#: ELSEWHERE, never because a field is judged unimportant: see
+#: `_decisions_digest`.
+_HEAD_FIELDS = ("pipeline",)
+
+#: A single-line value no longer than this rides its label; anything
+#: longer, or anything containing a newline, gets its own fenced block.
+#: NOT a cap — nothing is ever truncated. The fence is a boundary: an
+#: `Ingest.report` is itself a markdown paper whose `## Introduction`
+#: would otherwise read as a section of `decisions.md`, sitting at the
+#: same level as the `## N. Kind` headings around it.
+_INLINE_MAX = 120
+
+
+def _fence_for(text: str) -> str:
+    """A backtick fence longer than any run inside `text`, so a field
+    that quotes code or Lean stays byte-identical inside its block."""
+    longest = max((len(r) for r in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _render_field(name: str, value: Any) -> "list[str]":
+    """One field as the judge reads it, labelled with the name the
+    Strategist's contract uses for it (`contract.md` names every field
+    by its decision.json key, so the judge can match a clause to a
+    value without translating)."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    else:
+        text = str(value)
+    if not text.strip():
+        return []
+    if "\n" not in text and len(text) <= _INLINE_MAX:
+        return [f"{name}: {text}"]
+    fence = _fence_for(text)
+    return [f"{name}:", fence, text.rstrip("\n"), fence]
+
+
 def _decisions_digest(decisions, conn=None, problem=None) -> str:
-    """Render the batch's decisions for the judge (briefs + directive —
-    the package members it reviews alongside the Programme).
+    """Render the batch's decisions for the judge — EVERY field the
+    Strategist wrote, because this file is the judge's only sight of
+    the batch it is ruling on.
 
     07-29 judge feedback: goal targets rendered as bare ids were
     unverifiable inside the sandbox (CATALOG carries names, not ids) —
-    annotate with `(slug, status)` when a conn is given. The directive
-    body lives in `payload['body']` on real Decision objects (the
-    `.body` attribute only ever existed on test fixtures), so criterion
-    5 was judging a directive it could not read."""
+    annotate with `(slug, status)` when a conn is given.
+
+    The field dump has NO allowlist (2026-09-03, union_closed group
+    693). A hand list of rendered fields grew stale the moment the
+    contract gained a field: `Ingest.report` — the mathematician-facing
+    paper criterion 2 holds the judge responsible for — and
+    `MarkDeliverable.paper_ref` were both written in decision.json and
+    both absent from this projection, so three consecutive rounds fired
+    "bare Ingest with no report" / "MarkDeliverable omits paper_ref" at
+    fields that were already there, and the Strategist had no way to
+    satisfy the objection. The kinds' declared fields live in
+    `prompts/adversary/_contract.md` and are checked by
+    `strategist/verify.py`; the renderer does not re-declare them —
+    it renders what the parser kept (`brief`, `reason`, and every
+    payload entry), so a field added to the contract tomorrow reaches
+    the judge without touching this function."""
+    from .strategist import model as _model
+
     out: list[str] = ["# This batch's decisions\n"]
     for i, d in enumerate(decisions, 1):
-        kind = getattr(d, "kind", "?")
-        pipeline = getattr(d, "pipeline", None)
+        kind = str(getattr(d, "kind", "?"))
+        payload = dict(getattr(d, "payload", None) or {})
+        pipeline = getattr(d, "pipeline", None) or payload.get("pipeline")
         target = getattr(d, "target_id", None)
         head = f"## {i}. {kind}"
         if pipeline:
@@ -96,22 +154,27 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
                     anno = ""
             head += f" → {target}{anno}"
         out.append(head)
+        # The prose column first (its contract name depends on the kind:
+        # an Inject's is `proof`, a Delegate's `charter` — one mapping,
+        # shared with the parser that filled it), then the payload in
+        # the author's own key order, then `reason` last.
+        fields: "list[tuple[str, Any]]" = []
         brief = getattr(d, "brief", None)
-        body = getattr(d, "body", None) or (
-            getattr(d, "payload", None) or {}).get("body")
-        reason = getattr(d, "reason", None)
         if brief:
-            out.append(str(brief))
-        if body:
-            out.append("Directive body:\n" + str(body))
-        # Delegate's guidance hand-off (2026-08-19): payload['brief'] —
-        # shown so the judge rules on the whole package, not just the
-        # charter and the justification.
-        guidance = (getattr(d, "payload", None) or {}).get("brief")
-        if kind == "Delegate" and guidance:
-            out.append("Guidance to the group:\n" + str(guidance))
+            fields.append((_model.brief_field(kind), brief))
+        # `.body` is the pre-2026 fixture shape of `payload['body']`
+        # (the directive text); real Decision objects only ever carry
+        # the payload key.
+        legacy_body = getattr(d, "body", None)
+        if legacy_body and "body" not in payload:
+            payload["body"] = legacy_body
+        fields += [(str(k), v) for k, v in payload.items()
+                   if k not in _HEAD_FIELDS]
+        reason = getattr(d, "reason", None)
         if reason:
-            out.append(f"reason: {reason}")
+            fields.append(("reason", reason))
+        for name, value in fields:
+            out += _render_field(name, value)
         out.append("")
     return "\n".join(out)
 
