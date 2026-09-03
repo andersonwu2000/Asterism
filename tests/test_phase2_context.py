@@ -2118,3 +2118,30 @@ def test_no_discard_no_rebuttal_surface(workspace: Path, mfst,
     text = out.read_text(encoding="utf-8")
     assert "Previous proposal rejected" not in text
     assert not (attempts_dir / "REJECTED.md").exists()
+
+
+def test_owner_notes_reach_every_strategist_wake(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """The notes a person writes under `_docs/user/` (HID §1.2/§3.6)
+    were readable by every seat and announced to none: the Context said
+    only that `_docs/` is where the papers are. Every Strategist wake
+    renders the roster — the judge gets it too, because its projection
+    copies this same Context.md verbatim."""
+    _insert_problem(conn)
+    from Tooling.state import project_docs as _pd
+    _pd.write(workspace, "p", "user/split_note.md",
+              "# SPLIT: abundance across a cut\n\nbody\n")
+    attempts_dir = tmp_path / "_attempts_notes"
+    attempts_dir.mkdir()
+    for trigger in ("inject_batch_done", "pending_review", "routine"):
+        out = phase2_context.compile_strategist_context(
+            conn, problem="p", trigger_kind=trigger,
+            attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+        )
+        text = out.read_text(encoding="utf-8")
+        assert "## Owner's notes" in text, trigger
+        assert "Problems/p/_docs/user/split_note.md" in text, trigger
+        assert "SPLIT: abundance across a cut" in text, trigger
+        assert "\nbody\n" not in text, trigger

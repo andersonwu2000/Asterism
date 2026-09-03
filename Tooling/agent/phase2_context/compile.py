@@ -857,7 +857,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                       "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
-                      "charter", "paper_index"]
+                      "charter", "paper_index", "owner_notes"]
     sections += [
         _section_stall_warning(conn, problem, group_id),
         _section_ingest_gate(conn, problem, group_id, intent=intent),
@@ -882,6 +882,12 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_charter(conn, workspace, problem, group_id),
         _section_paper_index_strategist(intent, workspace, conn,
                                         attempts_dir=attempts_dir),
+        # Beside the papers on purpose: both are reading outside the
+        # framework's own records, and this one is the only channel
+        # that says a person wrote something for this Project at all.
+        # The judge gets it too — its projection copies this Context.md
+        # verbatim (`adversary.build_projection`).
+        context._section_owner_notes(intent, workspace, conn),
     ]
     # The lines this group has in flight — what the routine audit rules
     # on per line (criteria 3, 4). Rendered for every wake; the ROUTINE

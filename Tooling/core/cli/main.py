@@ -35,6 +35,7 @@ from .maint import (
     cmd_unbench,
     cmd_word,
 )
+from .carry import cmd_carry
 from .problems import cmd_init, cmd_init_batch, cmd_reset
 from .run import _force_utf8_io, cmd_daemon, cmd_run, cmd_serve
 
@@ -92,6 +93,34 @@ def main(argv: list[str] | None = None) -> int:
              "cascade victims (use after a quota-exhaust incident)",
     )
     p_reset.set_defaults(func=cmd_reset)
+
+    p_carry = sub.add_parser(
+        "carry",
+        help="move ONE problem's complete state between workspaces: "
+             "export a bundle (pruned DB snapshot + files + manifest), "
+             "import it by REPLACING that problem's rows and files",
+    )
+    p_carry.add_argument("carry_action", choices=("export", "import"))
+    p_carry.add_argument(
+        "bundle", nargs="?", default=None,
+        help="import: the bundle directory written by `carry export`")
+    p_carry.add_argument(
+        "--problem", default=None,
+        help="export: the problem to carry (required). import: assert "
+             "the bundle carries this problem (carry never renames one)")
+    p_carry.add_argument(
+        "--out", default=None,
+        help="export: directory to write carry.db / files.tar.gz / "
+             "manifest.json into")
+    p_carry.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="import: print the whole plan (rows deleted/inserted per "
+             "table, collisions, remaps, files) and change nothing")
+    p_carry.add_argument(
+        "--allow-migrate", action="store_true", dest="allow_migrate",
+        help="import: migrate a COPY of the bundle's carry.db up to this "
+             "workspace's schema first (the bundle is never written)")
+    p_carry.set_defaults(func=cmd_carry)
 
     p_status = sub.add_parser(
         "status",

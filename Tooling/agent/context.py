@@ -1640,6 +1640,91 @@ def _section_paper_index(intent: intent_mod.ProblemIntent,
     return lines + [""]
 
 
+#: What an owner's note can be. The rest of §3.6's whitelist is images
+#: and PDFs (nothing to read a title out of) and `.lean` — source, which
+#: reaches an agent through the proof surfaces, not a reading list.
+OWNER_NOTE_EXTENSIONS: "frozenset[str]" = frozenset({".md", ".txt", ".tex"})
+
+
+def _owner_note_title(path: Path) -> str:
+    """The note's first Markdown heading, as its label — the same
+    convention `_note_title` reads off an agent's progress note: the
+    line the writer put first IS the title, and a document with none is
+    listed by its path rather than by a sentence the framework invented.
+    Only the head is scanned; a title deeper than that is not a title."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(8192)
+    except OSError:
+        return ""
+    for ln in head.splitlines():
+        m = re.match(r"^#{1,6}\s+(\S.*?)\s*$", ln)
+        if m:
+            return m.group(1)[:160]
+    return ""
+
+
+def _section_owner_notes(intent: intent_mod.ProblemIntent,
+                         workspace: Path, conn=None) -> list[str]:
+    """The documents a PERSON wrote for this Project (HID §1.2/§3.6).
+
+    `_docs/user/` has been readable by every seat since the envelope's
+    `project_docs_dir` grant, and no surface ever said the notes were
+    there — the Sandbox section names `_docs/` only as "where its papers
+    are". A note nobody is told about is a note nobody opens.
+
+    A roster, never the bodies: path, size, date, title, one line each —
+    the same lazy layer CATALOG.md and PAST_*.md are, and absent
+    entirely when the owner has written nothing. Papers are skipped;
+    §3.9 parks them under `_docs/<area>/papers/<id>/` and `## Paper` is
+    their surface. The Project resolves exactly as the paper section
+    resolves it, so the two can never point into different roots."""
+    project = _paper_project(intent, conn)
+    if not project:
+        return []
+    from ..state import project_docs as _project_docs
+    try:
+        base = (_project_docs.root(Path(workspace), project)
+                / _project_docs.AREA_USER)
+    except ValueError:
+        return []
+    if not base.is_dir():
+        return []
+    rows: list[str] = []
+    for p in sorted(base.rglob("*")):
+        if "papers" in p.relative_to(base).parts:
+            continue
+        if p.suffix.lower() not in OWNER_NOTE_EXTENSIONS or not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:  # raced deletion — the roster is not the record
+            continue
+        when = datetime.fromtimestamp(
+            st.st_mtime, tz=timezone.utc).date().isoformat()
+        # Workspace-relative: the spelling `inspect` and Read are handed
+        # everywhere else, and an absolute path would be this machine's
+        # rather than this workspace's.
+        try:
+            shown = p.relative_to(Path(workspace)).as_posix()
+        except ValueError:
+            shown = p.as_posix()
+        title = _owner_note_title(p)
+        rows.append(f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
+                    + (f" — {title}" if title else ""))
+    if not rows:
+        return []
+    return [
+        "## Owner's notes",
+        "",
+        "The owner left these notes for this Project; read the ones "
+        "whose title bears on your work (`inspect` / Read).",
+        "",
+        *rows,
+        "",
+    ]
+
+
 def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:
     """target-1 pre-search: inject the cached per-node candidate-lemma
     section. Pure file-read of `.presearch/g<gid>.md` (written by

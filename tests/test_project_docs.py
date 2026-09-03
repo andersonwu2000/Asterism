@@ -10,6 +10,7 @@ routes around — `gate_must_name_a_reachable_action`).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
 from pathlib import Path
 
@@ -227,3 +228,61 @@ def test_locate_fences_the_place_as_well_as_the_bytes(ws: Path) -> None:
         pd.root(ws, "Erdos") / "user" / "ch" / "paper.tex")
     with pytest.raises(ValueError):
         pd.locate(ws, "Erdos", "../../escape.tex")
+
+
+# --------------------------------------------- the notes reach the agents
+
+def _owner_notes(ws: Path, problem: str = "Erdos.p1") -> "list[str]":
+    from Tooling.agent import context as _ctx
+    from Tooling.state import intent as _intent
+    return _ctx._section_owner_notes(
+        _intent.ProblemIntent(problem=problem), ws)
+
+
+def test_owner_notes_section_names_path_size_date_and_title(
+        ws: Path) -> None:
+    """§1.2/§3.6 put a person's writing under `_docs/user/`, and the
+    envelope already lets a worker read it — but nothing ever SAID the
+    notes were there, so they were undiscoverable. One line per note:
+    the workspace-relative path (what `inspect` is handed), how big it
+    is, when it was written, and the title the writer put first — the
+    reader decides from that whether to open it."""
+    pd.write(ws, "Erdos", "user/split_note.md",
+             "# SPLIT: abundance across a cut\n\nbody\n")
+    lines = _owner_notes(ws)
+    assert lines[0] == "## Owner's notes"
+    assert ("The owner left these notes for this Project; read the ones "
+            "whose title bears on your work (`inspect` / Read)."
+            in lines)
+    entry = next(ln for ln in lines if "split_note.md" in ln)
+    assert "Problems/Erdos/_docs/user/split_note.md" in entry
+    assert "KB" in entry
+    assert _dt.datetime.now(_dt.timezone.utc).date().isoformat() in entry
+    assert "SPLIT: abundance across a cut" in entry
+    assert "#" not in entry.split("KB", 1)[1]  # the heading's # is stripped
+    # Never the body — a note is grepped and read on demand, not copied
+    # into every wake.
+    assert "body" not in "\n".join(lines)
+
+
+def test_owner_notes_section_is_absent_when_the_owner_wrote_none(
+        ws: Path) -> None:
+    """No heading for an empty body: a Project with no notes must not
+    spend a section telling every wake so."""
+    assert _owner_notes(ws) == []
+    pd.write(ws, "Erdos", "agent/summary.md", "# agent wrote this\n",
+             area=pd.AREA_AGENT)
+    pd.write(ws, "Erdos", "user/diagram.png", b"\x89PNG")
+    assert _owner_notes(ws) == []
+
+
+def test_owner_notes_section_excludes_the_papers_shelf(ws: Path) -> None:
+    """§3.9 parks fetched papers under `_docs/<area>/papers/<id>/`, and
+    they have their own `## Paper` section. Listing `text.md` here would
+    put a 200-page extraction in a list of the owner's own writing."""
+    pd.write(ws, "Erdos", "user/papers/abc123/text.md", "## p.1\n")
+    pd.write(ws, "Erdos", "user/papers/abc123/map.md", "# Map\n")
+    assert _owner_notes(ws) == []
+    pd.write(ws, "Erdos", "user/note.tex", r"\section{x}" + "\n")
+    joined = "\n".join(_owner_notes(ws))
+    assert "note.tex" in joined and "papers" not in joined

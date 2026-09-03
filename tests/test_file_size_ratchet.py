@@ -657,10 +657,10 @@ _WATERMARKS = {
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/run.py": 800,  # +13 2026-09-03 _gateway_status_once asks the socket only after the presence marker says there is someone to ask  # +8 2026-09-03 daemon_status names the schema-behind case instead of counting -1 agents (the SchemaBehind branch + why it is not a measurement)  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/problems.py": 965,  # born 2026-08-28 from the cli.py split (A3)  # +10 2026-09-03 HID §3.9: a seeded paper id may sit on another Project's shelf, so init copies it onto this one before binding — conscious bump
+    "Tooling/core/cli/problems.py": 985,  # born 2026-08-28 from the cli.py split (A3)  # +10 2026-09-03 HID §3.9: a seeded paper id may sit on another Project's shelf, so init copies it onto this one before binding — conscious bump  # +20 2026-09-03 the wipe ends with a schema-DERIVED sweep over the problem-keyed tables (human_commands + routine_verdicts were never in the hand list and killed reset on the FK) — conscious bump
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 590,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)  # +8 2026-09-03 `papers-migrate` — a thin printer over `papers/migrate.py`, which holds the whole move
-    "Tooling/core/cli/main.py": 395,  # +12 2026-09-03 HID §3.9: `papers-migrate` parser + the Project argument paper-add/paper-index now take  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 430,  # +30 2026-09-03 `carry export` / `carry import` parser (one problem's whole state between workspaces) — conscious bump  # +12 2026-09-03 HID §3.9: `papers-migrate` parser + the Project argument paper-add/paper-index now take  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
     # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
     # here) split move-only into `Tooling/pipeline/strategist/` by
     # pipeline stage (Phase B, task B1): `model.py` is the Decision
@@ -694,7 +694,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1255,  # +12 2026-09-03 the decision replay names a PARKED step instead of calling it dispatched  # +31 2026-08-31 heading demotion + wake-time TREE refresh  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
+    "Tooling/agent/phase2_context/compile.py": 1265,  # +6 2026-09-03 HID §1.2: the owner's notes roster rides beside the paper section on every Strategist wake  # +12 2026-09-03 the decision replay names a PARKED step instead of calling it dispatched  # +31 2026-08-31 heading demotion + wake-time TREE refresh  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section
@@ -739,7 +739,7 @@ _WATERMARKS = {
     # touched `_live_procs` directly, against its own docstring), which
     # paid four of the six lines back — conscious bump.
     "Tooling/llm/claude_cli.py": 1910,
-    "Tooling/agent/context.py": 1840,  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's  # +25 2026-09-03 HID §3.9: the paper section resolves its Project (papers are that Project's documents now) and prints the real directory instead of `Papers/<id>` — conscious bump
+    "Tooling/agent/context.py": 1925,  # +81 2026-09-03 HID §1.2/§3.6: `## Owner's notes` — the roster that makes a person's `_docs/user/` writing discoverable (path/size/date/title, bodies read on demand) — conscious bump  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's  # +25 2026-09-03 HID §3.9: the paper section resolves its Project (papers are that Project's documents now) and prints the real directory instead of `Papers/<id>` — conscious bump
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's
     # judge verdict. app.py IS the route table, so an endpoint costs it
