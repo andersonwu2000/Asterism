@@ -494,6 +494,18 @@ def run_write(spec: str, content: str) -> str:
     except (ValueError, OSError):
         return (f"write_file: only your attempts directory is writable — "
                 f"write this as {(own / p.name).as_posix()}")
+    if target.suffix == ".lean":
+        # The formalizer's other write channel meets the same
+        # `native_decide` bill `apply_edit` shows (one source:
+        # `lsp.native_decide`) — a gate on one channel is a gate with a
+        # door beside it, and this one overwrites the very same
+        # patch.lean / new_*.lean. Held PRE-write: the file is untouched
+        # and the identical resend applies it.
+        from ..lsp import native_decide as _nd
+        held = _nd.hold_write(own, content)
+        if held is not None:
+            return (f"write_file: held — {(own / rel).as_posix()} is "
+                    f"unchanged. " + held)
     replaced = target.is_file()
     target.parent.mkdir(parents=True, exist_ok=True)
     try:

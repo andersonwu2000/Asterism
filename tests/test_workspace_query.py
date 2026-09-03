@@ -663,6 +663,55 @@ def test_write_file_lands_in_my_own_attempt(spawn):
     assert (mine / "decision.json").read_text(encoding="utf-8") == "[]"
 
 
+def test_write_file_bills_native_decide_before_the_write(spawn):
+    """The formalizer's OTHER write channel.
+
+    `apply_edit` shows the `native_decide` bill before the write and
+    lets the identical resend confirm it (`rpc._native_decide_gate`,
+    a77a32c3) — but `write_file` overwrites the same `patch.lean` /
+    `new_*.lean` and never met that gate, so the whole mechanism was
+    one tool call away from being bypassed. Same semantics, same words,
+    one source (`Tooling.lsp.native_decide`): held with the file
+    untouched, applied on the identical resend."""
+    from Tooling.lsp import native_decide
+
+    cwd, mine, theirs = spawn
+    body = ("import Mathlib\ntheorem t : (3 : Nat) < 5 := by "
+            "native_decide\n")
+    held = wq.run_write("new_forward.lean", body)
+    assert held.startswith("write_file: held")
+    assert native_decide.TEACHING in held, "the gateway's words, not a copy"
+    assert (mine / "new_forward.lean").read_text(encoding="utf-8") == \
+        "theorem mine : True := trivial\n", "held means the file is untouched"
+
+    again = wq.run_write("new_forward.lean", body)
+    assert again.startswith("wrote"), again
+    assert (mine / "new_forward.lean").read_text(encoding="utf-8") == body
+
+    # Changed content is a different bill and asks again.
+    v2 = body + "-- v2\n"
+    assert wq.run_write("new_forward.lean", v2).startswith("write_file: held")
+    assert (mine / "new_forward.lean").read_text(encoding="utf-8") == body
+    assert wq.run_write("new_forward.lean", v2).startswith("wrote")
+    assert (mine / "new_forward.lean").read_text(encoding="utf-8") == v2
+
+
+def test_write_file_never_bills_a_non_lean_file(spawn):
+    """The gate is about what Lean will elaborate and what the commit
+    axiom gate will refuse. A report that TALKS about `native_decide` —
+    a closure note, a Conventions line prohibiting it — plans nothing
+    and must not be held (the same over-claim `programme.py`'s notice
+    was rewritten to avoid, 2026-09-04)."""
+    cwd, mine, theirs = spawn
+    body = "# Report\n\nWe dropped the `native_decide` route.\n"
+    out = wq.run_write("report.md", body)
+    assert out.startswith("wrote"), out
+    assert (mine / "report.md").read_text(encoding="utf-8") == body
+    assert wq.run_write("decision.json",
+                        '[{"kind": "Noop", "why": "native_decide"}]'
+                        ).startswith("wrote")
+
+
 def test_write_file_refuses_everywhere_else(spawn):
     """Not the problem dir (the stale-stray class #218), not a sibling
     attempt — and the refusal names the address that would work."""

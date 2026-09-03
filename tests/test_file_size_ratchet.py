@@ -752,7 +752,13 @@ _WATERMARKS = {
     # app.py had one line of headroom left. The freed ~90 lines are not
     # a budget for silent regrowth.
     "Tooling/serve/app.py": 1700,
-    "Tooling/knowledge/workspace_query.py": 1475,  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
+    # +12 2026-09-04: `run_write` meets the `native_decide` soft gate
+    # `apply_edit` already shows — a gate on one of the formalizer's two
+    # write channels is a gate with a door beside it. The SEMANTICS went
+    # to `Tooling/lsp/native_decide.py` (one source for both channels),
+    # so what landed here is the call and why it is `.lean`-only. The
+    # split promise below still stands and is now overdue.
+    "Tooling/knowledge/workspace_query.py": 1490,  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,
     "Tooling/pipeline/forward.py": 1200,

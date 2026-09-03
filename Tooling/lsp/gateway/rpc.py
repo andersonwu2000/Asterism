@@ -37,6 +37,7 @@ import sys
 import time
 
 from .. import edits as _edits
+from .. import native_decide as _native_decide
 from .backend import _ensure_backend_ready
 from .elab import _elab_gate
 from .gates import (
@@ -491,36 +492,14 @@ def goal_at(line: int = 0, col: int = 0) -> str:
     return json.dumps(resp, ensure_ascii=False)
 
 
-#: `native_decide` proves via `Lean.ofReduceBool`, which the axiom gate
-#: never whitelists (ruling 2026-08-18): a proof carrying it cannot land,
-#: and the native compilation it triggers runs for minutes outside the
-#: heartbeat budget — 133 of 1,000 worker reports in the union_closed
-#: ring (2026-08-29) were that wait, paid before any gate spoke. Asked
-#: once per content, confirmed by the identical resend (the heartbeat
-#: gate's shape: not a hard block, a bill shown before the purchase).
-_NATIVE_DECIDE_RE = re.compile(r"\bnative_decide\b|Lean\.ofReduceBool")
-
-
 def _native_decide_gate(meta: SessionMetadata, content: str) -> "str | None":
-    if not _NATIVE_DECIDE_RE.search(content or ""):
-        return None
-    key = hashlib.sha1((content or "").encode("utf-8")).hexdigest()
-    if key in meta.nd_confirmed:
-        return None
-    meta.nd_confirmed.add(key)
-    return (
-        "This write uses `native_decide` (or `Lean.ofReduceBool`). It proves "
-        "through the `Lean.ofReduceBool` axiom, which is NOT on the axiom "
-        "whitelist — the commit gate rejects every such brick "
-        "unconditionally (ruling 2026-08-18), so this proof cannot land. It "
-        "also compiles natively: the check runs for minutes outside the "
-        "heartbeat budget and the elaboration wall will kill it. What works: "
-        "kernel `decide` on an instance small enough to reduce, `omega`/"
-        "`simp` with the finite case split written out, or lift the heavy "
-        "check into its own `new_<slug>.lean` as smaller bricks. — Resend "
-        "this identical write to confirm and it will be applied; changing "
-        "the content asks again."
-    )
+    """Asked once per content, confirmed by the identical resend (the
+    heartbeat gate's shape: not a hard block, a bill shown before the
+    purchase). The regex, the words and the once-then-resend rule are
+    `lsp.native_decide` — the tools server's `write_file` runs the same
+    gate over the same files from another process, and two copies of
+    this text would drift into two different contracts."""
+    return _native_decide.hold(content, meta.nd_confirmed)
 
 
 #: `set_option maxHeartbeats N`. Lean syntax, not prose — the value is
