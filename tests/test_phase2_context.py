@@ -2145,3 +2145,41 @@ def test_owner_notes_reach_every_strategist_wake(
         assert "Problems/p/_docs/user/split_note.md" in text, trigger
         assert "SPLIT: abundance across a cut" in text, trigger
         assert "\nbody\n" not in text, trigger
+
+
+def test_strategist_stats_name_every_section_they_measure(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent,
+) -> None:
+    """The telemetry zips `section_names` with `sections`, so one
+    missing name shifts every label after it onto the wrong section and
+    drops the last section from the total (2026-09-03: `adjudications`
+    was never named — 17 names against 18 sections — so `charter`
+    onward were mislabelled and the Lesson KB fell off the total: 16434
+    B reported for an 18975 B Context.md). Both halves must stay
+    paired on every trigger: nothing in the degradation ledger, and the
+    total must account for every byte of Context.md below its title."""
+    import json
+    from Tooling.core import degraded
+    from Tooling.state import kb
+    _insert_problem(conn)
+    _insert_root(conn)
+    # the routine wake's LAST section — the one a short name list drops
+    kb.add_lesson(conn, problem="p", title="a recipe", body="body",
+                  provenance="t:1")
+    for trigger in ("routine", "inject_batch_done", "pending_review"):
+        attempts_dir = workspace / ".attempts" / f"pipe-{trigger}"
+        attempts_dir.mkdir(parents=True)
+        out = phase2_context.compile_strategist_context(
+            conn, problem="p", trigger_kind=trigger,
+            attempts_dir=attempts_dir, workspace=workspace, intent=mfst)
+        text = out.read_text(encoding="utf-8")
+        assert "context_stats_name_mismatch" not in degraded.snapshot(
+            workspace), trigger
+        stats = json.loads((attempts_dir / "_context_stats.json").read_text(
+            encoding="utf-8"))
+        # parts = [title, ""] + every section line, joined with "\n":
+        # the recorded total (len(line)+1 per line) is exactly the file
+        # minus its title line, so a dropped section shows up here.
+        title = text.split("\n", 1)[0]
+        assert stats["total_bytes"] == len(text) - len(title) - 1, trigger

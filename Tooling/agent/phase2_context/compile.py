@@ -857,7 +857,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                       "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
-                      "charter", "paper_index", "owner_notes"]
+                      "adjudications", "charter", "paper_index",
+                      "owner_notes"]
     sections += [
         _section_stall_warning(conn, problem, group_id),
         _section_ingest_gate(conn, problem, group_id, intent=intent),

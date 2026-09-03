@@ -34,6 +34,18 @@ def write_context_stats(attempts_dir: Path, *, label: str,
     digest) was post-hoc archaeology; this makes section weight a standing
     metric. Best-effort: never fails the compile."""
     import json as _json
+    if len(names) != len(sections):
+        # `zip` truncates in silence: a drift here slides every label
+        # past the gap onto the wrong section and drops the tail from
+        # the total (2026-09-03 — the Strategist compile ran 17 names
+        # against 18 sections, so the Lesson KB was never counted).
+        # A mislabelled metric must not fail a wake, but it must not be
+        # invisible either: `daemon status` renders the ledger.
+        from ..core import degraded as _degraded
+        _degraded.record(attempts_dir.parent.parent,   # .attempts/<pid>
+                         "context_stats_name_mismatch",
+                         f"{label}: {len(names)} names, "
+                         f"{len(sections)} sections")
     try:
         stats = []
         for name, lines in zip(names, sections):

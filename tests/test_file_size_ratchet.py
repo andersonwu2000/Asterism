@@ -739,7 +739,7 @@ _WATERMARKS = {
     # touched `_live_procs` directly, against its own docstring), which
     # paid four of the six lines back — conscious bump.
     "Tooling/llm/claude_cli.py": 1910,
-    "Tooling/agent/context.py": 1925,  # +81 2026-09-03 HID §1.2/§3.6: `## Owner's notes` — the roster that makes a person's `_docs/user/` writing discoverable (path/size/date/title, bodies read on demand) — conscious bump  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's  # +25 2026-09-03 HID §3.9: the paper section resolves its Project (papers are that Project's documents now) and prints the real directory instead of `Papers/<id>` — conscious bump
+    "Tooling/agent/context.py": 1935,  # +12 2026-09-04 `write_context_stats` refuses a silent names/sections length drift (degraded ledger) — the guard that makes the 17-vs-18 mislabelling impossible to ship again — conscious bump  # +81 2026-09-03 HID §1.2/§3.6: `## Owner's notes` — the roster that makes a person's `_docs/user/` writing discoverable (path/size/date/title, bodies read on demand) — conscious bump  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's  # +25 2026-09-03 HID §3.9: the paper section resolves its Project (papers are that Project's documents now) and prints the real directory instead of `Papers/<id>` — conscious bump
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's
     # judge verdict. app.py IS the route table, so an endpoint costs it

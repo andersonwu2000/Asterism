@@ -671,6 +671,29 @@ def test_write_context_stats(tmp_path, capsys):
     assert "[context] builder g7" in out
 
 
+def test_write_context_stats_records_a_name_section_mismatch(tmp_path):
+    """`zip(names, sections)` is silent about a length drift: every
+    label past the gap slides onto the wrong section and the tail falls
+    out of the total (2026-09-03 — the Strategist compile ran 17 names
+    against 18 sections for weeks, and the Lesson KB was never
+    counted). Telemetry must not fail the compile, so the mismatch
+    lands in the silent-degradation ledger, where `daemon status` shows
+    it."""
+    import json
+    from Tooling.agent import context as ctx
+    from Tooling.core import degraded
+    attempts = tmp_path / ".attempts" / "pipe-1"
+    attempts.mkdir(parents=True)
+    ctx.write_context_stats(attempts, label="strategist p",
+                            names=["a"], sections=[["x"], ["y"]])
+    entry = degraded.snapshot(tmp_path)["context_stats_name_mismatch"]
+    assert entry["count"] == 1
+    assert "1 names, 2 sections" in entry["last_detail"]
+    # still best-effort: the pairs it could zip are reported anyway
+    assert json.loads((attempts / "_context_stats.json").read_text(
+        encoding="utf-8"))["total_bytes"] == 2
+
+
 def test_stream_parser_accumulates_usage():
     import json
     from Tooling.llm.stream_parser import StreamParser
