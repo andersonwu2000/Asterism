@@ -2,7 +2,7 @@
 
 The decision-kind rules the Strategist operates under — check quoted contract clauses against THESE, not the proposal's paraphrase:
 
-- `Inject` — `proof`. This brick's `Theorem.` statement and `Proof.` argument, copied from this batch's `## Proof` with the vocabulary it uses. The worker formalizes the Theorem against the Proof; it does not read the rest. Three shapes:
+- `Inject` — `proof`. This brick's `Theorem.` statement and `Proof.` argument, copied from this batch's `## Proof` with the vocabulary it uses. The worker formalizes the Theorem against the Proof. Three shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
   - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
@@ -12,13 +12,13 @@ The decision-kind rules the Strategist operates under — check quoted contract 
     `reason` — why you cannot prove this yourself and `Inject` it, nor pace it through AHEAD batch by batch — why it must be a group's burden.
     `brief` — guidance and lessons for the group.
   A batch delegates several groups or none — never exactly one; delegation stops two levels below the top. With `target_goal_id`: that goal becomes the anchor.
-- Papers are fetched with your tools, not with a decision: `paper_search` resolves a citation to open copies, `paper_fetch` downloads, shelves and binds one to this problem — during this wake, before investing in an unknown or uncertain plan. Do not formalize literature except where necessary.
+- Papers: `paper_search` / `paper_fetch` bind one to this problem during this wake. Do not formalize literature except where necessary.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the charter asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
 - `Ingest` — `report`, optional `reason`. The problem's only exit: emit once the marked set fully satisfies the charter. With a root: the proved root — or the `disproved` root, which closes the problem as `refuted`. `RequestUserAmend` only for a claim the user wrote wrong. `report`: a short paper in English markdown, LaTeX for math, written for a mathematician who has never seen this system — no framework words (goal, brick, batch, Programme). Sections, in this order: `## Introduction` (the question and why it matters), `## Main Result` (the statement as proved, or the counterexample), `## Proof Sketch` (the route in prose, citing the formal lemma names in backticks where a reader would look them up), `## What Remains` (what was refuted or left open). It becomes `REPORT.md`.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Root.lean", "charter"}`, `proposed_body`, `question`, `title`, `reason`. `title`: one line naming the ask. Only when a user file — or the problem's charter (the top group's goal) — is wrong. The user's word is never amendable.
 - `CloseGroup` — `target_group_id`, `reason`. Retire one when your route no longer needs its charter; its own sub-projects close with it. Difficulty is not a reason — whether to give up is that group's call.
 - `ReturnToParent` — `flavour ∈ {"refuted","amend","exhausted"}`, `reason` (what was tried, where it died, what was learned). `refuted` also takes `target_goal_id`: the `<slug>_disproof` brick the gate minted for a node in your chain. `amend` also takes `proposed_charter`: the claim you believe is provable.
-- Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
+- A reshaped statement of a goal that already exists is that goal, not a new lemma (the framework aliases or links it).
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it is not a fact.
 
 
