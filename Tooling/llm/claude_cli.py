@@ -1116,7 +1116,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # IS the projection) plus the problem's landed `proofs/` in place
     # (extra_read_dirs, 2026-08-04 — the cited-file staging + cap
     # truncated the judge's evidence on big problems); no
-    # Library/Papers/mathlib surfaces. Loogle stays available for
+    # Library/_docs/mathlib surfaces. Loogle stays available for
     # checking "mathlib has X" claims.
     if req.kind == "adversary":
         return " ".join(p for p in [
@@ -1169,16 +1169,18 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     if library.is_dir():
         lib = library.as_posix()
         patterns += [f"Read({lib}/**/*.lean)", f"Grep({lib}/**)"]
-    # Papers/ (paper pipeline bookshelf): agents Read normalized text /
-    # maps on demand; the original .pdf is the extraction-failure
-    # fallback (Read renders PDF pages). Whole-shelf grant mirrors
-    # Library — steering to THIS problem's paper is the Context
-    # section's job, enforcement stays coarse.
-    papers = workspace / "Papers"
-    if papers.is_dir():
-        pp = papers.as_posix()
-        patterns += [f"Read({pp}/**/*.md)", f"Read({pp}/**/*.pdf)",
-                     f"Grep({pp}/**)"]
+    # The spawn's OWN Project documents (§3.9): its papers' normalized
+    # text / maps, and whatever else the Project keeps beside them. The
+    # original .pdf is the extraction-failure fallback (Read renders PDF
+    # pages). Scoped to this Project, not the workspace — another
+    # Project's literature is not this worker's to read.
+    from .envelope import project_docs_dir
+    docs = project_docs_dir(req.problem_dir)
+    if docs is not None and docs.is_dir():
+        dp = docs.as_posix()
+        patterns += [f"Read({dp}/**/*.md)", f"Read({dp}/**/*.pdf)",
+                     f"Read({dp}/**/*.tex)", f"Read({dp}/**/*.txt)",
+                     f"Grep({dp}/**)"]
     # When the request carries an MCP config (Builder pipeline +
     # Phase 1 LSP swap), allow the LSP-backed MCP tools without
     # per-call permission prompts. claude CLI exposes MCP tools as
@@ -1460,16 +1462,19 @@ class ClaudeCliProvider:
             ["--add-dir", str(library_dir)] if library_dir.is_dir() else [])
         # Adversary hard isolation (research_mode_design.md §3): the
         # projection directory IS req.problem_dir, and the trust
-        # boundary must stop there — no mathlib/Library/Papers grants.
+        # boundary must stop there — no mathlib/Library/_docs grants.
         if req.kind == "adversary":
             add_dir_packages = []
             add_dir_library = []
-        # Papers/ bookshelf — same trust-boundary reasoning as Library:
-        # the allowlist patterns above only take effect inside
+        # The spawn's own Project `_docs/` (its papers live there since
+        # §3.9) — same trust-boundary reasoning as Library: the
+        # allowlist patterns above only take effect inside
         # `cwd ∪ --add-dir`.
-        papers_dir = _workspace_from_problem_dir(req.problem_dir) / "Papers"
+        from .envelope import project_docs_dir as _project_docs_dir
+        _docs_dir = _project_docs_dir(req.problem_dir)
         add_dir_papers: list[str] = (
-            ["--add-dir", str(papers_dir)] if papers_dir.is_dir() else [])
+            ["--add-dir", str(_docs_dir)]
+            if _docs_dir is not None and _docs_dir.is_dir() else [])
         if req.kind == "adversary":
             add_dir_papers = []
         # extra_read_dirs (LLMRequest): explicit read-only grants beyond

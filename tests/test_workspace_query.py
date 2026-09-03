@@ -1009,20 +1009,23 @@ def test_grep_zero_hit_budget_stop_is_not_a_negative_result(
 def test_a_broad_walk_prunes_heavy_dirs_unless_aimed_inside(
     tmp_path,
 ) -> None:
-    """`.attempts` / `Papers` / `_spike` are trees a broad grep almost
+    """`.attempts` / `papers` / `_spike` are trees a broad grep almost
     never means — the 2026-08-23 stall's walk wandered into them. An
-    explicit aim inside one still works."""
+    explicit aim inside one still works. (`papers` is the shelf folder
+    inside a Project's `_docs/` since §3.9, so a walk aimed at
+    `Problems/` passes right by it.)"""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.lean").write_text(
         "theorem src_hit : True := trivial\n", encoding="utf-8")
-    heavy = tmp_path / "Papers" / "deep"
+    heavy = tmp_path / "Problems" / "Erdos" / "_docs" / "agent" / "papers"
     heavy.mkdir(parents=True)
     (heavy / "p.lean").write_text(
         "theorem paper_hit : True := trivial\n", encoding="utf-8")
     out = wq.run_queries([{"grep": "theorem", "in": "."}], cwd=tmp_path)
     assert "src_hit" in out and "paper_hit" not in out
-    out2 = wq.run_queries([{"grep": "theorem", "in": "Papers"}],
-                          cwd=tmp_path)
+    out2 = wq.run_queries(
+        [{"grep": "theorem", "in": "Problems/Erdos/_docs/agent/papers"}],
+        cwd=tmp_path)
     assert "paper_hit" in out2
 
 

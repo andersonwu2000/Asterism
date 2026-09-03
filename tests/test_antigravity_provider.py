@@ -471,7 +471,7 @@ def test_audit_covers_the_whole_repo_except_the_output_regions(
     (ws / "Problems" / "other").mkdir(parents=True)
     (ws / "Problems" / "other" / "Root.lean").write_text("t\n",
                                                          encoding="utf-8")
-    for region in (".attempts", ".asterism", "Papers"):
+    for region in (".attempts", ".asterism", "Library"):
         (ws / region).mkdir()
         (ws / region / "note.txt").write_text("fine\n", encoding="utf-8")
 

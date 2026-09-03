@@ -18,7 +18,7 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the charter's prose.**
 - `TREE.md` (if present) — the goal tree (names + statuses) as it stood when this round started; check tree-shape and status claims here, and `inspect({"decl": "<slug>"})` when a status decides your verdict — that reads the record itself.
 - `{proofs_dir}` — the problem's landed proof files, all of them, readable in place. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
-- `{papers_dir}` — the fetched papers (each `Papers/<id>/` holds `text.md` + `map.md` + `meta.json`). **A faithfulness-to-the-paper claim is decided against these files, not by quotation.**
+- `{papers_dir}` — this Project's documents; its papers are under `<area>/papers/<id>/` (each holds `text.md` + `map.md` + `meta.json`). **A faithfulness-to-the-paper claim is decided against these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
 - `contract.md` — the decision-kind rules the Strategist operates under, verbatim. Check quoted contract clauses against THESE, not the proposal's paraphrase.

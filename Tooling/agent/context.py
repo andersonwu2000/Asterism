@@ -131,7 +131,7 @@ def _section_sandbox(strategy_id: int | None = None,
         "- `Grep`/`Glob` search the root you give them, so a root ABOVE "
         "those dirs walks the operator-private trees and is refused. "
         "Omit the path — it defaults to your cwd — or name `Library/` "
-        "or `Papers/`.",
+        "or your Project's `_docs/` (where its papers are).",
         "- `PAST_*.md` / `LESSONS.md` / `CATALOG.md` / `PAPER_MAP.md` / "
         "`BATCHES.md` sit in Context.md's own directory (NOT your cwd) "
         "and are read-only. `CATALOG.md` holds the exact statement of "
@@ -1523,6 +1523,25 @@ def _section_strategist_brief(conn: sqlite3.Connection,
 PAPER_INDEX_MAX_CHARS = 8_000
 
 
+def _paper_project(intent: intent_mod.ProblemIntent, conn=None) -> "str | None":
+    """Which Project's document shelf holds this problem's papers (§3.9).
+
+    The DB, not the problem name's first segment: a Project can be
+    renamed while the problem's directory stays where it is (§3.1), and
+    the shelf follows the NAME. conn=None (offline callers) falls back
+    to the default the name would have registered under."""
+    if conn is not None:
+        try:
+            from ..state import projects as _projects
+            found = _projects.project_of(conn, str(intent.problem))
+            if found:
+                return found
+        except Exception:  # noqa: BLE001 — never break Context
+            pass
+    name = str(intent.problem)
+    return name.split(".", 1)[0] if name else None
+
+
 def _paper_ids_for(intent: intent_mod.ProblemIntent,
                    conn=None) -> list[str]:
     """Bound paper ids for the problem, primary first — the DB
@@ -1558,28 +1577,31 @@ def _section_paper_index(intent: intent_mod.ProblemIntent,
     if not pids:
         return []
     from ..papers import shelf
+    project = _paper_project(intent, conn)
     primary, aux = pids[0], pids[1:]
-    meta = shelf.load_meta(workspace, primary)
-    if meta is None:
-        lines = [f"## Paper", f"(problem binds paper `{primary}` but "
-                 f"Papers/{primary}/ is missing — tell the operator via "
-                 f"feedback; proceed without it.)"]
+    pdir = shelf.paper_dir(workspace, primary, project=project)
+    meta = shelf.load_meta(workspace, primary, project=project)
+    if meta is None or pdir is None:
+        lines = ["## Paper", f"(problem binds paper `{primary}` but it is "
+                 f"missing from this Project's documents — tell the "
+                 f"operator via feedback; proceed without it.)"]
     else:
-        tpath = shelf.text_path(workspace, primary).as_posix()
+        rel = pdir.as_posix()
+        tpath = (pdir / "text.md").as_posix()
         lines = [
             "## Paper",
-            f"Source: `{meta.source_name}` (Papers/{primary}). The paper "
+            f"Source: `{meta.source_name}` ({rel}). The paper "
             f"is the authority for exact hypotheses/definitions — Read "
             f"`{tpath}` slices on demand (`## p.N` headings are page "
             f"anchors).",
         ]
-        mpath = shelf.map_path(workspace, primary)
+        mpath = pdir / "map.md"
         try:
             body = mpath.read_text(encoding="utf-8").strip()
         except OSError:
             body = ""
         if body:
-            if shelf.map_is_stale(workspace, primary):
+            if shelf.map_is_stale(workspace, primary, project=project):
                 lines.append("(WARNING: the navigation map was built from "
                              "an older extraction — trust text.md over it.)")
             written = False
@@ -1607,12 +1629,16 @@ def _section_paper_index(intent: intent_mod.ProblemIntent,
     if aux:
         lines += ["", "### Auxiliary papers (Read/Grep on demand)"]
         for pid in aux:
-            m = shelf.load_meta(workspace, pid)
+            adir = shelf.paper_dir(workspace, pid, project=project)
+            if adir is None:
+                lines.append(f"- `{pid}`: not on this Project's shelf")
+                continue
+            m = shelf.load_meta(workspace, pid, project=project)
             name = m.source_name if m else "?"
-            has_map = shelf.map_path(workspace, pid).is_file()
-            tail = (f"map at Papers/{pid}/map.md" if has_map
-                    else f"short — read Papers/{pid}/text.md whole")
-            lines.append(f"- `{name}` (Papers/{pid}): {tail}")
+            has_map = (adir / "map.md").is_file()
+            tail = (f"map at {(adir / 'map.md').as_posix()}" if has_map
+                    else f"short — read {(adir / 'text.md').as_posix()} whole")
+            lines.append(f"- `{name}` ({adir.as_posix()}): {tail}")
     return lines + [""]
 
 

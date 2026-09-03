@@ -27,9 +27,11 @@ def workspace(tmp_path: Path) -> Path:
     `Problems/sylvester_gallai` and `Problems/NumberTheory/cube_e2e`."""
     for rel in ("Problems/Combinatorics/union_closed",
                 "Problems/Combinatorics/other_combi",
+                "Problems/Combinatorics/_docs/agent/papers/abc123",
                 "Problems/NumberTheory/cube_e2e",
+                "Problems/NumberTheory/_docs/user/papers/def456",
                 "Problems/sylvester_gallai",
-                "Library", "Papers", "docs/internal", ".asterism/backups"):
+                "Library", "docs/internal", ".asterism/backups"):
         (tmp_path / rel).mkdir(parents=True, exist_ok=True)
     (tmp_path / "asterism.db").write_bytes(b"")
     return tmp_path
@@ -48,12 +50,27 @@ def test_private_subtrees_are_denied(workspace: Path) -> None:
         assert str(workspace / name) in roots, name
 
 
-def test_library_and_papers_stay_readable(workspace: Path) -> None:
+def test_library_and_the_projects_own_docs_stay_readable(
+        workspace: Path) -> None:
     """Both are surfaces the framework hands out on purpose — the
-    CATALOG cites Library by name and the scholar loop reads Papers."""
+    CATALOG cites Library by name, and a worker's papers live in its own
+    Project's `_docs/` since §3.9. `_docs` is NOT a problem directory,
+    so the sibling walk must not deny it: the papers the Context section
+    points the worker at are inside it."""
     roots = _roots(workspace, "Combinatorics/union_closed")
     assert str(workspace / "Library") not in roots
-    assert str(workspace / "Papers") not in roots
+    docs = workspace / "Problems" / "Combinatorics" / "_docs"
+    assert not any(str(docs) == r or str(docs).startswith(r + "\\")
+                   or str(docs).startswith(r + "/") for r in roots)
+
+
+def test_another_projects_docs_are_denied(workspace: Path) -> None:
+    """A worker gets ITS Project's documents, not the workspace's
+    (§3.9). Another Project's `_docs` is inside the sibling Project
+    directory the walk already denies — this pins that it stays there."""
+    roots = _roots(workspace, "Combinatorics/union_closed")
+    other = workspace / "Problems" / "NumberTheory"
+    assert str(other) in roots
 
 
 def test_other_problems_denied_at_every_depth(workspace: Path) -> None:
@@ -77,11 +94,25 @@ def test_the_spawns_own_problem_is_never_denied(workspace: Path) -> None:
 
 
 def test_unknown_problem_dir_denies_nothing_extra(workspace: Path) -> None:
-    """A spawn whose problem_dir is not under `Problems/` (paper_index
-    lives in `Papers/<pid>`) must not have every problem denied — err
-    toward working, never toward a blind spawn."""
-    roots = envelope.read_deny_roots(workspace, workspace / "Papers" / "p1")
+    """A spawn whose problem_dir is not under `Problems/` at all must
+    not have every problem denied — err toward working, never toward a
+    blind spawn."""
+    roots = envelope.read_deny_roots(workspace, workspace / "_spike" / "p1")
     assert not any("Problems" in str(r) for r in roots)
+
+
+def test_the_paper_index_spawn_can_read_its_own_paper(
+        workspace: Path) -> None:
+    """§3.9 moved the map spawn's cwd INSIDE `Problems/`, so it now gets
+    a computed fence where it used to get none. Its own paper directory
+    must survive it — that directory is the whole job."""
+    own = (workspace / "Problems" / "Combinatorics" / "_docs" / "agent"
+           / "papers" / "abc123")
+    roots = [str(p) for p in envelope.read_deny_roots(workspace, own)]
+    assert not any(str(own) == r or str(own).startswith(r + "\\")
+                   or str(own).startswith(r + "/") for r in roots)
+    # and it is fenced OUT of the live problems it has no business in
+    assert str(workspace / "Problems" / "NumberTheory") in roots
 
 
 # ------------------------------------------------------- agy rendering

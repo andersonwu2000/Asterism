@@ -107,8 +107,8 @@ _FETCHPAPER_REFUSAL = (
     "FetchPaper is retired (2026-08-22): the Scholar pipeline it "
     "dispatched no longer exists, so nothing would fetch this. Papers "
     "now arrive through the Strategist's own tools during its wake "
-    "(`paper_search` / `paper_fetch`), or by shelving the pdf into the "
-    "problem's papers yourself.")
+    "(`paper_search` / `paper_fetch`), or by uploading the pdf into the "
+    "Project's documents yourself.")
 
 
 # ---------------------------------------------------------------------

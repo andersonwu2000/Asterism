@@ -269,7 +269,6 @@ class ClaudeExplainer(_Backend):
         patterns = [
             f"Read({ws}/Problems/**)", f"Grep({ws}/Problems/**)",
             f"Read({ws}/Library/**/*.lean)", f"Grep({ws}/Library/**)",
-            f"Read({ws}/Papers/**/*.md)", f"Grep({ws}/Papers/**)",
             # dev machines carry design docs in-repo; absent in zip installs
             f"Read({ws}/docs/**/*.md)", f"Grep({ws}/docs/**)",
             f"Glob({ws}/**)",

@@ -210,7 +210,12 @@ def prune_proof_files(conn: sqlite3.Connection, *, snapshot_db: Path,
 COPY_DIRS = ("Tooling", "Library", "Asterism", "Benchmarks")
 COPY_FILES = ("lakefile.lean", "lake-manifest.json", "lean-toolchain", "VERSION",
               "Asterism.yaml", ".env")
-LINK_DIRS = (".lake", "Papers", ".git")
+#: Junctioned into the scratch workspace instead of copied. `Papers`
+#: left this list when the shelf retired into `Problems/<project>/_docs/`
+#: (§3.9): the documents travel with the problem directories the
+#: rewind already copies, so a junction would have pointed the scratch
+#: run's papers back at the live tree.
+LINK_DIRS = (".lake", ".git")
 
 
 def _link_dir(src: Path, dst: Path) -> None:
@@ -263,6 +268,16 @@ def build_scratch(*, src: Path, dst: Path, snapshot_db: Path,
     (dst / ".attempts").mkdir()
     pdir = dst / "Problems" / Path(*problem.split("."))
     shutil.copytree(snapshot_problem_dir, pdir)
+    # The Project's documents — its papers among them (§3.9) — come
+    # from the LIVE tree: a rewound wake read them, and a snapshot of a
+    # problem directory never held them. Copied, not junctioned: a
+    # scratch run that wrote into the real shelf would edit the live
+    # workspace, which `build_scratch` promises it never does.
+    seg = problem.split(".")[0]
+    live_docs = src / "Problems" / seg / "_docs"
+    if "." in problem and live_docs.is_dir():
+        shutil.copytree(live_docs, dst / "Problems" / seg / "_docs",
+                        dirs_exist_ok=True)
     shutil.copy2(snapshot_db, dst / "asterism.db")
 
 

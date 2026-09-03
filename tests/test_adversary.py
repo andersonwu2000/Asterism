@@ -713,8 +713,10 @@ def test_judge_reads_proofs_and_papers_in_place(
     RETARGETED and faithfulness-to-the-paper disputes "by these files"
     must be able to open every one of them, not a curated subset (the
     old SLC judge accepted a paper-grounded load-bearing claim on
-    consistency with a prior judge's pointer because Papers/ sat
-    outside its readable roots — rev 5 reservation, g368)."""
+    consistency with a prior judge's pointer because the shelf sat
+    outside its readable roots — rev 5 reservation, g368). Since §3.9 the
+    shelf is THIS problem's Project document root, not the workspace's
+    papers: another Project's literature is outside the boundary."""
     from Tooling.pipeline import adversary as adv
     attempts = workspace / ".attempts" / "adv-inplace"
     attempts.mkdir(parents=True)
@@ -736,7 +738,7 @@ def test_judge_reads_proofs_and_papers_in_place(
     assert rc == 0 and verdict is not None
 
     proofs_dir = (pdir / "proofs").resolve()
-    papers_dir = (workspace / "Papers").resolve()
+    papers_dir = (workspace / "Problems" / "p" / "_docs").resolve()
     assert seen["extra_read_dirs"] == (proofs_dir, papers_dir)
     rendered = Path(seen["prompt_path"]).read_text(encoding="utf-8")
     assert adv.PROOFS_DIR_PLACEHOLDER not in rendered

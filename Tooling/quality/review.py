@@ -157,6 +157,16 @@ def _deliverable_paper_line(conn, workspace: Path, g,
     pid = papers_cache[prob]
     if not pid:
         return ""
+    # The workspace-relative path of the actual document (§3.9) — the
+    # human signing off has to be able to OPEN it, and the console's
+    # ReviewTree parses the Project out of this same string.
+    from ..papers import shelf as _shelf
+    from ..state import projects as _projects
+    project = _projects.project_of(conn, prob) or prob.split(".", 1)[0]
+    pdir = _shelf.paper_dir(workspace, pid, project=project)
+    where = (pdir / "text.md").relative_to(workspace).as_posix() \
+        if pdir is not None else \
+        f"Problems/{project}/_docs/*/papers/{pid}/text.md (missing)"
     row = conn.execute(
         "SELECT payload FROM strategist_decisions"
         " WHERE decision_kind = 'MarkDeliverable' AND target_id = ?"
@@ -169,6 +179,6 @@ def _deliverable_paper_line(conn, workspace: Path, g,
         except ValueError:
             ref = ""
     if ref:
-        return f"paper: {ref}   (Papers/{pid}/text.md)"
+        return f"paper: {ref}   ({where})"
     return (f"paper: (no paper_ref recorded — locate the claim in "
-            f"Papers/{pid}/text.md yourself before signing)")
+            f"{where} yourself before signing)")

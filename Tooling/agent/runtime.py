@@ -256,11 +256,12 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
 
 #: Repo regions where a write DURING a spawn is expected, so a change
 #: there is not evidence of anything: the spawn sandboxes, the
-#: framework's own runtime state, the Scholar's shelf, the harvest
-#: target, and the benchmark ledger. `Problems/**/proofs/` needs no
-#: entry — it is gitignored, hence invisible to `_repo_status`.
+#: framework's own runtime state, the harvest target, and the benchmark
+#: ledger. `Problems/**/proofs/` needs no entry — it is gitignored,
+#: hence invisible to `_repo_status`; so is the papers tree a fetch
+#: shelves into (`Problems/**/_docs/*/papers/`, §3.9).
 _EXPECTED_WRITE_PREFIXES = (
-    ".attempts/", ".asterism/", "Papers/", "Library/", "Benchmarks/",
+    ".attempts/", ".asterism/", "Library/", "Benchmarks/",
 )
 
 #: Where a violation is recorded, one JSON object per audit. A log line

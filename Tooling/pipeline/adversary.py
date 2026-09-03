@@ -169,8 +169,9 @@ def _dialogue_digest(dialogue: list[dict[str, Any]]) -> str:
 
 
 #: The judge's `{proofs_dir}` / `{papers_dir}` prompt placeholders —
-#: substituted with the problem's landed proofs directory and the
-#: workspace paper shelf at spawn time (`review` below).
+#: substituted at spawn time (`review` below) with the problem's landed
+#: proofs directory and its Project's document root, which is where the
+#: papers live since §3.9 retired the workspace-global shelf.
 PROOFS_DIR_PLACEHOLDER = "{proofs_dir}"
 PAPERS_DIR_PLACEHOLDER = "{papers_dir}"
 
@@ -585,17 +586,26 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # (user calls 2026-08-04/05; staging retired — see build_projection).
     # Papers joined 08-05: the old SLC judge accepted a paper-grounded
     # load-bearing claim "on consistency with the prior judge's pointer"
-    # because Papers/ sat outside its readable roots (rev 5 reservation,
-    # g368) — and a paper-driven run makes faithfulness-to-the-paper
-    # claims load-bearing every rev. Both are ground truth, not
-    # strategist narrative; reading them in place widens no independence
-    # boundary. The prompt names the concrete directories: substitute
-    # the placeholders and hand the spawn the rendered copy (same move
-    # as the worker prompts' `__FEEDBACK_PATH__`). The write fence is
-    # untouched — the grants are read-only and neither is a write root.
+    # because the shelf sat outside its readable roots (rev 5
+    # reservation, g368) — and a paper-driven run makes
+    # faithfulness-to-the-paper claims load-bearing every rev. Both are
+    # ground truth, not strategist narrative; reading them in place
+    # widens no independence boundary. The prompt names the concrete
+    # directories: substitute the placeholders and hand the spawn the
+    # rendered copy (same move as the worker prompts'
+    # `__FEEDBACK_PATH__`). The write fence is untouched — the grants
+    # are read-only and neither is a write root.
+    #
+    # The shelf is THIS problem's Project document root now (§3.9), not
+    # every paper in the workspace: a judge reading another Project's
+    # literature is the independence boundary leaking sideways.
     workspace = attempts_dir.parent.parent
     proofs_dir = (problem_dir / "proofs").resolve()
-    papers_dir = (workspace / "Papers").resolve()
+    from ..state import project_docs as _project_docs
+    from ..state import projects as _projects
+    _project = _projects.project_of(conn, problem) \
+        or problem.split(".", 1)[0]
+    papers_dir = _project_docs.root(workspace, _project).resolve()
     prompt_src = PROMPT_DIR / "adversary" / "adversary.md"
     prompt_path = attempts_dir / "_adversary_prompt.md"
     # Appended dynamically, not written into the static prompt: which

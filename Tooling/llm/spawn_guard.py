@@ -223,9 +223,10 @@ def _read_denied(tool_name: str, raw: str, path: Path,
                 f"{tool_name} on {raw} is inside {root}, which is "
                 "operator-private: the framework's own notes, earlier "
                 "runs' databases, and other problems' proofs. Your "
-                "problem's own files, Library/ and Papers/ are the "
-                "surfaces meant for you — everything you are supposed to "
-                "know is in Context.md and BRIEF.md.")
+                "problem's own files, Library/ and your Project's "
+                "_docs/ are the surfaces meant for you — everything "
+                "you are supposed to know is in Context.md and "
+                "BRIEF.md.")
     if tool_name in SEARCH_TOOLS:
         # The root is allowed, but searching it walks the private
         # subtrees inside it. A prefix check alone would pass this and
@@ -236,7 +237,7 @@ def _read_denied(tool_name: str, raw: str, path: Path,
                 f"{tool_name} rooted at {raw} would search "
                 f"{inside[0]} and the other operator-private subtrees "
                 "under it. Narrow the search to your problem directory, "
-                "Library/ or Papers/.")
+                "Library/ or your Project's _docs/.")
     return None
 
 

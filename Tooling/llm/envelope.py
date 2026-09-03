@@ -141,8 +141,9 @@ class Envelope:
     #: Subtrees this spawn may NOT read. See `read_deny_roots`.
     read_deny_roots: "tuple[Path, ...]" = ()
     #: Named subtrees this spawn may read BEYOND its kind's own scope —
-    #: the Adversary's `proofs/` and `Papers/`. It lives here, in the
-    #: provider-independent envelope, because the caller's version
+    #: the Adversary's `proofs/` and its Project's `_docs/`. It lives
+    #: here, in the provider-independent envelope, because the caller's
+    #: version
     #: (`LLMRequest.extra_read_dirs`) was rendered by claude and silently
     #: dropped by agy and codex, and on agy a read with no matching allow
     #: is soft-denied, which ENDS THE TURN. Measured 2026-08-15: the
@@ -325,8 +326,8 @@ def spawn_env(base: "dict[str, str] | None" = None) -> "dict[str, str]":
 #:                  problem), caches, daemon runtime state.
 #:   asterism.db    the live run: every goal, decision and dead attempt.
 #:
-#: `Library/` and `Papers/` are deliberately absent — both are surfaces
-#: the framework hands out on purpose.
+#: `Library/` and the spawn's own Project `_docs/` are deliberately
+#: absent — both are surfaces the framework hands out on purpose.
 PRIVATE_READ_SUBTREES = ("docs", ".asterism", "asterism.db")
 
 
@@ -338,6 +339,33 @@ def workspace_of(problem_dir: "Path | None") -> "Path | None":
         if parent.name == "Problems":
             return parent.parent
     return None
+
+
+def project_docs_dir(problem_dir: "Path | None") -> "Path | None":
+    """`Problems/<project>/_docs` for the spawn's OWN Project (§3.9) —
+    where its papers are, and the only documents tree it may read.
+
+    Derived from the path, not the DB: this runs on the spawn's hot
+    path in three providers, and the directory a problem physically
+    lives under is the Project it was registered on (§3.1 — a rename
+    moves the row, never the folder; the shelf writers resolve the name
+    from the DB, so a renamed Project's papers are reached through that
+    Project's own directory).
+
+    None when the spawn has no problem_dir under `Problems/` — a grant
+    nobody can compute is not a grant, and the Adversary's projection
+    deliberately has none."""
+    ws = workspace_of(problem_dir)
+    if ws is None or problem_dir is None:
+        return None
+    from ..state.project_docs import ROOT_DIRNAME as _DOCS
+    try:
+        rel = Path(problem_dir).resolve().relative_to((ws / "Problems").resolve())
+    except (ValueError, OSError):
+        return None
+    if not rel.parts:
+        return None
+    return ws / "Problems" / rel.parts[0] / _DOCS
 
 
 def _foreign_problem_dirs(workspace: Path,
@@ -355,7 +383,14 @@ def _foreign_problem_dirs(workspace: Path,
 
     A spawn with no problem_dir under `Problems/` gets nothing denied
     here rather than everything: the read fence must never be the reason
-    a legitimate spawn goes blind (that failure is silent on agy)."""
+    a legitimate spawn goes blind (that failure is silent on agy).
+
+    `_docs` is skipped at every level: it is the Project's DOCUMENT root
+    (§3.6), not a sibling problem, and since §3.9 the spawn's own papers
+    live inside it — denying it would blind a worker on the very files
+    its Context section points at. Another Project's `_docs` needs no
+    entry of its own: it sits inside that Project's directory, which the
+    first level already denies."""
     problems = workspace / "Problems"
     if problem_dir is None or not problems.is_dir():
         return []
@@ -363,11 +398,13 @@ def _foreign_problem_dirs(workspace: Path,
         rel = Path(problem_dir).resolve().relative_to(problems.resolve())
     except (ValueError, OSError):
         return []
+    from ..state.project_docs import ROOT_DIRNAME as _DOCS
     out: "list[Path]" = []
     level = problems
     for part in rel.parts:
         try:
-            out += [c for c in level.iterdir() if c.name != part]
+            out += [c for c in level.iterdir()
+                    if c.name != part and c.name != _DOCS]
         except OSError:
             return out
         level = level / part
@@ -397,8 +434,9 @@ def envelope_for(req: LLMRequest, *, library_dir: "Path | None" = None
     if req.kind in _LIBRARY_EDITING_KINDS and library_dir is not None:
         roots.append(Path(library_dir))
     if req.kind == "paper_index":
-        # Its problem_dir IS Papers/<pid>, and the agent's contract is to
-        # write map.md there (papers/index.py re-stamps the frontmatter).
+        # Its problem_dir IS the paper's own directory on the Project's
+        # document shelf, and the agent's contract is to write map.md
+        # there (papers/index.py re-stamps the frontmatter).
         roots.append(Path(req.problem_dir))
     problem_dir = Path(req.problem_dir) if req.problem_dir else None
     return Envelope(
