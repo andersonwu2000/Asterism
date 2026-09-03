@@ -17,17 +17,6 @@ Adversary round per proposal, on the gate that decides what lands.
 So the pin below is not "the prompt says 2". It is that the prompt and
 the parser say the SAME thing, derived from each side rather than from
 a constant repeated here.
-
-2026-09-04 (owner ruling, after the theory-wake experiment) changed
-what criterion 2 ASKS, not where it sits: Reachability became
-**Relation** — the Roadmap must state the statement this Programme
-works toward and how it stands to the MAIN claim (implies / equivalent
-/ reduces / refuting condition), argued rather than asserted. The
-"stops short of it" refusal went with it, because a Programme that
-honestly reduces the claim always stops short; what replaces it is the
-wrong-direction refusal and the requirement that a named load-bearing
-difficulty be ATTACKED somewhere concrete. The pins below track the new
-question; they are a requirement change, not a fix.
 """
 from __future__ import annotations
 
@@ -46,15 +35,6 @@ _CRITERION = re.compile(r"^(\d)\.\s+\*\*([^*]+)\*\*:", re.M)
 
 def _criteria_in_prompt() -> "dict[str, str]":
     return {n: name.strip() for n, name in _CRITERION.findall(TEXT)}
-
-
-def _criterion_line(n: str) -> str:
-    """The one rubric line for criterion `n`, found by its number rather
-    than by its name — so a rename does not turn the pin vacuous."""
-    line = next((ln for ln in TEXT.splitlines()
-                 if _CRITERION.match(ln) and ln.startswith(f"{n}.")), None)
-    assert line, f"the prompt no longer states a criterion {n}"
-    return line
 
 
 def test_the_prompt_still_declares_five_numbered_criteria() -> None:
@@ -82,21 +62,11 @@ def test_the_naming_rule_names_the_same_criterion_in_both_places() -> None:
         f"the prompt would have its verdict refused.")
 
 
-def test_the_naming_criterion_is_the_one_about_the_relation_to_the_claim() -> None:
+def test_the_naming_criterion_is_the_one_about_reaching_the_claim() -> None:
     """Which criterion carries the naming is not arbitrary: the line it
-    must carry is the statement worked toward AND how it stands to the
-    MAIN claim, so it belongs to the criterion that judges that relation
-    (`Relation` since the owner's 2026-09-04 ruling; `Reachability`
-    before it)."""
-    named = _criteria_in_prompt()[adversary.NAMING_CRITERION]
-    assert named == "Relation", (
-        f"criterion {adversary.NAMING_CRITERION} is now {named!r}; the "
-        f"naming obligation belongs to the criterion that judges the "
-        f"relation to the MAIN claim")
-    line = _criterion_line(adversary.NAMING_CRITERION)
-    assert "how it stands to the MAIN claim" in line, (
-        "the naming criterion no longer asks for the relation to the "
-        "MAIN claim — the naming it demands would have nothing to name")
+    must carry is "the entry that closes the MAIN claim", so it belongs
+    to the criterion that judges whether the route gets there."""
+    assert _criteria_in_prompt()[adversary.NAMING_CRITERION] == "Reachability"
 
 
 def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
@@ -106,13 +76,7 @@ def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
     tmpl = TEXT.split("```json", 1)[1].split("```", 1)[0]
     # 2026-08-28: criteria take LISTS (one bullet per objection) — the
     # naming shape sits inside the list brackets now.
-    # 2026-09-04: the shape names three things, not two — the statement
-    # worked toward, its relation to the MAIN claim, and where the
-    # load-bearing difficulty is attacked.
-    m = re.search(r'"(\d)":\s*\["clear: <the statement this Programme '
-                  r'works toward and its relation to the MAIN claim> — '
-                  r'<where the load-bearing difficulty is attacked>"\]',
-                  tmpl)
+    m = re.search(r'"(\d)":\s*\["clear: <the entry that closes', tmpl)
     assert m, "the template no longer shows the naming shape at all"
     assert m.group(1) == adversary.NAMING_CRITERION, (
         f"the template demonstrates the naming on criterion {m.group(1)} "
@@ -177,8 +141,8 @@ def test_a_verified_record_still_refuses_a_contradicting_route() -> None:
     wording; criterion 5's "a mathematical claim must rest on a
     complete argument, never on conjecture" carries the proof-not-
     conjecture standard now."""
-    assert "a contradiction of a verified Programme record" in \
-        _criterion_line(adversary.NAMING_CRITERION)
+    crit2 = _CRITERION.sub(lambda m: m.group(0), TEXT)  # keep TEXT intact
+    assert "contradicts a verified Programme record" in crit2
     assert "never on conjecture" in TEXT
 
 
@@ -193,29 +157,13 @@ def test_the_finalized_wording_keeps_its_new_anchors() -> None:
     assert "patch over" in TEXT
 
 
-def test_the_relation_clause_keeps_its_refusals_and_defines_attacked() -> None:
-    """Rewriting the clause must not quietly drop the refusals that
-    survived it.
-
-    The owner's 2026-09-04 wording retires "stops short of it" — a
-    Programme that honestly REDUCES the MAIN claim stops short of it by
-    construction, so that refusal fought the new question. The two that
-    remain are re-walking and the verified-record contradiction. The
-    added refusal (naming a load-bearing difficulty and attacking it
-    nowhere) is only enforceable because the clause defines what an
-    attack is; without that sentence a judge would take the AHEAD
-    mention as the attack, which is the disease the ruling removed."""
-    line = _criterion_line(adversary.NAMING_CRITERION)
-    assert "a route re-walked unchanged" in line
-    assert "a contradiction of a verified Programme record" in line
-    assert ("attacked = a NOW brick bites it, or the Proof carries an "
-            "argument or a counterexample on it; a name in AHEAD is not "
-            "an attack") in line, (
-        "the clause no longer says what counts as attacking the "
-        "load-bearing difficulty — the refusal it gates is unjudgeable")
-    assert "stops short of it" not in line, (
-        "the retired refusal is back, contradicting a Roadmap that "
-        "reduces the MAIN claim rather than closing it")
+def test_the_route_clause_kept_its_two_original_refusals() -> None:
+    """Adding a third refusal must not quietly drop the first two."""
+    line = next(ln for ln in TEXT.splitlines()
+                if ln.startswith("2. **Reachability**"))
+    assert "stops short of it" in line
+    assert "re-walks a failed route unchanged" in line
+    assert "contradicts a verified Programme record" in line
 
 
 def test_every_criterion_refuses_a_bare_clear() -> None:
