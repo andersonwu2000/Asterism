@@ -190,28 +190,32 @@ CREATE TABLE IF NOT EXISTS goals (
     -- initial Inject batches); Strategist `Reopen(root)` flips frozen→open
     -- to release BFS once vocabulary / lemmas are in place. Replaces the
     -- earlier `problems.bootstrap_done` gate.
-    -- Split rule (Phase 6 update):
-    --   failure_reason='agent_infeasible' → 'disproved' (counterexample;
-    --     dedupe blocks same-shape proposals).
+    -- Split rule (2026-09-04 update — the goal status 'dead' retired
+    -- at v51; a goal is a STATEMENT and only the kernel settles one):
+    --   failure_reason='agent_infeasible' → 'disproved' (the disproof
+    --     gate certified a counterexample; dedupe blocks same-shape
+    --     proposals).
     --   failure_reason='agent_shelved' → 'pending_strategist_review'
     --     (transitional; Strategist judges).
-    --   failure_reason='parent_needs_fix' → 'dead' (parent strategy
-    --     was wrong, goal moot under that context; kills upward
-    --     strategies so parent retries with new decomposition).
+    --   failure_reason='parent_needs_fix' → 'shelved', event
+    --     'wrong_context_park' (the DECOMPOSITION was wrong, the
+    --     statement was never judged). Every strategy hanging on the
+    --     goal dies — inward and upward — so the parent retries with a
+    --     new decomposition; the goal itself stays revivable.
     -- Terminal soft/hard semantics:
-    --   'shelved' — soft terminal; Strategist may Reopen, dedupe DOES
-    --     NOT block, upward strategies stay 'proposed' (wait for Reopen).
-    --   'disproved' — hard for readers (citing = error, dedupe BLOCKS,
-    --     kills upward strategies) but revivable by Inject since
-    --     2026-08-18 — the mark records a CLAIMED counterexample.
-    --   'dead' — hard terminal in this strategy context; never Reopen,
-    --     dedupe DOES NOT block (same statement may be valid under a
-    --     different parent strategy), kills upward strategies so parent
-    --     goal retries.
+    --   'shelved' — a PARK, not a verdict; Strategist may Reopen,
+    --     dedupe does NOT block, a citation may revive it. Which park
+    --     it is lives in `goal_events.event`, not in the status.
+    --   'proved' / 'disproved' — the two KERNEL-checked terminals, and
+    --     the whole of GOAL_HARD_TERMINALS: citing a disproved goal is
+    --     an error, dedupe blocks its twins, upward strategies die, and
+    --     a strategist Inject may not overturn it (the way out of a
+    --     refutation is a different statement). The ('disproved','open')
+    --     FSM edge exists for OPERATOR repair only.
     status      TEXT    NOT NULL
                     CHECK(status IN ('open','attempting','proved','shelved',
                                      'pending_strategist_review','disproved',
-                                     'frozen','dead')),
+                                     'frozen')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
     -- (`entry_kind` routing column removed in v33 — the Formalizer
@@ -842,7 +846,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 50
+_CURRENT_USER_VERSION = 51
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

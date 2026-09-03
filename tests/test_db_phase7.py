@@ -5,6 +5,7 @@ fresh DB is at the expected version and accepts the new kind, an old (v6)
 DB upgrades in place without losing rows, and re-running init_schema is a
 no-op. Invariant test per CLAUDE.md rule 6 (schema CHECKs get tests too).
 """
+import re
 import sqlite3
 
 import pytest
@@ -17,7 +18,9 @@ from Tooling.state import db
 # as a table rebuild — hence a version step. 49→50 2026-09-03:
 # `strategist_decisions.report_carried_at`, the batch-report carry-over
 # mark — an additive column, and since v15 those ship as version steps
-# too (the frozen block below is why).
+# too (the frozen block below is why). 50→51 2026-09-04: the goal status
+# `dead` is retired, which narrows the `goals.status` CHECK — another
+# rebuild, and the migration also rewrites the surviving rows.
 
 
 def _fresh(tmp_path):
@@ -28,7 +31,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
 
 
 def test_queue_accepts_librarian(tmp_path):
@@ -79,7 +82,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -92,7 +95,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
@@ -129,7 +132,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -158,7 +161,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -235,7 +238,7 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"
@@ -309,3 +312,84 @@ def test_insert_goal_forward_origin_is_detached() -> None:
                         (fwd,)).fetchone()[0] == 1
     assert conn.execute("SELECT detached FROM goals WHERE id=?",
                         (bwd,)).fetchone()[0] == 0
+
+
+# --- v51: the goal status `dead` is retired (owner ruling 2026-09-04) ---
+
+def _downgrade_goals_check_to_v50(c) -> None:
+    """Rebuild `goals` with the pre-v51 CHECK (which still accepted
+    'dead') so the migration has something real to convert. The mirror
+    image of `_migrate_to_v51`'s own live-DDL rebuild."""
+    sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table'"
+                    " AND name='goals'").fetchone()[0]
+    check = re.search(r"CHECK\(status IN \(([^)]*)\)\)", sql)
+    assert check and "'dead'" not in check.group(1), \
+        "fresh schema still mints 'dead' goals"
+    wide = sql.replace("'frozen')", "'frozen','dead')", 1)
+    assert wide != sql, "goals.status CHECK no longer ends at 'frozen'"
+    idx = [r[0] for r in c.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index'"
+        " AND tbl_name='goals' AND sql IS NOT NULL")]
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute(wide.replace("CREATE TABLE goals", "CREATE TABLE _g_old", 1))
+    c.execute("INSERT INTO _g_old SELECT * FROM goals")
+    c.execute("DROP TABLE goals")
+    c.execute("ALTER TABLE _g_old RENAME TO goals")
+    for s in idx:
+        c.execute(s)
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("PRAGMA user_version = 50")
+    c.commit()
+
+
+def _seed_goal_v50(c, slug, status):
+    c.execute("INSERT INTO goals (problem, slug, lean_path, statement,"
+              " kind, origin, status, depth, attempts, created_at,"
+              " updated_at) VALUES ('p',?,?, 'T','theorem','backward',?,"
+              " 0,0,?,?)",
+              (slug, f"Problems/p/proofs/L_{slug}.lean", status,
+               db.now(), db.now()))
+    c.commit()
+    return c.execute("SELECT id FROM goals WHERE slug = ?", (slug,)
+                     ).fetchone()[0]
+
+
+def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
+    """A goal is a statement and only the kernel settles one, so `dead`
+    leaves the vocabulary. Existing rows become parks — and each one
+    gets a `goal_events` row naming the status it left, so the history
+    reads the same after the rename as before it."""
+    c = _fresh(tmp_path)
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (db.now(),))
+    c.commit()
+    _downgrade_goals_check_to_v50(c)
+    gid = _seed_goal_v50(c, "moot_ctx", "dead")
+    keep = _seed_goal_v50(c, "still_open", "open")
+
+    db.init_schema(c)
+
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("SELECT status FROM goals WHERE id = ?",
+                     (gid,)).fetchone()[0] == "shelved"
+    assert c.execute("SELECT status FROM goals WHERE id = ?",
+                     (keep,)).fetchone()[0] == "open"
+    ev = c.execute(
+        "SELECT from_status, to_status, event, reason FROM goal_events"
+        " WHERE goal_id = ?", (gid,)).fetchone()
+    assert ev is not None
+    assert (ev[0], ev[1], ev[2]) == ("dead", "shelved", "retire_dead_status")
+    assert "dead" in ev[3]
+    # Untouched goals get no invented history.
+    assert c.execute("SELECT count(*) FROM goal_events WHERE goal_id = ?",
+                     (keep,)).fetchone()[0] == 0
+    # And the narrowed CHECK now refuses a fresh one.
+    with pytest.raises(sqlite3.IntegrityError):
+        _seed_goal_v50(c, "rogue", "dead")
+
+
+def test_v51_is_idempotent_on_a_dead_free_db(tmp_path):
+    c = _fresh(tmp_path)
+    db.init_schema(c)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("SELECT count(*) FROM goal_events").fetchone()[0] == 0

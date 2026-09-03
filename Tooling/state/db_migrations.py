@@ -1067,6 +1067,16 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
                 raise
         conn.execute("PRAGMA user_version = 50")
         conn.commit()
+    if v < 51:
+        # v51 — the goal status `dead` is retired (owner ruling
+        # 2026-09-04). A goal is a STATEMENT and only the kernel settles
+        # one, so its terminal statuses are exactly the kernel-checked
+        # pair; "the parent's decomposition was wrong" is a fact about
+        # the STRATEGY, which keeps its own `dead`. Existing rows become
+        # parks, each with a `goal_events` row naming what it left.
+        _migrate_to_v51(conn)
+        conn.execute("PRAGMA user_version = 51")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -2600,6 +2610,11 @@ def _migrate_to_phase6(conn: sqlite3.Connection) -> None:
     Post-condition (caller sets user_version = 6):
       - goals.status CHECK accepts {'open','attempting','proved','shelved',
         'pending_strategist_review','disproved','frozen','dead'}
+
+    Historical: v51 (2026-09-04) NARROWS this same CHECK again, taking
+    'dead' back out. A ladder step describes the vocabulary at ITS
+    version, so this one keeps minting the wide CHECK — v51 is what
+    ends up on disk.
       - All existing rows preserved unchanged
     """
     chk = conn.execute(
@@ -3155,3 +3170,86 @@ def _migrate_to_v45(conn: sqlite3.Connection) -> None:
                   flush=True)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_v51(conn: sqlite3.Connection) -> None:
+    """Retire the goal status `dead` (owner ruling 2026-09-04).
+
+    Two halves, in this order:
+
+      1. Every surviving `dead` goal becomes `shelved`, and each one
+         gets a `goal_events` row (`event='retire_dead_status'`, reason
+         naming the status it left). The history is the point: a park
+         whose origin is invisible is indistinguishable from a
+         threshold shelve, and the 106 rows this converts on the live
+         DB carry real forensics.
+      2. The `goals.status` CHECK is NARROWED to the surviving seven.
+         SQLite cannot alter a CHECK in place, so this is a live-DDL
+         table rebuild — the v45/v46 channel, running with FK
+         enforcement off and self-healing an interrupted prior attempt.
+
+    Idempotent: a DB whose CHECK already lacks 'dead' returns at the
+    top of the rebuild, and the UPDATE matches nothing on a second run.
+    """
+    n = conn.execute(
+        "SELECT count(*) FROM goals WHERE status = 'dead'").fetchone()[0]
+    if n:
+        at = now()
+        conn.execute(
+            "INSERT INTO goal_events (goal_id, problem, from_status,"
+            " to_status, event, reason, at)"
+            " SELECT id, problem, 'dead', 'shelved', 'retire_dead_status',"
+            "        'goal status dead retired (v51): a wrong-context"
+            " decline is a park, not a verdict', ?"
+            " FROM goals WHERE status = 'dead'", (at,))
+        conn.execute(
+            "UPDATE goals SET status = 'shelved', updated_at = ?"
+            " WHERE status = 'dead'", (at,))
+        conn.commit()
+        print(f"[v51] {n} goal(s) moved from 'dead' to 'shelved' with a"
+              f" goal_events row each", flush=True)
+
+    conn.execute("DROP TABLE IF EXISTS _g_v51")
+    # Save and RESTORE, never force ON: unlike v45/v46 this step runs on
+    # every DB below 51 — including freshly created ones — so a blanket
+    # `PRAGMA foreign_keys = ON` in the finally would decide enforcement
+    # for callers that deliberately opened without it (most fixtures).
+    fk_here = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'goals'").fetchone()
+        sql = (row["sql"] or "") if row else ""
+        if not sql:
+            return
+        check = re.search(r"CHECK\(status IN \(([^)]*)\)\)", sql)
+        if check is None:
+            raise RuntimeError(
+                "v51: goals.status has no CHECK(status IN ...) — refusing"
+                " to guess the enum")
+        if "'dead'" not in check.group(1):
+            return  # fresh DB from the current SCHEMA already narrow
+        narrowed = check.group(0).replace(",'dead'", "").replace(
+            ", 'dead'", "").replace("'dead',", "").replace("'dead', ", "")
+        if "'dead'" in narrowed:
+            raise RuntimeError("v51: could not narrow the status CHECK")
+        new_sql = sql.replace(check.group(0), narrowed, 1)
+        new_sql = re.sub(r"CREATE TABLE\s+\"?goals\"?",
+                         "CREATE TABLE _g_v51", new_sql, count=1)
+        indexes = [r["sql"] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND tbl_name = 'goals' AND sql IS NOT NULL")]
+        conn.execute(new_sql)
+        carried = conn.execute(
+            "INSERT INTO _g_v51 SELECT * FROM goals").rowcount
+        conn.execute("DROP TABLE goals")
+        conn.execute("ALTER TABLE _g_v51 RENAME TO goals")
+        for st in indexes:
+            conn.execute(st)
+        conn.commit()
+        print(f"[v51] goals rebuilt without 'dead' in the status CHECK"
+              f" ({carried} row(s) carried)", flush=True)
+    finally:
+        if fk_here:
+            conn.execute("PRAGMA foreign_keys = ON")

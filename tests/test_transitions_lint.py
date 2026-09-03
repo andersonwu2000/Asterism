@@ -51,7 +51,11 @@ _ALLOWED: dict[str, int] = {
     # The disproved / bootstrap-frozen migration backfills (migrations run
     # at vocabulary-change points — the state machine's edges don't apply
     # to them). Split out of db.py 2026-07-07 (v24 schema rework).
-    "state/db_migrations.py": 2,
+    # 2→3 (v51, 2026-09-04): the `dead` → `shelved` rewrite. It is a
+    # RENAME of a retired status, not a transition — no edge exists for
+    # it (that is the point), and the migration writes the matching
+    # `goal_events` rows itself.
+    "state/db_migrations.py": 3,
     # Startup bulk repair (half-baked strategies → dead). Deliberately raw:
     # a bulk UPDATE skips update_strategy_status's inject-outcome hook,
     # compensated by null_inject_redispatch_specs — see the comment at the

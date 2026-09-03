@@ -108,7 +108,7 @@ def test_fresh_db_pipelines_shape(tmp_path: Path) -> None:
     # which SQLite only takes as a table rebuild — hence a version step.
     # 49→50 2026-09-03: `strategist_decisions.report_carried_at`.
     assert (conn.execute("PRAGMA user_version").fetchone()[0]
-            == db._CURRENT_USER_VERSION == 50)
+            == db._CURRENT_USER_VERSION == 51)
     ddl = _ddl(conn)
     assert "'running'" in ddl
     # outcome / finished_at are NULLable (a running row has neither).
@@ -157,7 +157,7 @@ def test_v37_db_migrates_to_same_shape_as_fresh(tmp_path: Path) -> None:
     db_migrations.apply(old)
 
     assert (old.execute("PRAGMA user_version").fetchone()[0]
-            == fresh.execute("PRAGMA user_version").fetchone()[0] == 50)
+            == fresh.execute("PRAGMA user_version").fetchone()[0] == 51)
     assert _table_info(old) == _table_info(fresh)
     assert "'running'" in _ddl(old)
     # Row + FK survived the rebuild.
@@ -185,7 +185,7 @@ def test_v38_migration_idempotent(tmp_path: Path) -> None:
     ddl_once = _ddl(conn)
     db_migrations.apply(conn)          # second run must be a no-op
     assert _ddl(conn) == ddl_once
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 51
     conn.close()
 
 
@@ -200,7 +200,7 @@ def test_connect_auto_migrates_v37_file(tmp_path: Path) -> None:
     conn.close()
 
     c2 = db.connect(path)
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 50
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 51
     assert "'running'" in _ddl(c2)
     c2.close()
 
