@@ -9,7 +9,8 @@ with less than it was given. Three instances so far, all silent:
                      `validate_file` and could not type-check a line it
                      wrote (2026-08-02).
   extra_read_dirs    dropped by agy and codex — the Adversary was granted
-                     `proofs/` and `Papers/`, agy soft-denied the read,
+                     `proofs/` and the Project's documents, agy
+                     soft-denied the read,
                      and a soft-deny ENDS THE TURN. Twelve wakes, ~1.9M
                      input tokens, reported as `agent_no_output`
                      (2026-08-15).
@@ -39,7 +40,7 @@ def test_the_envelope_carries_every_capability_the_caller_grants(
     grant that never lands on it can only be honoured by whichever
     backend happens to look at the request directly."""
     proofs = tmp_path / "Problems" / "P" / "proofs"
-    papers = tmp_path / "Papers"
+    papers = tmp_path / "Problems" / "P" / "_docs"
     req = LLMRequest(kind="adversary", prompt_path=tmp_path / "p.md",
                      problem_dir=tmp_path / "Problems" / "P",
                      attempts_dir=tmp_path / ".attempts" / "pid",
@@ -62,7 +63,7 @@ def test_the_judge_is_granted_its_two_directories_and_not_the_workspace(
     proj = tmp_path / ".attempts" / "pid" / "adversary" / "r1"
     proj.mkdir(parents=True)
     proofs = tmp_path / "Problems" / "P" / "proofs"
-    papers = tmp_path / "Papers"
+    papers = tmp_path / "Problems" / "P" / "_docs"
     req = LLMRequest(kind="adversary", prompt_path=tmp_path / "p.md",
                      problem_dir=proj, attempts_dir=proj, timeout_sec=900,
                      extra_read_dirs=(proofs, papers))
