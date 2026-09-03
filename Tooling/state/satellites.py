@@ -207,6 +207,27 @@ def file_complement(pdir: Path) -> "list[str]":
 
 # ──────────────────────────────── DB side ────────────────────────────────
 
+#: `dead_attempts.target_id` is an INTEGER column, so a failure that is
+#: not ABOUT a goal / strategy / group has no id to record and writes
+#: this SENTINEL instead — a Strategist wake that died, a Forward or a
+#: Librarian pipeline (`dispatcher/worker.py` writes `target_id=0` with
+#: `target_kind` copied from the PIPELINE's own kind). Such a row's
+#: subject is its `pipeline_id`, and nothing else.
+#:
+#: Ids are AUTOINCREMENT from 1, so 0 can never collide with one. It is
+#: still worth saying out loud: an auditor that read the 0 as a group id
+#: indicted every one of these — 85 on the operator's live DB, 44 on
+#: SP7, where they blocked a `carry export` outright. That is the
+#: "cries wolf a thousand times" failure this module was built to
+#: prevent, one column over.
+DEAD_ATTEMPT_NO_TARGET = 0
+
+#: "this `dead_attempts` row names a real target" — the guard every
+#: reader of `target_id` must carry, spelled once so the wipe, the carry
+#: prune and the orphan audit cannot disagree about it (the same reason
+#: `PROBLEM_OF_TARGET` below exists).
+NAMES_A_TARGET = f"target_id <> {DEAD_ATTEMPT_NO_TARGET}"
+
 #: `pipelines.target_id` for a Problem-kind row is either the problem
 #: name or the Librarian's composed `problem\x1ffile` key. This SQL
 #: fragment is the decoder both the per-problem question and the global
@@ -435,10 +456,20 @@ def orphan_rows(conn: sqlite3.Connection) -> "dict[str, int]":
             "(SELECT name FROM problems)",
         "dead_attempts(Goal target gone)":
             "SELECT COUNT(*) FROM dead_attempts WHERE target_kind='Goal' "
+            "AND " + NAMES_A_TARGET + " "
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM goals)",
         "dead_attempts(Group target gone)":
             "SELECT COUNT(*) FROM dead_attempts WHERE target_kind='Group' "
+            "AND " + NAMES_A_TARGET + " "
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM groups)",
+        # The question the two arms above cannot ask of a sentinel row,
+        # and the one that actually means something for it. Nothing
+        # asked it until 2026-09-03, which is why excusing the sentinel
+        # from the target checks is not a subtraction: its referent is
+        # its pipeline, so that is what gets audited instead.
+        "dead_attempts(pipeline gone)":
+            "SELECT COUNT(*) FROM dead_attempts WHERE pipeline_id "
+            "NOT IN (SELECT id FROM pipelines)",
         "queue(problem gone)":
             "SELECT COUNT(*) FROM queue WHERE problem NOT IN "
             "(SELECT name FROM problems)",

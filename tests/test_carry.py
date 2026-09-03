@@ -263,6 +263,70 @@ def test_export_leaves_no_orphan_in_the_goal_keyed_tables(
     assert manifest["row_counts"]["goals"] == 2
 
 
+def test_export_decides_the_failure_sentinel_by_its_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dead_attempts.target_id = 0` is a SENTINEL, not an id.
+
+    A failure that is not ABOUT a goal/strategy/group — a Strategist
+    wake that died, a Forward or Librarian pipeline — records 0 in an
+    INTEGER column and carries its real subject in `pipeline_id`
+    (`dispatcher/worker.py`). So the only thing that can say which
+    problem such a row belongs to is the pipeline it hangs off, and a
+    prune that reads the 0 as a group id exports the wrong rows and
+    then indicts the right ones: 44 of these blocked a `carry export`
+    on the SP7 node, 85 sit in the operator's live DB.
+
+    Three shapes, one rule — ownership is the pipeline's:
+      * pipeline is P's        -> travels with P
+      * pipeline is another's  -> stays behind, and is not P's orphan
+      * pipeline is gone       -> belongs to nobody; left in place
+    """
+    ws, s = _workspace(tmp_path / "src", "Erdos.p1", "Erdos.p2")
+    conn = db.connect(ws / "asterism.db")
+    ts = db.now()
+    gid = s["Erdos.p1"]["gid"]
+    # A Strategist wake on P's own group, and the sentinel it wrote.
+    conn.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
+                 " status, started_at) VALUES ('pipe-grp-p1', 'Strategist',"
+                 " ?, 'Group', 'failed', ?)", (str(gid), ts))
+    conn.execute("INSERT INTO dead_attempts (target_id, target_kind,"
+                 " pipeline_id, failure_reason, ts)"
+                 " VALUES (0, 'Group', 'pipe-grp-p1', 'spawn_rc1', ?)", (ts,))
+    # The same shape, owned by the OTHER problem's Forward pipeline.
+    conn.execute("INSERT INTO dead_attempts (target_id, target_kind,"
+                 " pipeline_id, failure_reason, ts)"
+                 " VALUES (0, 'Problem', 'pipe-Erdos.p2-fwd', 'rc1', ?)",
+                 (ts,))
+    # And one whose pipeline row no longer exists at all.
+    conn.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
+                 " status, started_at) VALUES ('pipe-ghost', 'Strategist',"
+                 " '999', 'Group', 'failed', ?)", (ts,))
+    conn.execute("INSERT INTO dead_attempts (target_id, target_kind,"
+                 " pipeline_id, failure_reason, ts)"
+                 " VALUES (0, 'Group', 'pipe-ghost', 'spawn_rc1', ?)", (ts,))
+    conn.commit()
+    # `PRAGMA foreign_keys` is a no-op inside a transaction, so the
+    # commit above is load-bearing: without it the pragma is ignored and
+    # the DELETE trips the FK it is meant to suspend.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM pipelines WHERE id = 'pipe-ghost'")
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "bundle"
+    assert _export(ws, "Erdos.p1", out, monkeypatch) == 0,         "the sentinel must not be mistaken for a missing group"
+    cdb = out / "carry.db"
+    assert _rows(cdb, "SELECT pipeline_id FROM dead_attempts"
+                      " WHERE target_id = 0") == [("pipe-grp-p1",)],         "exactly the sentinel whose pipeline is P's travels"
+
+    # The two that stayed behind are still in the SOURCE, untouched.
+    sdb = ws / "asterism.db"
+    assert _rows(sdb, "SELECT COUNT(*) FROM dead_attempts"
+                      " WHERE pipeline_id IN ('pipe-Erdos.p2-fwd',"
+                      " 'pipe-ghost')") == [(2,)]
+
+
 # ---------------------------------------------------------------------
 # import
 # ---------------------------------------------------------------------

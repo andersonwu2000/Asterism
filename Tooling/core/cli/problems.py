@@ -676,13 +676,33 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # strategies. Without this, pipelines accumulates orphan rows
     # whose target_id no longer resolves — confuses forensics queries
     # and any future pipeline → strategy / goal joins.
+    # Each target kind needs BOTH sweeps: the dead_attempts rows that
+    # NAME the referent (done above, by id) and the ones that merely
+    # HANG OFF its pipeline by FK. The Problem and Group kinds got their
+    # second sweep below; Goal and Strategy never had one, because every
+    # dead_attempt of theirs was assumed to name its goal. The failure
+    # SENTINEL breaks that assumption — `target_id=0` for a failure
+    # about no goal at all (satellites.DEAD_ATTEMPT_NO_TARGET), with
+    # `target_kind` copied from the pipeline's own kind — so a sentinel
+    # off a Goal- or Strategy-kind pipeline matched neither sweep and
+    # stranded on the `DELETE FROM pipelines` here, FK and all. Today
+    # every write site happens to be Strategist/Forward/Librarian, which
+    # is a fact about the callers, not about the schema.
     if gids:
         ph = ",".join("?" * len(gids))
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE pipeline_id IN "
+            f"(SELECT id FROM pipelines WHERE target_kind='Goal' "
+            f" AND target_id IN ({ph}))", [str(g) for g in gids])
         conn.execute(
             f"DELETE FROM pipelines WHERE target_kind='Goal' "
             f"AND target_id IN ({ph})", [str(g) for g in gids])
     if sids:
         ph = ",".join("?" * len(sids))
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE pipeline_id IN "
+            f"(SELECT id FROM pipelines WHERE target_kind='Strategy' "
+            f" AND target_id IN ({ph}))", [str(s) for s in sids])
         conn.execute(
             f"DELETE FROM pipelines WHERE target_kind='Strategy' "
             f"AND target_id IN ({ph})", [str(s) for s in sids])

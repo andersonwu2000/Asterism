@@ -225,6 +225,46 @@ def test_the_wipe_takes_the_group_targeted_rows_with_the_group(mem) -> None:
     ).fetchone()[0] == 0
 
 
+def test_the_wipe_takes_the_sentinel_rows_off_every_pipeline_kind(
+    mem,
+) -> None:
+    """A `target_id=0` sentinel is swept with its PIPELINE, whatever
+    kind that pipeline is.
+
+    The wipe pairs each target kind with two sweeps — the rows that NAME
+    the referent, and the rows that hang off its pipeline — but until
+    now it only had the second half for the Problem and Group kinds.
+    Sentinels off a Goal- or Strategy-kind pipeline matched neither
+    (their `target_id` is 0, so the "names it" sweep skips them), and
+    would be stranded by the `DELETE FROM pipelines` that follows: the
+    `human_commands` failure of this same morning, one table over.
+
+    Zero such rows exist today, purely because the three write sites all
+    happen to be Strategist/Forward/Librarian. The write site copies the
+    PIPELINE's own kind (`dispatcher/worker.py`), so that is a fact
+    about today's callers, not about the schema."""
+    _seed_full_problem(mem)
+    gid = mem.execute("SELECT id FROM goals WHERE problem = 'wilson'"
+                      ).fetchone()["id"]
+    now = db.now()
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-goal', 'Backward', ?, 'Goal',"
+        " 'failed', 'failed', ?)", (str(gid), now))
+    mem.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, ts) VALUES (0, 'Goal', 'pid-goal', 'rc1', ?)",
+        (now,))
+    mem.commit()
+
+    cli.wipe_problem_rows(mem, "wilson")
+    mem.commit()
+    assert satellites.orphan_rows(mem) == {}, (
+        "the wipe stranded a sentinel whose pipeline it deleted")
+    assert mem.execute(
+        "SELECT COUNT(*) FROM dead_attempts").fetchone()[0] == 0
+
+
 def test_another_problems_group_rows_are_untouched(mem) -> None:
     """Widening a DELETE is the dangerous direction. The sweep is by
     the problem's OWN group ids, so a second problem's identically
@@ -305,6 +345,67 @@ def test_orphan_rows_sees_the_group_target_class(mem) -> None:
     mem.commit()
     orphans = satellites.orphan_rows(mem)
     assert orphans.get("pipelines(Group target gone)") == 1
+
+
+def test_the_non_goal_failure_sentinel_is_not_a_missing_group(mem) -> None:
+    """`dead_attempts.target_id = 0` is a SENTINEL, not an id.
+
+    The column is INTEGER, so a failure that is not ABOUT a goal /
+    strategy / group — a Strategist wake that died, a Forward or
+    Librarian pipeline — records 0 and carries its subject in
+    `pipeline_id` instead (`dispatcher/worker.py` writes
+    `target_id=0, target_kind=<the pipeline's kind>`). An auditor that
+    reads that 0 as a group id indicts every such row: 85 of them on the
+    operator's live DB, 44 on SP7, where they blocked a `carry export`.
+
+    That is the exact failure this module exists to prevent — "an
+    auditor that cries wolf a thousand times is one nobody reads" — and
+    the floor here is meant to be zero."""
+    now = db.now()
+    mem.execute(
+        "INSERT INTO problems (name, created_at) VALUES ('wilson', ?)",
+        (now,))
+    mem.execute(
+        "INSERT INTO groups (problem, charter, status, created_at,"
+        " updated_at) VALUES ('wilson', 'c', 'active', ?, ?)", (now, now))
+    grid = mem.execute("SELECT id FROM groups").fetchone()["id"]
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-g', 'Strategist', ?, 'Group',"
+        " 'failed', 'failed', ?)", (str(grid), now))
+    # The sentinel: kind copied from the pipeline, id deliberately 0.
+    mem.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, ts) VALUES (0, 'Group', 'pid-g', 'spawn_rc1', ?)",
+        (now,))
+    mem.commit()
+    assert satellites.orphan_rows(mem) == {}, (
+        "the sentinel is a live row whose referent (its pipeline) is "
+        "right there — nothing here is orphaned")
+
+
+def test_a_dead_attempt_whose_pipeline_is_gone_is_the_real_orphan(
+    mem,
+) -> None:
+    """The check the sentinel rows actually need. `target_id` says
+    nothing about them, so the only question worth asking is whether
+    `pipeline_id` still resolves — and until now nothing asked it, which
+    is why silencing the false positive above cannot simply be a
+    subtraction."""
+    now = db.now()
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-g', 'Strategist', '1',"
+        " 'Group', 'failed', 'failed', ?)", (now,))
+    mem.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, ts) VALUES (0, 'Group', 'pid-g', 'spawn_rc1', ?)",
+        (now,))
+    mem.execute("PRAGMA foreign_keys = OFF")
+    mem.execute("DELETE FROM pipelines WHERE id = 'pid-g'")
+    mem.commit()
+    assert satellites.orphan_rows(mem).get(
+        "dead_attempts(pipeline gone)") == 1
 
 
 # -------------------------------------------------------------- file side

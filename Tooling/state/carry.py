@@ -167,20 +167,29 @@ def belongs_to(table: str, scope: Scope) -> "tuple[str, list]":
         return (pred.replace(":p", "?"), [scope.problem, scope.problem])
     if table in ("pipelines", "queue", "dead_attempts"):
         arms, args = [], []
+        deaths = table == "dead_attempts"
         for kind, ids in (("Goal", scope.goals),
                           ("Strategy", scope.strategies),
                           ("Group", scope.groups)):
             # `pipelines`/`queue` hold the id stringified; `dead_attempts`
             # declares the column INTEGER. Same polymorphism, two storage
             # classes — comparing the wrong one silently matches nothing.
-            pred, vals = _in("target_id", ids,
-                             as_text=(table != "dead_attempts"))
-            arms.append(f"(target_kind = '{kind}' AND {pred})")
+            pred, vals = _in("target_id", ids, as_text=not deaths)
+            # ...and `dead_attempts` alone has a THIRD storage meaning:
+            # `target_id = 0` is the sentinel for a failure that is about
+            # no goal/strategy/group at all, whatever `target_kind` says.
+            # Excluded here so ownership of those rows is decided by the
+            # one thing that can decide it — the pipeline arm below.
+            guard = (satellites.NAMES_A_TARGET + " AND ") if deaths else ""
+            arms.append(f"(target_kind = '{kind}' AND {guard}{pred})")
             args += vals
-        if table == "dead_attempts":
-            # A Forward/Librarian failure hangs off a Problem-target
-            # pipeline, not off a goal — `wipe_problem_rows` learned this
-            # the same way, on a reset that died on the FK.
+        if deaths:
+            # The sentinel's subject, and also the only link a
+            # Forward/Librarian failure ever had — those hang off a
+            # Problem-target pipeline, not off a goal (`wipe_problem_rows`
+            # learned that on a reset that died on the FK). A row whose
+            # pipeline row is gone matches nothing here and belongs to no
+            # problem: it stays where it is and travels with nobody.
             pred, vals = _in("pipeline_id", scope.pipelines, as_text=True)
             arms.append(f"({pred})")
             args += vals
