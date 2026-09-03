@@ -7,6 +7,7 @@ import { usePublishFocus } from '../lib/focus'
 import { groupLabel } from '../lib/format'
 import { CycleLine } from './EngineRoom'
 import ProgrammeView from '../components/ProgrammeView'
+import RevisionHistory from '../components/RevisionHistory'
 import { GroupCommandSheet } from '../components/CommandSheet'
 import { ErrorState } from '../components/ui'
 import type { Programme, RunStatus } from '../lib/types'
@@ -120,6 +121,10 @@ export default function Groups({
                 <CycleLine cycle={cycle} />
               </div>
             )}
+            {/* what this group has DECIDED, and how each one was argued
+                (§1.4-2). Under the tree, collapsed: the standing
+                argument below is what this screen is for. */}
+            <RevisionHistory problem={problem} group={data.group_id ?? null} />
             {shown &&
               (acting ? (
                 <GroupCommandSheet

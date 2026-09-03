@@ -292,6 +292,45 @@ export interface TimelineGroup {
   status: string
 }
 
+/** One row of a group's decided chain — the list under the Groups tree.
+ * No body and no dialogue: a list is read to choose a row. */
+export interface RevisionRow {
+  /** the ROW id — `rev` alone names several rows, since a rejected
+   * proposal and the revision that later takes its number share one */
+  id: number
+  rev: number
+  status: string
+  rounds: number
+  created_at: string
+  group_id: number | null
+  discard_reason: string | null
+  discard_channel: string | null
+  judge: RevisionVerdict['judge']
+}
+
+/** One round of the debate: what the author put on the table, and what
+ * the judge fired back at that body. The pairing IS the round — it is
+ * how the engine stores it (`pipeline/strategist/wake.py`). */
+export interface DebateRound {
+  round: number | null
+  /** the draft this round argued about */
+  proposal: string | null
+  criticisms: string[]
+  ruling: string | null
+  criteria: RevisionVerdict['criteria']
+  reservations: string[]
+}
+
+/** One revision, opened: what was decided, how it was argued, and the
+ * verdict that closed it. */
+export interface RevisionDetail extends RevisionRow {
+  body: string
+  /** the author's own note after a discard — its record, unverified */
+  last_words: string | null
+  dialogue: DebateRound[]
+  verdict: RevisionVerdict | null
+}
+
 export interface Programme {
   current: {
     rev: number

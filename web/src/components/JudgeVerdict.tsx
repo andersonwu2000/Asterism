@@ -115,6 +115,52 @@ function Seat({ judge }: { judge: RevisionVerdict['judge'] }) {
   )
 }
 
+/** The verdict itself, drawn — no fetching.
+ *
+ * The revision history (HID §1.4-2) already HOLDS the verdict it wants
+ * to draw: the revision read carries it, and a second request for the
+ * same JSON would be the console asking twice for one fact. Two
+ * renderers for one object is the drift this extraction prevents. */
+export function VerdictBody({ v }: { v: RevisionVerdict | null }) {
+  if (v === null || (v.criteria.length === 0 && v.reservations.length === 0))
+    return (
+      <div className="mt-1.5 text-[11px] text-ink-faint" data-verdict="none">
+        {/* pre-2026-08-29 rejections: the column was hard-coded NULL and
+            the ruling is gone for good */}
+        no verdict on record
+      </div>
+    )
+  return (
+    <div className="mt-2 border-t border-edge pt-2" data-verdict="read">
+      <Seat judge={v.judge} />
+      {v.criteria.map((c) => (
+        <Criterion key={c.key} c={c} />
+      ))}
+      {v.reservations.length > 0 && (
+        <div className="mt-2">
+          <div className="mb-0.5 text-[11px] tracking-wider text-ink-faint uppercase">
+            reservations — fired nothing, passed to the next wake
+          </div>
+          <ul className="space-y-0.5 pl-4 text-[12px] text-ink-faint">
+            {v.reservations.map((r, i) => (
+              <li key={i} className="list-disc marker:text-ink-faint">
+                {r}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {/* the ruling explains an adversary kill; anything else killed it
+          for a reason the criteria do not carry, and that IS the news */}
+      {v.status === 'rejected' && v.ruling !== 'rebut' && v.discard_reason && (
+        <div className="mt-2 text-[11px] text-ink-dim">
+          discarded — {v.discard_reason}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function JudgeVerdict({
   problem,
   revId,
@@ -150,42 +196,5 @@ export default function JudgeVerdict({
         …
       </div>
     )
-  if (v.criteria.length === 0 && v.reservations.length === 0)
-    return (
-      <div className="mt-1.5 text-[11px] text-ink-faint" data-verdict="none">
-        {/* pre-2026-08-29 rejections: the column was hard-coded NULL and
-            the ruling is gone for good */}
-        no verdict on record
-      </div>
-    )
-
-  return (
-    <div className="mt-2 border-t border-edge pt-2" data-verdict="read">
-      <Seat judge={v.judge} />
-      {v.criteria.map((c) => (
-        <Criterion key={c.key} c={c} />
-      ))}
-      {v.reservations.length > 0 && (
-        <div className="mt-2">
-          <div className="mb-0.5 text-[11px] tracking-wider text-ink-faint uppercase">
-            reservations — fired nothing, passed to the next wake
-          </div>
-          <ul className="space-y-0.5 pl-4 text-[12px] text-ink-faint">
-            {v.reservations.map((r, i) => (
-              <li key={i} className="list-disc marker:text-ink-faint">
-                {r}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {/* the ruling explains an adversary kill; anything else killed it
-          for a reason the criteria do not carry, and that IS the news */}
-      {v.status === 'rejected' && v.ruling !== 'rebut' && v.discard_reason && (
-        <div className="mt-2 text-[11px] text-ink-dim">
-          discarded — {v.discard_reason}
-        </div>
-      )}
-    </div>
-  )
+  return <VerdictBody v={v} />
 }
