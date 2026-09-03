@@ -2897,6 +2897,32 @@ def test_docs_round_trip_through_the_endpoints(workspace: Path) -> None:
                  ).status_code == 404
 
 
+def test_docs_read_raw_streams_the_bytes(workspace: Path) -> None:
+    """A pdf is not read into a JSON field. §3.6 allows either shape;
+    base64-in-JSON is the wrong one for a paper — the shelf holds a
+    25MB pdf, which is 33MB of JSON the browser has to parse before it
+    can show page one, and a blob cannot serve the range requests a pdf
+    viewer makes. `?raw=1` hands over the file itself, with its type."""
+    _with_project(workspace)
+    c = _client(workspace)
+    pdf = (workspace / "Problems" / "Erdos" / "_docs" / "user" / "papers"
+           / "abc")
+    pdf.mkdir(parents=True)
+    body = b"%PDF-1.4\nbody\n"
+    (pdf / "paper.pdf").write_bytes(body)
+    r = c.get("/api/projects/Erdos/docs/user/papers/abc/paper.pdf?raw=1")
+    assert r.status_code == 200
+    assert r.content == body
+    assert r.headers["content-type"].startswith("application/pdf")
+    # the JSON shape still answers for the callers that want it
+    j = c.get("/api/projects/Erdos/docs/user/papers/abc/paper.pdf").json()
+    assert j["encoding"] == "base64"
+    # and the fence is the same one: a path out of the root is refused
+    # whichever shape is asked for
+    assert c.get("/api/projects/Erdos/docs/user/../../x.md?raw=1"
+                 ).status_code in (404, 422)
+
+
 def test_docs_put_writes_only_the_user_area(workspace: Path) -> None:
     """§3.6: this door writes `user/`. `agent/` is the Assistant's
     shelf and reaching it from here would make the two areas one."""

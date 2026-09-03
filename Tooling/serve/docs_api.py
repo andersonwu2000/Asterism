@@ -26,6 +26,7 @@ import contextlib
 from pathlib import Path
 
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..state import project_docs as _docs
@@ -90,18 +91,46 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             return {"project": project, "entries": _docs.tree(workspace,
                                                               project)}
 
+    #: What `?raw=1` calls each kind, for the browser that will render
+    #: it. Anything else is served as bytes with no claim about them.
+    _MEDIA = {".pdf": "application/pdf", ".png": "image/png",
+              ".jpg": "image/jpeg", ".svg": "image/svg+xml",
+              ".md": "text/markdown; charset=utf-8",
+              ".tex": "text/plain; charset=utf-8",
+              ".txt": "text/plain; charset=utf-8",
+              ".lean": "text/plain; charset=utf-8"}
+
     @app.get("/api/projects/{project}/docs/{path:path}")
-    def docs_read(project: str, path: str) -> dict:
+    def docs_read(project: str, path: str, raw: int = 0):
         """One document. Text comes back as `content`; an image or pdf
         as `content_base64`, so one endpoint answers for both and the
-        client decides by which key is present."""
+        client decides by which key is present.
+
+        `?raw=1` hands over the FILE instead (§3.6 allows either shape).
+        A paper's pdf runs to tens of megabytes, and base64 in a JSON
+        field is 4/3 of that for the browser to parse before it can show
+        page one — and a blob cannot answer the range requests a pdf
+        viewer makes. Same address, same fence: only the wire shape
+        differs."""
         with _answers(project):
-            raw = _docs.read(workspace, project, path)
+            if raw:
+                target = _docs.locate(workspace, project, path)
+                if not target.is_file():
+                    raise KeyError(path)
+                suffix = target.suffix.lower()
+                return FileResponse(
+                    target,
+                    media_type=_MEDIA.get(suffix,
+                                          "application/octet-stream"),
+                    filename=target.name,
+                    content_disposition_type="inline")
+            raw_bytes = _docs.read(workspace, project, path)
             if _docs.is_binary(path):
                 return {"path": path, "encoding": "base64",
-                        "content_base64": base64.b64encode(raw).decode()}
+                        "content_base64":
+                            base64.b64encode(raw_bytes).decode()}
             return {"path": path, "encoding": "utf-8",
-                    "content": raw.decode("utf-8", errors="replace")}
+                    "content": raw_bytes.decode("utf-8", errors="replace")}
 
     @app.put("/api/projects/{project}/docs/{path:path}")
     def docs_write(project: str, path: str, body: DocBody) -> dict:

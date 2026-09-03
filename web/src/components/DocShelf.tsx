@@ -92,28 +92,14 @@ function TexBody({ content }: { content: string }) {
   )
 }
 
-/** A pdf, shown. The bytes arrive base64 in the document payload, so
- * they become a blob URL rather than a `data:` one: Chrome refuses to
- * hand a `data:application/pdf` frame to its viewer, and the URL is
- * revoked when the reader moves on so a long session does not hold
- * every paper it opened in memory. */
-function PdfBody({ path, base64 }: { path: string; base64: string }) {
-  const [url, setUrl] = useState<string | null>(null)
-  useEffect(() => {
-    const bin = atob(base64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    const u = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
-    setUrl(u)
-    return () => {
-      URL.revokeObjectURL(u)
-      setUrl(null)
-    }
-  }, [base64])
-  if (url === null) return <div className="text-xs text-ink-faint">opening…</div>
+/** A pdf, shown by the browser's own viewer. It is pointed at the raw
+ * document address rather than at a blob built from the base64 payload:
+ * a paper runs to tens of megabytes, and a blob cannot answer the range
+ * requests the viewer makes to open page one before the rest arrives. */
+function PdfBody({ project, path }: { project: string; path: string }) {
   return (
     <iframe
-      src={url}
+      src={`${docPath(project, path)}?raw=1`}
       title={path}
       className="h-full min-h-[36rem] w-full rounded-xl border border-edge bg-wash"
     />
@@ -121,19 +107,20 @@ function PdfBody({ path, base64 }: { path: string; base64: string }) {
 }
 
 function Body({
+  project,
   path,
   content,
   base64,
 }: {
+  project: string
   path: string
   content?: string
   base64?: string
 }) {
   const e = ext(path)
+  if (e === '.pdf') return <PdfBody project={project} path={path} />
   if (base64 !== undefined)
-    return e === '.pdf' ? (
-      <PdfBody path={path} base64={base64} />
-    ) : (
+    return (
       <img
         src={`data:${MIME[e] ?? 'application/octet-stream'};base64,${base64}`}
         alt={path}
@@ -357,6 +344,14 @@ export default function DocShelf({
   useEffect(() => {
     if (open === null || openIsDir) {
       setDoc(null)
+      return
+    }
+    // A pdf is never read INTO this component: its viewer fetches the
+    // raw address itself. Pulling the base64 payload here would be tens
+    // of megabytes nothing reads.
+    if (ext(open) === '.pdf') {
+      setLoadError(null)
+      setDoc({ path: open })
       return
     }
     let gone = false
@@ -849,7 +844,12 @@ export default function DocShelf({
           ) : (
             !openIsDir &&
             doc !== null && (
-              <Body path={doc.path} content={body} base64={doc.content_base64} />
+              <Body
+                project={project}
+                path={doc.path}
+                content={body}
+                base64={doc.content_base64}
+              />
             )
           )}
           {!openIsDir && open !== null && isImage(open) && doc === null && !loadError && (
