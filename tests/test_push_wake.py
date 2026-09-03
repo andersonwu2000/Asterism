@@ -198,6 +198,56 @@ def test_theory_verdict_object_rendering_still_refuses_a_bare_clear():
     assert "bare" in err
 
 
+def test_theory_verdict_takes_several_clear_bullets_per_criterion():
+    """One bullet per ITEM ruled on, clears included.
+
+    "clear takes exactly one entry" was inherited from the batch judge,
+    whose criteria rule on one proposal. A theory document carries
+    several theorems and several leads, so a criterion that asks about
+    them ("is every lead justified?") is answered one bullet per lead —
+    and both arm5F runs ended `judge_no_verdict` on a verdict that was
+    all-clear (`docs/internal/experiments/theory_wake/runs/arm5F_r1/
+    verdict_r3_raw2.json` criterion 4, `…/arm5F_r2/verdict_r2_raw2.json`
+    criterion 2). A criterion is clear iff EVERY bullet is a clear."""
+    from Tooling.experiments import theory_wake
+
+    keys = ("1", "2", "3", "4")
+    text = json.dumps({"criteria": {
+        "1": ["clear: Theorem 5 is a new bounded case of the obligation"],
+        "2": ["clear: Lemmas 1-3 and the (g,h) split supply the work",
+              "clear: I re-enumerated the seven-member families on 3 pts"],
+        "3": ["clear: the wall is extending exact restoration to g=7"],
+        "4": ["clear: the rank-three conjecture is motivated by Thm 2",
+              "clear: the cross-trace lead follows from the equality"]},
+        "reservations": []})
+    v, err = theory_wake.parse_theory_verdict(text, criteria_keys=keys)
+    assert err == "", err
+    assert v["verdict"] == "pass"
+    assert v["criticisms"] == []
+
+
+def test_theory_verdict_still_refuses_mixed_and_bare_clear_bullets():
+    """The relaxation is "several clears", not "anything goes": a
+    criterion is one ruling, so clear+fired in the same criterion stays
+    refused, and a bare `clear` among several stays refused too."""
+    from Tooling.experiments import theory_wake
+
+    mixed = json.dumps({"criteria": {
+        "1": ["clear: the statement is on no record"],
+        "2": ["clear: it implies main; the wall is Lemma 3"],
+        "3": ["clear: the n<=5 census reproduces",
+              "fired: the n=6 census could not be reproduced"]}})
+    v, err = theory_wake.parse_theory_verdict(mixed)
+    assert v is None and "mixes" in err
+
+    bare = json.dumps({"criteria": {
+        "1": ["clear: the statement is on no record"],
+        "2": ["clear: it implies main; the wall is Lemma 3"],
+        "3": ["clear: the n<=5 census reproduces", "clear"]}})
+    v, err = theory_wake.parse_theory_verdict(bare)
+    assert v is None and "bare" in err
+
+
 def test_theory_verdict_parser_flattens_a_nested_bullet_list():
     """The other reasonable rendering of "a list per criterion, one
     bullet per objection": the bullets arrive one level deeper."""

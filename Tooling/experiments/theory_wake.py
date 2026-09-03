@@ -255,20 +255,25 @@ def parse_theory_verdict(text: str, criteria_keys=CRITERIA_KEYS
                          ) -> "tuple[dict | None, str]":
     """Validate a theory judge's verdict.json and derive the ruling.
 
-    Same shape as the batch judge's — a list per criterion, one bullet
-    per objection, each bullet `"clear: <reason>"` or
-    `"fired: <objection>"`, any fired makes the verdict a rebut — over
-    the criteria THIS rubric has: `criteria_keys`, which the caller
-    takes from the judge prompt it spawned (`criteria_keys_for`), not
-    from the file the judge wrote. `strict=False` for the same reason
-    the batch parser uses it: a literal newline inside a string value
-    is not structural damage and has killed a wake over it.
+    Same shape as the batch judge's — a list per criterion, each bullet
+    `"clear: <reason>"` or `"fired: <objection>"`, any fired makes the
+    verdict a rebut — over the criteria THIS rubric has: `criteria_keys`,
+    which the caller takes from the judge prompt it spawned
+    (`criteria_keys_for`), not from the file the judge wrote.
+    `strict=False` for the same reason the batch parser uses it: a
+    literal newline inside a string value is not structural damage and
+    has killed a wake over it.
+
+    One bullet per ITEM ruled on, clears included: a criterion is clear
+    iff every bullet is a clear (a document with several theorems or
+    several leads is answered one bullet each). Mixed clear/fired in one
+    criterion is refused — a criterion is one ruling.
 
     A bullet may also arrive as an OBJECT carrying the ruling and its
     prose, or nested one list deeper (`_bullets`): those are renderings
-    of the same one-bullet-per-objection contract, and refusing them
-    cost arm3h_r2 both tries. What is NOT tolerated is a bare `clear` —
-    in any rendering.
+    of the same one-bullet-per-item contract, and refusing them cost
+    arm3h_r2 both tries. What is NOT tolerated is a bare `clear` — in
+    any rendering.
 
     Returns `({"verdict", "criticisms", "reservations", "criteria"},
     "")`, or `(None, <what to tell the judge>)`. The criticisms are the
@@ -309,18 +314,27 @@ def parse_theory_verdict(text: str, criteria_keys=CRITERIA_KEYS
         if "clear" in heads and "fired" in heads:
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
                           f"bullets — a criterion is one or the other")
-        if heads[0] == "clear" and len(vals) > 1:
-            return None, (f"criterion {k}: \"clear\" takes exactly one "
-                          f"entry")
         if heads[0] == "clear":
+            # SEVERAL clears are legal: a criterion is clear iff every
+            # bullet is one. "clear takes exactly one entry" came from
+            # the batch judge, whose criteria rule on a single proposal;
+            # a theory document carries several theorems and several
+            # leads, so a criterion that asks about them is answered one
+            # bullet per item — and that inherited rule ended BOTH arm5F
+            # runs as `judge_no_verdict` on verdicts that were all-clear
+            # (2026-09-04: runs/arm5F_r1/verdict_r3_raw2.json criterion
+            # 4, runs/arm5F_r2/verdict_r2_raw2.json criterion 2).
+            #
             # The prompt says "No criterion takes a bare `clear`" and
-            # this is the enforcement half. Prefix-keyed and
-            # annotation-tolerant, the batch parser's shape.
-            if not vals[0].strip()[len("clear"):].strip(" -—–:"):
-                return None, (
-                    f"criterion {k} never takes a bare \"clear\" — say "
-                    f"why it holds for THIS document: `\"clear: <one "
-                    f"concrete reason>\"`")
+            # this is the enforcement half — now per BULLET, so a bare
+            # one cannot hide behind a reasoned neighbour. Prefix-keyed
+            # and annotation-tolerant, the batch parser's shape.
+            for x in vals:
+                if not x.strip()[len("clear"):].strip(" -—–:"):
+                    return None, (
+                        f"criterion {k} never takes a bare \"clear\" — "
+                        f"say why it holds for THIS document: "
+                        f"`\"clear: <one concrete reason>\"`")
             continue
         for x in vals:
             xs = x.strip()
