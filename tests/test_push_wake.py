@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -263,8 +264,146 @@ def test_rejected_verdict_log_line_names_the_offending_shape():
 
 
 # ---------------------------------------------------------------------
+# arms 5F / 5X — a four-criterion rubric on the same wake
+# ---------------------------------------------------------------------
+
+def test_a_fourth_criterion_is_ruled_on_not_dropped():
+    """`theory5_judge.md` adjudicates FOUR (worth / rigour /
+    load-bearing work / leads). Read against the three-criterion key
+    set, criterion 4 is invisible: a fired objection is thrown away and
+    the wake is told the document PASSED. The expected key set is
+    therefore a parameter of the parse, declared per judge prompt."""
+    from Tooling.experiments import theory_wake
+
+    objection = ("the rank-three conjecture carries no test and does "
+                 "not say what a counterexample would look like")
+    text = json.dumps({"criteria": {
+        "1": ["clear: the persistent-coordinate statement is on no record"],
+        "2": ["clear: reran the n<=5 census, 1,171,932 families"],
+        "3": ["clear: the wall is the chain step, attacked in Lemma 2"],
+        "4": [f"fired: {objection}"]}})
+
+    keys = theory_wake.criteria_keys_for(Path("x/theory5_judge.md"))
+    assert keys == ("1", "2", "3", "4")
+    v, err = theory_wake.parse_theory_verdict(text, criteria_keys=keys)
+    assert err == ""
+    assert v["verdict"] == "rebut"
+    assert v["criticisms"] == [f"[criterion 4] {objection}"]
+    # The failure this parameter exists to prevent, kept visible: the
+    # three-criterion rubric reads the same bytes as an acceptance.
+    assert theory_wake.parse_theory_verdict(text)[0]["verdict"] == "pass"
+
+
+def test_a_four_criterion_rubric_refuses_a_missing_fourth():
+    from Tooling.experiments import theory_wake
+
+    text = json.dumps({"criteria": {
+        "1": ["clear: on no record"],
+        "2": ["clear: reran the census"],
+        "3": ["clear: the wall is Lemma 3"]}})
+    v, err = theory_wake.parse_theory_verdict(
+        text, criteria_keys=("1", "2", "3", "4"))
+    assert v is None
+    assert "4" in err
+
+
+def test_a_four_criterion_rubric_still_refuses_a_bare_clear():
+    """The bare-clear refusal is the rubric's, not criterion 3's: it
+    must fire on the fourth criterion too."""
+    from Tooling.experiments import theory_wake
+
+    text = json.dumps({"criteria": {
+        "1": ["clear: on no record"],
+        "2": ["clear: reran the census"],
+        "3": ["clear: the wall is Lemma 3"],
+        "4": ["clear"]}})
+    v, err = theory_wake.parse_theory_verdict(
+        text, criteria_keys=("1", "2", "3", "4"))
+    assert v is None
+    assert "bare" in err
+
+
+def test_an_unregistered_judge_prompt_is_a_hard_error():
+    """The key set is DECLARED per judge prompt, never counted out of
+    the prompt text: a rubric that guesses reads a judge who skipped a
+    criterion as a smaller rubric. A judge prompt nobody registered
+    stops the wake instead of silently getting three."""
+    from Tooling.experiments import theory_wake
+
+    with pytest.raises(SystemExit, match="theory9_judge.md"):
+        theory_wake.criteria_keys_for(Path("x/theory9_judge.md"))
+
+
+# ---------------------------------------------------------------------
 # run_matrix — what the first live matrix (2026-09-04) exposed
 # ---------------------------------------------------------------------
+
+def test_each_theory_arm_binds_its_own_author_and_judge_prompt():
+    """Arms 5F and 5X differ ONLY in the author's prompt (fixed section
+    shape vs. free), and both take the four-criterion judge. The arm is
+    what names its two prompts; every named prompt must exist and its
+    judge's rubric must be registered, or the arm would run against
+    another arm's prompt while looking like it worked."""
+    from Tooling.experiments import run_matrix, theory_wake
+
+    assert run_matrix.ARMS["arm5F"].author_prompt == "theory5F.md"
+    assert run_matrix.ARMS["arm5X"].author_prompt == "theory5X.md"
+    for arm in ("arm5F", "arm5X"):
+        assert run_matrix.ARMS[arm].judge_prompt == "theory5_judge.md"
+        assert run_matrix.ARMS[arm].theory
+    # arms 3 / 3h keep the prompts they ran with
+    assert run_matrix.ARMS["arm3"].author_prompt == "theory.md"
+    assert run_matrix.ARMS["arm3h"].judge_prompt == "theory_judge.md"
+    for name, arm in run_matrix.ARMS.items():
+        if not arm.theory:
+            continue
+        for rel in (arm.author_prompt, arm.judge_prompt):
+            assert (run_matrix.DESIGN_DIR / rel).is_file(), f"{name}: {rel}"
+        theory_wake.criteria_keys_for(arm.judge_prompt)
+
+
+def test_command_for_passes_the_arms_own_prompts(tmp_path):
+    from Tooling.experiments import run_matrix
+
+    cmd = run_matrix.command_for("arm5X", tmp_path)
+    assert cmd[cmd.index("--author-prompt") + 1] == \
+        "theory_prompts/theory5X.md"
+    assert cmd[cmd.index("--judge-prompt") + 1] == \
+        "theory_prompts/theory5_judge.md"
+    cmd3 = run_matrix.command_for("arm3h", tmp_path)
+    assert cmd3[cmd3.index("--author-prompt") + 1] == \
+        "theory_prompts/theory.md"
+    assert "--hide-owner-notes" in cmd3
+
+
+def test_overlay_gives_a_theory_arm_exactly_its_two_prompts(tmp_path):
+    """The workspace gets the arm's own two files under
+    `theory_prompts/` — and nothing else, so a stray prompt from
+    another arm cannot be picked up by a mistyped path."""
+    from Tooling.experiments import run_matrix
+
+    applied = run_matrix.apply_overlay(tmp_path, "arm5F")
+    assert sorted(applied) == ["theory_prompts/theory5F.md",
+                               "theory_prompts/theory5_judge.md"]
+    assert (tmp_path / "theory_prompts" / "theory5F.md").read_bytes() == \
+        (run_matrix.DESIGN_DIR / "theory5F.md").read_bytes()
+    assert not (tmp_path / "theory_prompts" / "theory.md").exists()
+
+
+def test_the_run_record_says_which_snapshot_the_run_started_from(tmp_path):
+    """The live state moves under the experiment — the daemon never
+    stops — so a matrix launched after the first one is NOT at the same
+    spacetime as it. When the copy was taken, and the Programme
+    revision it carries, belong in each run's record."""
+    from Tooling.experiments import run_matrix
+
+    snap = tmp_path / "_snapshot.db"
+    run_matrix.snapshot_meta_path(snap).write_text(json.dumps(
+        {"snapshot": snap.as_posix(), "taken_utc": "2026-09-04T09:00:00+00:00",
+         "group": 691, "programme_rev": 31, "goals": 812}), encoding="utf-8")
+    rec = run_matrix.snapshot_record(snap)
+    assert rec["taken_utc"] == "2026-09-04T09:00:00+00:00"
+    assert rec["programme_rev"] == 31
 
 def test_collect_binds_to_the_pipeline_the_run_itself_printed(tmp_path):
     """A scratch can hold more than one wake — arm3h_r2's did, after its

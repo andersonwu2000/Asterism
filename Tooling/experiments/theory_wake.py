@@ -17,9 +17,11 @@ Two things are deliberately NOT reused from `pipeline.adversary`:
 * `parse_verdict` — its contract is criteria "1".."5" and criterion 2's
   naming rule, held level with `Tooling/prompts/adversary/adversary.md`
   by `test_adversary_criteria_contract.py`. `theory_judge.md` rules on
-  three (Value / Relation / Rigour). Bending the shared parser to admit
-  three keys would move the batch judge's contract to serve an
-  experiment; `parse_theory_verdict` below is the experiment's own.
+  three (Value / Relation / Rigour) and `theory5_judge.md` on four.
+  Bending the shared parser to admit either would move the batch
+  judge's contract to serve an experiment; `parse_theory_verdict` below
+  is the experiment's own, and the key set it expects is a parameter
+  declared per judge prompt (`JUDGE_CRITERIA`).
 * `build_projection` — the batch judge's dossier is built around a
   proposal package (decisions.md, contract.md, proposal.md). This one
   is built around a document: charter, the Programme record, the four
@@ -32,7 +34,7 @@ in the attempts dir regardless.
     cd D:/Asterism_exp/arm3_r1 && python -m Tooling.experiments.theory_wake \
         --problem Combinatorics.union_closed --group 691 \
         --trigger inject_batch_done \
-        --prompt theory_prompts/theory.md \
+        --author-prompt theory_prompts/theory.md \
         --judge-prompt theory_prompts/theory_judge.md \
         --rounds 3 --out D:/Asterism/docs/internal/experiments/theory_wake/runs/arm3_r1
 """
@@ -60,6 +62,32 @@ VERDICT_BASENAME = "verdict.json"
 #: `theory_judge.md`'s rubric: Value / Relation / Rigour. Three, not
 #: the batch judge's five — see the module docstring.
 CRITERIA_KEYS = ("1", "2", "3")
+
+#: judge prompt file name → the criteria that rubric adjudicates.
+#: DECLARED, never counted out of the prompt text or out of the verdict:
+#: a key set read off the verdict would take a judge who skipped a
+#: criterion for a smaller rubric, and a key set the parse does not
+#: expect is silently dropped — a fired criterion 4 read against
+#: `CRITERIA_KEYS` comes back "pass" with the objection thrown away.
+#: A judge prompt nobody registered stops the wake instead.
+JUDGE_CRITERIA = {
+    # Value / Relation / Rigour
+    "theory_judge.md": CRITERIA_KEYS,
+    # Worth / Rigour / Load-bearing work / Leads (arms 5F, 5X)
+    "theory5_judge.md": ("1", "2", "3", "4"),
+}
+
+
+def criteria_keys_for(judge_prompt) -> "tuple[str, ...]":
+    """The criteria the given judge prompt rules on, by its file name."""
+    name = Path(judge_prompt).name
+    try:
+        return JUDGE_CRITERIA[name]
+    except KeyError:
+        raise SystemExit(
+            f"{name}: no rubric registered for this judge prompt — add "
+            f"its criteria keys to theory_wake.JUDGE_CRITERIA "
+            f"(have: {', '.join(sorted(JUDGE_CRITERIA))})") from None
 
 #: Judge re-spawns on a missing/malformed verdict, per round. Same
 #: number and same reason as `adversary.VERDICT_TRIES`: a judge that
@@ -223,13 +251,16 @@ def keep_rejected_verdict(vpath: Path, *, round_no: int,
     return dst
 
 
-def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
-    """Validate `theory_judge.md`'s verdict.json and derive the ruling.
+def parse_theory_verdict(text: str, criteria_keys=CRITERIA_KEYS
+                         ) -> "tuple[dict | None, str]":
+    """Validate a theory judge's verdict.json and derive the ruling.
 
     Same shape as the batch judge's — a list per criterion, one bullet
     per objection, each bullet `"clear: <reason>"` or
     `"fired: <objection>"`, any fired makes the verdict a rebut — over
-    THIS rubric's three criteria. `strict=False` for the same reason
+    the criteria THIS rubric has: `criteria_keys`, which the caller
+    takes from the judge prompt it spawned (`criteria_keys_for`), not
+    from the file the judge wrote. `strict=False` for the same reason
     the batch parser uses it: a literal newline inside a string value
     is not structural damage and has killed a wake over it.
 
@@ -254,15 +285,15 @@ def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
     if not isinstance(criteria, dict):
         return None, ("verdict.json needs a `criteria` object "
                       "adjudicating every criterion "
-                      + ", ".join(f'"{k}"' for k in CRITERIA_KEYS))
-    missing = [k for k in CRITERIA_KEYS if k not in criteria]
+                      + ", ".join(f'"{k}"' for k in criteria_keys))
+    missing = [k for k in criteria_keys if k not in criteria]
     if missing:
         return None, (f"verdict.json `criteria` missing criterion "
                       f"{', '.join(missing)} — every criterion gets a "
                       f"line, `\"clear: <reason>\"` or "
                       f"`\"fired: <objection>\"`")
     fired: list[str] = []
-    for k in CRITERIA_KEYS:
+    for k in criteria_keys:
         vals = _bullets(criteria[k])
         if vals is None:
             return None, (f"criterion {k} must be a list of strings "
@@ -307,7 +338,7 @@ def parse_theory_verdict(text: str) -> "tuple[dict | None, str]":
         "verdict": "rebut" if fired else "pass",
         "criticisms": fired,
         "reservations": reservations,
-        "criteria": {k: criteria[k] for k in CRITERIA_KEYS},
+        "criteria": {k: criteria[k] for k in criteria_keys},
     }, ""
 
 
@@ -425,10 +456,13 @@ def main(argv=None) -> int:
     ap.add_argument("--group", required=True, type=int)
     ap.add_argument("--trigger", default="inject_batch_done",
                     help="trigger_kind the Context is compiled for")
-    ap.add_argument("--prompt", required=True,
-                    help="the author's prompt file (theory.md), verbatim")
-    ap.add_argument("--judge-prompt", required=True,
-                    help="the reviewer's prompt file (theory_judge.md)")
+    ap.add_argument("--author-prompt", default="theory_prompts/theory.md",
+                    help="the author's prompt file, verbatim")
+    ap.add_argument("--judge-prompt",
+                    default="theory_prompts/theory_judge.md",
+                    help="the reviewer's prompt file; its NAME selects the "
+                         "rubric the verdict is read against "
+                         "(theory_wake.JUDGE_CRITERIA)")
     ap.add_argument("--rounds", type=int, default=3,
                     help="revision rounds a fired verdict may buy")
     ap.add_argument("--hide-owner-notes", action="store_true",
@@ -440,11 +474,14 @@ def main(argv=None) -> int:
 
     workspace = Path(a.workspace).resolve()
     assert_scratch(workspace)
-    author_prompt = Path(a.prompt).resolve()
+    author_prompt = Path(a.author_prompt).resolve()
     judge_prompt_src = Path(a.judge_prompt).resolve()
     for p in (author_prompt, judge_prompt_src):
         if not p.is_file():
             raise SystemExit(f"no prompt file at {p}")
+    # Before the DB is touched: an unregistered judge prompt is a wake
+    # that would spawn a judge and then refuse whatever it wrote.
+    criteria_keys = criteria_keys_for(judge_prompt_src)
     out = Path(a.out).resolve() if a.out else None
 
     os.chdir(workspace)
@@ -508,7 +545,9 @@ def main(argv=None) -> int:
     sid = str(uuid.uuid4())
     print(f"[theory] {a.problem} g{a.group} trigger={a.trigger!r} "
           f"pipeline={pipeline_id} attempts={attempts_dir} "
-          f"owner_notes={'hidden' if a.hide_owner_notes else 'present'}",
+          f"owner_notes={'hidden' if a.hide_owner_notes else 'present'} "
+          f"author={author_prompt.name} judge={judge_prompt_src.name} "
+          f"criteria={','.join(criteria_keys)}",
           flush=True)
 
     turns: list[dict] = []
@@ -585,7 +624,8 @@ def main(argv=None) -> int:
                 verr = "judge produced no verdict.json"
             else:
                 raw = vpath.read_text(encoding="utf-8")
-                verdict, verr = parse_theory_verdict(raw)
+                verdict, verr = parse_theory_verdict(
+                    raw, criteria_keys=criteria_keys)
                 if verdict is None:
                     # The refused file IS the evidence for the refusal;
                     # it moves aside, it does not vanish.
@@ -634,6 +674,7 @@ def main(argv=None) -> int:
         "context_chars": len(ctx_text),
         "author_prompt": author_prompt.as_posix(),
         "judge_prompt": judge_prompt_src.as_posix(),
+        "criteria_keys": list(criteria_keys),
         "outcome": outcome,
         "attempts_dir": attempts_dir.as_posix(),
         "transcript_dir": transcript.as_posix() if transcript else None,

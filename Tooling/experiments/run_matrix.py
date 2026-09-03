@@ -1,8 +1,11 @@
 """Build the theory-wake experiment's scratch workspaces and run the
 matrix in them, concurrently (2026-09-04).
 
-Five arms at ONE spacetime — the live state as of the build, group 691
-of `Combinatorics.union_closed`, the configured seats:
+The arms of one matrix run at ONE spacetime — the live state as of the
+build, group 691 of `Combinatorics.union_closed`, the configured seats.
+A matrix launched later takes its OWN snapshot (the daemon never stops),
+so each run's record carries the instant its copy was taken and the
+Programme revision that copy holds.
 
   arm2  / arm4 / arm24  a normal Strategist wake (`replay_strategist`:
                         agent → verify → judge loop → commit into the
@@ -12,11 +15,15 @@ of `Combinatorics.union_closed`, the configured seats:
                         one reviewer, up to three revisions.
   arm3h                 arm3 with the Context's `## Owner's notes`
                         removed.
+  arm5F / arm5X         the theory wake under the four-criterion judge
+                        (`theory5_judge.md`), the author's report shape
+                        fixed (5F) or left to the mathematics (5X).
 
-The snapshot is taken ONCE — a `mode=ro` connection and the sqlite
-backup API, which is WAL-safe against the daemon writing underneath —
-and copied into every workspace, so all ten runs really do start from
-the same instant rather than from ten instants a minute apart.
+The snapshot is taken ONCE per matrix — a `mode=ro` connection and the
+sqlite backup API, which is WAL-safe against the daemon writing
+underneath — and copied into every workspace, so the runs of that
+matrix really do start from the same instant rather than from as many
+instants a minute apart.
 
 Two things the workspaces deliberately do NOT carry: `.git` (a symlink
 to the live repo would put ten concurrent `git status` calls on the
@@ -43,6 +50,7 @@ import tarfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parents[2]
 DESIGN_DIR = REPO / "docs" / "internal" / "experiments" / "theory_wake"
@@ -53,13 +61,38 @@ PROBLEM = "Combinatorics.union_closed"
 GROUP = 691
 TRIGGER = "inject_batch_done"
 
-#: arm → (overlay source arm, theory-wake?, extra flags)
+class Arm(NamedTuple):
+    """One arm of the matrix.
+
+    A pipeline arm is defined by its prompt OVERLAY (a directory under
+    `prompts/` whose every file replaces one of the workspace's own).
+    A theory arm has no overlay: it is defined by the two prompts it
+    names, which are files of this design directory and are copied into
+    the workspace's `theory_prompts/`. The arm is what binds prompt to
+    run — arms 5F and 5X differ in the author's prompt alone, and a
+    binding read from anywhere else would run one of them twice while
+    looking like it worked.
+    """
+    overlay: "str | None" = None
+    theory: bool = False
+    flags: "tuple[str, ...]" = ()
+    author_prompt: str = "theory.md"
+    judge_prompt: str = "theory_judge.md"
+
+
 ARMS = {
-    "arm2": ("arm2", False, ()),
-    "arm4": ("arm4", False, ()),
-    "arm24": ("arm24", False, ()),
-    "arm3": ("arm3", True, ()),
-    "arm3h": ("arm3", True, ("--hide-owner-notes",)),
+    "arm2": Arm(overlay="arm2"),
+    "arm4": Arm(overlay="arm4"),
+    "arm24": Arm(overlay="arm24"),
+    "arm3": Arm(theory=True),
+    "arm3h": Arm(theory=True, flags=("--hide-owner-notes",)),
+    # 2026-09-04, second matrix: the four-criterion rubric (worth /
+    # rigour / load-bearing work / leads) on a fixed report shape (5F)
+    # and on a free one (5X). Same judge, same Context, notes present.
+    "arm5F": Arm(theory=True, author_prompt="theory5F.md",
+                 judge_prompt="theory5_judge.md"),
+    "arm5X": Arm(theory=True, author_prompt="theory5X.md",
+                 judge_prompt="theory5_judge.md"),
 }
 
 DEFAULT_MATRIX = "arm2:2,arm4:2,arm24:2,arm3:2,arm3h:2"
@@ -112,6 +145,32 @@ def snapshot_db(live_db: Path, dst: Path) -> None:
     verify_db(dst)
 
 
+def snapshot_meta_path(snapshot: Path) -> Path:
+    """The sidecar beside a snapshot DB recording when it was taken."""
+    return snapshot.with_suffix(".json")
+
+
+def snapshot_record(snapshot: Path) -> dict:
+    """What a run started from: the copy, the instant it was taken, and
+    the Programme revision it carries.
+
+    The live state moves under the experiment — the daemon never stops —
+    so a matrix launched after an earlier one is NOT at the same
+    spacetime as it, and two arms' documents are comparable only against
+    the state they each saw. The sidecar carries the instant (only the
+    process that took the copy knows it); the rev is read back out of
+    the copy itself, so a record can be rebuilt from the DB alone.
+    """
+    p = snapshot_meta_path(snapshot)
+    if p.is_file():
+        try:
+            return dict(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+    return {"snapshot": snapshot.as_posix(), "taken_utc": None,
+            **verify_db(snapshot)}
+
+
 def verify_db(path: Path) -> dict:
     """The copy opens, and it carries the group the matrix runs on."""
     c = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
@@ -159,26 +218,27 @@ def apply_overlay(ws: Path, arm: str) -> "list[str]":
     file is an overlay whose target moved, and it would run the arm
     against the unedited prompt while looking like it worked.
 
-    arm3's two files are not prompts of the pipeline at all
-    (`theory.md` / `theory_judge.md` are the theory wake's own), so they
-    land beside the workspace as `theory_prompts/` instead.
+    A theory arm's files are not prompts of the pipeline at all (the
+    theory wake's author and judge prompts are its own), so the two the
+    arm names land beside the workspace as `theory_prompts/` instead —
+    those two and nothing else, so no other arm's prompt is reachable
+    from the workspace by a mistyped path.
     """
-    src_arm, theory, _ = ARMS[arm]
-    src = OVERLAY_ROOT / src_arm
-    if not src.is_dir():
-        raise SystemExit(f"no overlay at {src} — run make_arms.py first")
+    spec = ARMS[arm]
     applied: list[str] = []
-    if theory:
+    if spec.theory:
         dst_dir = ws / "theory_prompts"
         dst_dir.mkdir(parents=True, exist_ok=True)
-        for p in sorted(src.rglob("*")):
-            if p.is_file():
-                shutil.copyfile(p, dst_dir / p.name)
-                applied.append(f"theory_prompts/{p.name}")
-        for need in ("theory.md", "theory_judge.md"):
-            if not (dst_dir / need).is_file():
-                raise SystemExit(f"{arm}: overlay has no {need}")
+        for rel in (spec.author_prompt, spec.judge_prompt):
+            src = DESIGN_DIR / rel
+            if not src.is_file():
+                raise SystemExit(f"{arm}: no prompt file at {src}")
+            shutil.copyfile(src, dst_dir / src.name)
+            applied.append(f"theory_prompts/{src.name}")
         return applied
+    src = OVERLAY_ROOT / spec.overlay
+    if not src.is_dir():
+        raise SystemExit(f"no overlay at {src} — run make_arms.py first")
     for p in sorted(src.rglob("*")):
         if not p.is_file():
             continue
@@ -226,19 +286,22 @@ def build_workspace(ws: Path, arm: str, snapshot: Path) -> dict:
 # ---------------------------------------------------------------------
 
 def command_for(arm: str, run_dir: Path) -> "list[str]":
-    _, theory, extra = ARMS[arm]
-    if theory:
+    spec = ARMS[arm]
+    if spec.theory:
         return [sys.executable, "-m", "Tooling.experiments.theory_wake",
                 "--workspace", ".", "--problem", PROBLEM,
                 "--group", str(GROUP), "--trigger", TRIGGER,
-                "--prompt", "theory_prompts/theory.md",
-                "--judge-prompt", "theory_prompts/theory_judge.md",
-                "--rounds", "3", "--out", str(run_dir), *extra]
+                "--author-prompt",
+                f"theory_prompts/{Path(spec.author_prompt).name}",
+                "--judge-prompt",
+                f"theory_prompts/{Path(spec.judge_prompt).name}",
+                "--rounds", "3", "--out", str(run_dir), *spec.flags]
     return [sys.executable, "-m",
             "Tooling.experiments.replay_strategist",
             "--workspace", ".", "--problem", PROBLEM,
             "--group", str(GROUP), "--trigger", TRIGGER,
-            "--since", datetime.now(timezone.utc).isoformat(), *extra]
+            "--since", datetime.now(timezone.utc).isoformat(),
+            *spec.flags]
 
 
 #: The pipeline id a run prints for itself — `[theory] … pipeline=<id>`
@@ -278,7 +341,7 @@ def collect(ws: Path, arm: str, run_dir: Path) -> dict:
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     kept: list[str] = []
-    _, theory, _ = ARMS[arm]
+    theory = ARMS[arm].theory
     marker = "theory_result.json" if theory else "replay_result.json"
     attempts = None
     bound = pipeline_id_from_log(run_dir / "run.log")
@@ -334,10 +397,10 @@ def collect(ws: Path, arm: str, run_dir: Path) -> dict:
 
 def status_line(arm: str, k: int, rec: dict) -> str:
     r = rec.get("collected", {}).get("result") or {}
-    _, theory, _ = ARMS[arm]
-    if theory:
+    if ARMS[arm].theory:
         tail = (f"outcome={r.get('outcome')} "
                 f"rounds={len(r.get('rounds', []))} "
+                f"author={Path(r.get('author_prompt') or '').name} "
                 f"owner_notes="
                 f"{'hidden' if r.get('hide_owner_notes') else 'present'}")
     else:
@@ -384,7 +447,11 @@ def main(argv=None) -> int:
             print(f"[matrix] snapshotting the live DB → {snapshot}",
                   flush=True)
             snapshot_db(REPO / "asterism.db", snapshot)
-        print(f"[matrix] snapshot: {verify_db(snapshot)}", flush=True)
+            snapshot_meta_path(snapshot).write_text(json.dumps(
+                {"snapshot": snapshot.as_posix(),
+                 "taken_utc": datetime.now(timezone.utc).isoformat(),
+                 **verify_db(snapshot)}, indent=2), encoding="utf-8")
+        print(f"[matrix] snapshot: {snapshot_record(snapshot)}", flush=True)
         for arm, n in matrix:
             for k in range(1, n + 1):
                 ws = exp_root / f"{arm}_r{k}"
@@ -395,12 +462,21 @@ def main(argv=None) -> int:
         return 0
 
     procs: "list[tuple[str, int, Path, Path, subprocess.Popen, object, float]]" = []
+    # The spacetime each run starts from, read BEFORE it runs: the
+    # snapshot's instant, and the Programme revision this workspace's
+    # own copy carries (a replay arm commits into its copy, so the same
+    # question asked afterwards answers about the end state).
+    snap_rec = snapshot_record(snapshot)
+    started: "dict[tuple[str, int], dict]" = {}
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     for arm, n in matrix:
         for k in range(1, n + 1):
             ws = exp_root / f"{arm}_r{k}"
             if not (ws / "asterism.db").is_file():
                 raise SystemExit(f"{ws}: not built — pass --build")
+            started[(arm, k)] = {"snapshot": snap_rec,
+                                 "db_at_launch": verify_db(ws / "asterism.db"),
+                                 "arm": ARMS[arm]._asdict()}
             run_dir = runs_dir / f"{arm}_r{k}"
             run_dir.mkdir(parents=True, exist_ok=True)
             cmd = command_for(arm, run_dir)
@@ -421,7 +497,7 @@ def main(argv=None) -> int:
         rc = p.wait()
         log.close()
         rec = {"rc": rc, "wall_sec": time.monotonic() - t0,
-               "workspace": ws.as_posix()}
+               "workspace": ws.as_posix(), **started[(arm, k)]}
         try:
             rec["collected"] = collect(ws, arm, run_dir)
         except Exception as e:  # noqa: BLE001 — a broken run must not
