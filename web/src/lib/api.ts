@@ -96,6 +96,16 @@ export function apiPut<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+/** Change part of a resource — the Project row is the one surface that
+ * takes a partial write (a rename, a re-blurb, or both). */
+export function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
 export function apiDelete<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' })
 }
