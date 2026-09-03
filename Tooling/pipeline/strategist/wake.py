@@ -77,6 +77,16 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     return body, sections, None
 
 
+def _judge_warning(length_warn: "str | None",
+                   nd_notice: "str | None") -> "str | None":
+    """What the judge reads above the proposal: both prominent
+    warnings, either optional. Kept separate from what the REBUTTAL
+    carries (`length_warn` alone) — the rebuttal's escalation sentence
+    is "the revision must come back smaller", which answers a bloated
+    proposal and nothing else."""
+    return "\n".join(w for w in (length_warn, nd_notice) if w) or None
+
+
 def _format_rebuttal(verdict: dict, round_no: int,
                      rounds_left: int,
                      length_warn: "str | None" = None,
@@ -363,6 +373,12 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     _last_judged: "str | None" = None
     _last_rebuttal: "str | None" = None
     _no_delta = 0
+    #: `native_decide` soft confirm gate (owner design 2026-09-04) —
+    #: asked at most once per wake, and the turn it costs is FREE
+    #: (`_nd_bounce`): the framework asked a question, so it pays for
+    #: the answer.
+    _nd_asked = False
+    _nd_bounce = False
     while True:
         # Round-boundary race-guard: the authoring group can be retired
         # mid-dialogue (ancestor ReturnToParent cascade). Ask before
@@ -434,9 +450,37 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 err_is_rebuttal = True
             elif not err:
                 _no_delta = 0
+            # ── `native_decide` soft confirm gate (owner design
+            # 2026-09-04), the shape the formalizer side already has
+            # (`rpc.py::_native_decide_gate`, a77a32c3): show the bill
+            # before the purchase, once, and let the resend be the
+            # confirmation. It sits AFTER the delta gate on purpose —
+            # a byte-identical body is an accident signature first, and
+            # must reach that gate — and BEFORE the judge, so the
+            # author can withdraw a doomed step without spending a
+            # judgement on it. `_last_judged` is deliberately NOT set:
+            # this bounce never reached the judge, so an unchanged
+            # resend is a confirmation, not a no-delta.
+            if not err and not _nd_asked:
+                _nd_ask = _programme.native_decide_confirm(
+                    proposal_body or "", _nd_asked)
+                if _nd_ask:
+                    _nd_asked = True
+                    # The turn is round-free (owner ruling 2026-09-04):
+                    # the framework asked the question, so it pays for
+                    # the answer — the loop tail skips both the
+                    # exhaustion check and the `rounds_used` bump.
+                    _nd_bounce = True
+                    print(f"[strategist] {problem}: native_decide "
+                          "confirm gate — asked once, judge skipped",
+                          flush=True)
+                    err = _nd_ask
             if not err:
-                proof_warn = _programme.length_warning(
+                length_warn = _programme.length_warning(
                     sections, proposal_body)
+                nd_notice = _programme.native_decide_warning(
+                    proposal_body or "")
+                proof_warn = _judge_warning(length_warn, nd_notice)
                 if proof_warn:
                     print(f"[strategist] {problem}: {proof_warn}",
                           flush=True)
@@ -507,7 +551,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 err = _format_rebuttal(
                     verdict, rounds_used + 1,
                     max_rounds - rounds_used,
-                    length_warn=proof_warn,
+                    length_warn=length_warn,
                     since_label=_label, since=_since)
                 err_is_rebuttal = True
                 # delta-gate bookkeeping: THIS body is what the judge
@@ -518,7 +562,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             break  # verify clean; exempt batches skip the package gate
         if first_err is None:
             first_err = err
-        if rounds_used >= max_rounds:
+        if rounds_used >= max_rounds and not _nd_bounce:
             if err_is_rebuttal and proposal_body is not None:
                 # Exhaustion on the adversarial channel discards the
                 # proposal AND the session: the rejected draft + full
@@ -556,7 +600,16 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 failure_detail=(f"verify (round {rounds_used}): {err}; "
                                 f"first-attempt: {first_err}"),
             )
-        rounds_used += 1
+        # The `native_decide` confirm turn is free (owner ruling
+        # 2026-09-04): the framework asked, so it pays — the spawn
+        # below still happens, on the same sid with the notice as
+        # `retry_context`, but it buys back no revision round. The
+        # gate fires at most once per wake (`_nd_asked`), so this can
+        # grant at most one free turn.
+        if _nd_bounce:
+            _nd_bounce = False
+        else:
+            rounds_used += 1
         # Same class as the judge's infra retry (task #132): this wake
         # already holds a parsed batch (and possibly rounds of
         # criticism); a provider-side rc on the revision spawn must cost

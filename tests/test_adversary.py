@@ -75,6 +75,9 @@ def _d(kind: str, **kw) -> SimpleNamespace:
 _PROPOSAL = ("# Step\n## Argument\nWhy this batch.\n"
              "## Proof\nThe route holds.\n## Roadmap\n1. the brick\n")
 
+_INJECT_PROOF = ("Theorem. Roadmap: the brick\n## Need\nbrick\n"
+                 "Proof. as argued.")
+
 
 # -------------------------------------------------------------- gate
 
@@ -395,6 +398,70 @@ def test_mechanical_discard_also_records_a_reason(
     assert row["discard_reason"] == "package verify rejected"
     notice = programme.rejection_notice(conn, "p")
     assert notice and "package verify" in notice
+
+
+def test_native_decide_mention_bounces_once_before_the_judge(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Soft confirm gate (owner design 2026-09-04), the shape the
+    formalizer already has in `rpc.py::_native_decide_gate`: a proposal
+    mentioning `native_decide` is bounced back to its author ONCE,
+    unjudged, with the qualified notice — and the resubmission reaches
+    the judge whether it was revised or deliberately left unchanged.
+    An unchanged resubmit must NOT be eaten by the delta gate: that
+    gate keys on the body the JUDGE rejected, and this bounce never
+    reached him. And the confirm turn is FREE (owner ruling
+    2026-09-04): asking a question costs the author no revision
+    round."""
+    _insert_root(conn)
+    state = {"adversary_calls": 0, "strategist_calls": 0,
+             "retry_contexts": []}
+    nd = _PROPOSAL.replace("The route holds.",
+                           "The route holds by native_decide.")
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            state["adversary_calls"] += 1
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps({"criteria": _criteria(),
+                            "reservations": []}), encoding="utf-8")
+            return 0
+        state["strategist_calls"] += 1
+        if kw.get("retry_context") is not None:
+            state["retry_contexts"].append(kw["retry_context"])
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Inject", "pipeline": "Forward",
+                        "proof": _INJECT_PROOF}),
+            encoding="utf-8")
+        # Byte-identical resubmission: the author judged the mention
+        # deliberate and confirms by resending.
+        (kw["attempts_dir"] / "proposal.md").write_text(
+            nd, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
+        workspace=workspace, intent=pintent, pipeline_id="adv-nd",
+    )
+    assert r.outcome == "success", r.failure_detail
+    # Round 1 bounced without the judge; round 2 was judged.
+    assert state["strategist_calls"] == 2
+    assert state["adversary_calls"] == 1
+    assert len(state["retry_contexts"]) == 1
+    ask = state["retry_contexts"][0]
+    assert "NATIVE_DECIDE NOTICE" in ask
+    assert "Resubmit proposal.md" in ask
+    # It is the confirm gate speaking, not the judge and not the
+    # delta gate.
+    assert "ADVERSARY REBUTTAL" not in ask
+    assert "mechanical delta gate" not in ask
+    assert "come back smaller" not in ask
+    # The confirm turn is round-free: the passed rev records ZERO
+    # revision rounds even though two strategist spawns happened.
+    row = programme.current_rev(conn, "p")
+    assert row is not None and row["rounds"] == 0
 
 
 def test_exempt_batch_skips_adversary(

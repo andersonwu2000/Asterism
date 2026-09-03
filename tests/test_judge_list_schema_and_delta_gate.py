@@ -59,3 +59,38 @@ def test_the_naming_rule_survives_the_list_form() -> None:
     assert v is None and adversary.NAMING_CRITERION in err
 
 
+
+
+# ------------------------------- native_decide soft confirm gate
+
+def test_the_rebuttal_never_carries_the_native_decide_notice() -> None:
+    """The rebuttal's over-length escalation ends "The revision must
+    come back smaller." — true of a bloated proposal, nonsense as an
+    answer to a `native_decide` mention. Before 2026-09-04 the notice
+    rode `length_warn` into exactly that sentence. The judge still
+    reads both (they are joined for its projection); the rebuttal takes
+    the length warning alone."""
+    from Tooling.state import programme
+    from Tooling.pipeline.strategist.wake import _format_rebuttal
+
+    verdict = {"criticisms": ["[criterion 2] the step is unproven"]}
+    notice = programme.native_decide_warning("plan: native_decide")
+    assert notice is not None
+
+    # Only the notice tripped → the rebuttal says nothing about size.
+    reb = _format_rebuttal(verdict, 1, 2, length_warn=None)
+    assert "NATIVE_DECIDE" not in reb
+    assert "come back smaller" not in reb
+
+    # A real length warning still escalates, and still alone.
+    length = "⚠ PROOF LENGTH WARNING: 99999 chars"
+    reb = _format_rebuttal(verdict, 1, 2, length_warn=length)
+    assert length in reb and "come back smaller" in reb
+    assert "NATIVE_DECIDE" not in reb
+
+    # …and the judge's own line is the two joined, either side optional.
+    from Tooling.pipeline.strategist.wake import _judge_warning
+    assert _judge_warning(None, None) is None
+    assert _judge_warning(length, None) == length
+    assert _judge_warning(None, notice) == notice
+    assert _judge_warning(length, notice) == length + "\n" + notice
