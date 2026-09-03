@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { usePoll } from '../lib/api'
 import { goalCode, goalLabel, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
@@ -17,10 +18,61 @@ import { GoalCommandSheet } from './CommandSheet'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
 
-/** Right-hand drill-down for a selected goal: the declaration source
- * as written (`name : statement := proof`, import prelude stripped),
- * routes, and — while the goal is still unproved — dead-attempt
- * forensics. A proved star's past failures are history, not signal. */
+/** Right-hand drill-down for a selected goal.
+ *
+ * WHAT IT SAYS FIRST is the whole design (human_interface_design.md
+ * §1.4-2: "點擊星星後的展開介面應重新設計：進去只展示狀態、註解和
+ * statement，完整代碼、歷史、指令應點開後檢視"). A star is opened to
+ * answer one question — what is this, and where does it stand — and the
+ * panel used to answer it under eighty lines of Lean, a route list and
+ * thirty dead attempts. So the front is the status marks and the
+ * STATEMENT, and everything else is behind a control the reader opens:
+ * the declaration as written, the routes, and the dead-attempt
+ * forensics.
+ *
+ * Collapsed is not hidden: every fold names what is inside it and how
+ * much of it there is, so nothing about the node is a surprise. */
+
+/** One disclosure. The label is a section label that happens to open —
+ * the same eyebrow the panel already speaks in, so a fold does not
+ * arrive as a new kind of thing (DESIGN.md: settled ink, no new
+ * devices). The count rides in the label: a reader must be able to see
+ * there are thirty dead attempts without opening thirty. */
+function Fold({
+  label,
+  count,
+  title,
+  children,
+}: {
+  label: string
+  count?: number
+  title?: string
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mb-4">
+      <button
+        className="mb-2 flex w-full cursor-pointer items-baseline gap-1.5 text-[11px] font-medium tracking-widest text-ink-faint/70 uppercase transition-colors hover:text-ink-dim"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={title}
+      >
+        <span
+          className={`inline-block text-[9px] transition-transform duration-150 ${
+            open ? 'rotate-90' : ''
+          }`}
+          aria-hidden
+        >
+          ▸
+        </span>
+        {label}
+        {count !== undefined && <span className="tnum normal-case">({count})</span>}
+      </button>
+      {open && children}
+    </div>
+  )
+}
 
 function Attempt({ a }: { a: DeadAttempt }) {
   const [open, setOpen] = useState(false)
@@ -223,7 +275,27 @@ export default function GoalPanel({
                 </span>
               )}
             </div>
-            <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
+            {/* the statement, and nothing else, is what opening a star
+                answers. It is the proposition as the engine holds it —
+                not the file, which may be a `sorry` stub, a live
+                decomposition or a finished proof, and which is one
+                control away. */}
+            <SectionLabel>statement</SectionLabel>
+            <pre
+              className={frameClass({
+                frame: false,
+                lead: 'quote',
+                tone: 'ink',
+                size: 'md',
+                className: 'mb-4',
+              })}
+            >
+              <Lean code={data.statement} />
+            </pre>
+            <Fold
+              label="full source"
+              title="the declaration as written, and the file it is in"
+            >
             {/* A node's own file is a `:= by sorry` stub for its whole
                 working life — the decomposition lives in the ROUTE's
                 file, a live attempt only in a workarea. The panel now
@@ -236,8 +308,8 @@ export default function GoalPanel({
                 folds away so the first visible line is the THEOREM —
                 a professor judging a claim wants the proposition, not
                 eight lines of plumbing (design round, 2026-07-13) */}
-            {(() => {
-              const src = data.proof_text ?? data.statement
+            {data.proof_text !== null && (() => {
+              const src = data.proof_text ?? ''
               const lines = src.split('\n')
               let cut = 0
               while (
@@ -274,6 +346,14 @@ export default function GoalPanel({
                 </>
               )
             })()}
+            {data.proof_text === null && (
+              // the engine holds the statement; this node's own file
+              // could not be read (a v40 task with nothing on disk yet)
+              <div className="mb-2 text-[11px] text-ink-faint">
+                no file read for this node — the statement above is the engine's record
+                of it.
+              </div>
+            )}
             <div className="mb-4 text-[11px] break-all text-ink-faint">
               {onOpenFile && (data.source_path ?? data.lean_path).includes('proofs/') ? (
                 <button
@@ -291,9 +371,13 @@ export default function GoalPanel({
                 (data.source_path ?? data.lean_path)
               )}
             </div>
+            </Fold>
             {data.strategies.filter((s) => s.subgoal_count > 0).length > 0 && (
-              <>
-                <SectionLabel>routes</SectionLabel>
+              <Fold
+                label="routes"
+                count={data.strategies.filter((s) => s.subgoal_count > 0).length}
+                title="how the engine has tried to split this node"
+              >
                 <div className="mb-4 flex flex-col gap-0.5">
                   {data.strategies
                     .filter((s) => s.subgoal_count > 0)
@@ -416,17 +500,20 @@ export default function GoalPanel({
                       )
                     })}
                 </div>
-              </>
+              </Fold>
             )}
             {data.status !== 'proved' && data.dead_attempts.length > 0 && (
-              <>
-                <SectionLabel>failed attempts ({data.dead_attempts.length})</SectionLabel>
+              <Fold
+                label="failed attempts"
+                count={data.dead_attempts.length}
+                title="what has been tried on this node and died — a proved star's failures are history, not signal"
+              >
                 <div className="flex flex-col gap-1.5">
                   {data.dead_attempts.map((a) => (
                     <Attempt key={a.id} a={a} />
                   ))}
                 </div>
-              </>
+              </Fold>
             )}
           </>
         )}
