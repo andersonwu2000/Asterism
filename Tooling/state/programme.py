@@ -286,25 +286,64 @@ def length_warning(sections: dict[str, str],
             f"⚠ PROPOSAL LENGTH WARNING: {d} chars total (threshold "
             f"{DOC_WARN_CHARS}). Distill the settled — a closed line "
             "collapses to its conclusion.")
-    # Doomed-route warning, same surface as the length warnings (owner
-    # call 2026-08-25): union_closed shipped TEN passed revisions
-    # planning `native_decide` routes — every resulting brick died at
-    # the commit axiom gate, and only the dying worker ever saw that
-    # message, so the NL layer kept re-planning the route. The judge
-    # reads this line in the projection; a proposal that keeps the
-    # step is rebuttable on it alone.
-    hay = body if body is not None else "\n".join(sections.values())
-    if "native_decide" in hay:
-        warns.append(
-            "⚠ NATIVE_DECIDE WARNING: this proposal plans a "
-            "`native_decide` route. `native_decide` proves via the "
-            "`Lean.ofReduceBool` axiom, which is NOT on the axiom "
-            "whitelist — the commit gate rejects every such brick "
-            "UNCONDITIONALLY, so the batch as planned cannot land. "
-            "Re-plan the finite check as kernel `decide` (keep the "
-            "instance small enough to reduce) or as a structural "
-            "proof.")
     return "\n".join(warns) if warns else None
+
+
+#: Same token test the formalizer's gate uses (`rpc.py`
+#: `_NATIVE_DECIDE_RE`) — one definition of "this text is about
+#: `native_decide`" across both sides, word-bounded so a longer
+#: identifier that merely contains the token does not trip it.
+_NATIVE_DECIDE_RE = re.compile(r"\bnative_decide\b|Lean\.ofReduceBool")
+
+#: 2026-09-04 requirement change. The 08-25 warning was a length
+#: warning that fired on the bare substring and then asserted "the
+#: batch as planned cannot land" — over-claiming twice over: a closure
+#: note recording that the route died, or a Conventions line
+#: PROHIBITING it, mentions the token without planning anything, and
+#: the mention is in NL prose that no formalization need follow. What
+#: is certain is conditional: IF a brick's formalization uses it, the
+#: commit axiom gate rejects that brick, after minutes of native
+#: compilation. So the notice states the condition and leaves the
+#: judgement of whether it applies where it belongs.
+_NATIVE_DECIDE_NOTICE = (
+    "⚠ NATIVE_DECIDE NOTICE: this proposal mentions `native_decide`. "
+    "If a planned brick's formalization must use it, the commit axiom "
+    "gate rejects that brick unconditionally (`Lean.ofReduceBool` is "
+    "not on the axiom whitelist) — and the native compilation runs "
+    "for minutes before any gate speaks. A closure note or a "
+    "prohibition changes nothing; a step that relies on it must be "
+    "re-planned as kernel `decide` on an instance small enough to "
+    "reduce, a written-out finite case split, or a structural proof.")
+
+
+def native_decide_warning(body: str) -> Optional[str]:
+    """The qualified `native_decide` notice, or None.
+
+    Its own surface, not a length warning: the two are joined for the
+    judge's projection but only the length one may carry "the revision
+    must come back smaller" (a bloated proposal shrinks; a proposal
+    that mentions an axiom does not)."""
+    if not _NATIVE_DECIDE_RE.search(body or ""):
+        return None
+    return _NATIVE_DECIDE_NOTICE
+
+
+def native_decide_confirm(body: str, asked: bool) -> Optional[str]:
+    """The wake's soft confirm gate, pure: the text to bounce back to
+    the author, or None if there is nothing to ask.
+
+    Same shape as the formalizer's gate (`rpc.py::_native_decide_gate`,
+    a77a32c3): show the bill before the purchase, once, and let the
+    identical resend be the confirmation. `asked` is the once-per-wake
+    latch — an author who resends unchanged has confirmed, and the
+    judge reads the proposal on that round."""
+    if asked or not _NATIVE_DECIDE_RE.search(body or ""):
+        return None
+    return (
+        _NATIVE_DECIDE_NOTICE + "\n"
+        "Resubmit proposal.md — revised, or unchanged if the mention "
+        "is deliberate — to confirm; this gate asks once per wake, "
+        "then the judge reads it.")
 
 
 # ---------------------------------------------------------------------

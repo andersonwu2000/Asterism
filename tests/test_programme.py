@@ -133,17 +133,48 @@ def test_native_decide_route_warns_the_judge():
     """Owner call 2026-08-25: union_closed shipped TEN passed revisions
     planning `native_decide` routes; every brick died at the commit
     axiom gate, and only the dying worker saw the gate's teaching — the
-    NL layer kept re-planning. The warning rides the same surface as
-    the length warnings, so the judge reads it in the projection and
-    can rebut the route before a wake is spent on it."""
+    NL layer kept re-planning.
+
+    2026-09-04 requirement change: the notice is its OWN function, not
+    a length warning — the two ride different surfaces (the judge reads
+    both; only the length one carries "come back smaller"). And the
+    wording is QUALIFIED: the mention alone proves nothing, a closure
+    note or a prohibition mentions the token too."""
     body = _body(proof="the filter is empty by native_decide")
-    sections, _ = programme.parse_proposal(body)
-    warn = programme.length_warning(sections, body)
-    assert warn and "NATIVE_DECIDE WARNING" in warn
+    warn = programme.native_decide_warning(body)
+    assert warn and "NATIVE_DECIDE NOTICE" in warn
     assert "ofReduceBool" in warn
+    # The claim is conditional, not "the batch cannot land".
+    assert "If a planned brick's formalization must use it" in warn
+    # `Lean.ofReduceBool` on its own trips it too (rpc.py's regex).
+    assert programme.native_decide_warning(
+        _body(proof="the axiom Lean.ofReduceBool")) is not None
+    # …but a word merely containing the token does not.
+    assert programme.native_decide_warning(
+        _body(proof="see nonnative_decideish notes")) is None
+    # The length surface no longer carries it (requirement change).
+    sections, _ = programme.parse_proposal(body)
+    assert programme.length_warning(sections, body) is None
     # clean proposals stay warning-free
     ok, _ = programme.parse_proposal(_body())
     assert programme.length_warning(ok) is None
+    assert programme.native_decide_warning(_body()) is None
+
+
+def test_native_decide_confirm_asks_once_per_wake():
+    """The soft confirm gate (owner design 2026-09-04, the shape the
+    formalizer side already has in `rpc.py::_native_decide_gate`): the
+    first proposal mentioning the token is bounced back to the author
+    unjudged, and the resubmission — revised OR unchanged — goes to the
+    judge. Asked once per wake, never twice."""
+    body = _body(proof="close it by native_decide")
+    ask = programme.native_decide_confirm(body, asked=False)
+    assert ask and "NATIVE_DECIDE NOTICE" in ask
+    assert "Resubmit proposal.md" in ask
+    # Already asked this wake → silent, whatever the body says.
+    assert programme.native_decide_confirm(body, asked=True) is None
+    # No mention → nothing to confirm.
+    assert programme.native_decide_confirm(_body(), asked=False) is None
 
 
 # ---------------------------------------------------------------- store
