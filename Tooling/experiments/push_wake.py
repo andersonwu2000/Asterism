@@ -37,6 +37,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import print_json
+
 #: What the runner keeps from the attempts dir, per turn and once.
 _TURN_ARTEFACTS = ("note.md",)
 _WAKE_ARTEFACTS = ("Context.md", "_context_stats.json", "charter.md",
@@ -225,7 +227,7 @@ def main(argv=None) -> int:
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     _snapshot(attempts_dir, out, _WAKE_ARTEFACTS, "")
     _snapshot(attempts_dir, out, ("push_result.json",), "")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print_json(result)
     return 0 if turns and all(t["rc"] == 0 for t in turns) else 1
 
 

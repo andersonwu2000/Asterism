@@ -21,6 +21,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import print_json
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -88,7 +90,7 @@ def main(argv=None) -> int:
     attempts_dir.mkdir(parents=True, exist_ok=True)
     (attempts_dir / "replay_result.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    print_json(out)
     return 0 if status == "succeeded" else 1
 
 

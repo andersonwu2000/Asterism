@@ -26,6 +26,8 @@ import sys
 import uuid
 from pathlib import Path
 
+from . import print_json
+
 
 def reconstruct_decisions(rows: "list[sqlite3.Row | dict]") -> "list[dict]":
     """`strategist_decisions` rows → the decision.json objects the
@@ -139,7 +141,7 @@ def main(argv=None) -> int:
            "err": jerr, "verdict": verdict}
     (attempts_dir / "replay_verdict.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    print_json(out)
     return 0 if rc == 0 and verdict is not None else 1
 
 
