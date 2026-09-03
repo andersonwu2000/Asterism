@@ -34,6 +34,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -240,6 +241,26 @@ def command_for(arm: str, run_dir: Path) -> "list[str]":
             "--since", datetime.now(timezone.utc).isoformat(), *extra]
 
 
+#: The pipeline id a run prints for itself — `[theory] … pipeline=<id>`
+#: from the theory wake, `"pipeline_id": "<id>"` in the replay's result
+#: JSON. Both runners emit one, which is what makes the binding below
+#: possible without the collector guessing.
+_PIPELINE_RE = re.compile(
+    r"pipeline(?:_id)?[=\"':\s]+"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
+
+
+def pipeline_id_from_log(log_path: Path) -> "str | None":
+    """The pipeline THIS run created, read from its own stdout."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _PIPELINE_RE.search(text)
+    return m.group(1) if m else None
+
+
 def collect(ws: Path, arm: str, run_dir: Path) -> dict:
     """Copy this run's artefacts out of the scratch.
 
@@ -247,16 +268,29 @@ def collect(ws: Path, arm: str, run_dir: Path) -> dict:
     the replay's, which lives in the pipeline's attempts dir (the wake
     does not tear it down) plus the rows it committed into the scratch
     DB.
+
+    Bound to the pipeline the run PRINTED, not to the newest marker
+    file: a scratch can hold more than one wake. arm3h_r2's did on
+    2026-09-04 — its first run died on a verdict rendering and was
+    relaunched into the same workspace — and an mtime pick would have
+    copied the dead wake's artefacts over the live one's. The glob
+    stays as the fallback for a run that died before printing an id.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     kept: list[str] = []
     _, theory, _ = ARMS[arm]
     marker = "theory_result.json" if theory else "replay_result.json"
-    hits = sorted((ws / ".attempts").glob(f"*/{marker}"),
-                  key=lambda p: p.stat().st_mtime)
-    if not hits:
-        return {"kept": kept, "note": f"no {marker} under .attempts/"}
-    attempts = hits[-1].parent
+    attempts = None
+    bound = pipeline_id_from_log(run_dir / "run.log")
+    if bound and (ws / ".attempts" / bound / marker).is_file():
+        attempts = ws / ".attempts" / bound
+    else:
+        hits = sorted((ws / ".attempts").glob(f"*/{marker}"),
+                      key=lambda p: p.stat().st_mtime)
+        if not hits:
+            return {"kept": kept, "bound_pipeline": bound,
+                    "note": f"no {marker} under .attempts/"}
+        attempts = hits[-1].parent
     names = ("replay_result.json", "theory_result.json", "Context.md",
              "proposal.md", "decision.json", "_plan_full.md",
              "_context_stats.json", "charter.md", "TREE.md",
@@ -267,7 +301,10 @@ def collect(ws: Path, arm: str, run_dir: Path) -> dict:
         if p.is_file():
             shutil.copyfile(p, run_dir / name)
             kept.append(name)
-    result = json.loads(hits[-1].read_text(encoding="utf-8"))
+    # From the dir this collection is BOUND to, never from whichever
+    # marker the glob happened to rank last — the two are the same
+    # file only when the fallback chose it.
+    result = json.loads((attempts / marker).read_text(encoding="utf-8"))
     if not theory:
         ids = [r["id"] for r in result.get("programme_revisions", [])]
         if ids:
@@ -292,7 +329,7 @@ def collect(ws: Path, arm: str, run_dir: Path) -> dict:
                 encoding="utf-8")
             kept.append("programme_revisions.json")
     return {"kept": kept, "attempts_dir": attempts.as_posix(),
-            "result": result}
+            "bound_pipeline": bound, "result": result}
 
 
 def status_line(arm: str, k: int, rec: dict) -> str:

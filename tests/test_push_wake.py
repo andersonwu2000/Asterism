@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
+import time
 
 import pytest
 
@@ -258,3 +260,41 @@ def test_rejected_verdict_log_line_names_the_offending_shape():
     assert "goal_id" in line and "verdict" in line and "reason" in line
     # unparseable bytes still describe themselves rather than throwing
     assert "not JSON" in theory_wake.describe_verdict_shape("{oops")
+
+
+# ---------------------------------------------------------------------
+# run_matrix — what the first live matrix (2026-09-04) exposed
+# ---------------------------------------------------------------------
+
+def test_collect_binds_to_the_pipeline_the_run_itself_printed(tmp_path):
+    """A scratch can hold more than one wake — arm3h_r2's did, after its
+    first run died on a verdict rendering and was relaunched into the
+    same workspace. Picking the NEWEST marker file then copies the wrong
+    wake's artefacts over the right one's. The run's own log names the
+    pipeline it created; that is the binding."""
+    from Tooling.experiments import run_matrix
+
+    ws = tmp_path / "scratch"
+    mine, other = "11111111-1111-4111-8111-111111111111", \
+                  "22222222-2222-4222-8222-222222222222"
+    for pid, body in ((mine, "MINE"), (other, "OTHER")):
+        d = ws / ".attempts" / pid
+        d.mkdir(parents=True)
+        (d / "theory_result.json").write_text(
+            json.dumps({"pipeline_id": pid, "outcome": "accepted"}),
+            encoding="utf-8")
+        (d / "report.md").write_text(body, encoding="utf-8")
+    # The other wake's marker is the NEWER one — mtime would choose it.
+    os.utime(ws / ".attempts" / other / "theory_result.json",
+             (time.time() + 60, time.time() + 60))
+
+    run_dir = tmp_path / "runs" / "arm3h_r2"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.log").write_text(
+        f"[theory] Combinatorics.union_closed g691 trigger='inject_batch_done' "
+        f"pipeline={mine} attempts={ws / '.attempts' / mine}\n",
+        encoding="utf-8")
+
+    info = run_matrix.collect(ws, "arm3h", run_dir)
+    assert info["attempts_dir"].endswith(mine)
+    assert (run_dir / "report.md").read_text(encoding="utf-8") == "MINE"
