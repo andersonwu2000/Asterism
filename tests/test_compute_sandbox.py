@@ -82,15 +82,23 @@ def test_the_tool_docstring_sizes_the_search_from_the_real_caps() -> None:
     assert f"{sandbox.MEMORY_MB} MB" in doc
 
 
-def test_the_gateway_client_outlives_the_sandbox_wall() -> None:
-    """The HTTP client must never hang up on a run the sandbox is still
-    entitled to finish: it would turn a measured "stopped at the 600s
-    limit, shrink the search" into "the compute service did not
+def test_the_gateway_client_outlives_a_queue_wait_plus_a_full_run() -> None:
+    """The HTTP client must never hang up on a run the framework is
+    still entitled to make: it would turn a measured "stopped at the
+    600s limit, shrink the search" into "the compute service did not
     answer", which sends the agent to the wait-vs-report fork with no
-    way to choose. Derived from the sandbox's own constant, so widening
-    the wall cannot leave the client behind."""
+    way to choose.
+
+    The budget is QUEUE PLUS RUN, not one run. `/compute` admits two
+    sandboxes, so a third caller can legitimately wait a full wall for
+    a slot and then run a full wall of its own — 2*600 + startup. A
+    client sized for one run would time out on exactly the caller the
+    gate created, and the 2-slot invariant is not negotiable (owner
+    ruling 2026-09-03: no soft gate). Derived from the sandbox's own
+    constant, so widening the wall cannot leave the client behind."""
     assert (mcp_tools._GATEWAY_TIMEOUT_SEC
-            >= sandbox.TIMEOUT_SEC + 60), "no room for sandbox startup"
+            >= 2 * sandbox.TIMEOUT_SEC + 60), (
+        "a queued caller plus its own run must fit inside the socket")
 
 
 def test_env_is_an_allowlist_with_no_path_and_no_secrets(monkeypatch) -> None:

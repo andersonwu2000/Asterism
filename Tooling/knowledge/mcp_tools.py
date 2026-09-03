@@ -420,15 +420,27 @@ def compute(code: str = "") -> str:
 #: THIS server on every loogle hit — so both halves of this path were
 #: already proven in production before it carried compute.
 #:
-#: DERIVED, never typed twice: the client must outlive the wall the
-#: sandbox is entitled to run to, plus the interpreter's own startup. A
-#: client that hangs up first turns "stopped at the 600s limit, shrink
-#: the search" — an instruction — into "the compute service did not
-#: answer", which is the wait-vs-report fork with no way to choose. The
-#: import is one stdlib-only module (`sandbox.provision` reaches no
+#: DERIVED, never typed twice: the client must outlive everything the
+#: framework is entitled to spend before answering. A client that hangs
+#: up first turns "stopped at the 600s limit, shrink the search" — an
+#: instruction — into "the compute service did not answer", which is
+#: the wait-vs-report fork with no way to choose.
+#:
+#: That budget is a QUEUE WAIT PLUS A FULL RUN, hence 2× (owner ruling
+#: 2026-09-03). The gateway admits `_COMPUTE_SLOTS = 2` sandboxes, so a
+#: third caller may legitimately wait one whole wall for a slot and
+#: then run a whole wall of its own; sized for one run, this socket
+#: would time out on precisely the caller the gate creates. The other
+#: two ways to close that gap were both refused: a soft gate that lets
+#: a third sandbox through loses the invariant it exists to hold, and
+#: refusing the queued caller hands the agent a fault it cannot act on.
+#: 1260 still sits under every client on the path (claude's
+#: MCP_TOOL_TIMEOUT 1500s, codex's tool_timeout_sec 1500).
+#:
+#: The import is one stdlib-only module (`sandbox.provision` reaches no
 #: further), so it does not breach this server's rule against pulling
 #: the framework's heavy modules into the stdio process.
-_GATEWAY_TIMEOUT_SEC = _SANDBOX_TIMEOUT_SEC + 60
+_GATEWAY_TIMEOUT_SEC = 2 * _SANDBOX_TIMEOUT_SEC + 60
 
 
 def _gateway_silence_hint() -> str:
