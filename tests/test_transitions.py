@@ -333,18 +333,18 @@ def test_apply_goal_transition_idempotent_self_edge_allowed(
 def test_apply_goal_transition_illegal_edge_strict_raises(
         conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
-    g = _insert_goal(conn, status="dead")
+    g = _insert_goal(conn, status="disproved")
     with pytest.raises(transitions.IllegalTransition):
         transitions.apply_goal_transition(conn, g, "attempting", event="t")
     # Strict mode raised BEFORE the write — status unchanged.
-    assert _gstatus(conn, g) == "dead"
+    assert _gstatus(conn, g) == "disproved"
 
 
 def test_apply_goal_transition_illegal_edge_lenient_logs_and_writes(
         conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture):
     monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
-    g = _insert_goal(conn, status="dead")
+    g = _insert_goal(conn, status="disproved")
     transitions.apply_goal_transition(conn, g, "attempting", event="probe")
     out = capsys.readouterr().out
     assert "[transition-violation]" in out
@@ -590,18 +590,30 @@ from pathlib import Path as _Path  # noqa: E402
 _APPLY_EVENT_RE = re.compile(
     # `groups.set_status` is the group FSM's checked mutator — it plays the
     # role `apply_*_transition` plays for the other three entities, so its
-    # labels belong to the same taxonomy.
-    r"(?:apply_(?:goal|strategy|problem)_transition|set_status)"
+    # labels belong to the same taxonomy. `_set_goal_terminal_and_propagate`
+    # is the terminal-flip wrapper around `apply_goal_transition`: since
+    # 2026-09-04 it forwards a caller-chosen `event=`, so a label can reach
+    # `goal_events` without ever appearing at a mutator call.
+    r"(?:apply_(?:goal|strategy|problem)_transition|set_status"
+    r"|_set_goal_terminal_and_propagate)"
     r"\(.*?event=[\"']([^\"']+)[\"']",
     re.DOTALL,
 )
+
+#: A label can also live as a keyword DEFAULT on such a wrapper
+#: (`event: str = "set_terminal"`), which is just as much a use — that
+#: is the string the column ends up carrying for every caller that does
+#: not override it.
+_DEFAULT_EVENT_RE = re.compile(r"event: str = [\"']([^\"']+)[\"']")
 
 
 def _scan_event_labels() -> set[str]:
     root = _Path(__file__).resolve().parent.parent / "Tooling"
     labels: set[str] = set()
     for py in root.rglob("*.py"):
-        labels |= set(_APPLY_EVENT_RE.findall(py.read_text(encoding="utf-8")))
+        text = py.read_text(encoding="utf-8")
+        labels |= set(_APPLY_EVENT_RE.findall(text))
+        labels |= set(_DEFAULT_EVENT_RE.findall(text))
     return labels
 
 
@@ -632,3 +644,23 @@ def test_has_live_sibling_default_and_widened(conn: sqlite3.Connection):
         conn, g, statuses=("proposed", "succeeded"))
     _insert_strategy(conn, goal_id=g, status="proposed")
     assert transitions.has_live_sibling(conn, g)
+
+
+def test_goal_dead_status_is_retired(conn: sqlite3.Connection):
+    """Owner ruling 2026-09-04 — a goal is a STATEMENT, and only the
+    kernel settles a statement, so the terminal goal statuses are
+    exactly the kernel-checked pair. "The parent's decomposition was
+    wrong" is a fact about the STRATEGY, not about the statement: the
+    strategy keeps its `dead`, the sub-goal is PARKED. Retiring the
+    status is the whole ruling — a `dead` goal was unrevivable by
+    design, so a wrong-context park could never come back even when the
+    statement was fine under a different parent."""
+    assert "dead" not in transitions.GOAL_STATES
+    assert transitions.GOAL_HARD_TERMINALS == {"proved", "disproved"}
+    assert transitions.GOAL_FAILED_TERMINALS == {"disproved"}
+    assert not [e for e in transitions.GOAL_EDGES if "dead" in e]
+    # The strategy machine is untouched — that is where `dead` belongs.
+    assert "dead" in transitions.STRATEGY_STATES
+    assert ("proposed", "dead") in transitions.STRATEGY_EDGES
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_goal(conn, status="dead", slug="rogue_dead")

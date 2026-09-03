@@ -69,7 +69,10 @@ def test_terminal_decline_set_pinned():
     assert failures.TERMINAL_DECLINE_REASONS == {
         "agent_declined", "agent_infeasible", "parent_needs_fix",
         "agent_shelved", "agent_bailed", "goal_no_longer_open",
-        "same_as_disproved", "same_as_dead_unchanged",
+        # `same_as_dead_unchanged` retired 2026-09-04 with the goal
+        # status it was named for: a spent twin is a park now, so the
+        # dedupe reuse tier CITES it instead of aborting the batch.
+        "same_as_disproved",
         "duplicate_strategy", "return_to_nl",
     }
 

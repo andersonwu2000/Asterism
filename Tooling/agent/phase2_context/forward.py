@@ -246,7 +246,8 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     the (prescriptive) brief and cites proved lemmas from `## Library`; it
     does not navigate goal structure. On a mature problem the inlined TREE
     was ~400 lines that were ~99% proved sub-trees (redundant with the
-    `## Library` signatures) plus dead/shelved branches (abandoned-route
+    `## Library` signatures) plus abandoned branches (dead-strategy /
+    parked, abandoned-route
     noise) — pure context bloat that slowed the agent and diluted focus
     (framework_backlog #3). The one thing Forward uses tree state for —
     not restating an alive goal — is exactly `_section_active_goals`.

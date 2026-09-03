@@ -201,6 +201,37 @@ def test_goal_by_slug_and_outcome_detail(conn):
     assert row["outcome_detail"] == "human rejected: nope"
 
 
+def test_reject_settles_the_producing_inject_itself(conn):
+    """`asterism reject` used to flip the node to the goal status
+    `dead`, and it was that HARD terminal which filled the producing
+    Inject's `outcome` on the way through
+    (`propagate_inject_outcome_from_goal` → `failed:dead`) and let
+    `inject_batch_done` fire — the wake the command's own output
+    promises. With `dead` retired (2026-09-04) a rejected node is a
+    PARK, and a park deliberately never settles an inject, so the
+    reject has to settle it itself or the batch waits forever."""
+    g = _seed_goal(conn, "P.a", "rejected_node")
+    conn.execute(
+        "INSERT INTO strategist_decisions(problem,triggered_at_tick,"
+        "trigger_kind,decision_kind,produced_goal_id,created_at,updated_at)"
+        " VALUES ('P.a',0,'routine','Inject',?,?,?)",
+        (g, _db.now(), _db.now()))
+    conn.commit()
+    did = _db.set_inject_outcome_detail(
+        conn, g, "human rejected: nope", outcome="failed:human_rejected")
+    row = conn.execute(
+        "SELECT id, outcome, outcome_detail FROM strategist_decisions"
+        " WHERE produced_goal_id=?", (g,)).fetchone()
+    assert did == row["id"]
+    assert row["outcome"] == "failed:human_rejected"
+    assert row["outcome_detail"] == "human rejected: nope"
+    # Second reject of the same node must not re-settle (and so must not
+    # re-wake) a decision that already carries an outcome.
+    assert _db.set_inject_outcome_detail(
+        conn, g, "human rejected: again", outcome="failed:human_rejected"
+    ) is None
+
+
 def test_resolve_reject_target(conn):
     from Tooling.core import cli
     a = _seed_goal(conn, "Geometry.stokes", "integrationCurrent")

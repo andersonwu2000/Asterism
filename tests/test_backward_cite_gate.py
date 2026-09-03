@@ -344,25 +344,26 @@ def test_decomp_revives_shelved_after_reengage_inject(
     assert revive == {g}        # un-parked → revivable again
 
 
-def test_decomp_rejects_dead_sibling(
+def test_decomp_revives_a_wrong_context_parked_sibling(
     conn: sqlite3.Connection,
 ) -> None:
-    """'dead' = the statement is wrong AS STATED in its parent's
-    decomposition (parent_needs_fix); the goals.status contract makes it
-    never-Reopen. Citing it would re-attempt a known-wrong statement, so
-    it is REJECTED (not revived) — the agent must re-declare the statement
-    fresh as its own sub-goal stub under a corrected context."""
-    _insert_goal(conn, "de", status="dead")
+    """A `parent_needs_fix` decline used to leave the goal `dead`, and
+    the gate rejected a cite of it: "wrong AS STATED, re-declare it
+    yourself". But the statement was never judged — only the
+    decomposition that minted it — and a CITING strategy is by
+    construction a different context. Since 2026-09-04 it is an ordinary
+    machine park: auto-linked and revived, so the citer waits for it
+    instead of minting a re-statement of the same thing."""
+    g = _insert_goal(conn, "de", status="shelved")
     patch = "import Problems.p.proofs.L_de\n"
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
         workspace=Path.cwd(),
     )
-    assert err is not None
-    assert "de" in err
-    assert "DEAD" in err or "dead" in err
-    assert revive == set()
+    assert err is None
+    assert auto_link == {g}
+    assert revive == {g}
 
 
 def test_decomp_rejects_disproved_sibling(
@@ -459,16 +460,16 @@ def test_no_autolink_caller_rejects_attempting_and_pending_review(
     assert revive == set()
 
 
-def test_no_autolink_caller_rejects_shelved_and_dead(
+def test_no_autolink_caller_rejects_parked_and_disproved(
     conn: sqlite3.Connection,
 ) -> None:
-    """Reviving is an auto-link capability — shelved/dead reject for a
-    caller with no wait edge to defer verification behind."""
+    """Reviving is an auto-link capability — a park and a disproved both
+    reject for a caller with no wait edge to defer verification behind."""
     _insert_goal(conn, "sh", status="shelved")
-    _insert_goal(conn, "de", status="dead")
+    _insert_goal(conn, "di", status="disproved")
     patch = (
         "import Problems.p.proofs.L_sh\n"
-        "import Problems.p.proofs.L_de\n"
+        "import Problems.p.proofs.L_di\n"
     )
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
@@ -476,7 +477,7 @@ def test_no_autolink_caller_rejects_shelved_and_dead(
         workspace=Path.cwd(),
     )
     assert err is not None
-    assert "sh" in err and "de" in err
+    assert "sh" in err and "di" in err
     assert revive == set()
 
 

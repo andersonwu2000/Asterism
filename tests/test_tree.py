@@ -96,15 +96,15 @@ def test_counters_precede_the_trees_and_count_every_status(conn) -> None:
     """Live-first file order (2026-08-15): the census line arrives
     before any tree body — a budgeted default read that dies mid-file
     has still seen the full count. And the count covers EVERY status:
-    the old footer skipped dead/disproved, so a tree with only those
-    read '(empty)'."""
+    the old footer skipped the settled statuses, so a tree with only
+    those read '(empty)'."""
     root_id = _seed_root(conn)
     s = _seed_strategy(conn, root_id)
-    _seed_subgoal(conn, s, "d1", status="dead", position=0)
+    _seed_subgoal(conn, s, "d1", status="shelved", position=0)
     _seed_subgoal(conn, s, "x1", status="disproved", position=1)
     out = tree.render(conn, "p")
     assert out.index("**Counters:**") < out.index("## Root")
-    assert "1 open" in out and "1 dead" in out and "1 disproved" in out
+    assert "1 open" in out and "1 shelved" in out and "1 disproved" in out
 
 
 def test_render_root_with_single_strategy_and_subgoals(conn) -> None:

@@ -190,8 +190,8 @@ def reconcile_settled_inject_outcomes(
     by inject kind:
 
       * Forward (no `produced_strategy_id`): `produced_goal_id` reached a
-        HARD-terminal goal status (proved / disproved / dead — `shelved`
-        is reopenable, does NOT settle) but goal-side propagation never
+        HARD-terminal goal status (proved / disproved — a park is
+        reopenable and does NOT settle) but goal-side propagation never
         ran (the transition predated the hook or took a path that
         bypassed it) → re-run `propagate_inject_outcome_from_goal`.
       * Backward / Builder: `produced_strategy_id` reached a terminal

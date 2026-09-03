@@ -48,9 +48,9 @@ export function citePath(
 /* ---- star marks ----------------------------------------------------
  *
  * BODY vs SHELL: a shell is a question CLOSED with no light — refuted
- * (disproved) or abandoned (dead). Everything still capable of coming
- * home is a disc: proved (it did), live (it might), shelved and frozen
- * (parked, and parked is not closed). One shell glows, and it earns
+ * (disproved). Everything still capable of coming home is a disc:
+ * proved (it did), live (it might), shelved and frozen (parked, and
+ * parked is not closed). One shell glows, and it earns
  * it: a goal waiting on the strategist, where the light stopped and a
  * decision is the only thing missing.
  *
@@ -140,12 +140,13 @@ export function nodeStyle(g: Goal, hasLive: boolean): StarMark {
       // in any sky. Faint ink keeps its outline from masquerading as a
       // sign-off ring.
       return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.55 }
-    case 'dead':
     default:
-      // abandoned: the faintest shell, residue but never hidden. Ink
-      // token, not the rgba `--color-edge-strong` it used to carry:
-      // that one stacks its own alpha under opacity, and a 5% outline
-      // is nothing at all.
+      // A status this build does not know — a retired one in old data
+      // (`dead`, until 2026-09-04), or one the engine gained first.
+      // The faintest shell: residue, but never hidden, because the sky
+      // is always complete. Ink token, not the rgba
+      // `--color-edge-strong` it used to carry: that one stacks its own
+      // alpha under opacity, and a 5% outline is nothing at all.
       return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.3 }
   }
 }

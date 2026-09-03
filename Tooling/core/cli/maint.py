@@ -128,16 +128,31 @@ def cmd_reject(args: argparse.Namespace) -> int:
         conn.close()
         return 0
 
-    # Kill the rejected node.
-    transitions._set_goal_terminal_and_propagate(conn, gid, "dead")
-    db.mark_deliverable(conn, gid, False)
-    db.set_inject_outcome_detail(conn, gid, f"human rejected: {reason}")
-    # Kill the meaning-dependent deliverables.
-    for did, _vfqn in victims:
-        transitions._set_goal_terminal_and_propagate(conn, did, "dead")
-        db.mark_deliverable(conn, did, False)
-        db.set_inject_outcome_detail(
-            conn, did, f"depends on rejected anchor {fqn}: {reason}")
+    # Retire the rejected node. A person's reject is not a KERNEL
+    # verdict, so it is a PARK (2026-09-04, when the goal status `dead`
+    # retired): the statement may well be fine, this rendering of it was
+    # not wanted. `human_rejected` is what tells the two apart later.
+    #
+    # The park is announced to the batch explicitly. Flipping to `dead`
+    # used to settle the producing Inject on the way through
+    # (`propagate_inject_outcome_from_goal` → `failed:dead`), and that
+    # settle is what fires `inject_batch_done` — the re-plan wake this
+    # command's own output promises. A park never settles an inject, so
+    # the reject files the outcome itself.
+    def _retire(target_gid: int, detail: str) -> None:
+        transitions._set_goal_terminal_and_propagate(
+            conn, target_gid, "shelved",
+            event="human_rejected", reason=detail)
+        db.mark_deliverable(conn, target_gid, False)
+        did = db.set_inject_outcome_detail(
+            conn, target_gid, detail, outcome="failed:human_rejected")
+        if did is not None:
+            db.maybe_enqueue_inject_batch_done(conn, did)
+
+    _retire(gid, f"human rejected: {reason}")
+    # Retire the meaning-dependent deliverables.
+    for did_goal, _vfqn in victims:
+        _retire(did_goal, f"depends on rejected anchor {fqn}: {reason}")
 
     print(f"rejected {fqn} + {len(victims)} dependent deliverable(s): "
           f"{[v for _, v in victims]}")

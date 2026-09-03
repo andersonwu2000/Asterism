@@ -17,18 +17,18 @@ lines and classify each cited slug by goal status:
   the caller can attach a `strategy_subgoals` row and have the new
   strategy wait until the cited goal proves; otherwise (leaf-bypass /
   Builder) reject.
-- `shelved` / `dead`: SOFT/context terminals. The `goals.status`
-  contract (db.py) makes these the statuses dedupe does NOT block —
-  shelved is "reopenable", dead is "same statement may be valid under a
-  different parent strategy". Citability mirrors dedupe-blocking, so on
-  the decomposition path these are REVIVED: reopened to `open` and
-  auto-linked, regaining a live path through the citing strategy's
-  `strategy_subgoals`. (Pre-2026-06-13 they were rejected alongside
-  `disproved`, which contradicted the contract and left cascade-shelved
-  leaves uncitable forever — agent_feedback T8.) Leaf-bypass / Builder
-  still reject (can't tolerate transitive sorry).
-- `disproved`: HARD terminal — a counterexample was found, dedupe
-  BLOCKS it, so does citation. The one status that is never citable.
+- `shelved`: a PARK, the status dedupe does NOT block — "reopenable",
+  whatever parked it (threshold, cascade, a wrong-context decline).
+  Citability mirrors dedupe-blocking, so on the decomposition path a
+  machine park is REVIVED: reopened to `open` and auto-linked, regaining
+  a live path through the citing strategy's `strategy_subgoals`.
+  (Pre-2026-06-13 these were rejected alongside `disproved`, which
+  contradicted the contract and left cascade-shelved leaves uncitable
+  forever — agent_feedback T8.) A PERSON's park is the exception, below.
+  Leaf-bypass / Builder still reject (can't tolerate transitive sorry).
+- `disproved`: HARD terminal — the disproof gate certified a
+  counterexample, dedupe BLOCKS it, so does citation. The one status
+  that is never citable.
 - No goal for the slug: if `proofs/L_<slug>.lean` does NOT exist it's a
   typo / cross-problem ref → pass through (lake's "unknown identifier"
   catches it). If the file DOES exist it's an ORPHAN stub (sub-goal whose
@@ -88,15 +88,8 @@ def _resolve_cite_dependencies(
           leaves being uncitable forever (agent_feedback T8).
         - else: reject (leaf-bypass / Builder can't tolerate transitive
           sorry; revival is a decomposition-path capability).
-      * status ∈ ('dead', 'disproved') → always reject (never revived):
-        - 'dead' = wrong AS STATED in its parent's decomposition
-          (parent_needs_fix); the db.py `goals.status` contract makes it
-          never-Reopen, so citing it would re-attempt a known-wrong
-          statement. The same statement may be valid in a fresh context —
-          re-declare it as your own `new_<slug>.lean` sub-goal stub (a
-          corrected re-statement under your strategy) instead of citing
-          the dead goal.
-        - 'disproved' = counterexample found; the statement is false.
+      * status = 'disproved' → always reject (never revived): a
+        kernel-certified counterexample; the statement is false.
       * no goal for the slug:
         - file `proofs/L_<slug>.lean` absent → skip (typo / cross-problem;
           lake's "unknown identifier" catches it)
@@ -106,7 +99,7 @@ def _resolve_cite_dependencies(
     Returns (auto_link_goal_ids, revive_goal_ids, err). `revive` ⊆
     `auto_link`. Caller commits the strategy with the declared subgoals
     plus `auto_link` goals as additional `strategy_subgoals` rows, and
-    reopens every `revive` goal (currently shelved/dead) to 'open' first.
+    reopens every `revive` goal (currently shelved) to 'open' first.
     On err non-None the strategy must abort (subgoals would be from a
     doomed dependency).
     """
@@ -183,13 +176,12 @@ def _resolve_cite_dependencies(
             else:
                 bad.append((slug, status))
             continue
-        # 'dead' / 'disproved' — hard terminals, never revived by citation.
-        #  - 'dead' = the statement is wrong AS STATED in its parent's
-        #    decomposition (parent_needs_fix); reviving re-attempts a
-        #    known-wrong statement (db.py goals.status contract: dead is
-        #    never-Reopen). A corrected re-statement under a fresh context
-        #    is fine — re-declare it as a `new_<slug>.lean` stub instead.
-        #  - 'disproved' = counterexample found; the statement is false.
+        # 'disproved' — the one hard terminal a cite can reach, and it
+        # is never revived by citation: the disproof gate certified a
+        # counterexample, so the statement is false. (A wrong-context
+        # decline lands in the `shelved` branch above since 2026-09-04:
+        # its statement was never judged, only the decomposition that
+        # minted it, so a citer in a DIFFERENT context may revive it.)
         bad.append((slug, status))
     if not bad:
         return auto_link, revive, None
@@ -213,16 +205,14 @@ def _resolve_cite_dependencies(
         if any("orphan" in status for _, status in bad) else ""
     )
     if allow_auto_link:
-        # On the decomp path `bad` holds disproved (false), dead
-        # (wrong-as-stated) and human-parked cites; machine-shelved are
-        # revived above.
+        # On the decomp path `bad` holds disproved (false) and
+        # human-parked cites; machine parks are revived above.
         hint = (
-            "\n\nThese goals cannot be cited: DISPROVED = a counterexample "
-            "was found (the statement is false); DEAD = wrong as stated in "
-            "its parent's decomposition, so citing re-attempts a known-wrong "
-            "statement. Re-declare a dead goal's statement as your own "
-            "`new_<slug>.lean` sub-goal stub (a corrected re-statement under "
-            "your strategy), or pick a different decomposition angle."
+            "\n\nThese goals cannot be cited: DISPROVED = the disproof "
+            "gate certified a counterexample, so the statement is false. "
+            "Re-declare what you actually need as your own "
+            "`new_<slug>.lean` sub-goal stub (a corrected re-statement "
+            "under your strategy), or pick a different decomposition angle."
         )
     else:
         # Leaf-bypass / Builder path: any non-proved cite is rejected
@@ -233,7 +223,7 @@ def _resolve_cite_dependencies(
             "\n\nFix by declaring each as a sub-goal stub "
             "(`new_<slug>.lean := by sorry`), or restructure as a "
             "Backward decomposition — the decomp path auto-links open "
-            "siblings and revives shelved/dead ones as `strategy_"
+            "siblings and revives parked ones as `strategy_"
             "subgoals` so the strategy waits for them to prove. Leaf-"
             "bypass and Builder (no decomposition) can only cite "
             "already-proved siblings."

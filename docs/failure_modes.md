@@ -61,7 +61,7 @@ from the English name.
 | retryable agent failure | The retry helper has already written evidence and incremented once. On exhaustion, send an over-threshold goal to `pending_strategist_review`; otherwise leave it dispatchable. |
 | provider or pipeline infra | No goal attempt or mathematical state change; dispatcher cooldown, requeue, parking, or operator escalation handles it. |
 | `agent_infeasible` | Increment once, mark `disproved`, and propagate upward. |
-| `parent_needs_fix` | Increment once, mark `dead`, and propagate the fix signal upward. |
+| `parent_needs_fix` | Increment once, park the sub-goal (`shelved`, event `wrong_context_park`), and propagate the fix signal upward: every strategy hanging on it dies, inward and upward. |
 | `agent_shelved` or `return_to_nl` | Increment once and send to `pending_strategist_review`; do not propagate a mathematical falsehood. |
 | `agent_declined`, `agent_bailed`, or another terminal agent failure | Increment once; threshold policy decides whether review is due. |
 | `missing_parent_stub` | Increment once, shelve, and propagate because the decomposition surface vanished. |
@@ -124,7 +124,6 @@ These stop the in-session retry loop rather than asking the same session to try 
 | `agent_shelved` | The agent cannot make a useful attempt now; Strategist review is required. |
 | `agent_bailed` | The watchdog rescue concludes further work is unlikely and preserves partial progress. |
 | `same_as_disproved` | The proposal repeats a statement already disproved in this problem. |
-| `same_as_dead_unchanged` | It repeats a dead twin and no newly proved fact changes the situation. |
 | `duplicate_strategy` | The proposed decomposition has no novel sub-goal or link set. |
 | `return_to_nl` | The claim has no justified Programme Proof correspondence; the Strategist must repair or retire the natural-language claim. |
 | `goal_no_longer_open` | A parallel cascade settled the goal during the run; this race terminates the loop. |

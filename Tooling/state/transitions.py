@@ -35,6 +35,19 @@ Strict vs. lenient
   daemon mid-cascade and leaving the DB half-mutated (CLAUDE.md rule 5: loud
   signal, not a hard stop on a live proof run).
 
+Terminal vocabulary (owner ruling 2026-09-04)
+---------------------------------------------
+A goal is a STATEMENT, and only the kernel settles a statement, so the
+terminal goal statuses are exactly the two kernel-checked verdicts:
+`proved` (carries a ProvedReceipt) and `disproved` (reachable only
+through `_disprove.run_disproof_gate`). Every other way a goal stops —
+threshold exhaustion, ConfirmShelve, a descendant cascade, a group
+retiring, a wrong-context decline — is a PARK (`shelved`), told apart
+by its `goal_events` event, and revivable. The retired `dead` status
+said "the parent's decomposition was wrong", which is a fact about the
+STRATEGY: strategies keep their own `dead`, and the sub-goal is parked
+with `event='wrong_context_park'`.
+
 This module imports only `db` (a leaf) — it must stay free of `core` /
 `pipeline` imports so it can be imported from anywhere without a cycle.
 """
@@ -51,6 +64,13 @@ from . import db
 # test_transitions.py::test_schema_enums_match_canonical_states).
 # ---------------------------------------------------------------------------
 
+#: Owner ruling 2026-09-04 — a goal is a STATEMENT, and only the kernel
+#: settles a statement, so the TERMINAL goal statuses are exactly the two
+#: kernel-checked verdicts (`proved` / `disproved`). The retired `dead`
+#: said "the parent's decomposition was wrong", which is a fact about the
+#: STRATEGY (strategies keep their own `dead`) — the sub-goal is PARKED
+#: (`shelved`, event `wrong_context_park`), from where a citation, an
+#: Inject or a Delegate can revive it in a context that fits.
 GOAL_STATES: frozenset[str] = frozenset({
     "open",
     "attempting",
@@ -59,7 +79,6 @@ GOAL_STATES: frozenset[str] = frozenset({
     "pending_strategist_review",
     "disproved",
     "frozen",
-    "dead",
 })
 
 STRATEGY_STATES: frozenset[str] = frozenset({
@@ -71,19 +90,20 @@ STRATEGY_STATES: frozenset[str] = frozenset({
 })
 
 # Terminal classes (referenced by cascade/propagation guards). A *hard*
-# terminal is never downgraded to a softer one (`proved` is a finished proof;
-# `disproved`/`dead` are stronger negatives than `shelved`).
-#: `disproved` stays in this READ-side set on purpose (2026-08-18):
-#: citing one is still an error, its inject outcome still settles, and
-#: BFS still skips it. What changed is the FSM: a ("disproved","open")
-#: edge exists, so a strategist Inject (or an operator repair) can
-#: revive one — it is parked on a claimed counterexample, not settled
-#: by the kernel.
-GOAL_HARD_TERMINALS: frozenset[str] = frozenset({"proved", "disproved", "dead"})
+# terminal is never downgraded to a softer one (`proved` is a finished
+# proof; `disproved` is a kernel-certified refutation, a stronger
+# negative than `shelved`).
+#: These two are the KERNEL-checked verdicts and nothing else qualifies
+#: (2026-09-04): `proved` carries a ProvedReceipt, `disproved` is only
+#: reachable through `_disprove.run_disproof_gate`. Every other way a
+#: goal stops is a PARK — reopenable by whoever finds the way back.
+GOAL_HARD_TERMINALS: frozenset[str] = frozenset({"proved", "disproved"})
 GOAL_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS | {"shelved"}
 #: Hard-settled AND failed: never citable, never revived by a proof —
-#: the cite-gate / ancestor-walk / `failed:<status>` predicate, named so
-#: consumers stop hand-copying {"disproved", "dead"} (found in 4 modules).
+#: the cite-gate / ancestor-walk / `failed:<status>` predicate. A
+#: one-element set today; it stays NAMED because the four modules that
+#: read it are asking "is this settled against us?", not "is this
+#: disproved?", and a kernel-witnessed second verdict would join it.
 GOAL_FAILED_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS - {"proved"}
 STRATEGY_TERMINALS: frozenset[str] = frozenset({"succeeded", "dead", "superseded"})
 
@@ -155,15 +175,16 @@ GOAL_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("shelved", "open"),                      # backward-revive / forward-reuse / strategist reopen
     ("pending_strategist_review", "open"),    # strategist Reopen / reconcile
     ("frozen", "open"),                       # strategist reopen of a frozen root
-    # 2026-08-18 (owner ruling): `disproved` is parked on a CLAIMED
-    # counterexample, not a kernel verdict — 8/8 of union_closed's
-    # disproved goals were prose-flipped `sorry` files, and one (g8014)
-    # was kernel-proven TRUE after the flip (#eval of the landed
-    # checker). This edge removes the irreversibility; every read site
-    # keeps treating disproved as settled-unless-revived, and a future
-    # kernel-witnessed disproof (the deliberately unscheduled "disproof
-    # leg") re-earns real terminality via a receipt.
-    ("disproved", "open"),                    # Inject revival / operator repair
+    # 2026-09-04 (owner ruling): the disproof gate landed, so a
+    # `disproved` mark IS a kernel-certified refutation and the
+    # strategist may not overturn one by fiat (`verify_decision` refuses
+    # the Inject and names the way out: a different statement). The edge
+    # survives for OPERATOR repair only — a person who finds the gate
+    # itself was wrong. It opened in 2026-08-18, when the mark was still
+    # a prose claim and 8/8 of union_closed's disproved goals were
+    # prose-flipped `sorry` files (g8014 was kernel-proven TRUE after
+    # the flip); that hole is closed on the WRITE side now.
+    ("disproved", "open"),                    # operator repair only
     ("proved", "open"),                       # rollback: culprit chain reverted
     ("proved", "attempting"),                 # rollback: non-culprit pre-verify state
 
@@ -176,11 +197,12 @@ GOAL_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("open", "pending_strategist_review"),
     ("attempting", "pending_strategist_review"),
 
-    # --- goal hard-terminal (counterexample / wrong-context subtree) ---
+    # --- goal hard-terminal (kernel-certified counterexample) ---
+    # The wrong-context case has no edge of its own: `parent_needs_fix`
+    # parks the sub-goal on the ordinary shelve edges above (event
+    # `wrong_context_park`) — see `_propagate_wrong_context`.
     ("attempting", "disproved"),
-    ("attempting", "dead"),
     ("open", "disproved"),
-    ("open", "dead"),
 
     # --- bootstrap: root statement seeded but Defs not yet initialised ---
     ("open", "frozen"),
@@ -232,6 +254,13 @@ EVENTS: frozenset[str] = frozenset({
     "reopen_after_cascade", "reopen_after_strategy_loss",
     "backward_decomposed", "inward_kill", "parent_stall", "upward_kill",
     "sibling_won", "parent_shelved_race",
+    # `parent_needs_fix` — the worker says the DECOMPOSITION was wrong,
+    # not the statement (2026-09-04). The strategy dies; the sub-goal is
+    # parked under its own event so a park for a wrong context is
+    # distinguishable in `goal_events` from a threshold shelve or a
+    # ConfirmShelve, and so a later reader knows the statement itself
+    # was never judged.
+    "wrong_context_park",
     # backward pipeline
     "skeleton_failed", "moot_retain", "agent_failed",
     "backward_alias_proved", "backward_sorryfree_proved", "backward_revive",
@@ -266,6 +295,10 @@ EVENTS: frozenset[str] = frozenset({
     # and left no goal_events row to say which restart did it).
     "recovery_reopen", "recovery_attempting_fixup",
     "recovery_anchor_repark",
+    # operator verbs (`asterism reject`) — a person retiring a
+    # framework-generated node. Not a kernel verdict, so it is a park;
+    # the event is what says a PERSON wanted this one gone.
+    "human_rejected",
     # problem FSM (v29) — apply_problem_transition call sites
     "amend_requested", "amend_resolved",
     "ingest_committed", "ingest_direct", "ingest_refuted",
@@ -307,7 +340,7 @@ def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
             row = conn.execute(
                 "SELECT status FROM goals WHERE id = ?", (gid,)).fetchone()
             # Real edge only from a LIVE status; shelved→shelved is a
-            # self-edge and proved/disproved/dead are silently no-op'd
+            # self-edge and proved/disproved are silently no-op'd
             # at commit (BT 2026-05-29 guard) — zero delta either way.
             if row is not None and str(row["status"]) in (
                     "open", "attempting", "pending_strategist_review",
@@ -651,7 +684,7 @@ def shelve_cascade_targets(
                 sub_status = str(r["status"])
                 if sub_id in saved or sub_id in picked:
                     continue
-                if sub_status in ("proved", "shelved", "disproved", "dead",
+                if sub_status in ("proved", "shelved", "disproved",
                                   "pending_strategist_review"):
                     if sub_status == "proved":
                         next_frontier.append(sub_id)
@@ -735,6 +768,7 @@ def _cascade_shelve_descendants(
 def _set_goal_terminal_and_propagate(
     conn: sqlite3.Connection, goal_id: int, status: str,
     receipt: "ProvedReceipt | None" = None,
+    *, event: str = "set_terminal", reason: str = "",
 ) -> None:
     """Flip a goal to a terminal status and:
 
@@ -742,9 +776,9 @@ def _set_goal_terminal_and_propagate(
          Strategist Inject decision), fill the originating decision's
          `outcome` column and fire `inject_batch_done` when its
          batch is fully terminal.
-      2. For non-recoverable terminals (`shelved` / `disproved` /
-         `dead`), cascade `shelved` to every still-active descendant
-         via `_cascade_shelve_descendants`. Display and Strategist
+      2. For non-recoverable terminals (`shelved` / `disproved`),
+         cascade `shelved` to every still-active descendant via
+         `_cascade_shelve_descendants`. Display and Strategist
          context view then converge on the same source of truth.
 
     Centralises the sequence (`update_goal_status` →
@@ -752,7 +786,10 @@ def _set_goal_terminal_and_propagate(
     `_maybe_enqueue_inject_batch_done` → optional descendant
     cascade) so every terminal flip site applies them uniformly.
 
-    `status` ∈ {'proved','shelved','disproved','dead'}.
+    `status` ∈ {'proved','shelved','disproved'}. `event` / `reason`
+    name the driving cause in `goal_events` — the shelve sites that
+    have a specific one (`wrong_context_park`) pass it so a later
+    reader can tell a wrong-context park from a threshold shelve.
 
     Instrument: every terminal flip prints a caller-trace line so we
     can attribute unexpected shelves (polar 2026-05-23: `square_root_
@@ -763,10 +800,11 @@ def _set_goal_terminal_and_propagate(
     point on next reproduction.
 
     Guard (BT 2026-05-29 g3380): never DOWNGRADE a goal that is already
-    a hard terminal (`proved` / `disproved` / `dead`) to `shelved`.
+    a hard terminal (`proved` / `disproved`) to `shelved`.
     `proved` is a completed proof — shelving it regresses a true theorem
     and breaks the invariant `proved ⟺ some strategy's subs all proved`;
-    `disproved`/`dead` are stronger negative terminals than `shelved`.
+    `disproved` is a kernel-certified refutation, a stronger negative
+    terminal than `shelved`.
     The observed trigger was a Strategist ConfirmShelve on a proved-but-
     superseded orphan goal (it had no clean "retire orphan" verb so it
     misused ConfirmShelve). The ConfirmShelve commit path also no-ops
@@ -778,13 +816,13 @@ def _set_goal_terminal_and_propagate(
             "SELECT status FROM goals WHERE id = ?", (goal_id,),
         ).fetchone()
         if cur is not None and str(cur["status"]) in (
-            "proved", "disproved", "dead",
+            "proved", "disproved",
         ):
             print(f"[goal-terminal] g{goal_id} shelve SKIPPED — already "
                   f"{cur['status']!r} (no downgrade of a terminal goal)",
                   flush=True)
             return
-    if status in ("shelved", "disproved", "dead"):
+    if status in ("shelved", "disproved"):
         import traceback as _tb
         frames = _tb.extract_stack()[-4:-1]
         caller = ""
@@ -805,11 +843,11 @@ def _set_goal_terminal_and_propagate(
               f"attempts={n} caller={caller}",
               flush=True)
     apply_goal_transition(
-        conn, goal_id, status, event="set_terminal", receipt=receipt)
+        conn, goal_id, status, event=event, reason=reason, receipt=receipt)
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
         _maybe_enqueue_inject_batch_done(conn, d)
-    if status in ("shelved", "disproved", "dead"):
+    if status in ("shelved", "disproved"):
         _cascade_shelve_descendants(conn, goal_id)
 
 
@@ -980,26 +1018,25 @@ def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
 
     Return `(found, status)` where `found` is True iff any ancestor
     goal in the strategy_subgoals chain has a HARD terminal status
-    (`disproved` or `dead`); `status` is which one if any.
+    (`disproved`, the only failed one); `status` is which if any.
 
-    Both hard terminals block Reopen on descendants:
-      - `disproved`: counterexample; descendant's statement depends on
-        a false hypothesis context — proving it is meaningless.
-      - `dead`: parent strategy was wrong; descendant was created for
-        that wrong context. Auto-detach can still salvage independently
-        useful lemmas, but the path through this descendant back to
-        root is permanently severed.
+    A `disproved` ancestor blocks Reopen on descendants: a kernel
+    counterexample stands against the parent statement, so the
+    descendant's own statement depends on a false hypothesis context
+    and proving it is meaningless.
 
     `shelved` ancestors do NOT count (soft terminal; auto-detach
     handles broken upward chains so the descendant can run standalone
-    and may even be revived once the ancestor reopens).
+    and may even be revived once the ancestor reopens) — and since
+    2026-09-04 a wrong-context park IS a `shelved` ancestor, which is
+    the point: the descendant statement was never judged.
 
     Walks UPWARD via strategy_subgoals.subgoal_id = goal_id → parent
     strategy → strategy.goal_id, recursively — MINTED edges only (v44):
-    both rationales above are about the context a goal was CREATED in,
+    the rationale above is about the context a goal was CREATED in,
     and a citing strategy is a consumer, not the creator. Crossing a
-    cited edge would let a consumer's disproved/dead parent block
-    Reopen on an independent shared goal.
+    cited edge would let a consumer's disproved parent block Reopen on
+    an independent shared goal.
     """
     visited: set[int] = set()
     frontier: list[int] = [goal_id]
@@ -1032,9 +1069,9 @@ def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
 
 def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
                                      goal_id: int) -> bool:
-    """Legacy alias — Phase 6 broadened the safety walk to include
-    `dead`. New code should call `_has_hard_terminal_ancestor` directly
-    for the more informative return shape."""
+    """Legacy alias. New code should call
+    `_has_hard_terminal_ancestor` directly for the more informative
+    return shape."""
     found, _ = _has_hard_terminal_ancestor(conn, goal_id)
     return found
 
@@ -1188,7 +1225,7 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
 
     When `goal_id` soft-shelves, any 'proposed' parent strategy (one that
     USES it as a sub-goal) whose sub-goals have now ALL settled — zero
-    alive, >=1 soft-shelved, and NO hard-terminal (disproved/dead)
+    alive, >=1 soft-shelved, and NO hard-terminal (`disproved`)
     sibling — is PARKED as 'stalled' instead of left 'proposed'.
 
     Why a distinct status (Phase 11): a 'proposed' strategy with no alive
@@ -1203,8 +1240,14 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
     to 'proposed'.
 
     Skipped cases (left for other paths):
-      - a hard-terminal (disproved/dead) sibling → `_kill_upward_chain`
-        marks the parent 'dead' (not reopenable);
+      - a hard-terminal (`disproved`) sibling → `_kill_upward_chain`
+        kills the parent STRATEGY and routes the exhausted parent goal
+        to Strategist review;
+      - a wrong-context park (`parent_needs_fix`) → the same kill,
+        driven by `_propagate_wrong_context`, which deliberately skips
+        this stall pass: a strategy about to be killed must not be
+        parked as 'stalled' first (a 'stalled' row is invisible to
+        `_kill_upward_chain`'s `status = 'proposed'` filter);
       - all sub-goals proved → 'succeeded' (handled at proof time);
       - any alive sibling → genuinely in flight, stays 'proposed';
       - a shelved sub-goal whose promised helper batch is still in
@@ -1229,8 +1272,7 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
         alive = (comp.get("open", 0) + comp.get("attempting", 0)
                  + comp.get("pending_strategist_review", 0))
         if (total > 0 and alive == 0 and comp.get("shelved", 0) >= 1
-                and comp.get("disproved", 0) == 0
-                and comp.get("dead", 0) == 0):
+                and comp.get("disproved", 0) == 0):
             if _strategy_waits_on_promised_batch(conn, sid):
                 continue
             apply_strategy_transition(
@@ -1273,7 +1315,7 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     """Inward strategy kill for a goal that just hit a terminal status.
 
     Phase 6: caller is responsible for the (separate) upward strategy
-    kill if the terminal status warrants it (disproved / dead, via
+    kill if the terminal status warrants it (`disproved`, via
     `_kill_upward_chain`). `shelved` is soft-terminal: parent strategies
     are not KILLED, but a parent whose sub-goals have all settled is
     PARKED as 'stalled' (reopenable) via `_maybe_stall_parent_strategies`
@@ -1309,7 +1351,7 @@ def _review_cited_waiters(conn: sqlite3.Connection, goal_id: int) -> None:
     parked = conn.execute("SELECT status FROM goals WHERE id = ?",
                           (goal_id,)).fetchone()
     if parked is None or str(parked["status"]) != "shelved":
-        # Hard terminals (disproved/dead) reach here through the
+        # Hard terminals (`disproved`) reach here through the
         # composite propagators; their citing strategies are
         # `_kill_upward_chain`'s business — conducting a review first
         # would race the kill's own cascade.
@@ -1342,8 +1384,8 @@ def park_group_anchor(conn: sqlite3.Connection,
     its anchor `attempting` — parked-alive under a closed group, never
     dispatched again (BFS skips `attempting`) and with no shelve record
     for citation-revival, where the direct `CloseGroup` path would have
-    shelved it (acceptance pass, 2026-08-17). Shelved, not dead: the
-    goal itself was not refuted, its group's charter went away —
+    shelved it (acceptance pass, 2026-08-17). A park, not a verdict:
+    the goal itself was not refuted, its group's charter went away —
     exactly what shelve's revivability is for.
     """
     if anchor_goal_id is None:
@@ -1357,21 +1399,25 @@ def park_group_anchor(conn: sqlite3.Connection,
         _propagate_shelve(conn, int(anchor_goal_id))
 
 
-def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
-                       *, parent_terminal_status: str) -> None:
+def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int) -> None:
     """Phase 6 — kill the strategies USING this goal as a sub-goal,
     then cascade to their parent goals.
 
-    Called only for hard terminals (`disproved` / `dead`). Soft
-    `shelved` deliberately leaves the upward chain alive so a future
-    Reopen can revive it.
+    Called for the two verdicts that repudiate a decomposition: a
+    kernel `disproved` sub-goal, and a `parent_needs_fix` park (the
+    worker's "this decomposition is wrong"). An ordinary `shelved`
+    deliberately leaves the upward chain alive so a future Reopen can
+    revive it.
 
-    `parent_terminal_status` ∈ {'shelved', 'dead'} — what to flip an
-    exhausted parent goal to when its attempts counter hits
-    SHELVE_THRESHOLD via this cascade. Disproved subgoals exhaust
-    their parents as 'shelved' (the parent could in principle try a
-    different decomposition); dead subgoals exhaust their parents as
-    'dead' (the whole subtree is in the wrong context).
+    An EXHAUSTED parent (attempts past SHELVE_THRESHOLD via this
+    cascade) always goes to `pending_strategist_review` — never to a
+    terminal of its own. Until 2026-09-04 the `parent_needs_fix` arm
+    passed a `parent_terminal_status='dead'` that killed the parent
+    GOAL outright and recursed upward; the owner ruling retires that:
+    a parent statement whose child was mis-decomposed was never itself
+    judged, so exhaustion is the Strategist's call (ConfirmShelve /
+    Reopen / a new Inject), exactly as the disproved cascade already
+    treated it.
     """
     parent_strategies = conn.execute(
         "SELECT s.id, s.goal_id FROM strategies s "
@@ -1442,23 +1488,11 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
             # shelve/reopen decision until the sibling resolves.
             continue
         if n >= _shelve_threshold():
-            if parent_terminal_status == "dead":
-                # Hard terminal (`dead` = structurally wrong subtree):
-                # keep direct dead-shelve + upward kill. Not Strategist-
-                # actionable.
-                _set_goal_terminal_and_propagate(
-                    conn, gid, parent_terminal_status)
-                _propagate_shelve(conn, gid)
-                _kill_upward_chain(
-                    conn, gid,
-                    parent_terminal_status=parent_terminal_status)
-            else:
-                # Soft terminal (`shelved` cascade from disproved sub):
-                # exhaustion is Strategist's call. Route through
-                # pending_strategist_review so Strategist sees the
-                # exhausted parent and decides ConfirmShelve / Reopen /
-                # Inject. Mirrors the agent_shelved path.
-                _enqueue_strategist_review(conn, gid)
+            # Exhaustion is the Strategist's call. Route through
+            # pending_strategist_review so it sees the exhausted parent
+            # and decides ConfirmShelve / Reopen / Inject. Mirrors the
+            # agent_shelved path.
+            _enqueue_strategist_review(conn, gid)
         else:
             apply_goal_transition(
                 conn, gid, "open", event="reopen_after_cascade")
@@ -1496,18 +1530,34 @@ def _reconcile_goal_after_strategy_loss(
 
 def _propagate_disproved(conn: sqlite3.Connection, goal_id: int) -> None:
     """Composite: inward strategy kill + upward strategy chain kill
-    for a disproved goal (counterexample-based hard terminal)."""
+    for a disproved goal (kernel counterexample; hard terminal)."""
     _propagate_shelve(conn, goal_id)
-    _kill_upward_chain(conn, goal_id, parent_terminal_status="shelved")
+    _kill_upward_chain(conn, goal_id)
 
 
-def _propagate_dead(conn: sqlite3.Connection, goal_id: int) -> None:
-    """Composite: inward strategy kill + upward strategy chain kill
-    for a dead goal (parent_needs_fix; parent strategy was wrong).
-    Exhausted parents cascade-die rather than cascade-shelve because
-    the entire subtree was in the wrong context."""
-    _propagate_shelve(conn, goal_id)
-    _kill_upward_chain(conn, goal_id, parent_terminal_status="dead")
+def _propagate_wrong_context(conn: sqlite3.Connection,
+                             goal_id: int) -> None:
+    """Composite for a `parent_needs_fix` park: the worker says the
+    DECOMPOSITION was wrong, so every strategy that hangs on this goal
+    dies — inward (the strategies trying to prove it, now moot) and
+    upward (the strategy that minted it into a context that does not
+    hold). The goal itself is only PARKED (`shelved`): its statement
+    was never judged, and a citation / Inject / Delegate can revive it
+    under a context that fits.
+
+    Deliberately NOT `_propagate_shelve`: that helper's
+    `_maybe_stall_parent_strategies` pass would park the very parent
+    strategies `_kill_upward_chain` is about to kill, and a 'stalled'
+    row is invisible to the kill's `status = 'proposed'` filter — the
+    upward kill, its sibling-orphan sweep and the parent's attempts++
+    would all silently stop happening. Before the retirement of the
+    `dead` goal status this was held by the composition guard
+    `comp.get("dead", 0) == 0` inside the stall predicate; with the
+    sub-goal now `shelved` the guard no longer fires, so the ordering
+    is made explicit here instead."""
+    _inward_kill_strategies(conn, goal_id)
+    _review_cited_waiters(conn, goal_id)
+    _kill_upward_chain(conn, goal_id)
 
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
@@ -1563,19 +1613,18 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             "SELECT status FROM goals WHERE id = ?", (int(target_id),),
         ).fetchone()
         # Cascade race guard: once a goal reaches a terminal state
-        # (proved/shelved/disproved/dead), late cascades from in-flight
+        # (proved/shelved/disproved), late cascades from in-flight
         # pipelines must not mutate it.
         # Without the 'shelved' guard, a Backward 'success' that races
         # past the shelve transition would unconditionally flip status
         # back to 'attempting' (observed: goal stuck at attempts=N with
         # status='attempting' instead of 'shelved').
-        # 'disproved' / 'dead' added with the sibling-orphan cascade
+        # 'disproved' added with the sibling-orphan cascade
         # (_kill_upward_chain sibling sweep): a worker dispatched on
         # g2 before g2 cascaded-shelved (because its sibling g3 hit a
         # hard terminal and killed their shared parent strategy) must
         # not flip g2 back to attempting.
-        if row and row["status"] in ("proved", "shelved",
-                                      "disproved", "dead"):
+        if row and row["status"] in ("proved", "shelved", "disproved"):
             return
 
     # Provider/transport infra failures don't burn the goal's attempts
@@ -1645,9 +1694,10 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # `docs/archive/design/phase2/pipelines.md` §4.2 Rule 1):
             #   * agent_infeasible (counterexample shown) → 'disproved'
             #     (hard terminal, dedupe blocks future same-shape proposals).
-            #   * parent_needs_fix → 'dead' (parent strategy was wrong;
-            #     cascade-die rather than cascade-shelve because the
-            #     entire subtree was in the wrong context).
+            #   * parent_needs_fix → PARKED 'shelved' with the
+            #     `wrong_context_park` event (the decomposition was
+            #     wrong, the statement was never judged); every
+            #     strategy hanging on it dies, inward and upward.
             #   * agent_shelved → 'pending_strategist_review'
             #     (transitional; defer judgment to Strategist via T2 trigger).
             # All three increment attempts once (LLM call happened;
@@ -1663,8 +1713,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if failure_reason == "parent_needs_fix":
                 db.increment_goal_attempts(conn, int(target_id))
                 _set_goal_terminal_and_propagate(
-                    conn, int(target_id), "dead")
-                _propagate_dead(conn, int(target_id))
+                    conn, int(target_id), "shelved",
+                    event="wrong_context_park",
+                    reason="parent_needs_fix: the decomposition that "
+                           "minted this goal was wrong")
+                _propagate_wrong_context(conn, int(target_id))
                 return
             if failure_reason == "agent_shelved":
                 db.increment_goal_attempts(conn, int(target_id))
@@ -1835,8 +1888,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             return  # same skip-increment as Builder above
         # Decline directives mirror the Builder branch above (Phase 2
         # split: agent_infeasible → 'disproved' + propagate; parent_
-        # needs_fix → 'dead' + propagate; agent_shelved → 'pending_
-        # strategist_review' + enqueue Strategist, no propagate).
+        # needs_fix → 'shelved' park + propagate; agent_shelved →
+        # 'pending_strategist_review' + enqueue, no propagate).
         # Backward cannot send `needs_decomposition` (Builder-only); if
         # a typo / unknown directive lands here it falls through to the
         # generic attempts++ branch and eventually shelves at threshold.
@@ -1849,8 +1902,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         if failure_reason == "parent_needs_fix":
             db.increment_goal_attempts(conn, int(target_id))
             _set_goal_terminal_and_propagate(
-                conn, int(target_id), "dead")
-            _propagate_dead(conn, int(target_id))
+                conn, int(target_id), "shelved",
+                event="wrong_context_park",
+                reason="parent_needs_fix: the decomposition that "
+                       "minted this goal was wrong")
+            _propagate_wrong_context(conn, int(target_id))
             return
         if failure_reason == "agent_shelved":
             db.increment_goal_attempts(conn, int(target_id))
@@ -1872,7 +1928,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # terminal here the goal tight-loops re-dispatch (~20/s) until
             # SHELVE_THRESHOLD (g4437: 4 dead_attempts in 167ms). Retrying
             # re-reads a missing file forever, so park it terminally and log
-            # the drift loudly. `shelved` (not `dead`): the statement is fine,
+            # the drift loudly. Parked, not settled: the statement is fine,
             # only its artifact vanished — restoring the stub (a parent
             # re-decompose) can revive it.
             db.increment_goal_attempts(conn, int(target_id))

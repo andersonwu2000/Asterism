@@ -329,17 +329,42 @@ def goal_by_slug(conn: sqlite3.Connection, problem: str,
 
 
 def set_inject_outcome_detail(conn: sqlite3.Connection, goal_id: int,
-                              detail: str) -> None:
+                              detail: str, *,
+                              outcome: "str | None" = None) -> "int | None":
     """Write `detail` into the `outcome_detail` of the Inject decision
     that produced `goal_id` (single-write invariant → at most one row).
     Used by `asterism reject` so the human's reject reason surfaces to
-    the Strategist in `## Completed Inject batches` on its next wake."""
+    the Strategist in `## Completed Inject batches` on its next wake.
+
+    `outcome` additionally SETTLES that decision, and returns its id so
+    the caller can fire `maybe_enqueue_inject_batch_done`. The reject
+    path needs this since 2026-09-04: it used to settle the inject as a
+    side effect of flipping the goal to the hard terminal `dead`, and
+    with `dead` retired the node is merely PARKED — a park never settles
+    an inject (it is reopenable), so an unsettled batch would suppress
+    the very wake the command promises. Guarded on `outcome IS NULL` in
+    the same statement, so a second reject of the same node returns None
+    instead of re-waking a batch that already reported."""
+    if outcome is None:
+        conn.execute(
+            "UPDATE strategist_decisions SET outcome_detail = ?,"
+            " updated_at = ? WHERE produced_goal_id = ?",
+            (detail, now(), goal_id),
+        )
+        conn.commit()
+        return None
+    row = conn.execute(
+        "SELECT id FROM strategist_decisions"
+        " WHERE produced_goal_id = ? AND outcome IS NULL",
+        (goal_id,),
+    ).fetchone()
     conn.execute(
-        "UPDATE strategist_decisions SET outcome_detail = ?, updated_at = ?"
-        " WHERE produced_goal_id = ?",
-        (detail, now(), goal_id),
+        "UPDATE strategist_decisions SET outcome_detail = ?, outcome = ?,"
+        " updated_at = ? WHERE produced_goal_id = ? AND outcome IS NULL",
+        (detail, outcome, now(), goal_id),
     )
     conn.commit()
+    return int(row["id"]) if row is not None else None
 
 
 def set_inject_decision_produced_goal(
@@ -581,7 +606,8 @@ def propagate_inject_outcome_from_strategy(
     Mapping: strategy 'succeeded' → 'success'. 'superseded' → 'success'
     (the goal got proved by a sibling — Strategist's intent of "make
     this goal terminal-proved" was met, even though by a different
-    decomposition). 'dead' → 'failed:dead'. 'stalled' → 'failed:stalled'
+    decomposition). 'dead' → 'failed:dead' (the STRATEGY's own status —
+    strategies keep `dead`). 'stalled' → 'failed:stalled'
     (subgoals all settled, >=1 soft-shelved — parked but reopenable).
     Other statuses are not terminal and this function is a no-op.
 

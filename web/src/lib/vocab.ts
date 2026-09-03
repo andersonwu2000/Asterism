@@ -13,7 +13,6 @@ const GOAL_STATUS_LABEL: Record<string, string> = {
   pending_strategist_review: 'awaiting review',
   disproved: 'disproved',
   frozen: 'frozen (pre-launch)',
-  dead: 'dead',
 }
 
 export function goalStatusLabel(status: string): string {
@@ -122,6 +121,9 @@ const EVENT_LABEL: Record<string, string> = {
   // surfaces (owner, 2026-08-12)
   shelved: 'shelved',
   disproved: 'disproved',
+  // HISTORY ONLY — the goal status `dead` retired 2026-09-04, but the
+  // `goal_events` rows written before then still say it, and a log
+  // entry with no word is worse than an old word.
   dead: 'dead',
   frozen: 'frozen',
   for_review: 'for review',
@@ -166,7 +168,8 @@ const EVENT_TITLE: Record<string, string> = {
   proved: 'the goal reached proved',
   shelved: 'set aside — not failed; it can be picked up again',
   disproved: 'its negation was proved instead',
-  dead: 'out of attempts',
+  dead: 'a retired status — the decomposition that minted this goal was' +
+    ' wrong. Today the same event parks the goal instead',
   frozen: 'held out of play — the root after you amended its statement',
   for_review: 'handed to the strategist to judge',
   deliverable:
@@ -290,7 +293,6 @@ export const GOAL_STATUS_CLS: Record<string, string> = {
   shelved: 'text-ink-faint',
   pending_strategist_review: 'text-warn',
   disproved: 'text-danger',
-  dead: 'text-ink-faint',
   frozen: 'text-ink-faint',
 }
 

@@ -51,7 +51,7 @@ function GoalCounts({ p }: { p: BoardProblem }) {
     <span
       className="tnum text-xs whitespace-nowrap text-ink-dim"
       title={`${p.goals.proved} proved · ${p.goals.open} open${
-        rest > 0 ? ` · ${rest} shelved/dead` : ''
+        rest > 0 ? ` · ${rest} parked` : ''
       } of ${p.goals.total} goals`}
     >
       {p.goals.proved}/{p.goals.total} proved

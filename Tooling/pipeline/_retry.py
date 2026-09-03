@@ -87,7 +87,7 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
     full knowledge of the attempts history (visible in its context's
     failure_replay), so the attempts cap is skipped — only the status
     check still applies (a parallel cascade that flipped the goal to
-    proved/disproved/dead still moots, so Inject can't infinite-loop
+    proved/disproved still moots, so Inject can't infinite-loop
     on a terminated goal). See `docs/data-flow.md` §3 for the design
     rationale.
 

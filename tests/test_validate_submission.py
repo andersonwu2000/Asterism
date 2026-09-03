@@ -293,8 +293,8 @@ def test_register_body_carries_pipeline_kind(tmp_path, monkeypatch):
     assert seen.get("kind") == "builder"
 
 
-def test_citation_dead_is_error(ws: Path):
-    _goal("bad", status="dead")
+def test_citation_disproved_is_error(ws: Path):
+    _goal("bad", status="disproved")
     r = gw._citation_submission(_cite("bad"), "p", ws, declared=set())
     assert r["ok"] is False
     assert r["issues"][0]["severity"] == "error"

@@ -66,7 +66,7 @@ def _tree(conn, root_id, kids):
 def test_descendant_ids_walks_strategy_subgoals(conn):
     root = _goal(conn, "root")
     _sid, (a, b) = _tree(conn, root, [("a", "open"), ("b", "proved")])
-    _sid2, (c,) = _tree(conn, a, [("c", "dead")])
+    _sid2, (c,) = _tree(conn, a, [("c", "disproved")])
     assert db.descendant_ids(conn, root) == {a, b, c}
     assert db.descendant_ids(conn, b) == set()
 
@@ -75,7 +75,7 @@ def test_in_flight_lines_report_each_root_with_its_tallies(conn):
     from Tooling.pipeline.strategist import audit
     top = groups_store.ensure_top_group(conn, "p")
     root = _goal(conn, "root", status="attempting")
-    _tree(conn, root, [("a", "proved"), ("b", "open"), ("c", "dead"),
+    _tree(conn, root, [("a", "proved"), ("b", "open"), ("c", "disproved"),
                        ("d", "shelved")])
     did = _inject(conn, top, root, batch="abcdef0123",
                   created_at="2026-08-26T04:13:13+00:00")
@@ -89,7 +89,7 @@ def test_in_flight_lines_report_each_root_with_its_tallies(conn):
     assert ln["batch_id"].startswith("abcdef01")
     assert ln["descendants"] == 4
     assert ln["tallies"] == {"proved": 1, "attempting": 0, "open": 1,
-                             "dead": 1, "shelved": 1, "disproved": 0,
+                             "shelved": 1, "disproved": 1,
                              "pending_strategist_review": 0}
     assert ln["age_days"] >= 3
 
@@ -226,7 +226,7 @@ def mfst():
 
 def _line_in_flight(conn, top, slug="root"):
     root = _goal(conn, slug, status="attempting")
-    _tree(conn, root, [("kid_open", "open"), ("kid_dead", "dead")])
+    _tree(conn, root, [("kid_open", "open"), ("kid_gone", "disproved")])
     _inject(conn, top, root, batch="live0001")
     return root
 
@@ -345,7 +345,7 @@ def test_routine_context_has_the_lines_section_and_the_roots_snapshot(
         workspace=workspace, intent=mfst, group_id=top)
     text = path.read_text(encoding="utf-8")
     assert "## Lines in flight" in text
-    assert f"`root` (goal_id {root}" in text and "dead 1" in text
+    assert f"`root` (goal_id {root}" in text and "disproved 1" in text
     assert json.loads((adir / audit.ROOTS_FILE).read_text(
         encoding="utf-8")) == [{"goal_id": root, "slug": "root"}]
 

@@ -142,25 +142,25 @@ def test_forward_proved_goal_resolved_success(conn: sqlite3.Connection) -> None:
     assert _n_strategist_queued(conn) == 1
 
 
-def test_forward_dead_goal_resolved_failed(conn: sqlite3.Connection) -> None:
-    """A hard-terminal (dead) produced goal still settles its inject — only
-    `shelved` was dropped from the settling set."""
+def test_forward_disproved_goal_resolved_failed(
+        conn: sqlite3.Connection) -> None:
+    """A hard-terminal (disproved) produced goal still settles its
+    inject — a PARK does not (it is reopenable)."""
     _goal(conn, slug="main", origin="root", status="attempting")
-    g = _goal(conn, slug="lemma", status="dead")
+    g = _goal(conn, slug="lemma", status="disproved")
     did = _inject(conn, batch_id="b1", produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn) == 1
-    assert _outcome(conn, did) == "failed:dead"
+    assert _outcome(conn, did) == "failed:disproved"
 
 
 def test_propagate_from_goal_status_mapping(conn: sqlite3.Connection) -> None:
     """Unit: propagate_inject_outcome_from_goal — proved→success,
-    disproved/dead→failed:<status>, shelved/open/attempting→None (not a
-    settling status; shelved is reopenable)."""
+    disproved→failed:disproved, shelved/open/attempting→None (not a
+    settling status; a park is reopenable)."""
     _goal(conn, slug="main", origin="root", status="attempting")
     cases = {
         "proved": "success",
         "disproved": "failed:disproved",
-        "dead": "failed:dead",
         "shelved": None,
         "open": None,
         "attempting": None,
@@ -368,16 +368,17 @@ def test_shelve_with_alive_sibling_keeps_parent_proposed(
     assert _outcome(conn, did) is None
 
 
-def test_shelve_with_dead_sibling_not_parked(conn: sqlite3.Connection) -> None:
-    """A hard-terminal (dead) sibling means the decomposition is wrong, not
-    merely parked — left for `_kill_upward_chain` to mark 'dead'. The soft
-    stall transition skips it (stays 'proposed')."""
+def test_shelve_with_disproved_sibling_not_parked(
+        conn: sqlite3.Connection) -> None:
+    """A hard-terminal (disproved) sibling means the decomposition is
+    refuted, not merely parked — left for `_kill_upward_chain` to kill.
+    The soft stall transition skips it (stays 'proposed')."""
     _goal(conn, slug="main", origin="root", status="attempting")
     g = _goal(conn, slug="target", status="attempting")
     s = _strategy(conn, goal_id=g, status="proposed")
-    sg_dead = _goal(conn, slug="sg_dead", status="dead")
+    sg_settled = _goal(conn, slug="sg_settled", status="disproved")
     sg_x = _goal(conn, slug="sg_x", status="open")
-    _link(conn, s, [sg_dead, sg_x])
+    _link(conn, s, [sg_settled, sg_x])
 
     db.update_goal_status(conn, sg_x, "shelved")
     disp._propagate_shelve(conn, sg_x)

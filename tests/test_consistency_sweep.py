@@ -109,8 +109,8 @@ def test_repair_unambiguous_finishes_the_owed_sweep(conn, monkeypatch):
     g_shelved = _goal(conn, "sh2", status="shelved")
     s_dead = _strategy(conn, g_shelved, status="proposed")
     # stalled under terminal: report-only, must NOT be touched
-    g_dead = _goal(conn, "gd", status="dead")
-    s_stall = _strategy(conn, g_dead, status="stalled")
+    g_settled = _goal(conn, "gd", status="disproved")
+    s_stall = _strategy(conn, g_settled, status="stalled")
     # healthy live strategy under attempting goal: untouched
     g_live = _goal(conn, "live", status="attempting")
     s_live = _strategy(conn, g_live, status="proposed")

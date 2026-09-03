@@ -103,13 +103,17 @@ The canonical sets are declared in `Tooling/state/transitions.py`:
 
 | Entity | States |
 |---|---|
-| Goal | `open`, `attempting`, `proved`, `shelved`, `pending_strategist_review`, `disproved`, `frozen`, `dead` |
+| Goal | `open`, `attempting`, `proved`, `shelved`, `pending_strategist_review`, `disproved`, `frozen` |
 | Strategy | `proposed`, `succeeded`, `dead`, `superseded`, `stalled` |
 
-`proved`, `disproved`, and `dead` are hard-settled read states; `shelved` is a soft terminal.
-`disproved` is also reopenable by an explicit Strategist action because it records a claimed,
-kernel-certified negation proof path rather than an immutable schema fact. A transition into
-`proved` requires a `ProvedReceipt` at the checked mutator.
+A goal is a statement, and only the kernel settles a statement, so the hard-settled goal states
+are exactly the two kernel-checked verdicts: `proved` and `disproved`. Every other way a goal
+stops is a park (`shelved`), told apart by its `goal_events` event and revivable. The goal state
+`dead` was retired at schema v51 (2026-09-04); `dead` remains a STRATEGY state, which is where
+"the decomposition was wrong" belongs — a `parent_needs_fix` decline kills the strategy and parks
+the sub-goal with `event='wrong_context_park'`. A transition into `proved` requires a
+`ProvedReceipt` at the checked mutator; the `disproved -> open` edge survives for operator repair
+only (a strategist `Inject` on a disproved goal is refused at verify).
 
 All normal writes use `apply_goal_transition` or `apply_strategy_transition`. Cascade
 propagation is main-thread-only; worker threads may commit their own target but do not walk

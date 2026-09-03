@@ -88,7 +88,7 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
     a terminal outcome.
 
       - Forward outcome fills when the produced lemma reaches a
-        terminal goal status (proved / shelved / disproved / dead).
+        terminal goal status (proved / disproved).
       - Backward outcome fills when the produced strategy reaches
         a terminal status (succeeded / dead / superseded).
       - Builder outcome fills when the target goal reaches terminal
@@ -220,10 +220,12 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
 
     # Force-reopen target so BFS / inject dispatch can run on it.
     # Auto-detach if the upward chain has died — same path Strategist
-    # Reopen takes. `dead` is a hard terminal already rejected by
-    # verify_decision; this list intentionally excludes it. `disproved`
-    # is IN it (2026-08-18): an Inject on one is the revival route for
-    # a claimed-counterexample park.
+    # Reopen takes. `disproved` stays IN this list on purpose after
+    # 2026-09-04: `verify_decision` now refuses a STRATEGIST Inject on
+    # one, so the only Inject that still reaches here with that status
+    # is a PERSON's (the human command path deliberately skips the
+    # verifier, state/commands.py) — which is exactly the operator
+    # repair the surviving ("disproved","open") edge is for.
     g = db.get_goal(conn, target_id)
     if g and str(g["status"]) in ("shelved", "pending_strategist_review",
                                    "frozen", "disproved"):
@@ -909,7 +911,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     elif k == "ConfirmShelve":
         gid = int(decision.target_id)  # type: ignore[arg-type]
         # No-op guard (BT 2026-05-29 g3380): a ConfirmShelve on a goal
-        # that is already a hard terminal (proved / disproved / dead) is
+        # that is already a hard terminal (proved / disproved) is
         # silently ignored — it does NOT bounce the batch back to the
         # Strategist for re-issue. The Strategist sometimes ConfirmShelves
         # a proved-but-superseded orphan (it has no clean "retire orphan"
@@ -932,7 +934,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # disproved), descendants of a shelved goal stay invisible to
         # BFS via the alive-set filter in `db.open_goals` regardless
         # of their own status — no behavior gain from flipping them.
-        # Strategist's context view filters descendants of dead chains
+        # Strategist's context view filters descendants of dead-strategy
+        # chains
         # too (see `_section_active_goals`), so the surface area where
         # status drift could mislead Strategist is closed at the view
         # boundary, not the data boundary.

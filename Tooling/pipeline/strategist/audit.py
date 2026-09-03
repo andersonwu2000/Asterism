@@ -36,7 +36,7 @@ VERDICT_FILE = "verdict.json"
 ROOTS_FILE = "_audit_roots.json"
 CRITERIA = ("1", "2", "3", "4")
 PER_LINE = ("3", "4")
-TALLY_STATUSES = ("proved", "attempting", "open", "dead", "shelved",
+TALLY_STATUSES = ("proved", "attempting", "open", "shelved",
                   "disproved", "pending_strategist_review")
 
 
@@ -134,7 +134,7 @@ def render_lines_section(lines: "list[dict]") -> "list[str]":
             f"batch `{ln['batch_id'][:8]}`, decision {ln['decision_id']}; "
             f"dispatched {ln['age_days']:.1f} d ago) — {ln['descendants']} "
             f"descendant(s): proved {t['proved']}, attempting "
-            f"{t['attempting']}, open {t['open']}, dead {t['dead']}, "
+            f"{t['attempting']}, open {t['open']}, "
             f"shelved {t['shelved']}, disproved {t['disproved']}, "
             f"pending review {t['pending_strategist_review']}")
     out.append("")

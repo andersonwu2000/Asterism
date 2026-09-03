@@ -171,12 +171,13 @@ _LANDED_OUTCOMES = frozenset({
 })
 
 #: goal statuses that are an end of the road — these get a dated event.
-#: An open/attempting goal has no transition to date yet.
+#: An open/attempting goal has no transition to date yet. (Reads the
+#: CURRENT status, so retired vocabulary does not belong here — unlike
+#: `_TO_STATUS_VERB` below, which reads historical `goal_events` rows.)
 _TERMINAL_GOAL_STATES = {
     "proved": "proved",
     "shelved": "shelved",
     "disproved": "disproved",
-    "dead": "dead",
 }
 
 #: `goal_events.to_status` → the log's verb (v36). Not every transition
@@ -188,9 +189,13 @@ _TO_STATUS_VERB = {
     "proved": "proved",
     "shelved": "shelved",
     "disproved": "disproved",
-    "dead": "dead",
     "frozen": "frozen",
     "pending_strategist_review": "for_review",
+    # HISTORY ONLY: the goal status `dead` retired at v51 (2026-09-04)
+    # and no new row can carry it, but the rows written before that date
+    # are still in `goal_events` and are still the log of what happened.
+    # Dropping the verb would silently blank them.
+    "dead": "dead",
 }
 _SETTLED = transitions.GOAL_TERMINALS
 

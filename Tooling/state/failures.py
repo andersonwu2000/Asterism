@@ -197,7 +197,6 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "agent_shelved": _T(terminal_in_loop=True, agent_visible=False),
     "agent_bailed": _T(terminal_in_loop=True),
     "same_as_disproved": _T(terminal_in_loop=True),
-    "same_as_dead_unchanged": _T(terminal_in_loop=True),
     "duplicate_strategy": _T(terminal_in_loop=True),
     # NL-first (2026-07-25): goal has no Programme Proof correspondence
     # — routes to pending_strategist_review (mirror of agent_shelved;

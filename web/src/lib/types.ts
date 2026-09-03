@@ -54,7 +54,6 @@ export type GoalStatus =
   | 'pending_strategist_review'
   | 'disproved'
   | 'frozen'
-  | 'dead'
 
 export interface Goal {
   id: number

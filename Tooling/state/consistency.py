@@ -26,8 +26,11 @@ from . import transitions as _transitions
 # Terminal goal statuses: a completed cascade never leaves a live
 # strategy under one of these (proved → siblings superseded; the rest →
 # inward-killed dead). Tuple form because the sites splat it into SQL
-# placeholders.
+# placeholders, and the placeholder run is DERIVED from its length —
+# the set shrank by one when the goal status `dead` retired (2026-09-04)
+# and a hardcoded `(?,?,?,?)` took the startup repair down with it.
 _TERMINAL_GOAL = tuple(_transitions.GOAL_TERMINALS)
+_TERMINAL_GOAL_Q = ",".join("?" * len(_TERMINAL_GOAL))
 
 # Phase 6 — single-source alive seed (root ∪ detached) lives in db.py;
 # this copy already had the correct shape, now it can't drift.
@@ -76,7 +79,7 @@ def consistency_sweep(conn: sqlite3.Connection, *,
         "       s.goal_id, g.status AS goal_status, g.problem"
         "  FROM strategies s JOIN goals g ON g.id = s.goal_id"
         " WHERE s.status IN ('proposed','stalled')"
-        f"   AND g.status IN (?,?,?,?) AND {_sc}",
+        f"   AND g.status IN ({_TERMINAL_GOAL_Q}) AND {_sc}",
         *_TERMINAL_GOAL, *_sa)
     out["open_with_proposed_strategy"] = q(
         "SELECT DISTINCT g.id AS goal_id, g.problem FROM goals g"
@@ -111,8 +114,8 @@ def repair_unambiguous(conn: sqlite3.Connection) -> "dict[str, int]":
 
       live `proposed` strategy under a terminal goal:
         parent proved      → superseded (the OR race was won by a sibling)
-        parent dead/disproved/shelved → dead (the inward-kill that the
-                                        interrupted cascade owed it)
+        parent disproved/shelved → dead (the inward-kill that the
+                                    interrupted cascade owed it)
     `stalled` rows and every other category are report-only — their repair
     is either recovery's existing job or needs operator judgment."""
     from . import transitions
@@ -120,7 +123,7 @@ def repair_unambiguous(conn: sqlite3.Connection) -> "dict[str, int]":
     rows = conn.execute(
         "SELECT s.id AS sid, g.status AS gstat FROM strategies s"
         "  JOIN goals g ON g.id = s.goal_id"
-        " WHERE s.status = 'proposed' AND g.status IN (?,?,?,?)",
+        f" WHERE s.status = 'proposed' AND g.status IN ({_TERMINAL_GOAL_Q})",
         _TERMINAL_GOAL).fetchall()
     for r in rows:
         to = "superseded" if r["gstat"] == "proved" else "dead"

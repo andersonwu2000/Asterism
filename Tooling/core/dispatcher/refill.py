@@ -92,7 +92,7 @@ def _verify_problem(workspace: Path, problem: str) -> "bool | None":
     Why lazy (vs at-startup): wide-scope daemons (e.g. miniF2F=244
     problems) would pay 30-60min upfront. Lazy pays only for problems
     that actually get dispatched (BFS may never touch a problem whose
-    parent is dead/shelved). Per-problem ~5-15s amortizes over a long
+    parent is parked). Per-problem ~5-15s amortizes over a long
     run. None = no verdict: the OS memory fence stopped the build for
     lack of room (`BuildOutcome.capped`, 2026-09-02) — not cached, the
     problem is asked again on its next dispatch.

@@ -56,7 +56,7 @@ def test_goal_row_is_stale_when_goal_settled(
             assert _row_is_stale(conn, str(gid), kind, "Goal") is False, (
                 live, kind)
     # A settled goal's row drops before the spawn is paid.
-    for settled in ("proved", "shelved", "dead", "disproved",
+    for settled in ("proved", "shelved", "disproved",
                     "pending_strategist_review"):
         conn.execute("UPDATE goals SET status = ? WHERE id = ?",
                      (settled, gid))

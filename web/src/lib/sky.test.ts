@@ -123,8 +123,12 @@ const ALL: GoalStatus[] = [
   'pending_strategist_review',
   'disproved',
   'frozen',
-  'dead',
 ]
+
+/** Not a GoalStatus: a status this build does not know — a retired one
+ * in old data (`dead`, until 2026-09-04) or one the engine gains first.
+ * The sky must still draw it, and draw it lowest. */
+const UNKNOWN = 'a_status_this_build_never_heard_of' as GoalStatus
 
 /** the statuses that make `hasLive` true in Constellation — the sky's
  * ink inversion is gated on exactly these */
@@ -183,7 +187,7 @@ describe('star marks', () => {
       // stay discs and buy their distance in brightness instead
       expect(isBody(nodeStyle(goal('shelved'), hasLive).fill)).toBe(true)
       expect(isBody(nodeStyle(goal('frozen'), hasLive).fill)).toBe(true)
-      for (const s of ['disproved', 'dead'] as const) {
+      for (const s of ['disproved', UNKNOWN] as const) {
         expect(
           isBody(nodeStyle(goal(s), hasLive).fill),
           `${s} must be a shell`,
@@ -196,16 +200,18 @@ describe('star marks', () => {
     expect(nodeStyle(goal('frozen'), true)).toEqual(nodeStyle(goal('shelved'), true))
   })
 
-  it('keeps dead the floor of the sky', () => {
-    // abandoned is the faintest thing drawn — residue, and still never
-    // hidden (the sky is always complete)
+  it('keeps an unknown status the floor of the sky', () => {
+    // a status this build cannot name is the faintest thing drawn —
+    // residue, and still never hidden (the sky is always complete).
+    // `dead` was this arm's named occupant until 2026-09-04; the arm
+    // outlives it because old rows and new engine states both land here
     const L = (s: GoalStatus): number => {
       const m = nodeStyle(goal(s), true)
       return lightness(m.stroke, m.opacity)
     }
     for (const s of ALL) {
-      if (s === 'dead') continue
-      expect(L('dead'), `dead must sit under ${s}`).toBeLessThan(L(s))
+      expect(L(UNKNOWN), `the unknown floor must sit under ${s}`)
+        .toBeLessThan(L(s))
     }
   })
 
@@ -217,7 +223,7 @@ describe('star marks', () => {
       const m = nodeStyle(goal(s), true)
       return lightness(m.stroke, m.opacity)
     }
-    expect(L('shelved')).toBeGreaterThan(L('dead') + 6)
+    expect(L('shelved')).toBeGreaterThan(L(UNKNOWN) + 6)
   })
 
   it('lets a refuted star glow in no sky', () => {

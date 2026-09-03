@@ -77,7 +77,7 @@ def _proved_goals(
     conn: sqlite3.Connection, problem: str,
 ) -> list[sqlite3.Row]:
     """Proved goals for a problem, ordered by id. Mirrors tree._load_goals
-    but filters to status='proved' — empty/dead/shelved nodes are not
+    but filters to status='proved' — empty / unsettled nodes are not
     Library candidates."""
     return list(conn.execute(
         "SELECT id, slug, status, kind, origin, lean_path "
@@ -389,7 +389,7 @@ def build_inventory(
     decls: list[InvDecl] = []
     for g in goals:
         # deps = winning-strategy children that are themselves proved
-        # (drop dead/shelved branches — they aren't part of the proof).
+        # (drop dead-strategy / parked branches — not part of the proof).
         child_slugs = [
             by_id[cid]["slug"]
             for cid in edges.get(g["id"], [])

@@ -305,7 +305,8 @@ def verify_housekeeping(
     After the loop, each problem whose goal/strategy state changed gets
     one TREE.md refresh. Without this, verify-side status flips
     (attempting→proved via _set_goal_terminal_and_propagate, downward
-    cascade-shelve on disprove/dead) never reach TREE.md — only
+    cascade-shelve on a disproof or a wrong-context park) never reach
+    TREE.md — only
     cascade_one writes the tree, and verify-driven transitions don't
     pass through cascade_one. Strategist reads TREE.md inline into
     its Context.md; a stale TREE.md misled Strategist #115 (residue_thm

@@ -103,36 +103,6 @@ def _normalize_slug(raw: str) -> "str | None":
     return s if _SLUG_RE.match(s) else None
 
 
-def _dead_twin_block_reason(conn, problem: str,
-                            dead_goal_id: int) -> "str | None":
-    """Dead-twin guard verdict for one dedupe kind='dead' hit
-    (agent_feedback 2026-07-09/10): None when the problem's proved base
-    has GROWN since the twin died — the world changed, a retry with new
-    tools is the designed revival path. Otherwise the decline fragment
-    carrying the twin's last failure forensics, so the retry / next
-    Strategist sees WHY the identical statement already died instead of
-    re-walking it blind."""
-    twin = db.get_goal(conn, dead_goal_id)
-    if twin is None:
-        return None
-    grown = conn.execute(
-        "SELECT 1 FROM goals WHERE problem = ? AND status = 'proved'"
-        "  AND updated_at > ? LIMIT 1",
-        (problem, str(twin["updated_at"])),
-    ).fetchone() is not None
-    if grown:
-        return None
-    prior = conn.execute(
-        "SELECT failure_reason, substr(COALESCE(failure_detail,''), 1, 300)"
-        "       AS detail FROM dead_attempts"
-        " WHERE target_id = ? AND target_kind = 'Goal'"
-        " ORDER BY id DESC LIMIT 1", (int(dead_goal_id),),
-    ).fetchone()
-    why = (f"last failure: {prior['failure_reason']} — {prior['detail']}"
-           if prior else "no recorded attempt detail")
-    return f"≡ dead goal {int(dead_goal_id)} ({twin['slug']}); {why}"
-
-
 def _existing_duplicate_strategy(conn, goal_id: int,
                                  linked_set: "set[int]") -> "int | None":
     """The id of an existing 'proposed'/'stalled' strategy on `goal_id`
@@ -317,11 +287,11 @@ def _partition_sibling_reuse(
       * the parent goal's own slug (self-cycle; dedupe `no_progress`
         handles it),
       * same-slug-DIFFERENT-statement collisions (genuine name clash),
-      * `dead` / `disproved` siblings — the cite-gate rejects these
-        (dead = wrong-as-stated, disproved = false), so citing would
-        abort the whole strategy; keep for the `_2` resolver instead so
-        the re-declaration becomes a FRESH re-statement under this
-        strategy. (Consistency with the cite-gate's dead-reject, 6fc6ff4.)
+      * `disproved` siblings — the cite-gate rejects these (a
+        kernel-certified counterexample), so citing would abort the
+        whole strategy; keep for the `_2` resolver instead so the
+        re-declaration becomes a FRESH re-statement under this
+        strategy. (Consistency with the cite-gate, 6fc6ff4.)
 
     Pure decision — no filesystem mutation, so the caller owns the
     unlink + import injection. agent_feedback T8 / 91-92,110."""
@@ -1797,38 +1767,6 @@ def _backward_parse_and_commit(
             leading,
         )
 
-    # Dead-twin guard (agent_feedback 2026-07-09/10, ~35 entries): a
-    # sub-goal statement-equivalent to a DEAD goal is a blind repeat of an
-    # exhausted attempt — b6 burned 3-4 full Backward turns re-walking a
-    # same-day counterexampled decline. Decline WITH the twin's prior
-    # failure forensics so the retry / next Strategist sees WHY it died.
-    # World-changed release: if any goal PROVED after the twin died, the
-    # toolkit grew — the retry is legitimate (the designed revival path),
-    # so the match is neutralized and the sub-goal mints as novel.
-    dead_pairs = [
-        (idx, slug, m.goal_id)
-        for idx, ((slug, _), m) in enumerate(zip(sub_meta, canonical_for))
-        if m is not None and m.kind == "dead"
-    ]
-    blocking_dead: list[str] = []
-    for idx, slug, dgid in dead_pairs:
-        why = _dead_twin_block_reason(conn, goal["problem"], dgid)
-        if why is None:
-            canonical_for[idx] = None  # world changed — retry allowed
-            continue
-        blocking_dead.append(f"`{slug}` {why}")
-    if blocking_dead:
-        return _abort(
-            "same_as_dead_unchanged",
-            "sub-goal(s) restate a DEAD twin and nothing has been proved "
-            "in this problem since it died — a byte-identical retry in an "
-            "unchanged world repeats the same failure:\n  "
-            + "\n  ".join(blocking_dead)
-            + "\nEither change the statement (weaker/refactored), or "
-            "first land the missing tool the prior failure names.",
-            leading,
-        )
-
     # #2 reuse extraction — a sub-goal that matched a NON-proved in-problem
     # twin (dedupe kind="reuse") becomes a CITATION of that twin instead of
     # a new goal: dropped from the sub-goal lists, recorded as a patch
@@ -2063,8 +2001,9 @@ def _backward_parse_and_commit(
         #    pattern — strategy waits in 'proposed' until cited goal
         #    proves via `strategies_ready_for_verify`'s all-subgoals-
         #    proved check, then alias-rewrites up).
-        #  - terminal-failed siblings (shelved/disproved/dead): reject
-        #    (can't recover in this strategy).
+        #  - a `disproved` sibling: reject (can't recover in this
+        #    strategy); a PERSON's park too (nothing promised to wait
+        #    for).  A machine park is revived and linked.
         # Run after `_inject_imports_for_subs` so framework-injected
         # imports for declared sub-goals don't false-trigger.
         declared_slugs = {slug for slug, _ in sub_meta}
@@ -2309,20 +2248,23 @@ def _backward_parse_and_commit(
         # declared sub-goals so `strategies_ready_for_verify` blocks
         # until they prove — the strategy waits naturally for the
         # parallel-built lemma to land before alias-rewrite proceeds.
-        # Revive cited soft-terminal siblings (shelved / dead) before
-        # linking: the strategy_subgoals link below gives each a fresh
-        # live path to root through THIS strategy, so flip it back to
-        # 'open' for re-dispatch. dedupe does not block these statuses,
-        # so neither does this revival (db.py `goals.status` contract;
-        # agent_feedback T8 — cascade-shelved leaves were otherwise
-        # unreachable forever once cited). Re-check status to skip any
-        # the time-of-check/use race already moved.
+        # Revive cited PARKED siblings before linking: the
+        # strategy_subgoals link below gives each a fresh live path to
+        # root through THIS strategy, so flip it back to 'open' for
+        # re-dispatch. dedupe does not block a park, so neither does
+        # this revival (db.py `goals.status` contract; agent_feedback
+        # T8 — cascade-shelved leaves were otherwise unreachable forever
+        # once cited). Since 2026-09-04 a wrong-context decline is one
+        # of these parks: its statement was never judged, only the
+        # decomposition that minted it, and THIS strategy is a different
+        # context. Re-check status to skip any the time-of-check/use
+        # race already moved.
         for rid in sorted(revive_ids):
             cur = db.get_goal(conn, rid)
-            # Only 'shelved' is revivable by citation; 'dead' is rejected
-            # at the gate (never reaches revive_ids). Re-check status to
-            # skip any the time-of-check/use race already moved to a
-            # non-revivable terminal.
+            # Only a park is revivable by citation; 'disproved' is
+            # rejected at the gate (never reaches revive_ids). Re-check
+            # status to skip any the time-of-check/use race already
+            # moved to a non-revivable terminal.
             if cur is not None and str(cur["status"]) == "shelved":
                 transitions.apply_goal_transition(
                     conn, rid, "open", event="backward_revive")

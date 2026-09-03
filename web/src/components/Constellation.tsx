@@ -688,9 +688,9 @@ export default function Constellation({
     // rings follow the hovered star's OWN vitality (owner, 2026-07-11):
     // a living star's hover invites you to its living relatives — its
     // failed decompositions keep the faint strokes (never hidden) but
-    // earn no ring; a dead/shelved star has only dead family, and
+    // earn no ring; a parked star has only retired family, and
     // "where did this hang" still deserves an answer, so its rings stay
-    const retiredStatus = (s: string) => s === 'dead' || s === 'shelved'
+    const retiredStatus = (s: string) => s === 'shelved'
     const retired = retiredStatus(hovered.goal.status)
     // dim ink = the route is dead OR the relative itself is parked —
     // brightness is the state axis, and a shelved subgoal must not
@@ -775,7 +775,6 @@ export default function Constellation({
     let disproved = false
     let shelved = false
     let frozen = false
-    let dead = false
     let attempts = false
     let root = false
     let claim = false
@@ -791,7 +790,6 @@ export default function Constellation({
       if (g.status === 'disproved') disproved = true
       if (g.status === 'shelved') shelved = true
       if (g.status === 'frozen') frozen = true
-      if (g.status === 'dead') dead = true
       if (live && g.attempts > 0) attempts = true
       if (g.origin === 'root') root = true
       if (g.human_facing_claim) claim = true
@@ -804,7 +802,6 @@ export default function Constellation({
       disproved,
       shelved,
       frozen,
-      dead,
       attempts,
       root,
       claim,
@@ -821,7 +818,6 @@ export default function Constellation({
     present.disproved ||
     present.shelved ||
     present.frozen ||
-    present.dead ||
     present.attempts
   const legendMarks = present.root || present.claim || present.anchor
   const legendLines = present.route || present.cites || present.alias
@@ -1786,14 +1782,6 @@ export default function Constellation({
             : present.frozen
               ? 'frozen'
               : 'shelved'}
-        </span>
-        )}
-        {present.dead && (
-<span className="flex items-center gap-1" title="an abandoned path — the faintest shell, kept on the map as residue and never hidden">
-          <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="2.8" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" opacity="0.6" />
-          </svg>
-          dead
         </span>
         )}
         {present.attempts && (

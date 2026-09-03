@@ -175,7 +175,7 @@ def _normalized_signature(text: str) -> str | None:
     — for a pair that is byte-identical. That is not hypothetical: goal
     7499 was a character-for-character copy of its own parent 7486, the
     probe ran on the pair at commit time and returned False, and the copy
-    entered the tree (whence a dead route, five shelved goals and two
+    entered the tree (whence a spent route, five shelved goals and two
     Strategist wakes spent catching it by hand).
 
     The normalization is deliberately CONSERVATIVE — comments (via
@@ -885,41 +885,6 @@ def _eligible_disproved(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
-def _eligible_dead(conn: sqlite3.Connection, workspace: Path, *,
-                   problem: str, parent_goal_id: int,
-                   candidate_count: int,
-                   ) -> list[tuple[sqlite3.Row, str]]:
-    """DEAD goals in the same Problem whose lean files are still on disk
-    (same shape as `_eligible_disproved`, status='dead'). Used to detect
-    that a candidate sub-goal restates a statement whose attempts were
-    already exhausted — the caller then declines it WITH the prior
-    failure forensics unless the problem's proved base has grown since
-    the twin died (agent_feedback 2026-07-09/10: the same shape was
-    re-briefed 3-4 full Backward turns after a same-day counterexampled
-    decline, each time blind)."""
-    rows = conn.execute(
-        "SELECT g.id, g.statement, g.lean_path, g.status, g.updated_at,"
-        "       g.slug FROM goals g "
-        "WHERE g.problem = ? AND g.status = 'dead' "
-        "  AND g.alias_target_id IS NULL "
-        "  AND g.id != ? "
-        "ORDER BY g.id ASC",
-        (problem, parent_goal_id),
-    ).fetchall()
-
-    eligible: list[tuple[sqlite3.Row, str]] = []
-    for r in rows:
-        try:
-            canon_text = (workspace / r["lean_path"]).read_text(
-                encoding="utf-8")
-        except OSError:
-            continue
-        if _signature_binder_count(canon_text) > candidate_count:
-            continue
-        eligible.append((r, canon_text))
-    return eligible
-
-
 class CanonicalMatch(NamedTuple):
     """Result of a dedupe hit on one candidate.
 
@@ -950,15 +915,16 @@ class CanonicalMatch(NamedTuple):
         Cannot be immediately aliased; the caller turns the candidate
         into a CITATION of `goal_id` and lets the cite-gate link-and-wait
         (revive if shelved) — the canonical proving later satisfies it.
-      - `"dead"`: canonical is a DEAD in-problem twin (attempts
-        exhausted / declined). Caller declines the candidate WITH the
-        twin's prior failure forensics UNLESS the problem's proved base
-        has grown since the twin died (a retry with new tools is
-        legitimate; a blind byte-identical retry in an unchanged world
-        is not — agent_feedback 2026-07-09/10).
+        A SPENT twin (attempts exhausted, or a wrong-context decline)
+        is one of these: it had its own blocking tier until 2026-09-04,
+        when goal `dead` retired and every park became linkable, so the
+        cheap link-and-wait subsumes the old decline-with-forensics
+        (task #112; b6 2026-07-12 showed the block shadowing a linkable
+        twin of the same statement and re-opening the inject→abort
+        churn the reuse tier exists to collapse).
     """
     goal_id: int
-    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias" | "reuse" | "dead"
+    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias" | "reuse"
     library_module: str | None = None  # set iff kind == "library_alias"
     library_fqn: str | None = None
 
@@ -1069,15 +1035,11 @@ def find_canonicals_batch(
     KIND_DISPROVED = "disproved"
     KIND_NO_PROGRESS = "no_progress"
     KIND_REUSE = "reuse"
-    KIND_DEAD = "dead"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     # Reuse pool kept separate so it can be appended to `pairs` AFTER the
     # Library tier — low priority (a proved alias always beats linking
     # an unproved twin). Aligned 1:1 with `candidates`.
     cand_reusable: list[list[tuple[sqlite3.Row, str]]] = []
-    # Dead pool: separate too, appended after even the reuse tier — the
-    # weakest verdict (see the priority comment below). Aligned 1:1.
-    cand_dead: list[list[tuple[sqlite3.Row, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
@@ -1086,7 +1048,6 @@ def find_canonicals_batch(
             # defs are never alias-safe — see tier1_rows comment).
             cand_pools.append([])
             cand_reusable.append([])
-            cand_dead.append([])
             continue
         cand_count = _signature_binder_count(full_text)
         anc = _eligible_ancestors(
@@ -1111,21 +1072,10 @@ def find_canonicals_batch(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
         )
-        dead = _eligible_dead(
-            conn, workspace, problem=problem,
-            parent_goal_id=parent_goal_id, candidate_count=cand_count,
-        )
         # Order = priority on first-hit: a PROVED canonical (alias) wins over
         # both a disproved precedent and a no-progress self/ancestor match —
         # if the candidate can be discharged by an existing proof, do that.
         # disproved (statement known false) outranks no_progress (retryable).
-        # dead (a spent twin — weakest verdict) ranks BELOW even the reuse
-        # tier, so it is emitted after it (see the pair loop): when the
-        # same statement has BOTH a linkable shelved/alive twin and a dead
-        # one, the link-and-wait is the designed cheap path — a dead-block
-        # there re-opens the inject→abort churn P1 collapses (b6
-        # 2026-07-12, goal 5484 shadowing shelved 5422). Dead fires only
-        # when nothing linkable matched (the blind-retry guard, #88).
         pool: list[tuple[sqlite3.Row, str, str]] = []
         for r, t in anc + orph + cross:
             pool.append((r, t, KIND_ALIAS))
@@ -1150,14 +1100,12 @@ def find_canonicals_batch(
         reuse_exclude = (seen_ids
                          | {int(r["id"]) for r, _ in cross}
                          | {int(r["id"]) for r, _ in disproved}
-                         | {int(r["id"]) for r, _ in no_progress}
-                         | {int(r["id"]) for r, _ in dead})
+                         | {int(r["id"]) for r, _ in no_progress})
         cand_reusable.append(_eligible_problem_reusable(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
             exclude_ids=reuse_exclude,
         ))
-        cand_dead.append(dead)
 
     # Build flat list of pairs to check; track origin (cand_idx, row, kind).
     # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
@@ -1204,8 +1152,7 @@ def find_canonicals_batch(
                 # it stays kernel-confirmed (task #6: a `_2` slug
                 # collision must never alias on a name, and it must not
                 # alias on a string either).
-                if kind not in (KIND_NO_PROGRESS, KIND_DISPROVED,
-                                KIND_DEAD):
+                if kind not in (KIND_NO_PROGRESS, KIND_DISPROVED):
                     continue
                 if _normalized_signature(anc_text) != cand_norm:
                     continue
@@ -1291,22 +1238,6 @@ def find_canonicals_batch(
                          if reuse_thm else "")
             pairs.append((cand_sig, reuse_module, reuse_fqn))
             pair_origin.append((ci, KIND_REUSE, reuse_row))
-        # Dead tier — appended LAST of all (weakest verdict): a dead-twin
-        # hit blocks the candidate (same_as_dead_unchanged), so it must
-        # not shadow a linkable shelved/alive twin of the same statement
-        # (b6 2026-07-12: dead 5484 outranked shelved 5422 and re-opened
-        # the inject→abort churn P1 exists to collapse).
-        for dead_row, dead_text in cand_dead[ci]:
-            dead_thm = _extract_theorem_name(dead_text) or ""
-            try:
-                dead_module = lean_path_to_module(
-                    workspace, workspace / dead_row["lean_path"])
-            except (ValueError, OSError):
-                continue
-            dead_fqn = (f"Problems.{problem}.{dead_thm}"
-                        if dead_thm else "")
-            pairs.append((cand_sig, dead_module, dead_fqn))
-            pair_origin.append((ci, KIND_DEAD, dead_row))
 
     # NB: no early return on empty `pairs` — the P1 statement-defeq pass
     # below can still have work (a shelved twin whose shape mismatches
@@ -1406,12 +1337,11 @@ def find_canonicals_batch(
     n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
     n_library = sum(1 for m in result if m and m.kind == "library_alias")
     n_reuse = sum(1 for m in result if m and m.kind == "reuse")
-    n_dead = sum(1 for m in result if m and m.kind == "dead")
     n_unchecked = sum(1 for f in flags if f is None)
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
           f"no_progress={n_noprog} library={n_library} reuse={n_reuse} "
-          f"(defeq={n_defeq}) dead={n_dead}"
+          f"(defeq={n_defeq})"
           + (f" — WARNING: {n_unchecked} pair(s) UNCHECKED (probe did "
              f"not answer; a duplicate here would not have been seen)"
              if n_unchecked else ""),

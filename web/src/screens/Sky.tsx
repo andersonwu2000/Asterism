@@ -37,7 +37,6 @@ const GOAL_STATUS_CLS: Record<string, string> = {
   shelved: 'text-ink-faint',
   pending_strategist_review: 'text-warn',
   disproved: 'text-danger',
-  dead: 'text-ink-faint',
   frozen: 'text-ink-faint',
 }
 
@@ -50,7 +49,6 @@ const GOAL_SORT: Record<string, number> = {
   frozen: 4,
   proved: 5,
   shelved: 6,
-  dead: 7,
 }
 
 /** Fold a statement's leading `letI …;` / `let …;` / `haveI …;` binder

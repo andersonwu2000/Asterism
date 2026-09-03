@@ -267,10 +267,12 @@ def test_subgoal_at_threshold_routes_to_pending_review(
 def test_parent_needs_fix_kills_upward_chain_phase6(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: `parent_needs_fix` decline flips goal to status='dead'
-    (parent strategy was wrong, this goal moot in that context) AND
-    triggers upward strategy kill. Replaces the legacy shelve-as-cascade
-    pattern from pre-Phase-6 tests.
+    """`parent_needs_fix` kills the STRATEGY that used this goal and
+    PARKS the goal (owner ruling 2026-09-04: only the kernel settles a
+    statement; "the parent's decomposition was wrong" is a fact about
+    the strategy). The park carries its own event so the history says
+    WHY this shelve happened, and the parent goal reopens for a fresh
+    decomposition exactly as before.
     """
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
@@ -292,7 +294,12 @@ def test_parent_needs_fix_kills_upward_chain_phase6(
                 target_id=str(sub), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
 
-    assert db.get_goal(conn, sub)["status"] == "dead"
+    assert db.get_goal(conn, sub)["status"] == "shelved"
+    ev = conn.execute(
+        "SELECT event, reason FROM goal_events WHERE goal_id = ?"
+        " ORDER BY id DESC LIMIT 1", (sub,)).fetchone()
+    assert ev["event"] == "wrong_context_park"
+    assert "parent_needs_fix" in ev["reason"]
     assert conn.execute(
         "SELECT status FROM strategies WHERE id = ?", (sid,),
     ).fetchone()["status"] == "dead"
@@ -304,10 +311,12 @@ def test_parent_needs_fix_kills_upward_chain_phase6(
 def test_parent_needs_fix_cascades_grand_when_at_threshold(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: parent_needs_fix on sub-goal flips it to 'dead' AND kills
-    upward strategy. If the grand's attempts increment from this cascade
-    crosses SHELVE_THRESHOLD, grand also flips to 'dead' (mirrors what
-    happens up the chain — wrong context propagates)."""
+    """An EXHAUSTED parent is the Strategist's call, not the cascade's
+    (2026-09-04): when the attempts increment crosses SHELVE_THRESHOLD
+    the parent goes to `pending_strategist_review`, the same route the
+    disproved cascade already takes. It never inherits a hard terminal
+    from a child's wrong-context park — the parent statement was never
+    judged."""
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
     conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
@@ -331,8 +340,8 @@ def test_parent_needs_fix_cascades_grand_when_at_threshold(
                 target_id=str(sub), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
 
-    assert db.get_goal(conn, sub)["status"] == "dead"
-    assert db.get_goal(conn, grand)["status"] == "dead"
+    assert db.get_goal(conn, sub)["status"] == "shelved"
+    assert db.get_goal(conn, grand)["status"] == "pending_strategist_review"
     assert db.get_goal(conn, grand)["attempts"] == SHELVE_THRESHOLD
 
 
@@ -425,9 +434,9 @@ def test_cascade_at_threshold_with_sibling_alive_defers_terminal(
                 target_id=str(sub), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
 
-    # Failing strategy killed, sub dead, attempts at threshold — but
+    # Failing strategy killed, sub parked, attempts at threshold — but
     # sibling untouched and grand still 'attempting' (deferred).
-    assert db.get_goal(conn, sub)["status"] == "dead"
+    assert db.get_goal(conn, sub)["status"] == "shelved"
     assert conn.execute(
         "SELECT status FROM strategies WHERE id = ?", (s_failing,),
     ).fetchone()["status"] == "dead"
@@ -490,14 +499,14 @@ def test_deferred_terminal_fires_when_last_sibling_dies(
     ).fetchone()["status"] == "proposed"
 
     # Second cascade: kills s_b, no live sibling, attempts already past
-    # threshold → terminal fires (parent_terminal_status='dead').
+    # threshold → the deferred decision fires as a Strategist review.
     cascade_one(conn, pipeline_id="pid_b", kind="Builder",
                 target_id=str(sub_b), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
     assert conn.execute(
         "SELECT status FROM strategies WHERE id = ?", (s_b,),
     ).fetchone()["status"] == "dead"
-    assert db.get_goal(conn, grand)["status"] == "dead"
+    assert db.get_goal(conn, grand)["status"] == "pending_strategist_review"
 
 
 def test_reconcile_after_placeholder_delete_reopens_under_threshold(
@@ -698,14 +707,14 @@ def test_goal_at_threshold_preserves_own_strategies(
         ).fetchone()["status"] == "proposed"
 
 
-def test_dead_goal_combined_upward_and_inward_cascade(
+def test_wrong_context_park_combined_upward_and_inward_cascade(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: a goal that is both (a) sub-goal of a parent strategy
-    and (b) has its own strategies, when flipped to 'dead' (via
-    parent_needs_fix), kills strategies in BOTH directions —
-    upward (the parent strategy that built on this goal) and inward
-    (this goal's own strategies, now moot)."""
+    """A goal that is both (a) sub-goal of a parent strategy and (b)
+    the owner of its own strategies kills strategies in BOTH directions
+    when `parent_needs_fix` parks it — upward (the parent strategy that
+    built on this goal) and inward (its own strategies, now moot). The
+    goal-status rename must not touch either arm."""
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
@@ -737,7 +746,7 @@ def test_dead_goal_combined_upward_and_inward_cascade(
                 target_id=str(middle), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
 
-    # parent strategy killed (built on a now-dead goal)
+    # parent strategy killed (built on a now-parked goal)
     assert conn.execute(
         "SELECT status FROM strategies WHERE id = ?", (parent_strat,),
     ).fetchone()["status"] == "dead"

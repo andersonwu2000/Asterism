@@ -78,7 +78,7 @@ _PAD_MID = "│  "
 _LIVE_GOAL_STATUSES = frozenset(
     {"open", "attempting", "pending_strategist_review"})
 _SETTLED_GOAL_STATUSES = frozenset(
-    {"proved", "shelved", "disproved", "dead", "frozen"})
+    {"proved", "shelved", "disproved", "frozen"})
 
 
 def _strategy_dead_cause(conn: sqlite3.Connection, strategy_id: int
@@ -116,7 +116,6 @@ _STATUS_SECTION_ORDER = (
     ("shelved", "Shelved"),
     ("frozen", "Frozen"),
     ("disproved", "Disproved"),
-    ("dead", "Dead"),
 )
 
 

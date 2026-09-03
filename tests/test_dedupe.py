@@ -752,23 +752,29 @@ def test_existing_duplicate_strategy_guard(
     assert _existing_duplicate_strategy(conn, target, {crux}) is None
 
 
-def test_find_canonicals_batch_dead_match_returns_dead_kind(
+def test_a_spent_twin_is_a_reuse_hit_not_a_block(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """agent_feedback 2026-07-09/10 — a candidate statement-equivalent to
-    a DEAD in-problem twin gets kind='dead' so the caller can decline it
-    with the twin's forensics (or release it if the proved base grew).
-    Pre-fix a dead twin matched NOTHING and the blind duplicate minted."""
+    """Task #112, closed by the 2026-09-04 ruling: the dead-twin tier
+    existed only because a `dead` goal could never be cited or revived,
+    so re-proposing its statement had to be BLOCKED with forensics. A
+    spent twin is a park now, and a park is linkable — so the same
+    statement resolves through the ordinary reuse path (cite the twin,
+    let the cite-gate link-and-wait and revive it) instead of aborting
+    the whole decomposition. That was already the better outcome when
+    both existed: b6 2026-07-12 had the dead tier shadow a linkable
+    shelved twin and re-open the inject→abort churn."""
     _seed_problem(conn)
     root = _seed_root(conn)
-    dead_g = _seed_sub(conn, slug="spent_twin",
-                       statement="X", status="dead")
-    _link(conn, root, [dead_g])
+    spent = _seed_sub(conn, slug="spent_twin",
+                      statement="X", status="shelved")
+    _link(conn, root, [spent])
     parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
     _link(conn, root, [parent])
+    sig = "(a : T) : X"
     _write_lean(tmp_path, "p", "spent_twin",
-        "import Mathlib\ntheorem spent_twin (a : T) : X := by sorry\n")
+        f"import Mathlib\ntheorem spent_twin {sig} := by sorry\n")
     _write_lean(tmp_path, "p", "parent",
         "import Mathlib\ntheorem parent : Q := by sorry\n")
     _write_lean(tmp_path, "p", "main",
@@ -779,97 +785,15 @@ def test_find_canonicals_batch_dead_match_returns_dead_kind(
         return [thm == "Problems.p.spent_twin" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
-    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
-    canonicals = dedupe.find_canonicals_batch(
-        conn, tmp_path, problem="p", parent_goal_id=parent,
-        candidates=[("c", cand)],
-    )
-    assert canonicals == [
-        dedupe.CanonicalMatch(goal_id=dead_g, kind="dead"),
-    ]
-
-
-def test_shelved_reuse_outranks_dead_twin(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """b6 2026-07-12: on a wall, the crux statement exists BOTH as a dead
-    twin and as the shelved canonical. Dead ranked above reuse, so the
-    dead-block (same_as_dead_unchanged → inject aborts → strategist
-    re-injects) shadowed the link-and-wait collapse P1 shipped. Dead is
-    the weakest verdict: when a linkable shelved twin also matches, the
-    match must be kind='reuse' on the shelved goal; dead fires only when
-    nothing linkable matched (blind-retry guard, unchanged)."""
-    _seed_problem(conn)
-    root = _seed_root(conn)
-    dead_g = _seed_sub(conn, slug="spent_twin",
-                       statement="X", status="dead")
-    shelved_g = _seed_sub(conn, slug="parked_twin",
-                          statement="X", status="shelved")
-    _link(conn, root, [dead_g, shelved_g])
-    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
-    _link(conn, root, [parent])
-    sig = "(a : T) : X"
-    _write_lean(tmp_path, "p", "spent_twin",
-        f"import Mathlib\ntheorem spent_twin {sig} := by sorry\n")
-    _write_lean(tmp_path, "p", "parked_twin",
-        f"import Mathlib\ntheorem parked_twin {sig} := by sorry\n")
-    _write_lean(tmp_path, "p", "parent",
-        "import Mathlib\ntheorem parent : Q := by sorry\n")
-    _write_lean(tmp_path, "p", "main",
-        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
-
-    def fake(ws: Path, p: str,
-             pairs: list[tuple[str, str, str]]) -> list[bool]:
-        # Both twins unify with the candidate (identical statement).
-        return [thm in ("Problems.p.spent_twin", "Problems.p.parked_twin")
-                for _sig, _mod, thm in pairs]
-    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
-
     cand = f"import Mathlib\ntheorem c {sig} := by sorry\n"
     canonicals = dedupe.find_canonicals_batch(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("c", cand)],
     )
     assert canonicals == [
-        dedupe.CanonicalMatch(goal_id=shelved_g, kind="reuse"),
+        dedupe.CanonicalMatch(goal_id=spent, kind="reuse"),
     ]
-
-
-def test_dead_twin_block_reason_blocks_and_releases(
-    conn: sqlite3.Connection,
-) -> None:
-    """Backward's dead-twin verdict: unchanged world → decline fragment
-    carrying the twin's last failure forensics; a goal PROVED after the
-    twin died → None (world changed, retry is the designed path)."""
-    from Tooling.pipeline.backward import _dead_twin_block_reason
-    _seed_problem(conn)
-    dead_g = _seed_sub(conn, slug="spent_twin", statement="X",
-                       status="dead")
-    conn.execute(
-        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
-        " outcome, started_at, finished_at)"
-        " VALUES ('pp1', 'Backward', ?, 'Goal', 'failed', 'failed',"
-        " ?, ?)", (str(dead_g), db.now(), db.now()))
-    conn.execute(
-        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
-        " failure_reason, failure_detail, ts)"
-        " VALUES (?, 'Goal', 'pp1', 'agent_declined',"
-        " 'T1 constant too large; needs K0 bound', ?)",
-        (dead_g, db.now()))
-    conn.commit()
-
-    why = _dead_twin_block_reason(conn, "p", dead_g)
-    assert why is not None
-    assert "T1 constant too large" in why and "spent_twin" in why
-
-    # A goal proved AFTER the twin died releases the guard.
-    fresh = _seed_sub(conn, slug="new_tool", statement="Y")
-    conn.execute(
-        "UPDATE goals SET status='proved',"
-        " updated_at='299-01-01T00:00:00+00:00' WHERE id=?", (fresh,))
-    conn.commit()
-    assert _dead_twin_block_reason(conn, "p", dead_g) is None
+    assert not hasattr(dedupe, "_eligible_dead")
 
 
 def test_find_canonicals_batch_shelved_is_reused(
@@ -1953,10 +1877,10 @@ def test_slug_match_returns_none_when_base_missing(
 
 
 def test_slug_match_skips_unproved_base(conn: sqlite3.Connection) -> None:
-    """Base exists but not proved (open/dead/shelved) → no match."""
+    """Base exists but not proved (open/shelved) → no match."""
     _seed_problem(conn)
     root = _seed_root(conn, status="proved")
-    _seed_sub(conn, slug="some_lemma", statement="T", status="dead")
+    _seed_sub(conn, slug="some_lemma", statement="T", status="shelved")
     hit = dedupe._slug_match_proved(
         conn, problem="p", candidate_slug="some_lemma_2",
         parent_goal_id=root,

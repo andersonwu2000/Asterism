@@ -211,15 +211,15 @@ def test_mixed_batch_partitions_correctly(
     assert dropped == [ns_reuse]
 
 
-def test_dead_sibling_redeclaration_is_kept_not_cited(
+def test_disproved_sibling_redeclaration_is_kept_not_cited(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """A re-declared DEAD sibling (wrong-as-stated) must NOT be cited —
-    the cite-gate rejects dead (6fc6ff4), which would abort the strategy.
-    Keep it for the `_2` resolver so the re-declaration becomes a fresh
-    re-statement under this strategy instead."""
+    """A re-declared DISPROVED sibling must NOT be cited — the cite-gate
+    rejects it (6fc6ff4), which would abort the strategy. Keep it for the
+    `_2` resolver so the re-declaration becomes a fresh re-statement
+    under this strategy instead."""
     rel = _write_goal_file(tmp_path, "wrong", "(n : Nat) : n = n")
-    _insert_goal(conn, "wrong", status="dead", lean_path=rel)
+    _insert_goal(conn, "wrong", status="disproved", lean_path=rel)
     ns = _declared(tmp_path, "wrong", "(n : Nat) : n = n")
     kept, reuse_imports, dropped = _partition_sibling_reuse(
         conn, problem="p", goal_id=999, workspace=tmp_path,

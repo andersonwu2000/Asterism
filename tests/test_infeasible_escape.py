@@ -183,13 +183,12 @@ def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
 #    semantics as agent_infeasible: shelve immediately + propagate up.
 # ---------------------------------------------------------------------
 
-def test_cascade_parent_needs_fix_marks_goal_dead(conn: sqlite3.Connection) -> None:
-    """Phase 6: `return_to_parent` directive routes to failure_reason
-    'parent_needs_fix' which flips the goal to status='dead' (the
-    parent strategy was wrong, this goal is moot in that context).
-    Distinct from 'shelved' (reopenable, soft) and 'disproved'
-    (counterexample, dedupe blocks). Same upward-kill cascade as
-    disproved so the parent goal retries with a different decomposition."""
+def test_cascade_parent_needs_fix_parks_the_goal(conn: sqlite3.Connection) -> None:
+    """`return_to_parent` routes to failure_reason 'parent_needs_fix':
+    the DECOMPOSITION was wrong, so the goal is PARKED (the statement
+    was never judged — owner ruling 2026-09-04) under its own
+    `wrong_context_park` event, while the upward-kill cascade still
+    fires so the parent retries with a different decomposition."""
     gid = _seed_goal(conn)
     pid = "rtp-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -198,8 +197,12 @@ def test_cascade_parent_needs_fix_marks_goal_dead(conn: sqlite3.Connection) -> N
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "dead"
+    assert row["status"] == "shelved"
     assert row["attempts"] == 1
+    ev = conn.execute(
+        "SELECT event FROM goal_events WHERE goal_id = ?"
+        " ORDER BY id DESC LIMIT 1", (gid,)).fetchone()
+    assert ev["event"] == "wrong_context_park"
 
 
 def test_cascade_agent_shelved_routes_to_strategist_review(

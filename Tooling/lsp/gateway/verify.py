@@ -145,7 +145,7 @@ def validate_file(content: str = "", file: str = "") -> str:
       - `submission.citation`: { ok, issues:[{slug,status,severity,hint}] } —
         each `import Problems.<p>.proofs.L_<slug>` whose cited goal is not
         `proved`. severity `error` = rejected at commit no matter what
-        (orphan/dead/disproved); `warn` = citable only via a Backward
+        (orphan/disproved); `warn` = citable only via a Backward
         decomposition. Absent if the DB can't be read.
       - `submission.annotation`: { checked, ok[, note] } — whether a final
         patch (a real, non-`sorry` theorem) carries the required leading `--`

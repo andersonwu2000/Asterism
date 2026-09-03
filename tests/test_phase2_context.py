@@ -1360,7 +1360,7 @@ def test_tree_inline_lists_only_live_goals(
             ("g_open", "open"), ("g_att", "attempting"),
             ("g_rev", "pending_strategist_review"),
             ("g_shelved", "shelved"), ("g_dis", "disproved"),
-            ("g_dead", "dead"), ("g_proved", "proved")):
+            ("g_frozen", "frozen"), ("g_proved", "proved")):
         db.insert_goal(conn, problem="p", slug=slug,
                        lean_path=f"P/L_{slug}.lean", statement="S",
                        origin="forward", status=status)
@@ -1371,7 +1371,7 @@ def test_tree_inline_lists_only_live_goals(
     # (the 08-24 autopsy's dominant "surfaces disagree" pair). Counters
     # keep the census; the pointer names the lazy home; NO slugs here.
     for s in ("g_open", "g_att", "g_rev",
-              "g_shelved", "g_dis", "g_dead", "g_proved"):
+              "g_shelved", "g_dis", "g_frozen", "g_proved"):
         assert f"`{s}`" not in text, s
     assert "1 shelved" in text and "1 disproved" in text, (
         "the counters must keep the full census")
@@ -1444,7 +1444,7 @@ def test_batch_scoreboard_surfaces_recent_declines(
     gid = db.insert_goal(
         conn, problem="p", slug="growth_exp_flawed",
         lean_path="Problems/p/proofs/L_growth_exp_flawed.lean",
-        statement="1 <= liminf ...", origin="backward", status="dead")
+        statement="1 <= liminf ...", origin="backward", status="shelved")
     conn.execute(
         "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
         " outcome, started_at, finished_at) VALUES ('pid-dcl', 'Backward',"
@@ -1485,7 +1485,7 @@ def test_a_decline_reaches_the_strategist_with_its_ask_intact(
     gid = db.insert_goal(
         conn, problem="p", slug="count_missing_hyp",
         lean_path="Problems/p/proofs/L_count_missing_hyp.lean",
-        statement="3 <= s", origin="backward", status="dead")
+        statement="3 <= s", origin="backward", status="shelved")
     conn.execute(
         "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
         " outcome, started_at, finished_at) VALUES ('pid-hyp', 'Backward',"

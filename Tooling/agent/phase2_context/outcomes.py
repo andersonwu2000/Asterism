@@ -129,7 +129,7 @@ def _step_artifact_lines(conn: sqlite3.Connection,
 
     An `outcome` records the exit; the Strategist is instructed to read
     the scoreboard mechanically, and the two are routinely opposite.
-    Measured 2026-08-11 (its own report): a step labelled `failed:dead`
+    Measured 2026-08-11 (its own report): a step labelled `failed:<...>`
     had left a `proposed` strategy with one brick already proved and one
     open child, and a step labelled `exhausted:forward_no_new_goal` had
     created the group's deliverable node and linked it — so the wake

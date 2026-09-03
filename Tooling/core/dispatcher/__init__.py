@@ -164,7 +164,7 @@ from ...state.transitions import (  # noqa: E402,F401
     _kill_upward_chain,
     _reconcile_goal_after_strategy_loss,
     _propagate_disproved,
-    _propagate_dead,
+    _propagate_wrong_context,
     cascade_one,
 )
 

@@ -29,7 +29,7 @@ from Tooling.core.dispatcher import (
     _enqueue_strategist_review,
     _propagate_shelve,
     _propagate_disproved,
-    _propagate_dead,
+    _propagate_wrong_context,
     _cascade_shelve_descendants,
     _inward_kill_strategies,
     cascade_one,
@@ -287,30 +287,31 @@ def test_disproved_at_depth_2(conn: sqlite3.Connection) -> None:
     assert _has_terminal_disproved_ancestor(conn, sub) is True
 
 
-def test_dead_ancestor_blocks_reopen(conn: sqlite3.Connection) -> None:
-    """Phase 6: `dead` ancestor (parent_needs_fix verdict) also blocks
-    Reopen on descendants. The descendant exists only in the wrong
-    context that produced the dead ancestor; reopening it would attempt
-    proof in an abandoned strategy direction. Salvage useful descendants
-    via Inject(Backward, target=<other-goal>) instead."""
-    g = _insert_goal(conn, slug="g_dead", origin="root", status="dead")
+def test_a_wrong_context_parked_ancestor_does_not_block_reopen(
+    conn: sqlite3.Connection,
+) -> None:
+    """Until 2026-09-04 a `parent_needs_fix` ancestor was `dead` and
+    blocked Reopen on every descendant — the wrong context was treated
+    as a verdict on the whole subtree. It never was one: the ancestor's
+    STATEMENT was never judged, only its decomposition. The ancestor is
+    now a park, and a parked ancestor has always been reopenable."""
+    g = _insert_goal(conn, slug="g_parked", origin="root", status="shelved")
     s = _insert_strategy(conn, goal_id=g)
-    sub = _insert_goal(conn, slug="sub_under_dead", status="shelved")
+    sub = _insert_goal(conn, slug="sub_under_parked", status="shelved")
     _link(conn, s, [sub])
 
     found, kind = _has_hard_terminal_ancestor(conn, sub)
-    assert found is True
-    assert kind == "dead"
-    # Legacy alias keeps returning True for either disproved/dead.
-    assert _has_terminal_disproved_ancestor(conn, sub) is True
+    assert found is False
+    assert kind is None
+    assert _has_terminal_disproved_ancestor(conn, sub) is False
 
 
-def test_dead_at_depth_2_blocks_reopen(conn: sqlite3.Connection) -> None:
-    """G (open) → S1 → mid (dead) → S2 → sub. Walk finds mid='dead',
-    returns True with kind='dead'."""
+def test_disproved_at_depth_2_blocks_reopen(conn: sqlite3.Connection) -> None:
+    """G (open) → S1 → mid (disproved) → S2 → sub. Walk finds
+    mid='disproved', returns True with kind='disproved'."""
     g = _insert_goal(conn, slug="g_d2", origin="root")
     s1 = _insert_strategy(conn, goal_id=g)
-    mid = _insert_goal(conn, slug="mid_d2", status="dead")
+    mid = _insert_goal(conn, slug="mid_d2", status="disproved")
     _link(conn, s1, [mid])
     s2 = _insert_strategy(conn, goal_id=mid)
     sub = _insert_goal(conn, slug="sub_d2", status="shelved")
@@ -318,7 +319,7 @@ def test_dead_at_depth_2_blocks_reopen(conn: sqlite3.Connection) -> None:
 
     found, kind = _has_hard_terminal_ancestor(conn, sub)
     assert found is True
-    assert kind == "dead"
+    assert kind == "disproved"
 
 
 def test_shelved_ancestor_not_a_hard_terminal(
@@ -343,7 +344,7 @@ def test_a_citing_consumers_death_does_not_block_reopen(
     """v44 — the hard-terminal walk climbs MINTED edges only. A
     strategy that CITES a pre-existing sibling is a consumer, not the
     creator: the sibling's statement does not live inside the citing
-    goal's context, so the citing goal going disproved/dead says
+    goal's context, so the citing goal going disproved says
     nothing about the sibling or its subtree. (Same edge-semantics
     conflation that leaked a redispatch brief sideways, 2026-08-25.)"""
     # shared's real (minting) parent is alive
@@ -360,11 +361,11 @@ def test_a_citing_consumers_death_does_not_block_reopen(
     assert found is False
     assert kind is None
     # …while a hard-terminal MINTING parent still blocks as before.
-    conn.execute("UPDATE goals SET status='dead' WHERE id=?", (parent,))
+    conn.execute("UPDATE goals SET status='disproved' WHERE id=?", (parent,))
     conn.commit()
     found, kind = _has_hard_terminal_ancestor(conn, shared)
     assert found is True
-    assert kind == "dead"
+    assert kind == "disproved"
 
 
 def test_shelve_conducts_to_cited_waiters_review(
@@ -664,17 +665,20 @@ def test_propagate_disproved_kills_upward(
     assert db.get_goal(conn, parent_g)["status"] == "open"
 
 
-def test_propagate_dead_kills_upward(
+def test_propagate_wrong_context_kills_upward(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: `_propagate_dead` (parent_needs_fix) kills upward and
-    inward. Parent reopens to try a different decomposition."""
+    """`_propagate_wrong_context` (parent_needs_fix) kills upward and
+    inward. Parent reopens to try a different decomposition. The
+    sub-goal is a PARK now (2026-09-04), so the strategy-side effects
+    are exactly what this test still has to pin: a park that left the
+    upward chain alive would silently strand the parent."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
-    target = _insert_goal(conn, slug="target", status="dead")
+    target = _insert_goal(conn, slug="target", status="shelved")
     _link(conn, parent_s, [target])
 
-    _propagate_dead(conn, target)
+    _propagate_wrong_context(conn, target)
 
     assert conn.execute(
         "SELECT status FROM strategies WHERE id=?", (parent_s,)
@@ -693,16 +697,17 @@ def test_kill_upward_cascades_open_sibling_to_shelved(
     conn: sqlite3.Connection,
 ) -> None:
     """strategy s1 has subgoals g_terminating + g_sibling (open).
-    When g_terminating goes dead, s1 dies; g_sibling has no other
+    When g_terminating is wrong-context parked, s1 dies; g_sibling
+    has no other
     parent strategy → status should flip 'shelved' so status reflects
     'not dispatchable' (matches BFS's alive-set CTE)."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
-    terminating = _insert_goal(conn, slug="terminating", status="dead")
+    terminating = _insert_goal(conn, slug="terminating", status="shelved")
     sibling = _insert_goal(conn, slug="sibling", status="open")
     _link(conn, s1, [terminating, sibling])
 
-    _propagate_dead(conn, terminating)
+    _propagate_wrong_context(conn, terminating)
 
     assert conn.execute(
         "SELECT status FROM strategies WHERE id=?", (s1,)
@@ -737,7 +742,7 @@ def test_kill_upward_cascades_sibling_subtree(
     kill the sibling's own strategy (via `_propagate_shelve`)."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
-    terminating = _insert_goal(conn, slug="t", status="dead")
+    terminating = _insert_goal(conn, slug="t", status="shelved")
     sibling = _insert_goal(conn, slug="sib", status="attempting")
     _link(conn, s1, [terminating, sibling])
     # Sibling's own sub-strategy
@@ -746,7 +751,7 @@ def test_kill_upward_cascades_sibling_subtree(
     grand_b = _insert_goal(conn, slug="grand_b", status="open")
     _link(conn, s_sib, [grand_a, grand_b])
 
-    _propagate_dead(conn, terminating)
+    _propagate_wrong_context(conn, terminating)
 
     assert db.get_goal(conn, sibling)["status"] == "shelved"
     # Sibling's own strategy: inward-killed by _propagate_shelve(sibling)
@@ -765,11 +770,11 @@ def test_kill_upward_skips_proved_sibling(
     cites them); the sweep must walk past without flipping status."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
-    terminating = _insert_goal(conn, slug="t", status="dead")
+    terminating = _insert_goal(conn, slug="t", status="shelved")
     sibling = _insert_goal(conn, slug="proved_sib", status="proved")
     _link(conn, s1, [terminating, sibling])
 
-    _propagate_dead(conn, terminating)
+    _propagate_wrong_context(conn, terminating)
 
     # Proved is preserved.
     assert db.get_goal(conn, sibling)["status"] == "proved"
@@ -778,15 +783,15 @@ def test_kill_upward_skips_proved_sibling(
 def test_kill_upward_skips_already_terminal_sibling(
     conn: sqlite3.Connection,
 ) -> None:
-    """Already-shelved / disproved / dead siblings are skipped — no
+    """Already-shelved / disproved siblings are skipped — no
     redundant re-flip, idempotent on re-cascade."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
-    terminating = _insert_goal(conn, slug="t", status="dead")
+    terminating = _insert_goal(conn, slug="t", status="shelved")
     already_shelved = _insert_goal(conn, slug="sh", status="shelved")
     _link(conn, s1, [terminating, already_shelved])
 
-    _propagate_dead(conn, terminating)
+    _propagate_wrong_context(conn, terminating)
 
     # No re-flip; still 'shelved'.
     assert db.get_goal(conn, already_shelved)["status"] == "shelved"
@@ -798,7 +803,7 @@ def test_cascade_one_terminal_goal_guard_blocks_late_worker(
     """Race guard: a worker dispatched on g before g cascaded-shelved
     (via sibling sweep) commits success after the cascade. The early-
     return in cascade_one for goals already in terminal status
-    (shelved / disproved / dead / proved) must prevent the late commit
+    (shelved / disproved / proved) must prevent the late commit
     from flipping g back to attempting/proved."""
     g = _insert_goal(conn, slug="g", status="shelved")
     cascade_one(
@@ -809,14 +814,14 @@ def test_cascade_one_terminal_goal_guard_blocks_late_worker(
     # Worker's commit did NOT mutate the shelved status.
     assert db.get_goal(conn, g)["status"] == "shelved"
 
-    # Same for dead status
-    g2 = _insert_goal(conn, slug="g2", status="dead")
+    # Same for disproved status
+    g2 = _insert_goal(conn, slug="g2", status="disproved")
     cascade_one(
         conn, pipeline_id="late-pid2", kind="Builder",
         target_id=str(g2), target_kind="Goal",
         outcome="proved", failure_reason="",
     )
-    assert db.get_goal(conn, g2)["status"] == "dead"
+    assert db.get_goal(conn, g2)["status"] == "disproved"
 
 
 def test_forward_cascade_without_decision_id_is_noop(
