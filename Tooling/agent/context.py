@@ -1525,11 +1525,9 @@ PAPER_INDEX_MAX_CHARS = 8_000
 
 def _paper_project(intent: intent_mod.ProblemIntent, conn=None) -> "str | None":
     """Which Project's document shelf holds this problem's papers (§3.9).
-
-    The DB, not the problem name's first segment: a Project can be
-    renamed while the problem's directory stays where it is (§3.1), and
-    the shelf follows the NAME. conn=None (offline callers) falls back
-    to the default the name would have registered under."""
+    The DB, not the name's first segment: a Project can be renamed while
+    the problem's directory stays put (§3.1), and the shelf follows the
+    NAME. conn=None (offline callers) falls back to that default."""
     if conn is not None:
         try:
             from ..state import projects as _projects

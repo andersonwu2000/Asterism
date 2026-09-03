@@ -16,7 +16,12 @@ import { frameClass } from '../lib/textFrame'
  * rendered as an expandable tree (charter §3.2). Data = the Ingest-time
  * snapshot; GET never touches the gateway. */
 
-const PAPER_RE = /^paper: (.*?)\s+\(Papers\/(.+?)\/text\.md\)$/
+/** The review's paper line, as `quality/review.py` writes it since
+ * §3.9: the workspace-relative path of the document the human signs
+ * against. Both halves matter — the Project addresses the section
+ * endpoint, and the id names the paper. */
+const PAPER_RE =
+  /^paper: (.*?)\s+\(Problems\/([^/]+)\/_docs\/[^/]+\/papers\/([^/]+)\/text\.md\)$/
 
 /** snapshot anchor/claim entries: bare names or {name, kind, module}
  * records (the recompute path emits records — live-run catch) */
@@ -28,9 +33,17 @@ function entrySignature(e: ReviewEntry): string | null {
   return typeof e === 'string' ? null : (e?.signature ?? null)
 }
 
-function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
+function PaperPane({
+  project,
+  pid,
+  anchor,
+}: {
+  project: string
+  pid: string
+  anchor: string
+}) {
   const { data, error } = usePoll<{ found: boolean; content: string }>(
-    `/api/papers/${encodeURIComponent(pid)}/section?anchor=${encodeURIComponent(anchor)}`,
+    `/api/projects/${encodeURIComponent(project)}/papers/${encodeURIComponent(pid)}/section?anchor=${encodeURIComponent(anchor)}`,
     60000,
   )
   if (error) return <div className="text-xs text-ink-faint">Paper text unavailable: {error.message}</div>
@@ -189,7 +202,7 @@ function Deliverable({
               </div>
               {showPaper && paper && (
                 <div className="mt-2">
-                  <PaperPane pid={paper[2]} anchor={paper[1]} />
+                  <PaperPane project={paper[2]} pid={paper[3]} anchor={paper[1]} />
                 </div>
               )}
             </div>

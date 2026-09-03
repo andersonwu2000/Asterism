@@ -356,9 +356,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_paper_add = sub.add_parser(
         "paper-add",
-        help="shelve a paper under Problems/<project>/_docs/user/papers/"
-             "<content-hash>/ (PDF extracted to page-anchored text; "
-             ".md/.txt/.tex pass through)",
+        help="shelve a paper on a Project's document shelf (PDF "
+             "extracted to page-anchored text; .md/.txt/.tex pass through)",
     )
     p_paper_add.add_argument("project", help="the Project it is shelved on")
     p_paper_add.add_argument("file", help="path to the paper file")

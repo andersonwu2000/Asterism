@@ -79,7 +79,11 @@ are exactly two frames and no sidebar.
   `.tex` / `.txt`, plus new file, new folder and delete; `agent/` is
   what the Assistant wrote and is marked read-only. `.lean` opens in the
   Lean viewer, images render inline, and a refused path shows the
-  engine's own sentence about it.
+  engine's own sentence about it. Papers live here too (§3.9): each is
+  a `papers/<id>/` folder holding the original pdf (shown in the
+  reader), the extracted `text.md` and its `map.md`. Dropping files
+  anywhere on this page — or "paper" in the column header — shelves
+  them under `user/papers/`, extraction and all.
 
 ### Outside a Project
 
@@ -91,7 +95,6 @@ are exactly two frames and no sidebar.
   it there) — a name and a natural-language description, paper bindings,
   and two advanced folds (pinned Defs/Root; axiom whitelist, forbidden
   lemmas, lemma hints). The description IS the goal.
-- **Papers** (`#/papers`) — the shelf a task binds its sources from.
 - **Assistant** — the docked right panel, opened by the corner glyph or
   `Ctrl+/`; the glyph blinks while it is thinking and holds a mark when
   an answer landed unseen. One conversation per Project, and every

@@ -85,7 +85,6 @@ function whereFromRoute(segments: string[], screen: ScreenFocus): Where {
   // the addresses that are not inside a Project
   if (s0 === 'problems' && segments[1])
     return { page: { kind: 'problem', name: segments[1] }, project: null, focus: null }
-  if (s0 === 'papers') return { page: { kind: 'papers' }, project: null, focus: null }
   if (s0 === 'settings') return { page: { kind: 'engine' }, project: null, focus: null }
   return { page: { kind: 'board' }, project: null, focus: null }
 }

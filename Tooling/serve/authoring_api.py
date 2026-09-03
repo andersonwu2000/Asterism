@@ -31,7 +31,8 @@ class ProblemCreateBody(BaseModel):
     settings: dict | None = None
     defs: str | None = None
     root: str | None = None
-    # shelf ids to cite (Papers/<id> — bound with origin='user')
+    # shelf ids to cite — bound with origin='user'; a paper from
+    # another Project's shelf is copied onto this one (§3.9)
     papers: list[str] | None = None
     # the Project to file it under (§3.1). Absent = the shelf the name's
     # first segment defaults to; the DIRECTORY is unaffected either way.
@@ -122,9 +123,18 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001 — FastAPI app
                                                 body.settings[key])
                             except ValueError:
                                 pass  # form junk never blocks creation
-                    for pid in body.papers or []:
-                        db.bind_paper(conn2, problem=name, paper_id=pid,
-                                      origin="user")
+                    if body.papers:
+                        # The picked ids may sit on another Project's
+                        # shelf (§3.9); a binding whose document this
+                        # Project cannot open is a dead citation.
+                        from ..papers import shelf as _shelf
+                        _proj = (body.project
+                                 or _projects.project_of(conn2, name)
+                                 or name.split(".", 1)[0])
+                        for pid in body.papers:
+                            _shelf.copy_into_project(workspace, pid, _proj)
+                            db.bind_paper(conn2, problem=name,
+                                          paper_id=pid, origin="user")
                     if body.project:
                         # after init: registration files it under the
                         # prefix's Project first, and the author's

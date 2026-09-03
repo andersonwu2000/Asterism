@@ -657,7 +657,7 @@ _WATERMARKS = {
     "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/run.py": 800,  # +13 2026-09-03 _gateway_status_once asks the socket only after the presence marker says there is someone to ask  # +8 2026-09-03 daemon_status names the schema-behind case instead of counting -1 agents (the SchemaBehind branch + why it is not a measurement)  # +6 2026-09-02 daemon_status reads the counts once (was two opens of the DB, two instants)  # +6 2026-09-02 promotion_builds — the promotion gate is a thread, invisible to in_flight (HID §3.4)  # +8 2026-08-31 in_flight=running pipelines, leases separate  # born 2026-08-28 from the cli.py split (A3)
-    "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/problems.py": 965,  # born 2026-08-28 from the cli.py split (A3)  # +10 2026-09-03 HID §3.9: a seeded paper id may sit on another Project's shelf, so init copies it onto this one before binding — conscious bump
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 582,  # 2026-08-31 bench/unbench commands  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/main.py": 380,  # +3 2026-09-02 --scope help names the explicit-list form (HID §1.4)  # +3 2026-09-01: serve --host flag  # 2026-08-31 bench/unbench parsers  # +10 2026-08-30 catalog-verify subcommand  # born 2026-08-28 from the cli.py split (A3)
@@ -739,7 +739,7 @@ _WATERMARKS = {
     # touched `_live_procs` directly, against its own docstring), which
     # paid four of the six lines back — conscious bump.
     "Tooling/llm/claude_cli.py": 1910,
-    "Tooling/agent/context.py": 1815,  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's
+    "Tooling/agent/context.py": 1840,  # +4 2026-08-30 intake counterexample section (the disproof turn)  # +8 2026-09-02 v48 HID §3.2: ADJUDICATIONS.md names a human ruling as the human's, not the filing group's  # +25 2026-09-03 HID §3.9: the paper section resolves its Project (papers are that Project's documents now) and prints the real directory instead of `Papers/<id>` — conscious bump
     # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
     # verdict/{rev_id}` — the console's on-demand read of a revision's
     # judge verdict. app.py IS the route table, so an endpoint costs it

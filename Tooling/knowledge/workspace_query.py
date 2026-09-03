@@ -92,9 +92,7 @@ _SKIP_DIRS = {".git", ".lake", "__pycache__", "node_modules", ".venv",
 #: Big trees an agent almost never MEANS when it aims a walk at a broad
 #: root — pruned unless the walk's root is explicitly inside one. The
 #: 2026-08-23 fleet stall was one grep whose walk wandered into these
-#: and read files for 28 minutes. `papers` is the shelf folder inside a
-#: Project's `_docs/` (§3.9): a walk aimed at `Problems/` must not read
-#: forty full-text extractions on its way past.
+#: and read files for 28 minutes. (`papers` = a Project's shelf, §3.9.)
 _HEAVY_DIRS = {".attempts", "papers", "_spike", ".playwright-mcp"}
 
 #: Scan budget for ONE grep query: whichever trips first stops the scan

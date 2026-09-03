@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ApiError, apiDelete, apiGet, apiPost, apiPut, usePoll } from '../lib/api'
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, usePoll } from '../lib/api'
 import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
@@ -22,12 +22,29 @@ import { Button } from './ui'
  * what a legal path is: it sends what the person typed and shows the
  * refusal, which names the way out. Every 422 here is a sentence
  * written for the person about the path they wrote.
+ *
+ * Papers live here too (§3.9, 2026-09-03 — the `#/papers` page and the
+ * workspace-global shelf retired): each is a `papers/<id>/` folder with
+ * its `paper.pdf`, its extracted `text.md` and its `map.md`, read like
+ * any other document. Adding one is the one act that is NOT a document
+ * PUT — a paper is extracted, hashed into its content id and given a
+ * `meta.json` — so a drop goes to `POST /api/projects/{p}/papers`,
+ * which lands it under `user/papers/`.
  */
 
 export interface DocEntry {
   path: string
   kind: 'file' | 'dir'
   size?: number
+}
+
+/** One paper on its way onto the shelf. Extraction is real server work,
+ * so the strip says which file and how far it got. */
+interface UploadItem {
+  key: number
+  name: string
+  status: 'uploading' | 'shelved' | 'already' | 'error'
+  detail?: string
 }
 
 /** Where the column's fold is remembered. Its own key, beside the task
@@ -75,6 +92,34 @@ function TexBody({ content }: { content: string }) {
   )
 }
 
+/** A pdf, shown. The bytes arrive base64 in the document payload, so
+ * they become a blob URL rather than a `data:` one: Chrome refuses to
+ * hand a `data:application/pdf` frame to its viewer, and the URL is
+ * revoked when the reader moves on so a long session does not hold
+ * every paper it opened in memory. */
+function PdfBody({ path, base64 }: { path: string; base64: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const bin = atob(base64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const u = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
+    setUrl(u)
+    return () => {
+      URL.revokeObjectURL(u)
+      setUrl(null)
+    }
+  }, [base64])
+  if (url === null) return <div className="text-xs text-ink-faint">opening…</div>
+  return (
+    <iframe
+      src={url}
+      title={path}
+      className="h-full min-h-[36rem] w-full rounded-xl border border-edge bg-wash"
+    />
+  )
+}
+
 function Body({
   path,
   content,
@@ -87,10 +132,7 @@ function Body({
   const e = ext(path)
   if (base64 !== undefined)
     return e === '.pdf' ? (
-      <div className="text-xs text-ink-faint">
-        {path} — a pdf. The console does not render one; it is on disk under the
-        Project's <span className="font-mono">_docs/</span>.
-      </div>
+      <PdfBody path={path} base64={base64} />
     ) : (
       <img
         src={`data:${MIME[e] ?? 'application/octet-stream'};base64,${base64}`}
@@ -295,6 +337,13 @@ export default function DocShelf({
   useEffect(() => {
     localStorage.setItem(COLUMN_KEY, columnOpen ? '1' : '0')
   }, [columnOpen])
+  /** papers being shelved — one line each while the extraction runs */
+  const [uploads, setUploads] = useState<UploadItem[]>([])
+  const seq = useRef(0)
+  const paperInput = useRef<HTMLInputElement | null>(null)
+  // Counter, not boolean: dragging over child elements fires
+  // leave/enter pairs that a boolean would read as "left the area".
+  const [dragDepth, setDragDepth] = useState(0)
 
   const files = useMemo(() => entries.filter((e) => e.kind === 'file'), [entries])
   // the column opens on something rather than an empty frame
@@ -449,6 +498,41 @@ export default function DocShelf({
     }
   }
 
+  /** Shelve papers, sequentially: PDF extraction is real server work,
+   * and a strip that fills top-to-bottom reads as progress. Which
+   * suffixes are papers stays server-side — one validator, one
+   * wording. */
+  const shelvePapers = async (files: File[]) => {
+    for (const f of files) {
+      const key = ++seq.current
+      setUploads((u) => [...u, { key, name: f.name, status: 'uploading' }])
+      const settle = (patch: Partial<UploadItem>) => {
+        setUploads((u) => u.map((x) => (x.key === key ? { ...x, ...patch } : x)))
+        // successes clear themselves after a beat; errors stay
+        if (patch.status !== 'error')
+          window.setTimeout(
+            () => setUploads((u) => u.filter((x) => x.key !== key)),
+            4000,
+          )
+      }
+      try {
+        const r = await apiUpload<{ id: string; already_shelved: boolean }>(
+          `/api/projects/${encodeURIComponent(project)}/papers?filename=${encodeURIComponent(f.name)}`,
+          f,
+        )
+        settle({ status: r.already_shelved ? 'already' : 'shelved' })
+        refresh()
+      } catch (e) {
+        settle({
+          status: 'error',
+          detail: e instanceof ApiError ? e.detail : String((e as Error).message),
+        })
+      }
+    }
+  }
+
+  const hasFiles = (e: React.DragEvent) => e.dataTransfer.types.includes('Files')
+
   const doDelete = async () => {
     if (open === null) return
     setDeleting(true)
@@ -471,7 +555,34 @@ export default function DocShelf({
   }
 
   return (
-    <>
+    <div
+      className="relative flex min-h-0 w-full flex-1"
+      onDragEnter={(e) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        setDragDepth((d) => d + 1)
+      }}
+      onDragOver={(e) => {
+        if (hasFiles(e)) e.preventDefault()
+      }}
+      onDragLeave={(e) => {
+        if (hasFiles(e)) setDragDepth((d) => Math.max(0, d - 1))
+      }}
+      onDrop={(e) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        setDragDepth(0)
+        void shelvePapers([...e.dataTransfer.files])
+      }}
+    >
+      {dragDepth > 0 && (
+        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-ink-faint bg-bg/85">
+          <div className="text-center">
+            <div className="font-display text-[18px] text-ink">Drop to shelve</div>
+            <div className="mt-1 text-xs text-ink-faint">.pdf · .md · .txt · .tex</div>
+          </div>
+        </div>
+      )}
       {!columnOpen ? (
         // the same fold the task rail carries (ProjectShell): a reading
         // posture, kept, and the strip that brings it back
@@ -513,6 +624,25 @@ export default function DocShelf({
             >
               folder
             </button>
+            <input
+              ref={paperInput}
+              type="file"
+              multiple
+              accept=".pdf,.md,.txt,.tex"
+              className="hidden"
+              onChange={(e) => {
+                const files = [...(e.target.files ?? [])]
+                e.target.value = '' // re-picking the same file must re-fire
+                void shelvePapers(files)
+              }}
+            />
+            <button
+              className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+              onClick={() => paperInput.current?.click()}
+              title="shelve a paper under user/papers/ — or drop files anywhere on this page"
+            >
+              paper
+            </button>
             <button
               onClick={() => setColumnOpen(false)}
               title="hide the file list"
@@ -541,6 +671,25 @@ export default function DocShelf({
             {createNote && (
               <div className="mt-1 text-[11px] leading-relaxed text-warn">{createNote}</div>
             )}
+          </div>
+        )}
+        {/* one line per paper on its way in; a 422 is written for a
+            person, so it is shown whole */}
+        {uploads.length > 0 && (
+          <div className="space-y-0.5 px-4 pb-1.5">
+            {uploads.map((u) => (
+              <div key={u.key} className="text-[11px] leading-relaxed">
+                <span className="font-mono text-ink-dim">{u.name}</span>{' '}
+                {u.status === 'uploading' && (
+                  <span className="text-ink-faint">shelving…</span>
+                )}
+                {u.status === 'shelved' && <span className="text-ink-faint">shelved</span>}
+                {u.status === 'already' && (
+                  <span className="text-ink-faint">already here (same content)</span>
+                )}
+                {u.status === 'error' && <span className="text-warn">{u.detail}</span>}
+              </div>
+            ))}
           </div>
         )}
         <AreaRows
@@ -718,7 +867,7 @@ export default function DocShelf({
           onConfirm={() => void doDelete()}
         />
       )}
-    </>
+    </div>
   )
 }
 

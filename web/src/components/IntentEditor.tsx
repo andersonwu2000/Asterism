@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
+import { projectPath } from '../lib/projectRoute'
 import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
@@ -20,11 +21,22 @@ import type { IntentData, PaperShelfItem, ProblemPaperBinding } from '../lib/typ
  * machine-amendable, and so it never locks.
  */
 
+/** Where a bound paper READS: its `text.md` in the Project's
+ * Documents, which is where the paper lives now (§3.9). */
+function docHref(project: string, b: ProblemPaperBinding): string {
+  const rel = b.path ?? `user/papers/${b.id}`
+  return `${projectPath(project, 'docs')}/shelf/${rel}/text.md`
+}
+
 /** Papers bound to this problem. A binding is its own DB row, not part
  * of the goal, so this block deliberately sits OUTSIDE the
  * pending_amend lock — binding a paper never collides with a
- * strategist amend. */
-function PapersBlock({ problem }: { problem: string }) {
+ * strategist amend.
+ *
+ * The shelf offered is THIS Project's (§3.9): a paper is one of its
+ * Project's documents now, and a picker listing the workspace's would
+ * offer papers this task's engine cannot read. */
+function PapersBlock({ problem, project }: { problem: string; project: string }) {
   const [bindings, setBindings] = useState<ProblemPaperBinding[] | null>(null)
   const [shelf, setShelf] = useState<PaperShelfItem[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -44,7 +56,9 @@ function PapersBlock({ problem }: { problem: string }) {
         setErr(null)
       })
       .catch((e) => !cancelled && setErr(String((e as Error).message)))
-    apiGet<{ papers: PaperShelfItem[] }>('/api/papers')
+    apiGet<{ papers: PaperShelfItem[] }>(
+      `/api/projects/${encodeURIComponent(project)}/papers`,
+    )
       .then((d) => !cancelled && setShelf(d.papers))
       .catch(() => {
         /* shelf unavailable → the bind select simply stays empty */
@@ -52,7 +66,7 @@ function PapersBlock({ problem }: { problem: string }) {
     return () => {
       cancelled = true
     }
-  }, [problem, tick])
+  }, [problem, project, tick])
 
   const unbind = async (pid: string) => {
     setBusy(true)
@@ -109,7 +123,7 @@ function PapersBlock({ problem }: { problem: string }) {
                 </>
               ) : (
                 <Link
-                  to={`/papers/${encodeURIComponent(b.id)}`}
+                  to={docHref(project, b)}
                   className="font-mono text-[12px] text-ink transition-colors hover:text-starlight"
                   title={b.reason ?? `read ${b.source_name ?? b.id}`}
                 >
@@ -166,11 +180,15 @@ function PapersBlock({ problem }: { problem: string }) {
 
 export default function IntentEditor({
   problem,
+  project,
   onDirtyChange,
   bridged = false,
   shelfHref,
 }: {
   problem: string
+  /** the shelf this task sits on — its papers are the Project's
+   * documents (§3.9), so the picker needs to know whose */
+  project: string
   onDirtyChange?: (dirty: boolean) => void
   /** where the decisions waiting on the human are — the Project's own
    * shelf, since the inbox is no longer a destination of its own */
@@ -395,7 +413,7 @@ export default function IntentEditor({
       {/* NOTE: outside the lock on purpose — paper bindings are their own
           DB rows, not part of the goal, so a pending amend does not
           apply to them */}
-      <PapersBlock problem={problem} />
+      <PapersBlock problem={problem} project={project} />
     </div>
   )
 }

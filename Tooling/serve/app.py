@@ -35,11 +35,6 @@ from . import data as _data
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WEB_DIST = REPO_ROOT / "web" / "dist"
 
-# Paper upload guard: bodies are read whole into memory (papers are
-# tens of MB at most; the Scholar fetch cap is 50MB) — an accidental
-# drop of something huge should bounce, not balloon the serve process.
-_MAX_UPLOAD_BYTES = 100 * 2**20
-
 
 @contextlib.contextmanager
 def _ro(workspace: Path):
@@ -95,10 +90,6 @@ class ApproveIngestBody(BaseModel):
 class RejectDeclBody(BaseModel):
     decl: str  # slug or Problems.<problem>.<slug> FQN (as review prints)
     reason: str | None = None
-
-
-class PaperRenameBody(BaseModel):
-    title: str = ""
 
 
 class PaperBindBody(BaseModel):
@@ -363,6 +354,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     # the Project's document root (/api/projects/{p}/docs, HID §3.6)
     from .docs_api import register as _register_docs
     _register_docs(app, workspace, _ro)
+
+    # the Project's papers (/api/projects/{p}/papers, HID §3.9)
+    from .papers_api import register as _register_papers
+    _register_papers(app, workspace, _ro)
 
     # a .tex document, compiled (/api/projects/{p}/tex, HID §1.2-2)
     from .tex_render import register as _register_tex
@@ -1157,128 +1152,6 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         with _ro(workspace) as conn:
             return _data.inbox(conn, workspace, project)
 
-    @app.get("/api/papers/{pid}/section")
-    def paper_sec(pid: str, anchor: str | None = None) -> dict:
-        d = _data.paper_section(workspace, pid, anchor)
-        if d is None:
-            raise HTTPException(status_code=404,
-                                detail=f"paper {pid!r} not shelved here")
-        return d
-
-    # -- papers bookshelf (top-level page) ------------------------------
-
-    @app.get("/api/papers")
-    def papers() -> dict:
-        if not (workspace / "asterism.db").exists():
-            return _data.papers_list(None, workspace)
-        with _ro(workspace) as conn:
-            return _data.papers_list(conn, workspace)
-
-    @app.get("/api/papers/{pid}/text")
-    def paper_text(pid: str) -> dict:
-        from ..papers import shelf as _shelf
-        meta = _shelf.load_meta(workspace, pid)
-        tp = _shelf.text_path(workspace, pid)
-        if meta is None or not tp.exists():
-            raise HTTPException(status_code=404,
-                                detail=f"paper {pid!r} not shelved here")
-        return {"id": pid, "source_name": meta.source_name,
-                "pages": meta.pages,
-                "text": tp.read_text(encoding="utf-8")}
-
-    @app.get("/api/papers/{pid}/file")
-    def paper_file(pid: str):
-        """The original document (browser-native PDF viewing)."""
-        from ..papers import shelf as _shelf
-        pdir = _shelf.paper_dir(workspace, pid)
-        original = next(
-            (f for f in pdir.glob("paper.*") if f.is_file()), None)
-        if original is None:
-            raise HTTPException(status_code=404,
-                                detail=f"paper {pid!r} has no original file")
-        media = "application/pdf" if original.suffix == ".pdf" \
-            else "text/plain; charset=utf-8"
-        return FileResponse(original, media_type=media,
-                            filename=f"{pid}{original.suffix}",
-                            content_disposition_type="inline")
-
-    @app.post("/api/papers/upload")
-    async def paper_upload(request: Request, filename: str) -> dict:
-        """Shelve a document dropped or picked in the browser. The body
-        is the RAW file bytes (no multipart — keeps the install free of
-        a parser dependency); the source filename rides the query
-        string. Content-hash identity: re-dropping the same document is
-        a no-op returning the existing slot, and `already_shelved`
-        tells the UI which happened."""
-        import tempfile
-        from ..papers import shelf as _shelf
-        # The wire filename is client data: strip path components and
-        # the characters Windows refuses so the temp write can't fail
-        # or escape (identity never depends on the name anyway).
-        name = re.sub(r'[<>:"|?*\x00-\x1f]', "_",
-                      Path(filename.replace("\\", "/")).name).strip()
-        if name.strip(". ") == "":
-            raise HTTPException(status_code=422,
-                                detail=f"unusable filename {filename!r}")
-        data = await request.body()
-        if not data:
-            raise HTTPException(status_code=422,
-                                detail=f"{name}: empty file")
-        if len(data) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"{name}: {len(data) // 2**20}MB exceeds the "
-                       f"{_MAX_UPLOAD_BYTES // 2**20}MB upload cap")
-        already = _shelf.load_meta(workspace,
-                                   _shelf.content_id(data)) is not None
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td) / name
-            tmp.write_bytes(data)
-            try:
-                meta = _shelf.add_paper(workspace, tmp, added_by="user")
-            except (_shelf.ScannedPdfError, ValueError) as e:
-                raise HTTPException(status_code=422, detail=str(e)) from e
-        return {"id": meta.id, "source_name": meta.source_name,
-                "pages": meta.pages, "chars": meta.chars,
-                "already_shelved": already}
-
-    @app.post("/api/papers/{pid}/rename")
-    def paper_rename(pid: str, body: PaperRenameBody) -> dict:
-        """Set the display title (empty clears back to the filename).
-        Display metadata only — identity, text and bindings untouched."""
-        from ..papers import shelf as _shelf
-        meta = _shelf.set_title(workspace, pid, body.title)
-        if meta is None:
-            raise HTTPException(status_code=404,
-                                detail=f"paper {pid!r} not shelved here")
-        return {"id": meta.id, "title": meta.title,
-                "source_name": meta.source_name}
-
-    @app.delete("/api/papers/{pid}")
-    def paper_delete(pid: str) -> dict:
-        """Remove a shelf slot. Refused while any problem cites it —
-        unbind there first (the bindings are the citations agents rely
-        on; deleting under them would orphan every reference)."""
-        import shutil
-        from ..papers import shelf as _shelf
-        pdir = _shelf.paper_dir(workspace, pid)
-        if _shelf.load_meta(workspace, pid) is None:
-            raise HTTPException(status_code=404,
-                                detail=f"paper {pid!r} not shelved here")
-        if (workspace / "asterism.db").exists():
-            with _ro(workspace) as conn:
-                rows = conn.execute(
-                    "SELECT problem FROM problem_papers WHERE paper_id = ?"
-                    " ORDER BY problem", (pid,)).fetchall()
-            if rows:
-                names = ", ".join(str(r["problem"]) for r in rows)
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"cited by {names} — unbind it from those"
-                           f" problems first")
-        shutil.rmtree(pdir)
-        return {"message": f"removed Papers/{pid}"}
-
     @app.get("/api/problems/{problem}/papers")
     def problem_papers(problem: str) -> dict:
         with _ro(workspace) as conn:
@@ -1286,11 +1159,16 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
 
     @app.post("/api/problems/{problem}/papers")
     def problem_paper_bind(problem: str, body: PaperBindBody) -> dict:
+        """Cite a paper from this problem. A binding is the PROBLEM's,
+        so this stays here while the shelf itself became the Project's
+        (§3.9) — and a paper bound across Projects is COPIED onto the
+        target's shelf, because the source Project may still be citing
+        the one it has."""
         from ..papers import shelf as _shelf
-        if _shelf.load_meta(workspace, body.paper_id) is None:
+        if _shelf.paper_dir(workspace, body.paper_id) is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"paper {body.paper_id!r} not shelved here")
+                detail=f"paper {body.paper_id!r} is on no Project's shelf")
         conn = db.connect(workspace / "asterism.db")
         try:
             known = conn.execute(
@@ -1299,12 +1177,16 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             if known is None:
                 raise HTTPException(status_code=404,
                                     detail=f"unknown problem {problem!r}")
+            from ..state import projects as _projects
+            project = _projects.project_of(conn, problem) \
+                or problem.split(".", 1)[0]
+            _shelf.copy_into_project(workspace, body.paper_id, project)
             db.bind_paper(conn, problem=problem, paper_id=body.paper_id,
                           origin="user")
             conn.commit()
         finally:
             conn.close()
-        return {"message": f"bound Papers/{body.paper_id} to {problem}"}
+        return {"message": f"bound {body.paper_id} to {problem}"}
 
     @app.delete("/api/problems/{problem}/papers/{pid}")
     def problem_paper_unbind(problem: str, pid: str) -> dict:
@@ -1316,7 +1198,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         if not removed:
             raise HTTPException(status_code=404,
                                 detail="no such binding")
-        return {"message": f"unbound Papers/{pid} from {problem}"}
+        return {"message": f"unbound {pid} from {problem}"}
 
     @app.get("/api/library")
     def library() -> dict:

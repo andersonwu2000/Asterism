@@ -313,9 +313,19 @@ def init_problem(workspace: Path, problem: str, *,
     # already in the DB are never clobbered — settings.write upserts,
     # bind_paper dedups).
     if seed is not None:
-        for pid in seed.get("papers", []) or []:
-            db.bind_paper(conn, problem=problem, paper_id=str(pid),
-                          origin="user")
+        seed_papers = [str(pid) for pid in (seed.get("papers") or [])]
+        if seed_papers:
+            # A seeded id may name a paper on ANOTHER Project's shelf
+            # (§3.9); copy it here first, or the binding points at a
+            # document this Project cannot open.
+            from ...papers import shelf as _shelf
+            from ...state import projects as _projects_mod
+            _proj = (_projects_mod.project_of(conn, problem)
+                     or problem.split(".", 1)[0])
+            for pid in seed_papers:
+                _shelf.copy_into_project(workspace, pid, _proj)
+                db.bind_paper(conn, problem=problem, paper_id=pid,
+                              origin="user")
         from ...state import settings as _settings
         stored = _settings.read(conn, problem)
         for key, val in (seed.get("settings") or {}).items():

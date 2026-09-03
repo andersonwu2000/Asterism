@@ -109,6 +109,24 @@ def test_copy_into_project_is_a_copy_not_a_move(tmp_path: Path) -> None:
     assert shelf.copy_into_project(tmp_path, meta.id, "Topology") == dst
 
 
+def test_set_title_is_display_only(tmp_path: Path) -> None:
+    """The display title is owner-editable and display-ONLY: identity
+    (content hash) and the source filename survive, and an empty title
+    clears back to the filename standing in. (Moved here from
+    `test_serve_api` when `/api/papers/{id}/rename` retired with the
+    workspace-global shelf — the guarantee is the shelf's, and the
+    endpoint was only one caller of it.)"""
+    meta = _add_text_paper(tmp_path, "# Paper\n\nsome text")
+    assert meta.title is None
+    got = shelf.set_title(tmp_path, meta.id, "Residues and applications")
+    assert got.title == "Residues and applications"
+    assert got.source_name == "notes.md" and got.id == meta.id
+    assert shelf.load_meta(tmp_path, meta.id).title == \
+        "Residues and applications"
+    assert shelf.set_title(tmp_path, meta.id, "  ").title is None
+    assert shelf.set_title(tmp_path, "deadbeef0000", "x") is None
+
+
 def test_list_papers_reports_project_and_area(tmp_path: Path) -> None:
     """The shelf listing the console and the migration both read."""
     a = _add_text_paper(tmp_path, "one\n", name="a.md", project="Erdos",

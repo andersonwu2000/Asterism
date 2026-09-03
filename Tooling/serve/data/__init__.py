@@ -166,8 +166,6 @@ from .library import (
     _scanned_library_file,
     _stmt_head,
     library_chapter,
-    paper_section,
-    papers_list,
     problem_papers_detail,
     read_problem_file,
     telemetry_usage,

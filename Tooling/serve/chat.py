@@ -422,14 +422,6 @@ def _page_context(workspace: Path, page: "dict | None", *,
             # literally all we handed over)
             return key, _decorate(
                 conn, _board_context(conn, workspace, project))
-        if kind == "papers":
-            from . import data as _data
-            shelf = _data.papers_list(conn, workspace)["papers"][:30]
-            rows = [{"id": p["id"],
-                     "title": p["title"] or p["source_name"]}
-                    for p in shelf]
-            return key, _decorate(conn, json.dumps(
-                {"page": "papers", "papers": rows}, ensure_ascii=False))
         return key, _decorate(
             conn, _board_context(conn, workspace, project))
     except sqlite3.Error:

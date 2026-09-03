@@ -196,15 +196,23 @@ test('the Library is not reachable from anywhere', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Library' })).toHaveCount(0)
 })
 
-test('papers shelf renders rows or empty state', async ({ page }) => {
+test('the papers page is not reachable from anywhere', async ({ page }) => {
+  // §3.9: the workspace-global shelf retired — a paper is one of its
+  // Project's documents. A dead route must not render a screen either.
   await page.goto('/#/papers')
-  await expect(page.getByRole('heading', { name: 'Papers' })).toBeVisible()
-  // rows, the explicit empty state, or (on an engine predating the
-  // papers API) the error state — never a blank list area
-  const rows = page.locator('tbody tr')
-  const empty = page.getByText('The shelf is empty')
-  const errState = page.getByText(/Not found|Can't reach the engine/).first()
-  await expect(rows.first().or(empty).or(errState)).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Papers' })).toHaveCount(0)
+  await page.goto('/')
+  await expect(page.getByRole('link', { name: 'Papers' })).toHaveCount(0)
+})
+
+test("Documents is where a paper is shelved", async ({ page, request }) => {
+  // §3.9: the drop target and the "paper" affordance live on the
+  // Project's own document column, and the areas it writes are named
+  // there.
+  const shelf = await firstShelf(request)
+  test.skip(!shelf, 'needs a workspace with a Project')
+  await page.goto(`/#/p/${encodeURIComponent(shelf!.project)}/docs/shelf`)
+  await expect(page.getByTitle(/shelve a paper under user\/papers\//)).toBeVisible()
 })
 
 test('api meta reachable and shaped', async ({ request }) => {
@@ -223,12 +231,20 @@ test('new-task form renders (read-only: no submit)', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Create task' })).toBeDisabled()
 })
 
-test('new-task: the paper shelf is a window, not a wall', async ({ page }) => {
+test('new-task: the paper shelf is a window, not a wall', async ({
+  page,
+  request,
+}) => {
   // The picker used to render one checkbox per shelved paper, which
   // buried the rest of the form (owner, 2026-08-27). It is a floating
   // window now: collapsed the field is one button, and choosing marks
   // a paper in place rather than moving it. Read-only — no submit.
-  await page.goto('/#/new')
+  //
+  // Addressed at a PROJECT (§3.9): the shelf on offer is the one the
+  // task will be filed on, so `#/new` with nothing typed has none.
+  const shelf = await firstShelf(request)
+  test.skip(!shelf, 'needs a workspace with a Project')
+  await page.goto(`/#/new/${encodeURIComponent(shelf!.project)}`)
   const open = page.locator('[data-paper-open]')
   const shelved = await open
     .waitFor({ timeout: 5000 })

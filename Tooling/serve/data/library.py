@@ -381,106 +381,34 @@ def telemetry_usage(conn: sqlite3.Connection, *,
     return {"problems": rows}
 
 
-def papers_list(conn: "sqlite3.Connection | None",
-                workspace: Path) -> dict:
-    """The bookshelf: every shelved paper's meta + which problems cite
-    it (reverse of problem_papers) + map staleness. Filesystem is the
-    shelf's SoT; the DB only contributes bindings (conn optional so a
-    fresh workspace still lists its shelf)."""
-    from ...papers import shelf as _shelf
-    root = _shelf.papers_root(workspace)
-    bound: dict[str, list[dict]] = {}
-    if conn is not None:
-        try:
-            for r in conn.execute(
-                    "SELECT problem, paper_id, origin FROM problem_papers"
-                    " ORDER BY problem"):
-                bound.setdefault(str(r["paper_id"]), []).append(
-                    {"problem": str(r["problem"]),
-                     "origin": str(r["origin"])})
-        except sqlite3.OperationalError:
-            pass
-    papers = []
-    if root.is_dir():
-        for pdir in sorted(root.iterdir()):
-            if not pdir.is_dir():
-                continue
-            meta = _shelf.load_meta(workspace, pdir.name)
-            if meta is None:
-                continue  # not a shelf slot (stray dir)
-            original = next(
-                (f.name for f in pdir.glob("paper.*") if f.is_file()), None)
-            papers.append({
-                "id": meta.id,
-                "source_name": meta.source_name,
-                # owner-editable display title; null = filename stands in
-                "title": meta.title,
-                # provenance: 'user' | 'fetched' | null (pre-provenance)
-                "added_by": meta.added_by,
-                "pages": meta.pages,
-                "chars": meta.chars,
-                "original": original,
-                "has_map": _shelf.map_path(workspace, meta.id).exists(),
-                "map_stale": _shelf.map_is_stale(workspace, meta.id),
-                "bound": bound.get(meta.id, []),
-            })
-    papers.sort(key=lambda p: (p["title"] or p["source_name"]).lower())
-    return {"papers": papers}
-
-
 def problem_papers_detail(conn: sqlite3.Connection, workspace: Path,
                           problem: str) -> dict:
     """One problem's citations: bindings joined with shelf meta (a
-    binding whose shelf slot vanished still shows, flagged missing)."""
+    binding whose shelf slot vanished still shows, flagged missing).
+
+    `path` is the paper's address in the Project's documents (§3.9), so
+    a row can link straight to what it cites; None when the slot is
+    missing, which is the same fact `missing` reports."""
     from ...papers import shelf as _shelf
+    from ...state import project_docs as _project_docs
+    from ...state import projects as _projects
+    project = _projects.project_of(conn, problem) \
+        or problem.split(".", 1)[0]
     out = []
     for r in db.paper_bindings(conn, problem):
         pid = str(r["paper_id"])
-        meta = _shelf.load_meta(workspace, pid)
+        pdir = _shelf.paper_dir(workspace, pid, project=project)
+        meta = _shelf.load_meta(workspace, pid, project=project)
         out.append({
             "id": pid,
             "origin": str(r["origin"]),
             "reason": r["reason"],
             "source_name": meta.source_name if meta else None,
+            "path": None if pdir is None else pdir.relative_to(
+                _project_docs.root(workspace, project)).as_posix(),
             "missing": meta is None,
         })
     return {"problem": problem, "papers": out}
-
-
-def paper_section(workspace: Path, pid: str,
-                  anchor: str | None) -> dict | None:
-    """One page-anchored section of a shelved paper's extracted text
-    (charter §3.2 side-by-side). Page anchors are `## p.N` lines. When
-    `anchor` is a page anchor, returns that page's block; otherwise the
-    whole text is scanned for the first literal occurrence and the
-    surrounding page is returned. None if the paper isn't shelved."""
-    if "/" in pid or "\\" in pid or ".." in pid:
-        return None
-    path = workspace / "Papers" / pid / "text.md"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    a = (anchor or "").strip()
-    # Non-page anchor (free-text ref): locate it, then serve its page.
-    if a and not a.startswith("## p.") and a in text:
-        page_start = text.rfind("\n## p.", 0, text.index(a))
-        if page_start >= 0:
-            a = text[page_start + 1:text.index("\n", page_start + 1)]
-        else:
-            a = ""
-    if a.startswith("## p."):
-        idx = text.find(a + "\n")
-        if idx < 0:
-            idx = text.find(a)
-        if idx >= 0:
-            nxt = text.find("\n## p.", idx + 1)
-            content = text[idx:nxt] if nxt > 0 else text[idx:]
-            return {"pid": pid, "anchor": a, "found": True,
-                    "content": content.strip()}
-    # Fallback: unpaged source or unknown anchor — first 4KB as context.
-    return {"pid": pid, "anchor": a or None, "found": False,
-            "content": text[:4096]}
 
 
 def read_problem_file(workspace: Path, problem: str,

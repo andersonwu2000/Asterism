@@ -50,6 +50,15 @@ def _add_problem(conn: sqlite3.Connection, name: str, **cols) -> None:
     conn.commit()
 
 
+def _add_project(conn: sqlite3.Connection, name: str) -> None:
+    """A Project row — the shelf a document surface is addressed by
+    (§3.1/§3.6: an unknown Project is a 404, not a folder invented on a
+    typo)."""
+    conn.execute("INSERT OR IGNORE INTO projects (name, description,"
+                 " created_at) VALUES (?, '', ?)", (name, db.now()))
+    conn.commit()
+
+
 def _add_decision(conn: sqlite3.Connection, problem: str, *,
                   kind: str = "Noop", outcome: str | None = "success",
                   payload: dict | None = None, reason: str = "") -> int:
@@ -1037,25 +1046,37 @@ def test_reject_decl_endpoint_calls_chokepoint(workspace: Path,
 
 
 def test_paper_section_page_anchor(workspace: Path) -> None:
-    pdir = workspace / "Papers" / "abc123"
+    """The sign-off pane's slice, addressed through the Project whose
+    shelf holds the paper (§3.9 — `/api/papers/*` retired with the
+    workspace-global shelf)."""
+    conn = _open_db(workspace)
+    _add_project(conn, "Proj")
+    conn.close()
+    pdir = (workspace / "Problems" / "Proj" / "_docs" / "agent" / "papers"
+            / "abc123")
     pdir.mkdir(parents=True)
+    (pdir / "meta.json").write_text(
+        '{"id": "abc123", "source_name": "p.md", "pages": 3, '
+        '"chars": 10, "text_sha": "x"}', encoding="utf-8")
     (pdir / "text.md").write_text(
         "# Title\n\n## p.1\nfirst page\n\n## p.2\nsecond page body\n\n"
         "## p.3\nthird\n", encoding="utf-8")
     c = _client(workspace)
-    r = c.get("/api/papers/abc123/section", params={"anchor": "## p.2"})
+    r = c.get("/api/projects/Proj/papers/abc123/section",
+              params={"anchor": "## p.2"})
     body = r.json()
     assert body["found"] is True
     assert "second page body" in body["content"]
     assert "third" not in body["content"]
     # free-text ref resolves to its containing page
-    r2 = c.get("/api/papers/abc123/section",
+    r2 = c.get("/api/projects/Proj/papers/abc123/section",
                params={"anchor": "second page"})
     assert r2.json()["found"] is True
     assert "second page body" in r2.json()["content"]
-    # unknown paper → 404; traversal refused
-    assert c.get("/api/papers/nope/section").status_code == 404
-    assert c.get("/api/papers/..%2Fabc123/section").status_code == 404
+    assert c.get(
+        "/api/projects/Proj/papers/nope/section").status_code == 404
+    assert c.get(
+        "/api/projects/Proj/papers/..%2Fabc123/section").status_code == 404
 
 
 # ---------------------------------------------------------------------
@@ -1268,90 +1289,104 @@ def test_goal_source_shows_the_working_text_not_the_stub(
     assert g["source_state"] == "winning_route"
 
 
-def test_papers_bookshelf_flow(workspace: Path) -> None:
-    """Top-level bookshelf: browser upload (raw bytes, content-hash
-    idempotent), list with bindings, read text + original, delete
-    guarded by citations (unbind first)."""
+def test_project_papers_flow(workspace: Path) -> None:
+    """A Project's shelf (§3.9): browser upload (raw bytes, content-hash
+    idempotent) into its `user/papers/`, listing with bindings, and the
+    document itself readable through the Documents surface — which is
+    also where it is deleted, because a paper is a document now."""
     conn = _open_db(workspace)
-    _add_problem(conn, "p")
+    _add_project(conn, "Proj")
+    _add_problem(conn, "Proj.p", project="Proj")
     conn.close()
     c = _client(workspace)
-    assert c.get("/api/papers").json() == {"papers": []}
+    assert c.get("/api/projects/Proj/papers").json()["papers"] == []
     body = b"# Paper\n\nsome text"
-    r = c.post("/api/papers/upload", params={"filename": "notes.md"},
-               content=body)
+    r = c.post("/api/projects/Proj/papers",
+               params={"filename": "notes.md"}, content=body)
     assert r.status_code == 200
     pid = r.json()["id"]
     assert r.json()["already_shelved"] is False
-    again = c.post("/api/papers/upload", params={"filename": "other.md"},
-                   content=body).json()
+    again = c.post("/api/projects/Proj/papers",
+                   params={"filename": "other.md"}, content=body).json()
     assert again["id"] == pid and again["already_shelved"] is True
-    papers = c.get("/api/papers").json()["papers"]
+    papers = c.get("/api/projects/Proj/papers").json()["papers"]
     assert [p["id"] for p in papers] == [pid]
     assert papers[0]["bound"] == []
-    assert "some text" in c.get(f"/api/papers/{pid}/text").json()["text"]
-    assert c.get(f"/api/papers/{pid}/file").status_code == 200
+    # a person's upload lands in the person's area, and the row carries
+    # the document address the Documents tab opens
+    assert papers[0]["area"] == "user"
+    assert papers[0]["path"] == f"user/papers/{pid}"
+    doc = c.get(f"/api/projects/Proj/docs/user/papers/{pid}/text.md")
+    assert doc.status_code == 200 and "some text" in doc.json()["content"]
+    assert c.get(
+        f"/api/projects/Proj/docs/user/papers/{pid}/paper.md"
+    ).status_code == 200
     # server owns format/emptiness validation (one validator, one wording)
-    assert c.post("/api/papers/upload", params={"filename": "x.docx"},
+    assert c.post("/api/projects/Proj/papers",
+                  params={"filename": "x.docx"},
                   content=b"zz").status_code == 422
-    assert c.post("/api/papers/upload", params={"filename": "empty.md"},
+    assert c.post("/api/projects/Proj/papers",
+                  params={"filename": "empty.md"},
                   content=b"").status_code == 422
+    # an unknown Project is a 404, not a folder invented on a typo
+    assert c.get("/api/projects/Nope/papers").status_code == 404
 
-    assert c.post("/api/problems/p/papers",
+    assert c.post("/api/problems/Proj.p/papers",
                   json={"paper_id": pid}).status_code == 200
-    assert c.post("/api/problems/p/papers",
+    assert c.post("/api/problems/Proj.p/papers",
                   json={"paper_id": "unshelved"}).status_code == 404
-    assert c.get("/api/papers").json()["papers"][0]["bound"] == [
-        {"problem": "p", "origin": "user"}]
-    mine = c.get("/api/problems/p/papers").json()["papers"]
+    assert c.get("/api/projects/Proj/papers").json()["papers"][0]["bound"] \
+        == [{"problem": "Proj.p", "origin": "user"}]
+    mine = c.get("/api/problems/Proj.p/papers").json()["papers"]
     assert mine[0]["id"] == pid and mine[0]["origin"] == "user"
-    # cited → delete refused; unbind → delete ok
-    assert c.delete(f"/api/papers/{pid}").status_code == 409
-    assert c.delete(f"/api/problems/p/papers/{pid}").status_code == 200
-    assert c.delete(f"/api/problems/p/papers/{pid}").status_code == 404
-    assert c.delete(f"/api/papers/{pid}").status_code == 200
-    assert c.get("/api/papers").json() == {"papers": []}
+    assert c.delete(f"/api/problems/Proj.p/papers/{pid}").status_code == 200
+    assert c.delete(f"/api/problems/Proj.p/papers/{pid}").status_code == 404
+
+
+def test_binding_a_paper_from_another_project_copies_it(
+        workspace: Path) -> None:
+    """§3.9: the shelves are per-Project and the id space is not, so a
+    problem citing a paper another Project holds gets its OWN copy —
+    the source may still be citing the one it has, and a move would
+    blind it mid-run."""
+    conn = _open_db(workspace)
+    _add_project(conn, "Erdos")
+    _add_project(conn, "Topology")
+    _add_problem(conn, "Topology.t", project="Topology")
+    conn.close()
+    c = _client(workspace)
+    pid = c.post("/api/projects/Erdos/papers",
+                 params={"filename": "shared.md"},
+                 content=b"# Shared\n\nbody").json()["id"]
+    assert c.get("/api/projects/Topology/papers").json()["papers"] == []
+    assert c.post("/api/problems/Topology.t/papers",
+                  json={"paper_id": pid}).status_code == 200
+    here = c.get("/api/projects/Topology/papers").json()["papers"]
+    assert [p["id"] for p in here] == [pid]
+    # the source Project keeps its copy
+    assert [p["id"] for p in
+            c.get("/api/projects/Erdos/papers").json()["papers"]] == [pid]
 
 
 def test_paper_upload_provenance_and_filename_hygiene(
         workspace: Path) -> None:
-    """Browser uploads record added_by='user' (the shelf's provenance
-    tag — Scholar fetches record 'fetched') and the wire filename is
+    """Console uploads record added_by='user' (the shelf's provenance
+    tag — agent fetches record 'fetched') and the wire filename is
     reduced to a safe basename: the shelf must never mirror client
     paths, and identity never depends on the name anyway."""
+    conn = _open_db(workspace)
+    _add_project(conn, "Proj")
+    conn.close()
     c = _client(workspace)
-    r = c.post("/api/papers/upload",
+    r = c.post("/api/projects/Proj/papers",
                params={"filename": "C:\\Users\\me\\Desktop\\no:tes.md"},
                content=b"hello world")
     assert r.status_code == 200
     assert r.json()["source_name"] == "no_tes.md"
-    got = c.get("/api/papers").json()["papers"][0]
+    got = c.get("/api/projects/Proj/papers").json()["papers"][0]
     assert got["added_by"] == "user"
-    assert c.post("/api/papers/upload", params={"filename": "..."},
+    assert c.post("/api/projects/Proj/papers", params={"filename": "..."},
                   content=b"x").status_code == 422
-
-
-def test_paper_rename_display_title(workspace: Path) -> None:
-    """The display title is owner-editable and display-ONLY: identity
-    (content hash) and the source filename survive; empty clears back
-    to the filename; old meta.json files without the field keep
-    loading (dataclass default)."""
-    c = _client(workspace)
-    pid = c.post("/api/papers/upload", params={"filename": "notes.md"},
-                 content=b"# Paper\n\nsome text").json()["id"]
-    assert c.get("/api/papers").json()["papers"][0]["title"] is None
-    r = c.post(f"/api/papers/{pid}/rename",
-               json={"title": "Residues and their applications"})
-    assert r.status_code == 200
-    got = c.get("/api/papers").json()["papers"][0]
-    assert got["title"] == "Residues and their applications"
-    assert got["source_name"] == "notes.md" and got["id"] == pid
-    # empty title clears back to the filename standing in
-    assert c.post(f"/api/papers/{pid}/rename",
-                  json={"title": "  "}).status_code == 200
-    assert c.get("/api/papers").json()["papers"][0]["title"] is None
-    assert c.post("/api/papers/nope/rename",
-                  json={"title": "x"}).status_code == 404
 
 
 def test_create_settings_and_papers_are_authoritative(
@@ -1359,9 +1394,11 @@ def test_create_settings_and_papers_are_authoritative(
     """Creation-time settings land in the DB via the chokepoint —
     explicit form input must win over lazy migration — and checked
     papers bind with origin='user'."""
-    _open_db(workspace).close()
+    conn = _open_db(workspace)
+    _add_project(conn, "Test")
+    conn.close()
     c = _client(workspace)
-    pid = c.post("/api/papers/upload", params={"filename": "ref.md"},
+    pid = c.post("/api/projects/Test/papers", params={"filename": "ref.md"},
                  content=b"# Ref\n\nbody").json()["id"]
     r = c.post("/api/problems/create", json={
         "name": "Test.cite", "charter": "prove the thing",

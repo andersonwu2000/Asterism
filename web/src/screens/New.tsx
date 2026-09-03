@@ -70,21 +70,33 @@ export default function New({ project }: { project?: string | null }) {
   const [axioms, setAxioms] = useState<string[]>(DEFAULT_AXIOMS)
   const [forbidden, setForbidden] = useState<string[]>([])
 
-  // the papers block only renders when a shelf exists — one silent
-  // fetch; failure (older engine, empty workspace) hides it
+  // Which shelf's papers are on offer: the one the task will be filed
+  // on. Arriving from a Project names it; typing a name picks the same
+  // default registration would (§3.1), and a paper is one of its
+  // Project's documents now (§3.9) — offering the workspace's would
+  // offer papers this task's engine cannot read.
+  const shelfProject = project ?? (name.includes('.') ? name.split('.')[0] : name)
+  // one silent fetch; failure (no such Project yet, older engine) just
+  // leaves the block empty
   useEffect(() => {
+    if (shelfProject.trim() === '') {
+      setShelf([])
+      return
+    }
     let cancelled = false
-    apiGet<{ papers: PaperShelfItem[] }>('/api/papers')
+    apiGet<{ papers: PaperShelfItem[] }>(
+      `/api/projects/${encodeURIComponent(shelfProject)}/papers`,
+    )
       .then((d) => !cancelled && setShelf(d.papers))
-      .catch(() => {})
+      .catch(() => !cancelled && setShelf([]))
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [shelfProject])
 
-  // a paper reads by its TITLE where it has one, exactly as it does on
-  // the Papers shelf — `div-class-title-a-proof-of-the-erd-s-...pdf`
-  // is a filename, not a name (the picker was showing only that)
+  // a paper reads by its TITLE where it has one —
+  // `div-class-title-a-proof-of-the-erd-s-...pdf` is a filename, not a
+  // name (the picker was showing only that)
   const paperName = (p: PaperShelfItem) => p.title ?? p.source_name
   const chosen = useMemo(
     () => shelf.filter((p) => papers.has(p.id)),

@@ -6,7 +6,6 @@ import { stalePair } from './lib/freshness'
 import Projects from './screens/Projects'
 import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
-import Papers, { PaperReader } from './screens/Papers'
 import Settings from './screens/Settings'
 import AssistantPanel from './components/AssistantPanel'
 import type { BoardResponse, Meta } from './lib/types'
@@ -19,8 +18,9 @@ import { isStopped, onStopped } from './lib/shutdown'
  * own header, and the tasks are the column beside them.
  *
  * Everything global that is not a Project lives at one address each:
- * #/settings is the gear, #/new mints a task, #/papers is the shelf a
- * task binds its sources from. The banners below are the exception the
+ * #/settings is the gear and #/new mints a task. (#/papers went with
+ * the workspace-global shelf — §3.9: a paper is one of its Project's
+ * documents.) The banners below are the exception the
  * old shell also made: a state that silently fails EVERY run has to
  * speak wherever the reader is standing.
  */
@@ -152,7 +152,7 @@ function Shell() {
   useEffect(() => {
     const leaf = project
       ? (project.problem?.split('.').pop() ?? project.project)
-      : { settings: 'Settings', new: 'New task', papers: 'Papers' }[section]
+      : { settings: 'Settings', new: 'New task' }[section]
     const base = leaf ? `${leaf} — Asterism` : 'Asterism'
     document.title = inboxCount > 0 ? `(${inboxCount}) ${base}` : base
   }, [inboxCount, section, project])
@@ -226,12 +226,6 @@ function Shell() {
             /* `#/new/<project>` files the task on that shelf (§3.1: the
                name's first segment is only a default) */
             <New project={route.segments[1] ?? null} />
-          ) : section === 'papers' ? (
-            route.segments[1] ? (
-              <PaperReader id={route.segments[1]} />
-            ) : (
-              <Papers />
-            )
           ) : section === 'problems' && route.segments[1] ? (
             <LegacyProblem
               name={route.segments[1]}

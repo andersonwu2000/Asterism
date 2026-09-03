@@ -205,7 +205,7 @@ the ladder via `::picker(select)` where supported.
   The audience is mathematicians: human words in the UI, engine
   vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word
   layer).
-- Drop targets (Papers is the reference): the WHOLE route area
+- Drop targets (Documents is the reference): the WHOLE route area
   accepts the drop; while a file is over it, a dashed `border-2
   border-ink-faint` frame at `inset-3 rounded-xl` floats over
   `bg-bg/85` with a two-line center label (display-face verb + quiet

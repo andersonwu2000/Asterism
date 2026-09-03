@@ -623,13 +623,16 @@ export interface LibraryChapter {
   colophon?: { decls: number; axioms: string[] } | null
 }
 
-/** A problem citing a shelf paper, as reported by GET /api/papers. */
+/** A problem citing a shelf paper, as reported by
+ * GET /api/projects/{p}/papers. */
 export interface PaperBoundRef {
   problem: string
   origin: string
 }
 
-/** One entry on the paper shelf (GET /api/papers). */
+/** One paper on a Project's shelf (GET /api/projects/{p}/papers). A
+ * paper is one of its Project's documents since §3.9 — the shelf is
+ * per-Project, and `path` is where the Documents tab opens it. */
 export interface PaperShelfItem {
   id: string
   source_name: string
@@ -638,6 +641,11 @@ export interface PaperShelfItem {
   /** who shelved it: 'user' (upload/CLI) or 'fetched' (the engine,
    * mid-run); null = shelved before provenance existed */
   added_by: string | null
+  /** which sub-root holds it: the person's `user/` or the engine's
+   * `agent/` — decided by `added_by` when it was shelved */
+  area: string
+  /** its folder, relative to the Project's docs root */
+  path: string
   pages: number
   chars: number
   original: string
@@ -654,6 +662,9 @@ export interface ProblemPaperBinding {
   origin: string
   reason: string | null
   source_name: string | null
+  /** its folder in the Project's documents, root-relative; null when
+   * the slot is missing */
+  path: string | null
   /** binding survives but the shelf entry is gone */
   missing: boolean
 }

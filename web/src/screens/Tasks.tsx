@@ -524,6 +524,7 @@ function OneTask({
       </div>
       <IntentEditor
         problem={problem}
+        project={project}
         onDirtyChange={setDirty}
         bridged={row?.status === 'bridged'}
         shelfHref={projectPath(project, 'tasks')}
