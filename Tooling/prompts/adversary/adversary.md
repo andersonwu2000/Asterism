@@ -12,7 +12,7 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 - `charter.md` — this group's charter: the claim this judgment settles. The fixed reference point — every "charter" and "MAIN claim" in the criteria mean it. Below it, the charters above this one (ancestral context) and those this chain already handed back; returned charters are context, not verdicts.
 - `user_word.md` (if present) — the user's standing directives, verbatim, binding for every group at every depth. Not part of the claim under judgment; a batch that plainly contradicts them fires criterion 1.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / shelved with anchoring) since it passed. **Check the candidate Argument's account against those results.**
-- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why the requirement needs this plan), `## Proof` (every brick as `Theorem.` statement then `Proof.` argument — no gaps), `## Roadmap` (the research roadmap, one bullet per item — PAST closures, each collapsed to its conclusion with its restart condition / NOW this batch's decisions, each saying how MAIN will consume it / AHEAD the blueprint ahead, each item saying how it pushes toward MAIN, in order; closures name the exact dead instantiation and a self-producible restart condition).
+- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why the requirement needs this plan), `## Proof` (every brick as `Theorem.` statement then `Proof.` argument — no gaps), `## Roadmap` (first line `Relation:`; then PAST closures, each collapsed to its conclusion with citations and restart condition / NOW this batch's decisions, each Inject with its consumption chain and endpoint / AHEAD drawn only to the known boundary, each item one sentence of push and prerequisites; handling a wall = a brick whose endpoint is the wall, an argument or counterexample on it in the Proof, or a `Theorize`).
 - `decisions.md` — this batch's decisions; goal targets are annotated `(slug, status)`.
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the charter's prose.**
@@ -25,10 +25,10 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 ## How to judge
 
-1. **Value**: `proposal.md`'s ## Argument must explain why achieving the charter's requirement needs this plan, and every Inject in ### NOW must state which Roadmap item consumes its conclusion and what the MAIN claim gains by it. Work the MAIN claim cannot consume is not allowed.
-2. **Direction**: every item of `proposal.md`'s ### AHEAD must argue how it pushes toward the MAIN claim, which earlier items it depends on, and why the plan's order is sound. A plan not pointed at the MAIN claim, an AHEAD item without that argument, or a route re-walked against the record, is not allowed.
-3. **Honesty**: the assertions of `proposal.md`'s ### PAST must carry their citations (node pointers, framework messages); a mathematical claim must rest on a complete argument, never on conjecture. An external circumstance is not a reason to restart.
-4. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
+1. **Value**: `proposal.md`'s ## Argument must explain why achieving the charter's requirement needs this plan, and every Inject in ### NOW must give its consumption chain, ending at the charter or at a wall the Roadmap names (an endpoint at a wall requires a necessity argument). A brick without a consumption chain, or with a broken one, is not allowed.
+2. **Direction**: `proposal.md`'s ## Roadmap must open with an argued `Relation:` — how the route's endpoint stands to the charter — and its ### AHEAD is drawn only to the known boundary (the exit or a named wall), with the wall handled this batch. Items beyond the wall, a Relation without argument, or a route that contradicts the record or re-walks it in the same shape, are not allowed.
+3. **Honesty**: every assertion in `proposal.md`'s ### PAST carries a citation — a node or a framework message — and every closure names its dead instance and restart condition. A mathematical claim rests on a complete argument or the kernel's record, and a claim about framework behaviour anywhere in the proposal cites its source. Conjecture treated as fact, or reliance on external circumstances, is not allowed.
+4. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed; an evaluation or experiment from `compute` (counts, distributions, exhaustive checks) is not an argument.
 5. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 
 Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. A fired criterion = rebut; a reservation must not be used to patch over one.
@@ -41,8 +41,8 @@ Notes:
 - A `Theorize` is judged on its `objective` and `situation`: the objective must be a difficulty the record, the literature and the author's own derivation cannot cross, and the situation must carry pointers. A step the author could derive, or a question the record already answers, is rejected through criterion 1; a load-bearing wall named exactly passes — that is what the theory layer is for.
 
 Failure modes — a plan showing these is rejected through criterion 1:
-- Substituting a cheap brick for the load-bearing work: dispatching what is doable — a computable table, a method with no room to improve, a nearby known result — instead of the step the route actually needs. It produces something every batch, so every "is there progress" check passes; clever avoidance never reaches the MAIN claim.
-- Giving up at difficulty instead of taking it on: shelving because the brick was harder than expected, or parking the wall in AHEAD batch after batch with nothing dispatched to bite it and nothing handed to the Theorist.
+- Substituting a reachable brick for the load-bearing work: formalizing something because it is easy — a `compute` table, an argument from the literature, a nearby known result — while the core the route actually faces is set aside. Literature and `compute` give direction and experiments; the charter does not necessarily consume them, and formalizing them in full only wastes resources.
+- Giving up at difficulty: shelving because the brick was harder than expected; parking the wall in AHEAD, or handing it to the Theorist, and then avoiding the core of the problem. Find the next load-bearing point, attempt it or hand it to the Theorist, and say in ## Argument what was attempted on the core.
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
 ## Output
@@ -52,8 +52,9 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
 ```json
 {"criteria": {
    "1": ["fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and point to a possible direction toward the goal>",
-         "fired: <another objection under this criterion>"],
-   "2": ["clear: <the next AHEAD item's push toward the MAIN claim> — <the earlier items it depends on, checked against the record>"],
+         "fired: <another objection under this criterion>"],  // the fired shape
+   "1": ["clear: <each NOW Inject's consumption chain and its endpoint>"],
+   "2": ["clear: <the Relation's argument — which item is the wall, how this batch handles it>"],
    "3": ["clear: <one concrete reason this holds for THIS proposal>"],
    "4": ["clear: <one concrete reason>"], "5": ["clear: <one concrete reason>"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
@@ -61,12 +62,12 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
 
 Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass.
 
-No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 1's clear names the consumption each NOW Inject states, checked and holding. Criterion 2's reason IS the naming: the next AHEAD item's push toward the MAIN claim, and the earlier items it depends on.
+No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 1's reason IS the naming: each NOW Inject's consumption chain and endpoint. Criterion 2's reason IS the naming: the Relation's argument and the handling of the wall.
 
 Rules:
 - You review and point directions; never rewrite the proposal or the directive yourself.
-- For every NOW Inject brick, answer independently of the author: how will the MAIN claim consume it? One you cannot derive is rejected through criterion 1.
-- A fired line gives the defect AND the way out — the defect, such as a search that cannot serve the charter; the way out, such as which prerequisite step to turn to, a latent property of high value behind it, or the unproven case.
-- When you see the author settling for a cheap substitute, giving up at a difficulty, or patching along a wrong route: name the wall the Programme is avoiding and require the revision to face it — a brick that bites it, or a `Theorize` that hands it to the theory layer with objective and situation.
-- Bookkeeping or format defects, and redundant Programme content, do not rebut — keep them in reservations.
+- Check only the Relation, the consumption chains and the wall the author wrote; do not supply them. A consumer or a route you thought of yourself goes in reservations.
+- A fired line gives the defect AND the way out; the way out comes from the proposal's own AHEAD, the charter, or the record, and names the file path it points to.
+- Format defects and redundant Programme content do not rebut — keep them in reservations. A PAST line without its citation is criterion 3.
+- A NOW step already scheduled by the current Programme's AHEAD is fired only by showing where the execution record since then voided it.
 - Validate `{attempts_dir}/verdict.json` with `validate_json` before finishing.

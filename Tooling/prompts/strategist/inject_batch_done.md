@@ -38,15 +38,23 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
     ## Proof        every brick this batch dispatches, each as `Theorem.` its full
                     statement, then `Proof.` a complete argument — no logical gaps.
                     Nothing to argue → the single line "No new mathematics this batch."
-    ## Roadmap      the research roadmap: explain your plan. One bullet per item.
-    ### PAST        closed lines, each collapsed to its conclusion (a shelved goal
-                    carries its restart condition);
-    ### NOW         this batch's decisions: each Inject says which Roadmap item consumes
-                    its conclusion and what MAIN gains by it; the rest explain their
-                    necessity. Never run a batch MAIN cannot consume.
-    ### AHEAD       the blueprint ahead, in order; each item one sentence: how it pushes
-                    toward MAIN and which earlier items it depends on. Never plan an
-                    item not pointed at MAIN.
+    ## Roadmap      the research roadmap. First line `Relation:` — the statement the
+                    route ends at and how it stands to the charter (implies / equivalent /
+                    reduces / refuted on failure), with its argument. Then three sections,
+                    one bullet per item.
+    ### PAST        closed lines, each collapsed to its conclusion with citations
+                    (declaration name / goal id / attempt id / verbatim framework message);
+                    a shelved goal carries its dead instance and restart condition;
+    ### NOW         this batch's decisions. Each Inject gives its consumption chain: which
+                    item uses its conclusion, which item uses that, up to the charter or a
+                    named wall; a brick whose endpoint is a wall argues in the Proof that
+                    every proof crossing that wall needs it. The other decisions state
+                    their necessity.
+    ### AHEAD       drawn only to the known boundary, in order; each item one sentence:
+                    what it pushes and which earlier items it uses; it ends at the exit or
+                    a named wall, with no items beyond the wall. The wall is handled this
+                    batch: a brick whose endpoint is the wall, an argument or counterexample
+                    in the Proof, or a `Theorize`.
     ## Conventions  standing notes every Formalizer sees on every spawn — short and general
 
 - Once complete, copy each brick's `Theorem.` + `Proof.` into its Inject's `proof`.
@@ -80,8 +88,8 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
 
 Plans showing these traits are sent back:
 
-- Giving up at difficulty instead of taking it on: shelving because the brick was harder than expected, or parking the wall in AHEAD batch after batch. Face it — vary the dead attempts' shared assumption, build the missing tool as a brick, or look for direction through the Theorist.
-- Substituting a cheap brick for the load-bearing work: dispatching what is doable — a computable table, a method with no room to improve, a nearby known result — instead of the step the route actually needs. Clever avoidance never reaches MAIN. Pin down the load-bearing mathematics, plan it in order, and face the wall together with the Theorist.
+- Substituting a reachable brick for the load-bearing work: formalizing something because it is easy — a `compute` table, an argument from the literature, a nearby known result — while the core the route actually faces is set aside. Literature and `compute` give direction and experiments; the charter does not necessarily consume them. Compute with `compute`; never mint a brick as a computational experiment.
+- Giving up at difficulty: shelving because the brick was harder than expected; parking the wall in AHEAD, or handing it to the Theorist, and then avoiding the core of the problem. Find the next load-bearing point, attempt it or hand it to the Theorist, and say in ## Argument what was attempted on the core.
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
 ## Rules
@@ -104,12 +112,13 @@ Follow-up brick Y for the remaining step..."},
 ```
 
 ```json
-// a wall the record cannot cross → hand it to the theory layer; the objective says what would suffice, the situation says where the record stands (with pointers).
+// a wall the record cannot cross → hand it to the theory layer; the objective says what would suffice, the situation says where the record stands (with pointers). The same batch may dispatch a brick whose endpoint is that wall.
 [{"kind": "Theorize",
-  "objective": "A reduction statement S: S ⇒ MAIN provable, and S holding in the landed low-rank cases — or a proof that no such S exists.",
-  "situation": "The bridge `<bridge_slug>` (g<id>) came back return_to_parent, the statement itself mis-stated; the two rewrites in PAST 3–4 died at the same step; the low-rank case `<lemma_slug>` is landed (CATALOG)."},
+  "objective": "<a statement P: proving it makes AHEAD item k provable, refuting it closes this route — or why neither can be done>",
+  "situation": "<attempts on it s<id>, s<id> died at the same step <step>; the landed <lemma_slug> gives <what>; <goal_slug> (g<id>) is parked for it>"},
+ {"kind": "Inject", "proof": "<Theorem. a special case or prerequisite of P, with a complete Proof and the argument that every proof of P needs it … Proof. …>"},
  {"kind": "ConfirmShelve", "target_goal_id": <root_id>,
-  "reason": "Still parked; awaiting the theory layer's answer on S"}]
+  "reason": "Still parked; awaiting P or its refutation"}]
 ```
 
 ```json
