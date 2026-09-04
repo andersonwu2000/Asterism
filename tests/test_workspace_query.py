@@ -945,6 +945,56 @@ def test_explicit_lake_path_overrides_the_skip_list(tmp_path):
     assert "Card.lean" in out4
 
 
+def test_a_glob_resolves_its_prefix_the_way_the_directory_form_does(
+        ws: Path, here: Path) -> None:
+    """`in` with a glob must reach the same files `in` with the
+    directory reaches — from a NESTED cwd, which is where every spawn
+    runs.
+
+    `_expand` handed the whole glob-bearing spec to `_resolve`, whose
+    only test is `Path(cand).exists()` — never true of a string carrying
+    `**`. So the workspace-root fallback (2026-08-31, generalised
+    2026-09-03) could not fire for the spelling agents actually use, and
+    the query answered "nothing to search" for a path the directory form
+    reads fine: 21 reports 2026-08-30..09-04, 13 naming the glob, all
+    falling back to loogle (names only — it cannot check a statement)."""
+    src = ws / ".lake" / "packages" / "mathlib" / "Mathlib" / "Order"
+    src.mkdir(parents=True)
+    (src / "Card.lean").write_text(
+        "theorem ncard_le_ncard : True := trivial\n", encoding="utf-8")
+    lib = ws / "Library" / "Deep"
+    lib.mkdir(parents=True)
+    (lib / "Lemma.lean").write_text(
+        "theorem lib_deep_hit : True := trivial\n", encoding="utf-8")
+
+    d = wq.run_queries([{"grep": "ncard_le",
+                         "in": ".lake/packages/mathlib/Mathlib"}], cwd=here)
+    assert "ncard_le_ncard" in d, "the directory form is the baseline"
+    g = wq.run_queries([{"grep": "ncard_le",
+                         "in": ".lake/packages/mathlib/Mathlib/**/*.lean"}],
+                       cwd=here)
+    assert "ncard_le_ncard" in g, g
+
+    # Same door, every other `in` shape a spawn writes.
+    assert "lib_deep_hit" in wq.run_queries(
+        [{"grep": "theorem", "in": "Library/**/*.lean"}], cwd=here)
+    assert "a_bound" in wq.run_queries(
+        [{"grep": "theorem", "in": "proofs/*.lean"}], cwd=here)
+    assert "ncard_le_ncard" in wq.run_queries(
+        [{"grep": "ncard_le", "in": str(src / "*.lean")}], cwd=here)
+    assert "Library/Deep/Lemma.lean" in wq.run_queries(
+        [{"size": "Library/**/*.lean"}], cwd=here), "`size` shares _expand"
+    # …and the walls the resolution does not open: build artifacts still
+    # teach instead of answering, in the glob spelling too.
+    (ws / ".lake" / "build").mkdir(parents=True)
+    (ws / ".lake" / "build" / "junk.lean").write_text(
+        "theorem ncard_le_junk : True := trivial\n", encoding="utf-8")
+    walled = wq.run_queries(
+        [{"grep": "ncard_le", "in": ".lake/build/**/*.lean"}], cwd=here)
+    assert "only under .lake/packages" in walled, walled
+    assert "ncard_le_junk" not in walled
+
+
 def test_a_multi_level_glob_expands_instead_of_dying_silently(tmp_path):
     """Only the LAST component used to be treated as a pattern, so
     `Library/**/*.lean` walked into a literal `**` directory, matched

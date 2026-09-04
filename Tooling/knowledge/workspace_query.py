@@ -287,11 +287,42 @@ def _glob_hits(base: Path, pattern: str) -> "list[Path]":
     return sorted(hits)
 
 
+def _is_glob(spec: str) -> bool:
+    return any(ch in spec for ch in "*?[")
+
+
+def _glob_base(spec: str, cwd: Path) -> "tuple[Path, str]":
+    """The DIRECTORY a glob spec walks, resolved like a plain path.
+
+    `_resolve` decides between the spawn's directories by asking whether
+    a candidate exists, and no candidate carrying `**` ever does — so a
+    glob-bearing spec went straight to the `cwd / spec` fallback and the
+    workspace-root branch (`.lake/packages/…`, `Library/…`,
+    `Problems/<p>/_docs/user/`) was unreachable in the spelling agents
+    write. `.lake/packages/mathlib/Mathlib` answered while
+    `.lake/packages/mathlib/Mathlib/**/*.lean` said "nothing to search"
+    (21 reports 2026-08-30..09-04, every one detouring to loogle).
+    Split FIRST, resolve the glob-free prefix, and the two spellings
+    reach the same files. Containment is unchanged: the prefix goes
+    through the same `_resolve`, so `../<other-pid>/*.lean` still lands
+    outside this spawn's attempt dir and finds nothing."""
+    prefix, pattern = _glob_split(Path(spec))
+    return _resolve(prefix.as_posix(), cwd), pattern
+
+
 def _expand(spec: str, cwd: Path) -> "list[Path]":
     """A path or a glob, relative to the agent's own directories."""
-    p = _resolve(spec, cwd)
-    if any(ch in spec for ch in "*?["):
-        base, pattern = _glob_split(p)
+    if _is_glob(spec):
+        base, pattern = _glob_base(spec, cwd)
+        # The SAME two walls the directory branch below puts up. They
+        # were only ever applied to `p.is_dir()`, so the glob spelling
+        # walked a root the directory spelling refuses — latent while
+        # the prefix went unresolved, reachable the moment it resolves.
+        grant = _lake_grant(base.resolve())
+        if isinstance(grant, str):
+            return []  # grep surfaces the teaching via _lake_grant
+        if _skipped(base, allow_lake=grant is True):
+            return []
         hits = _glob_hits(base, pattern)
         own = _own_attempt_dir()
         if not hits and own is not None and not Path(spec).is_absolute():
@@ -310,6 +341,7 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
                 return hits
             hits = _glob_hits(base2, pattern2)
         return hits
+    p = _resolve(spec, cwd)
     if p.is_dir():
         grant = _lake_grant(p.resolve())
         if isinstance(grant, str):
@@ -556,7 +588,13 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         return [f"bad pattern: {exc}"]
     files = _expand(where, cwd)
     if not files:
-        grant = _lake_grant(_resolve(where, cwd).resolve())
+        # The same base `_expand` walked, so the `.lake` teaching answers
+        # the glob spelling too — `.lake/build/**/*.lean` used to fall
+        # through to the generic "nothing to search", which names no way
+        # to the sources the walk actually allows.
+        probe = (_glob_base(where, cwd)[0] if _is_glob(where)
+                 else _resolve(where, cwd))
+        grant = _lake_grant(probe.resolve())
         if isinstance(grant, str):
             return [grant]
         return [f"nothing to search at {where!r}; "
