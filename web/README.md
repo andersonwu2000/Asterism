@@ -26,12 +26,18 @@ are exactly two frames and no sidebar.
 ### The six sections
 
 - **Tasks** — the shelf, and the engine control that acts on it. Tick
-  tasks and Run (an explicit list, never a pattern); Stop, with its
-  force step; and the run parameters folded beside them — models per
+  tasks and Run (an explicit list, never a pattern — every Run in the
+  console, the shelf's and a task page's, reads the engine's preview
+  and confirms in the one floating window); Stop, with its force step,
+  the same control on both pages; and the run parameters folded beside
+  them — models per
   seat, time budget, shelve threshold, quota behaviour. What waits on
   you rides at the top of the shelf: amend requests with word-level
   diffs, ingest sign-offs with every vouchable statement in full; a row
   a person has benched says so, and Groups is where it goes back.
+  The shelf, the task column beside every other section and the task a
+  section opens on all read one order (`shelfOrder`: what waits on you,
+  then what is stalled, then what is in motion, then by recency).
   A task name opens that task's own page: Run, the parameters, then
   **the goal** and **your standing word** (the engine may propose a
   change to the first and can never touch the second), settings and
@@ -41,7 +47,10 @@ are exactly two frames and no sidebar.
   anything is live the unproved stars carry the light and the proved
   mass recedes. `map` / `list` is the same data read two ways, not two
   pages; clicking a star opens its panel (routes, subgoals, dead
-  attempts), and a route's file link lands in Documents. The panel is
+  attempts) and writes the star into the address (`…/g/<id>`, replaced
+  rather than pushed, so a reload or a mailed link opens the same star
+  and Back still leaves the section); a route's file link lands in
+  Documents. The panel is
   also where a person ACTS on a goal — park it, mark it delivered, hand
   it a proof, hand it to a new group — through the command queue: a
   preview, a live confirm window naming every node that closes, and a
