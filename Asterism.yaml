@@ -365,11 +365,12 @@ adversary:
 # above) decides how the programme runs inside the known. User ruling
 # 2026-09-04: sol at `xhigh` up here, sol at `high` on the strategy
 # layer — the theory seat is the one whose product is a proof nobody
-# has written, so it gets the deeper budget. The two move together
+# has written, so it gets the deeper budget. 2026-09-05: the theory
+# layer moves to gpt-6-astra (owner call; smoke-tested through the CLI). The two move together
 # (`quota.BOUND`): a document with no reviewer never lands.
 theorist:
   provider: codex
-  model: gpt-5.6-sol
+  model: gpt-6-astra
   reasoning_effort: xhigh
 
 theory_reviewer:
@@ -377,5 +378,5 @@ theory_reviewer:
   # reviewer re-derives the proofs and reproduces the computations, so
   # it must not sit below the seat it is checking.
   provider: codex
-  model: gpt-5.6-sol
+  model: gpt-6-astra
   reasoning_effort: xhigh
