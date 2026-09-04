@@ -531,9 +531,12 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # The author's companions were written once, at spawn,
                 # while the judge's projection is rebuilt every round —
                 # so a brick that landed mid-debate was a fact only the
-                # judge could see, and it fired criterion 5 on the
-                # mismatch the packet itself made. Same refresher, same
-                # four files, into the author's own dir (2026-09-03).
+                # judge could see, and it fired the account-against-the-
+                # record obligation on a mismatch the packet itself
+                # made. Named, not numbered: the rubric has been
+                # reordered once and a number in a comment goes quietly
+                # stale (2026-09-04). Same refresher, same four files,
+                # into the author's own dir (2026-09-03).
                 # Context.md is NOT touched: it is the snapshot the
                 # judge holds a verbatim copy of.
                 _round_materials.refresh(
