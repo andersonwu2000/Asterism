@@ -554,7 +554,7 @@ export default function AssistantPanel({
           // described claude's fence on every provider
           title={
             meta?.read_note ??
-            'questions are answered about this page; read-only, it explains, it never acts'
+            'questions are answered about this page; it can prepare a command or write a note, and nothing takes effect until you confirm it'
           }
         >
           about {pageLabel(where)}
@@ -611,7 +611,8 @@ export default function AssistantPanel({
           <div className="flex h-full flex-col justify-center gap-3 text-[12px] text-ink-faint">
             <p>
               ask about progress, a lemma, or how the machine works. it reads the workspace and
-              answers with sources; it never acts.
+              answers with sources; when it prepares a command, nothing is queued until you
+              confirm it.
             </p>
             {noMemory && <p>this backend keeps no conversation — each question is read fresh.</p>}
             <div className="space-y-1.5">
