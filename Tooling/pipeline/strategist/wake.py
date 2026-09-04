@@ -105,12 +105,16 @@ def _format_rebuttal(verdict: dict, round_no: int,
     # rewritten — it cannot tell by looking (`round_materials`). The
     # delta below it names what the record did while this round argued;
     # it rides only when something actually moved.
+    # Rendered by `round_materials`: the judge read the same list as
+    # `since.md` in its projection and was told the author receives it
+    # with the verdict — so the two must be the same bytes.
+    from .. import round_materials as _round_materials
     head = ("Context.md is your snapshot from spawn. TREE.md, "
             "CATALOG.md, BATCHES.md, ADJUDICATIONS.md beside it are "
             "refreshed for this round.\n")
-    if since:
-        head += ("\n" + since_label + "\n"
-                 + "\n".join(f"- {s}" for s in since) + "\n")
+    block = _round_materials.render(since_label, list(since or []))
+    if block:
+        head += "\n" + block
     return (
         head + "\n"
         f"ADVERSARY REBUTTAL (round {round_no}; {rounds_left} revision "

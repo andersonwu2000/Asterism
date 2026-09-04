@@ -16,13 +16,16 @@ handed the newer bytes at all.
 
 One refresher, called by both: `refresh` (re)writes the four
 machine-generated files into a working directory. `since` renders what
-the record recorded after a given instant, and `delta` is the author's
-per-round pack built on it — what moved since the previous rebuttal,
-so the four fresh files do not have to be re-read to find the one line
-that changed. `Context.md` is NOT touched on either side — it is the
-author's snapshot, the evidence a quotation is checked against, and
-rewriting it mid-debate would make the judge's verbatim copy a moving
-target.
+the record recorded after a given instant; `pack` is this round's
+delta built on it — what moved since the previous rebuttal, so the four
+fresh files do not have to be re-read to find the one line that
+changed — and `render` puts it in words. Both sides of the round read
+the SAME pack: the judge as `since.md` in its projection, the author in
+the rebuttal that carries the verdict. `delta` is `pack` plus the mark
+advance, and only the author's rebuttal may call it. `Context.md` is
+NOT touched on either side — it is the author's snapshot, the evidence
+a quotation is checked against, and rewriting it mid-debate would make
+the judge's verbatim copy a moving target.
 """
 from __future__ import annotations
 
@@ -162,10 +165,10 @@ def since(conn: sqlite3.Connection, *, problem: str,
     return [line for _, line in out]
 
 
-def delta(conn: sqlite3.Connection, *, problem: str,
-          attempts_dir: Path) -> "tuple[str, list[str]]":
+def pack(conn: sqlite3.Connection, *, problem: str,
+         attempts_dir: Path) -> "tuple[str, list[str]]":
     """This round's delta pack — `(heading, lines)`, empty list when the
-    record stood still.
+    record stood still. Does NOT advance the mark.
 
     PER ROUND, not cumulative (owner ruling 2026-09-03). Round 1
     measures from the author's `Context.md` snapshot: everything at or
@@ -175,10 +178,14 @@ def delta(conn: sqlite3.Connection, *, problem: str,
     measures from where the last rebuttal was issued, so a 10-round
     debate carries each change exactly once.
 
-    ADVANCES the mark: call it exactly once per rebuttal, as the
-    rebuttal is issued.
+    ONE definition of what moved, read by both sides of the round: the
+    judge is handed it as `since.md` when its projection is built, the
+    author receives the same list with the verdict. Before that the
+    author wrote from a snapshot and the judge read the live record,
+    and the judge fired the record criterion on the difference — twice
+    in three rounds on group 694 rev 9 (2026-09-04), on goals proved
+    while the judge itself was reading.
     """
-    from ..state import db as _db
     mark = attempts_dir / SINCE_MARK
     try:
         prior = mark.read_text(encoding="utf-8").strip()
@@ -190,8 +197,39 @@ def delta(conn: sqlite3.Connection, *, problem: str,
     since_iso = max(prior, taken.isoformat() if taken is not None else "")
     lines = (since(conn, problem=problem, since_iso=since_iso)
              if since_iso else [])
+    return (SINCE_LAST_REBUTTAL if prior else SINCE_WAKE_BEGAN), lines
+
+
+def render(heading: str, lines: "list[str]") -> str:
+    """The pack as text, or "" when nothing moved.
+
+    One rendering, so the judge's `since.md` and the author's rebuttal
+    block are the same bytes for the same round — a judge told "the
+    author receives this list" must be told the truth. Empty rather
+    than a "nothing changed" line: that line would ride every round of
+    every short debate, and a reader who is handed one starts looking
+    for the change it names.
+    """
+    if not lines:
+        return ""
+    return heading + "\n" + "\n".join(f"- {ln}" for ln in lines) + "\n"
+
+
+def delta(conn: sqlite3.Connection, *, problem: str,
+          attempts_dir: Path) -> "tuple[str, list[str]]":
+    """`pack` for the author, plus the mark the NEXT round measures
+    from.
+
+    ADVANCES the mark: call it exactly once per rebuttal, as the
+    rebuttal is issued. Every other reader of this round — the judge's
+    `since.md` above all — goes through `pack`, because an advance
+    there would consume the author's round and hand it a rebuttal
+    saying the record stood still.
+    """
+    from ..state import db as _db
+    heading, lines = pack(conn, problem=problem, attempts_dir=attempts_dir)
     try:
-        mark.write_text(_db.now(), encoding="utf-8")
+        (attempts_dir / SINCE_MARK).write_text(_db.now(), encoding="utf-8")
     except OSError:  # noqa: BLE001 — the rebuttal still goes out
         pass
-    return (SINCE_LAST_REBUTTAL if prior else SINCE_WAKE_BEGAN), lines
+    return heading, lines

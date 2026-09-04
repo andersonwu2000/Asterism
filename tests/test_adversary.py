@@ -1690,3 +1690,90 @@ def test_the_rebuttal_says_which_files_are_fresh_and_what_changed(
     assert quiet.startswith(_PREFIX)
     assert "Since this wake began" not in quiet
     assert "Since the last rebuttal" not in quiet
+
+
+# ── since.md: the judge is handed the same pack as the author ───────
+
+
+def _judge_projection(workspace: Path, conn: sqlite3.Connection,
+                      attempts: Path, round_no: int) -> Path:
+    return adversary.build_projection(
+        round_no=round_no, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+
+
+def test_round_one_since_file_names_what_landed_after_the_snapshot(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The author writes from a snapshot; the judge reads the live
+    record. A change that lands in between is the packet's timing, not
+    the author's defect — so the judge is handed the difference by name
+    (2026-09-04, group 694 rev 9: two of three rebut rounds fired the
+    record criterion on goals proved WHILE the judge read)."""
+    attempts = workspace / ".attempts" / "since-judge-1"
+    attempts.mkdir(parents=True)
+    _ctx_at(attempts, "2026-09-01T12:00:00+00:00")
+    gid = _brick(conn)
+    _event(conn, gid, "2026-09-01T11:59:59+00:00", "open", "attempting")
+    _event(conn, gid, "2026-09-01T12:30:00+00:00", "attempting", "proved")
+
+    proj = _judge_projection(workspace, conn, attempts, 1)
+
+    assert (proj / "since.md").read_text(encoding="utf-8") == (
+        "Since this wake began:\n"
+        f"- g{gid} brick: attempting → proved\n"), (
+        "round 1 measures from the author's snapshot: what predates it "
+        "is already in the Context.md the judge holds a copy of")
+
+
+def test_the_judges_since_file_is_the_pack_the_author_will_receive(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """One definition of what moved, for both sides of the same round.
+    Round 2 starts where round 1's rebuttal was issued — and building
+    the judge's copy must not consume the author's round: if it
+    advanced the mark, the rebuttal that carries the verdict would say
+    nothing moved."""
+    attempts = workspace / ".attempts" / "since-judge-2"
+    attempts.mkdir(parents=True)
+    _ctx_at(attempts, "2026-09-01T12:00:00+00:00")
+    gid = _brick(conn)
+    _event(conn, gid, "2026-09-01T12:30:00+00:00", "open", "proved")
+    # Round 1's rebuttal goes out — it carries that line and leaves the
+    # mark round 2 measures from.
+    round_materials.delta(conn, problem="p", attempts_dir=attempts)
+    _event(conn, gid, "2099-01-01T00:00:00+00:00", "proved", "open")
+
+    shown = (_judge_projection(workspace, conn, attempts, 2)
+             / "since.md").read_text(encoding="utf-8")
+    assert shown == ("Since the last rebuttal:\n"
+                     f"- g{gid} brick: proved → open\n"), (
+        "round 2 re-sent what round 1's rebuttal already carried")
+
+    label, lines = round_materials.delta(conn, problem="p",
+                                         attempts_dir=attempts)
+    rebuttal = strategist._format_rebuttal(
+        {"criticisms": ["[criterion 3] contradicts the record"]},
+        2, 4, since_label=label, since=lines)
+    assert shown.strip() in rebuttal, (
+        "the author's rebuttal block and the judge's since.md disagree "
+        "about what moved during round 2")
+
+
+def test_no_since_file_when_the_record_stood_still(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The judge's rubric says "if present". A "nothing changed" file on
+    every round of every short debate is noise, and a judge that reads
+    one starts looking for the change it names."""
+    attempts = workspace / ".attempts" / "since-judge-quiet"
+    attempts.mkdir(parents=True)
+    _ctx_at(attempts, "2026-09-01T12:00:00+00:00")
+    gid = _brick(conn)
+    _event(conn, gid, "2026-09-01T11:00:00+00:00", "open", "attempting")
+
+    proj = _judge_projection(workspace, conn, attempts, 1)
+    assert not (proj / "since.md").exists()

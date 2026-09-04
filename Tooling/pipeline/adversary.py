@@ -307,6 +307,23 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     outcome_lines = _round_materials.refresh(
         conn, workspace=attempts_dir.parent.parent, problem=problem,
         group_id=group_id, target_dir=proj)
+    # …and, beside them, the ONE thing the four fresh files cannot say:
+    # which of their lines the author had not yet been shown when it
+    # wrote this round's materials. The author writes from a snapshot
+    # and the judge reads the live record, so a goal proved mid-round
+    # reached the judge as "the roadmap contradicts the record" — twice
+    # in three rounds on group 694 rev 9 (2026-09-04), on bricks that
+    # landed while the judge itself was reading. The rubric owns the
+    # ruling (`adversary.md`: a change listed here fires no criterion);
+    # this hands over the list it rules on. Through `pack`, NOT `delta`:
+    # the same bytes reach the author with the verdict, and consuming
+    # the round's mark here would leave that rebuttal saying nothing
+    # moved.
+    _since_text = _round_materials.render(
+        *_round_materials.pack(conn, problem=problem,
+                               attempts_dir=attempts_dir))
+    if _since_text:
+        (proj / "since.md").write_text(_since_text, encoding="utf-8")
     # The decision-kind contract is reference material, not instruction:
     # 17 lines that were inlined into every judge spawn's prompt. It
     # rides the projection instead, next to the decisions it governs.
