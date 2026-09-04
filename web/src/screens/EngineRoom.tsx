@@ -634,12 +634,19 @@ export default function EngineRoom({
     !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
   const st = d.slots
   const target = st?.target ?? 0
-  const ghostsShown = st
-    ? Math.min(ghostsRef.current.length, Math.max(0, target - workers.length))
-    : 0
-  const free = st
-    ? Math.max(0, Math.min(st.free, target - workers.length - ghostsShown))
-    : 0
+  // berths belong to a running engine. The ledger keeps its target
+  // whether or not the daemon is up, so a stopped engine drew four
+  // dashed boxes each saying "free — waiting for work" — nothing is
+  // waiting for work, and the honest idle sentence below could never
+  // reach the reader past them.
+  const ghostsShown =
+    running && st
+      ? Math.min(ghostsRef.current.length, Math.max(0, target - workers.length))
+      : 0
+  const free =
+    running && st
+      ? Math.max(0, Math.min(st.free, target - workers.length - ghostsShown))
+      : 0
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-6">
@@ -674,7 +681,7 @@ export default function EngineRoom({
       <section className="mt-7">
         <SectionLabel>
           slots
-          {(workers.length > 0 || st) && (
+          {running && (workers.length > 0 || st) && (
             <span className="tnum ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
               {st ? `${workers.length}/${target} busy · ${free} free` : `${workers.length} busy`}
             </span>
