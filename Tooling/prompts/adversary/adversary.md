@@ -22,6 +22,7 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
 - `contract.md` — the decision-kind rules the Strategist operates under, verbatim. Check quoted contract clauses against THESE, not the proposal's paraphrase.
+- `since.md` (if present) — what the record recorded after the author's materials for this round were written. A change listed here is not the author's defect: an account that predates it fires no criterion; note it in reservations, the author receives the same list with your verdict.
 
 ## How to judge
 
