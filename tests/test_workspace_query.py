@@ -196,6 +196,51 @@ def test_decl_degrades_without_a_database(here: Path) -> None:
     assert "unavailable" in out or "no declaration named" in out
 
 
+def test_decl_scope_comes_from_the_declared_problem_not_the_cwd(
+        ws: Path, monkeypatch) -> None:
+    """The judge runs under NO problem, so cwd could never scope it.
+
+    `324784ee` scoped `decl` with `_problem_dir_of(cwd)` after 100
+    reports in a day. The Adversary's cwd is
+    `.attempts/<pid>/adversary/rN`, which is under no `Problems/…` at
+    all, so that helper returns None by construction and the scoped
+    branch was structurally unreachable for the one seat filing the
+    reports — 120 more of them 2026-08-30..09-04, still asking for the
+    same thing after the fix landed. The problem name now travels from
+    the spawn that owns it (`spawn_guard.PROBLEM_ENV`), and is read
+    BEFORE any cwd inference."""
+    from Tooling.llm.spawn_guard import PROBLEM_ENV
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    for prob in ("Combinatorics.union_closed", "Topology.loops"):
+        conn.execute(
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)", (prob, _db.now()))
+        _db.insert_goal(
+            conn, problem=prob, slug="main",
+            lean_path=f"Problems/{prob.replace('.', '/')}/proofs/L_main.lean",
+            statement="True", origin="root")
+    conn.commit()
+    conn.close()
+    judge = ws / ".attempts" / "pid1" / "adversary" / "r1"
+    judge.mkdir(parents=True)
+
+    monkeypatch.delenv(PROBLEM_ENV, raising=False)
+    out = wq.run_queries([{"decl": "main"}], cwd=judge)
+    assert "Topology/loops" in out and "Combinatorics/union_closed" in out, \
+        "cwd alone cannot scope the judge — that is the defect"
+
+    monkeypatch.setenv(PROBLEM_ENV, "Combinatorics.union_closed")
+    scoped = wq.run_queries([{"decl": "main"}], cwd=judge)
+    assert "Combinatorics/union_closed" in scoped
+    assert "Topology/loops" not in scoped, scoped
+
+    # Nothing local still falls back to the unscoped search, so a
+    # cross-problem Library lookup keeps answering.
+    other = wq.run_queries([{"decl": "elsewhere_only"}], cwd=judge)
+    assert "no declaration named" in other
+
+
 def _seed_decl(ws: Path, here: Path, *, slug: str, sig_lines: int) -> None:
     """A minimal `asterism.db` + on-disk stub carrying one goal, so
     `_q_decl` resolves `slug` to a REAL full signature the way

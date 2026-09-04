@@ -141,7 +141,28 @@ def _problem_dir_of(cwd: Path, workspace: "Path | None") -> "Path | None":
             else workspace / "Problems" / parts[0] if parts else None)
 
 
+def _declared_problem() -> "str | None":
+    """The problem THIS spawn was given, dotted — or None.
+
+    Declared by `spawn_guard.PROBLEM_ENV` / `PROBLEM_CONTEXT`, written
+    into the tools server's env by the pipeline config writers. It comes
+    first, everywhere, because cwd cannot answer for every seat: a judge
+    or a theory reviewer runs inside its round's projection, under no
+    `Problems/…`, so `_problem_dir_of` returns None there by
+    construction (120 reports 2026-08-30..09-04 asking for a scope the
+    cwd-based fix could never give that seat)."""
+    from ..llm.spawn_guard import current_problem
+    return current_problem()
+
+
 def _deny_roots(cwd: Path) -> "tuple[Path, ...]":
+    # Deliberately NOT fed the declared problem. `_problem_dir_of`
+    # returning None here means "deny no sibling problem", and the fence
+    # errs open on purpose (`envelope._foreign_problem_dirs`: "the read
+    # fence must never be the reason a legitimate spawn goes blind").
+    # Handing it the declared name would TIGHTEN the judge's read scope
+    # — a different decision from scoping an ANSWER, and not this one's
+    # to make.
     from ..llm.envelope import read_deny_roots
     ws = workspace_of(cwd)
     return read_deny_roots(ws, _problem_dir_of(cwd, ws))
@@ -1084,13 +1105,21 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
     # problems' goals, burning the reply budget without resolving the
     # one the caller meant). Nothing local → the old unscoped search,
     # so cross-problem library lookups still answer.
-    prob = None
-    pdir = _problem_dir_of(cwd, ws)
-    if pdir is not None:
-        try:
-            prob = ".".join(pdir.relative_to(ws / "Problems").parts)
-        except (ValueError, OSError):
-            prob = None
+    #
+    # The DECLARED problem wins over the cwd guess, and that is the
+    # whole point: the seat filing those reports is the judge, whose
+    # cwd is its round's projection and therefore under no problem at
+    # all — the cwd branch could never fire for it, so the same ask
+    # kept arriving (120 more reports 2026-08-30..09-04) after the fix
+    # had "landed". cwd stays the fallback for a spawn launched by hand.
+    prob = _declared_problem()
+    if prob is None:
+        pdir = _problem_dir_of(cwd, ws)
+        if pdir is not None:
+            try:
+                prob = ".".join(pdir.relative_to(ws / "Problems").parts)
+            except (ValueError, OSError):
+                prob = None
     try:
         rows = []
         if gid:

@@ -228,7 +228,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Lean file open, and registering one would hold a backend slot for
     # nothing.
     from .. import write_tools_mcp_config as _write_tools_cfg
-    tools_cfg = _write_tools_cfg(attempts_dir, workspace, seat="strategist")
+    tools_cfg = _write_tools_cfg(attempts_dir, workspace,
+                                 seat="strategist", problem=problem)
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,

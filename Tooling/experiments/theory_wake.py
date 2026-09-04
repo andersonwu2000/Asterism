@@ -543,7 +543,8 @@ def main(argv=None) -> int:
             "compiled Context still carries `## Owner's notes`")
 
     tools_cfg = write_tools_mcp_config(attempts_dir, workspace,
-                                       seat="strategist")
+                                       seat="strategist",
+                                       problem=a.problem)
     author_timeout = config.get(
         "strategist.timeout_sec", default=10800,
         env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int)
@@ -617,7 +618,8 @@ def main(argv=None) -> int:
             judge_prompt_src, proj / "_theory_judge_prompt.md",
             proofs_dir=proofs_dir, papers_dir=papers_dir)
         judge_cfg = write_tools_mcp_config(proj, workspace,
-                                           seat="adversary")
+                                           seat="adversary",
+                                           problem=a.problem)
         verdict, verr = None, ""
         for attempt in range(VERDICT_TRIES):
             jt0 = time.monotonic()

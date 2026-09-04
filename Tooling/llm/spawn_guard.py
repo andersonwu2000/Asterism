@@ -112,12 +112,45 @@ TOOL_CWD_CONTEXT: "ContextVar[str | None]" = ContextVar(
     "asterism_tool_cwd", default=None)
 
 
+#: WHICH problem this spawn is working on, dotted (`Combinatorics.
+#: union_closed`). Travels the same route as ATTEMPT_DIR_ENV — the MCP
+#: tools server's own `env`, written by the pipeline config writers —
+#: because the reader is that server, not the spawn.
+#:
+#: It exists because cwd cannot answer the question for every seat. The
+#: Adversary and the theory reviewer run inside their round's
+#: PROJECTION (`.attempts/<pid>/adversary/rN`), which is under no
+#: `Problems/…` at all, so `workspace_query._problem_dir_of` returns
+#: None by construction and `inspect({"decl": …})` fell back to the
+#: unscoped search: a common slug like `main` answered with unrelated
+#: problems' goals. 120 reports 2026-08-30..09-04, still arriving after
+#: the cwd-based scoping shipped, because that fix could never reach
+#: the seat filing them. The dispatcher knows the problem at spawn
+#: time; this is it saying so.
+PROBLEM_ENV = "ASTERISM_SPAWN_PROBLEM"
+
+#: Request-local override for PROBLEM_ENV, for the same reason
+#: ATTEMPT_DIR_CONTEXT exists: the shim serves many spawns from one
+#: process, where a process-global would answer with someone else's
+#: problem.
+PROBLEM_CONTEXT: "ContextVar[str | None]" = ContextVar(
+    "asterism_problem", default=None)
+
+
 def current_attempt_dir() -> "str | None":
     """This request's attempt dir: context first, env fallback."""
     ctx = ATTEMPT_DIR_CONTEXT.get()
     if ctx:
         return ctx
     return os.environ.get(ATTEMPT_DIR_ENV) or None
+
+
+def current_problem() -> "str | None":
+    """This request's problem, declared by whoever spawned it."""
+    ctx = PROBLEM_CONTEXT.get()
+    if ctx:
+        return ctx
+    return (os.environ.get(PROBLEM_ENV) or "").strip() or None
 
 #: Tools whose path argument is a search ROOT, not a target: they
 #: traverse it, so a private subtree INSIDE the root leaks even though

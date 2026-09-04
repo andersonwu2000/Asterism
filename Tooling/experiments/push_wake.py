@@ -167,7 +167,8 @@ def main(argv=None) -> int:
         attempts_dir=attempts_dir, workspace=workspace, intent=intent,
         group_id=a.group)
     tools_cfg = write_tools_mcp_config(attempts_dir, workspace,
-                                       seat="strategist")
+                                       seat="strategist",
+                                       problem=a.problem)
     timeout = config.get("strategist.timeout_sec", default=10800,
                          env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int)
     problem_dir = db.problem_dir(workspace, a.problem)

@@ -449,7 +449,8 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
             # an MCP tool now — without the config the prompt would name
             # a tool the agent cannot call.
             mcp_config_path=_write_tools_cfg(sandbox, workspace,
-                                             seat="presearch"),
+                                             seat="presearch",
+                                             problem=problem),
         )
 
         if not out_path.is_file():

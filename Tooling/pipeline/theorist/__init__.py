@@ -144,7 +144,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         "theorist.rounds", default=DEFAULT_ROUNDS,
         env_var="ASTERISM_THEORIST_ROUNDS", cast=int))
     tools_cfg = write_tools_mcp_config(attempts_dir, workspace,
-                                       seat="theorist")
+                                       seat="theorist", problem=problem)
     prompt_path = PROMPT_DIR / "theorist" / "theory.md"
     report_path = attempts_dir / REPORT_BASENAME
     sid = str(uuid.uuid4())

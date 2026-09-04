@@ -105,8 +105,14 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
     if workspace is not None:
         try:
             from . import write_tools_mcp_config
+            # `problem=None` on purpose: this turn is spawned WITH
+            # the problem dir as its cwd, so the tools resolve the
+            # scope from there. The name is not threaded through
+            # `run_prework`/`Arm` for a seat whose cwd already
+            # answers — saying None is the declaration.
             mcp_path = write_tools_mcp_config(attempts_dir, workspace,
-                                              seat="formalizer")
+                                              seat="formalizer",
+                                              problem=None)
         except OSError as exc:
             print(f"[intake] {label}: could not write the tools MCP config "
                   f"({exc}) — the turn will run without `inspect`",

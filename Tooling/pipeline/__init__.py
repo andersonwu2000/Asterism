@@ -38,7 +38,8 @@ from ..quality import diagnostics
 from ..state import assemble
 
 
-def tools_mcp_entry(workspace: Path, seat: "str | None") -> dict:
+def tools_mcp_entry(workspace: Path, seat: "str | None",
+                    problem: "str | None" = None) -> dict:
     """The `asterism_tools` stdio server entry, shared by every config.
 
     PYTHONPATH rather than cwd: the client spawns this from the spawn's
@@ -50,12 +51,22 @@ def tools_mcp_entry(workspace: Path, seat: "str | None") -> dict:
     provider lists the same filtered surface. An undeclared seat fails
     loudly at config-write time, not silently at full-surface. `None`
     is the OPERATOR grant (agy's global config, tests) — full surface,
-    never a spawn's."""
+    never a spawn's.
+
+    `problem` scopes the ANSWERS the same way. It rides the server's
+    `env` (`spawn_guard.PROBLEM_ENV`) because cwd cannot carry it for
+    every seat: a judge or a theory reviewer runs inside its round's
+    projection, under no `Problems/…`, so `inspect({"decl": …})` had no
+    way to know whose `main` was being asked about. `None` = the caller
+    genuinely has no problem (the operator's global config)."""
     env = {"PYTHONPATH": str(workspace)}
     if seat is not None:
         from ..llm.envelope import asterism_tools_for
         asterism_tools_for(seat)  # raise NOW on an undeclared seat
         env["ASTERISM_SEAT"] = seat
+    if problem:
+        from ..llm.spawn_guard import PROBLEM_ENV
+        env[PROBLEM_ENV] = str(problem)
     return {
         "type": "stdio",
         "command": sys.executable,
@@ -65,16 +76,22 @@ def tools_mcp_entry(workspace: Path, seat: "str | None") -> dict:
 
 
 def write_tools_mcp_config(attempts_dir: Path, workspace: Path,
-                           seat: str) -> Path:
+                           seat: str, *, problem: "str | None") -> Path:
     """MCP config for the spawns that need the framework's tools but not
     the Lean gateway — the NL layer. Registering a gateway session for
     them would open a Lean backend slot nobody uses, so this writes the
     tools server alone: the NL layer's no-Lean rule is constructive,
-    not advisory."""
+    not advisory.
+
+    `problem` is REQUIRED and may be None. Required because the caller
+    is the one place that knows, and a default would let the next seat
+    inherit the old silence by forgetting; None because a caller that
+    truly has no problem must be able to say so out loud."""
     path = attempts_dir / "_mcp_tools.json"
     path.write_text(
         json.dumps({"mcpServers": {"asterism_tools":
-                                   tools_mcp_entry(workspace, seat)}},
+                                   tools_mcp_entry(workspace, seat,
+                                                   problem)}},
                    indent=2),
         encoding="utf-8")
     return path
@@ -174,7 +191,8 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     # `knowledge/mcp_tools.py` for why a shell allowlist could not.
     config = {
         "mcpServers": {
-            "asterism_tools": tools_mcp_entry(workspace, "formalizer"),
+            "asterism_tools": tools_mcp_entry(workspace, "formalizer",
+                                              problem),
             "lsp": {
                 "type": "http",
                 "url": f"{base}/mcp",

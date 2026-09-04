@@ -282,7 +282,8 @@ def test_tools_config_is_stdio_with_pythonpath(tmp_path: Path) -> None:
     att = tmp_path / "att"
     att.mkdir()
     path = pipeline.write_tools_mcp_config(att, tmp_path,
-                                           seat="strategist")
+                                           seat="strategist",
+                                           problem="Combinatorics.uc")
     cfg = json.loads(path.read_text(encoding="utf-8"))
     entry = cfg["mcpServers"]["asterism_tools"]
     assert entry["type"] == "stdio"
@@ -292,6 +293,44 @@ def test_tools_config_is_stdio_with_pythonpath(tmp_path: Path) -> None:
     # No gateway session for a wake with no Lean file open — registering
     # one would hold a backend slot for nothing.
     assert set(cfg["mcpServers"]) == {"asterism_tools"}
+
+
+def test_the_tools_server_is_told_which_problem_it_serves(
+        tmp_path: Path) -> None:
+    """The scope travels in the config, not in the cwd.
+
+    `_q_decl` scoped its answer with `_problem_dir_of(cwd)`, and the
+    judge's cwd is `.attempts/<pid>/adversary/rN` — under no problem at
+    all — so the scoped branch never ran for it: `inspect({"decl":
+    "main"})` kept answering with unrelated projects' goals, 120 reports
+    2026-08-30..09-04, most of them costing a rebuttal round. The spawn
+    that owns the problem knows its name, so it says so; every provider
+    reads the server's `env` out of this file.
+
+    Required, not defaulted: a call site that cannot name the problem
+    has to say `problem=None` on purpose, so a new seat cannot inherit
+    the old silence by forgetting."""
+    from Tooling import pipeline
+    from Tooling.llm.spawn_guard import PROBLEM_ENV
+
+    att = tmp_path / "att"
+    att.mkdir()
+    path = pipeline.write_tools_mcp_config(
+        att, tmp_path, seat="adversary", problem="Combinatorics.uc")
+    env = json.loads(path.read_text(encoding="utf-8"))[
+        "mcpServers"]["asterism_tools"]["env"]
+    assert env[PROBLEM_ENV] == "Combinatorics.uc"
+
+    # A spawn with no problem of its own leaves the key off entirely,
+    # so the reader falls back to cwd exactly as before.
+    path2 = pipeline.write_tools_mcp_config(
+        att, tmp_path, seat="strategist", problem=None)
+    env2 = json.loads(path2.read_text(encoding="utf-8"))[
+        "mcpServers"]["asterism_tools"]["env"]
+    assert PROBLEM_ENV not in env2
+
+    with pytest.raises(TypeError):
+        pipeline.write_tools_mcp_config(att, tmp_path, seat="strategist")
 
 
 def test_every_prompt_naming_a_tool_gets_a_config() -> None:

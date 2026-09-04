@@ -23,6 +23,7 @@ and these tests hold each backend to it.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from Tooling.llm import antigravity_cli, codex_cli, envelope
@@ -122,6 +123,31 @@ def test_codex_tells_the_tools_server_which_attempt_it_serves(
     assert "[mcp_servers.asterism_tools.env]" in toml
     assert ATTEMPT_DIR_ENV in toml
     assert str(spec.write_roots[0]) in toml
+
+
+def test_every_backend_tells_the_tools_server_which_problem_it_serves(
+        tmp_path: Path):
+    """Same parity, second scope. `inspect({"decl": …})` scoped its
+    answer off cwd, and the judge's cwd is its round's projection —
+    under no `Problems/…` — so the scope never applied for the one seat
+    filing the reports (120, 2026-08-30..09-04). The name now rides the
+    server's env, and the env block is what each backend re-renders:
+    codex into TOML, claude and agy by reading this very file. A route
+    that carries it on one backend and drops it on another is the
+    2026-08-16 lesson repeated."""
+    from Tooling import pipeline
+    from Tooling.llm.spawn_guard import PROBLEM_ENV
+
+    att = tmp_path / ".attempts" / "pid"
+    att.mkdir(parents=True)
+    cfg = pipeline.write_tools_mcp_config(att, tmp_path, seat="adversary",
+                                          problem="Combinatorics.uc")
+    # claude / agy: both consume the config file as written.
+    assert json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"][
+        "asterism_tools"]["env"][PROBLEM_ENV] == "Combinatorics.uc"
+    # codex: only the config env block is verified to reach the child.
+    toml = codex_cli._mcp_servers_toml(cfg, att)
+    assert PROBLEM_ENV in toml and "Combinatorics.uc" in toml
 
 def test_the_theory_layer_seats_declare_their_own_surface() -> None:
     """`asterism_tools_for` fails loudly on an undeclared seat, and the

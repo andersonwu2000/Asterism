@@ -168,7 +168,8 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         proj / "_theory_review_prompt.md",
         proofs_dir=proofs_dir, papers_dir=papers_dir, present=present)
     tools_cfg = write_tools_mcp_config(proj, workspace,
-                                       seat="theory_reviewer")
+                                       seat="theory_reviewer",
+                                       problem=problem)
     last_err = ""
     for attempt in range(VERDICT_TRIES):
         rc = agent.spawn_llm(
