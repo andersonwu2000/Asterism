@@ -730,3 +730,89 @@ def test_an_unsignalled_pipeline_keeps_its_own_ending(
     assert str(conn.execute(
         "SELECT outcome FROM pipelines WHERE id = 'pipe-2'"
     ).fetchone()["outcome"]) == "proved"
+
+
+# ------------------------------------------- Theory (the theory layer)
+
+
+def test_theory_needs_both_of_its_own_fields(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """§1.3's rule, one kind further: a request the Theorist cannot
+    answer is refused at the POST, where the person is still looking at
+    the form — not at apply, where it comes back as a receipt."""
+    for missing in ("objective", "situation"):
+        payload = {"objective": "S implies MAIN",
+                   "situation": "the bridge died"}
+        payload[missing] = "  "
+        with pytest.raises(ValueError) as e:
+            commands.enqueue(conn, problem="p", kind="Theory",
+                             payload=payload, idempotency_key=missing)
+        assert missing in str(e.value)
+    assert commands.enqueue(
+        conn, problem="p", kind="Theory",
+        payload={"objective": "S implies MAIN",
+                 "situation": "the bridge died"},
+        idempotency_key="ok") > 0
+
+
+def test_a_theory_command_lands_as_a_theorize_decision(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """The one command whose name is not its decision kind: a person
+    asks for `Theory`, and what the log records is the `Theorize` the
+    Strategist would have written. Same appliers, actor='human'."""
+    groups.ensure_top_group(conn, "p")
+    cid = _q(conn, "Theory", {"objective": "S implies MAIN",
+                              "situation": "the bridge died"},
+             key="th")
+    commands.apply_pending(conn, workspace)
+    row = commands.get(conn, cid)
+    assert row["status"] == "applied", row["outcome"]
+    assert row["decision_id"] is not None
+    d = conn.execute(
+        "SELECT decision_kind, actor, trigger_kind, outcome, payload,"
+        " group_id FROM strategist_decisions WHERE id = ?",
+        (row["decision_id"],)).fetchone()
+    assert (str(d["decision_kind"]), str(d["actor"]),
+            str(d["trigger_kind"])) == ("Theorize", "human", "human")
+    # An OPEN step: the document is not written yet.
+    assert d["outcome"] is None
+    payload = json.loads(d["payload"])
+    assert payload["objective"] == "S implies MAIN"
+    assert payload["situation"] == "the bridge died"
+    # filed under the group whose Context the Theorist will read
+    assert int(d["group_id"]) == groups.ensure_top_group(conn, "p")
+    q = conn.execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"
+        " WHERE kind = 'Theorist'").fetchone()
+    assert q is not None and q["decision_id"] == row["decision_id"]
+
+
+def test_a_persons_theory_does_not_freeze_the_group(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """The 2026-09-03 ruling, one kind further: a request the OWNER
+    filed runs BESIDE the group's line, so the group still owes its own
+    next move. The answer still reaches it — the pipeline settles the
+    row and wakes it exactly as a machine request does; what changes is
+    only the waiting."""
+    top = groups.ensure_top_group(conn, "p")
+    _q(conn, "Theory", {"objective": "S implies MAIN",
+                        "situation": "the bridge died"}, key="th2")
+    commands.apply_pending(conn, workspace)
+    assert not db.has_active_inflight_inject(conn, "p", group_id=top)
+    assert not db.has_live_inflight_inject(conn, "p", group_id=top)
+
+
+def test_a_person_may_ask_a_second_question(
+        workspace: Path, conn: sqlite3.Connection) -> None:
+    """One-per-group is the STRATEGIST's gate (`verify_decision`), and
+    the human path does not run it (§1.3): a person asking a second
+    question is a person's call, the same exemption their ConfirmShelve
+    has from its pairing rule."""
+    groups.ensure_top_group(conn, "p")
+    _q(conn, "Theory", {"objective": "first", "situation": "s"}, key="a")
+    _q(conn, "Theory", {"objective": "second", "situation": "s"}, key="b")
+    out = commands.apply_pending(conn, workspace)
+    assert [r["status"] for r in out] == ["applied", "applied"], out
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions"
+        " WHERE decision_kind = 'Theorize'").fetchone()[0] == 2

@@ -2681,6 +2681,29 @@ def test_post_command_returns_a_queued_receipt(workspace: Path) -> None:
     assert again.json()["id"] == cid
 
 
+def test_a_theory_command_round_trips(workspace: Path) -> None:
+    """The endpoints are kind-agnostic on purpose — the vocabulary
+    lives in `state/commands`, so a new kind reaches the console with
+    no HTTP change. This is the proof for `Theory`."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    body = {"problem": "p", "kind": "Theory",
+            "payload": {"objective": "S implies MAIN",
+                        "situation": "the bridge died"},
+            "idempotency_key": "theory-1"}
+    r = c.post("/api/commands", json=body)
+    assert r.status_code == 202, r.text
+    cid = r.json()["id"]
+    assert c.get(f"/api/commands/{cid}").json()["kind"] == "Theory"
+    # a request with no situation is refused at the POST, not at apply
+    bad = dict(body, idempotency_key="theory-2",
+               payload={"objective": "S implies MAIN"})
+    assert c.post("/api/commands", json=bad).status_code == 422
+
+
 def test_command_refusals_are_404_and_422(workspace: Path) -> None:
     """The `resolve_amend` shape the Project endpoints already use:
     KeyError = the named thing is not there (404), a malformed request

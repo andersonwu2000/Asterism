@@ -36,7 +36,19 @@ from . import db
 #: anything else before the DB has to.
 KINDS: frozenset[str] = frozenset({
     "Delegate", "ReturnToParent", "MarkDeliverable",
-    "ConfirmShelve", "FetchPaper", "Inject", "Signal"})
+    "ConfirmShelve", "FetchPaper", "Inject", "Signal",
+    # v52 (theory_wake_design.md §2) — a person may ask the theory
+    # layer a question of their own.
+    "Theory"})
+
+#: Command kind -> the decision kind it becomes, where the two differ.
+#: `Theory` is the only one: a person asks for theory, and what the
+#: decision log records is the `Theorize` the Strategist would have
+#: written — one vocabulary in the log, whoever authored the row. The
+#: names differ because the two surfaces name different things: the
+#: command is what the person asked for, the decision is what the
+#: framework does about it.
+DECISION_KIND: "dict[str, str]" = {"Theory": "Theorize"}
 
 #: §3.7's three kill signals. `Signal` is the one DYNAMIC command: every
 #: other kind acts on a row, this one reaches an OS process — a person
@@ -265,6 +277,14 @@ def validate_fields(kind: str, payload: dict) -> None:
             _needs("reason", "closing a group from under a running "
                              "worker retires every line beneath it, and "
                              "the parent is owed the why")
+    elif kind == "Theory":
+        _needs("objective", "the statement whose proof or refutation "
+                            "would move the claim, or the wall to be "
+                            "crossed — what would SUFFICE")
+        _needs("situation", "where the record stands: what has landed, "
+                            "what died and why, what is parked. Without "
+                            "it the Theorist re-derives the record and "
+                            "hands it back in new words")
     elif kind == "Delegate":
         # With a `target_goal_id` a person owes NEITHER charter nor
         # reason (§1.3): the goal's own statement is the charter, and a
@@ -482,7 +502,8 @@ def _decision_for(conn: sqlite3.Connection, *, problem: str, kind: str,
     # the queue by another route (a replay, a hand-written row), and the
     # two answers must not be able to diverge.
     validate_fields(kind, payload)
-    decision, err = parse_decision(json.dumps({**payload, "kind": kind}))
+    decision, err = parse_decision(json.dumps(
+        {**payload, "kind": DECISION_KIND.get(kind, kind)}))
     if decision is None:
         raise ValueError(err)
     tid = target_of(kind, payload)
@@ -516,7 +537,9 @@ def _group_for(conn: sqlite3.Connection, *, problem: str, kind: str,
     names its own group; a goal-targeted command is filed with the group
     that OWNS the goal (`groups.group_for_goal`), so the human decision
     appears where the work it touches is being argued. None = the
-    problem's top group (`commit_decisions` resolves it)."""
+    problem's top group (`commit_decisions` resolves it) — which is
+    where a `Theory` and a charter-only `Delegate` land, both being
+    requests about the problem rather than about a node of it."""
     from . import groups as _groups
     tid = target_of(kind, payload)
     if kind == "ReturnToParent":
