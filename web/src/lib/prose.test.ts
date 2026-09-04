@@ -123,3 +123,43 @@ describe('renderProse goal mentions', () => {
     expect(out).not.toContain('role="link"')
   })
 })
+
+/*
+ * Two citation kinds outlived their routes: the Library surface left
+ * the shell (HID §1.4-3) and the papers page retired (§3.9). A link to
+ * `/library/X` or `/papers/ID` now lands on the project picker with no
+ * explanation, so those citations read as text — the label still
+ * names the thing, nothing offers to open it.
+ */
+
+describe('renderProse dead citation routes', () => {
+  it('a library citation is text, not a link to nowhere', () => {
+    const out = html('see [library:Foo.bar] for the lemma')
+    expect(out).not.toContain('role="link"')
+    expect(out).toContain('Foo.bar')
+    // the bracket token is spent either way — only the label reads
+    expect(out).not.toContain('[library:')
+  })
+
+  it('a paper citation is text, not a link to nowhere', () => {
+    const out = html('see [paper:abc123] for the construction')
+    expect(out).not.toContain('role="link"')
+    expect(out).toContain('abc123')
+    expect(out).not.toContain('[paper:')
+  })
+
+  it('both of them in one sentence leave no link behind', () => {
+    const out = html('see [library:Foo.bar] and [paper:abc123]')
+    expect(out).not.toContain('role="link"')
+  })
+
+  it('a goal citation still opens its star', () => {
+    const out = html('see [goal:p1:my_slug] instead')
+    expect(out).toContain('role="link"')
+    expect(out).toContain('my_slug')
+  })
+
+  it('a problem citation still opens its task', () => {
+    expect(html('see [problem:p1] instead')).toContain('role="link"')
+  })
+})

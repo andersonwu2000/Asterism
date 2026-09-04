@@ -107,10 +107,16 @@ function openMention(id: number): void {
     })
 }
 
+/* `to: null` = the citation names something real and there is nowhere
+ * to send the reader. The Library surface left the shell (HID §1.4-3)
+ * and the papers page retired (§3.9), so `/library/X` and `/papers/ID`
+ * resolve to nothing and drop the reader on the project picker with no
+ * explanation. The label still names the thing; only the offer to open
+ * it is gone. */
 function citeTarget(
   kind: string,
   body: string,
-): { to: string; label: string; goal?: { problem: string; slug: string } } | null {
+): { to: string | null; label: string; goal?: { problem: string; slug: string } } | null {
   const parts = body.split(':')
   if (kind === 'problem') return { to: `/problems/${body}`, label: body }
   if (kind === 'goal') {
@@ -118,10 +124,14 @@ function citeTarget(
     const slug = parts.slice(1).join(':')
     return { to: `/problems/${parts[0]}`, label: slug, goal: { problem: parts[0], slug } }
   }
-  if (kind === 'library') return { to: `/library/${body}`, label: body }
-  if (kind === 'paper') return { to: `/papers/${body}`, label: body }
+  if (kind === 'library' || kind === 'paper') return { to: null, label: body }
   return null
 }
+
+/** The mono voice both citation shapes wear; a link adds the pointer
+ * and the dotted rule to it. */
+const CITE_TEXT = 'font-mono text-[0.92em] text-ink'
+const CITE_LINK = `cursor-pointer ${CITE_TEXT} underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink`
 
 function renderCites(seg: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = []
@@ -137,7 +147,7 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
           key={`${keyBase}g${m.index}`}
           role="link"
           tabIndex={0}
-          className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
+          className={CITE_LINK}
           title="open this star"
           onClick={() => openMention(id)}
           onKeyDown={(e) => {
@@ -153,6 +163,14 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
     const t = citeTarget(m[1], m[2])
     if (t === null) {
       out.push(m[0])
+    } else if (t.to === null) {
+      // named, but no longer reachable — the same mono voice, without
+      // the pointer and the rule that promise somewhere to go
+      out.push(
+        <span key={`${keyBase}c${m.index}`} className={CITE_TEXT}>
+          {t.label}
+        </span>,
+      )
     } else {
       const { to, goal } = t
       const open = () => {
@@ -168,7 +186,7 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
           key={`${keyBase}c${m.index}`}
           role="link"
           tabIndex={0}
-          className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
+          className={CITE_LINK}
           onClick={open}
           onKeyDown={(e) => {
             if (e.key === 'Enter') open()
