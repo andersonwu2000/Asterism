@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { ApiError, apiGet, apiPost } from '../lib/api'
 import {
   RECEIPT_POLL_MS,
@@ -15,6 +13,7 @@ import {
 import type { CommandKind, CommandPreview, CommandRow, Receipt } from '../lib/commands'
 import { groupCode, relTime } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
+import { ConfirmWindow } from './ConfirmWindow'
 import { Button } from './ui'
 
 /*
@@ -30,100 +29,15 @@ import { Button } from './ui'
  *
  * It floats by DESIGN.md's own carve-out: this is a task of its own
  * (read a cascade, then decide), and the page behind it is what the
- * cascade is about. The shape is the delete-confirm's: `fixed inset-0
- * z-50` over `bg-bg/70`, one centred panel, Escape and backdrop close,
- * focus lands inside.
- *
- * It renders through a PORTAL, and must: `fixed` is relative to the
- * nearest ancestor that animates a transform, and the goal panel does
- * exactly that (`rise-in`). Mounted in place, the window came up the
- * width of the panel it was launched from, with its own title wrapped
- * over three lines. Every surface that opens this one is a candidate
- * for that trap, so the fix belongs here rather than in each of them.
+ * cascade is about. The chrome — the shape, the portal, Escape and
+ * backdrop, where the focus lands — is `ConfirmWindow`'s, shared with
+ * every other floating surface. This file is the command half only.
  *
  * What it does NOT do: validate. The engine's own validator answers
  * that, and a 422 goes back to the form that drew the box — two
  * validators for one command is how a console starts telling a person
  * something the engine does not believe.
  */
-
-/** THE floating confirm window's chrome, and nothing else.
- *
- * Extracted so a second thing that must be confirmed before it happens
- * — starting a run over a list of tasks — wears the same window
- * instead of a lookalike (DESIGN.md: `fixed inset-0 z-50` over
- * `bg-bg/70`, one centred panel, Escape and backdrop close, focus lands
- * inside). It carries no idea of what a command IS: the queue's receipt
- * ladder is `CommandConfirm`'s, and the run's is its own.
- */
-export function ConfirmWindow({
-  title,
-  subject,
-  badge,
-  badgeTitle,
-  onClose,
-  children,
-}: {
-  title: string
-  /** what this is about, in the reader's terms */
-  subject?: string
-  /** the engine's own name for it, quiet, top right */
-  badge?: string
-  badgeTitle?: string
-  onClose: () => void
-  children: ReactNode
-}) {
-  const panelRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose])
-  // focus lands inside the window on open (DESIGN.md's floating shape)
-  useEffect(() => {
-    panelRef.current?.focus()
-  }, [])
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
-      onClick={onClose}
-    >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className="w-[34rem] max-w-full rounded-xl border border-edge bg-surface p-5 focus:outline-none"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-ink">{title}</span>
-          {subject !== undefined && (
-            <span
-              className="min-w-0 truncate font-mono text-[11px] text-ink-faint"
-              title={subject}
-            >
-              {subject}
-            </span>
-          )}
-          {badge !== undefined && (
-            <span
-              className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint/70"
-              title={badgeTitle}
-            >
-              {badge}
-            </span>
-          )}
-        </div>
-        {children}
-      </div>
-    </div>,
-    document.body,
-  )
-}
 
 /* ------------------------------------------------------------------ */
 /* starting a run over a list of tasks                                 */

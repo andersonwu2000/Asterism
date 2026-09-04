@@ -2,6 +2,7 @@
 import { apiGet, apiPost } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { projectPath } from '../lib/projectRoute'
+import { ConfirmWindow } from '../components/ConfirmWindow'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
 import { DiagList, LeanBlock, countErrors } from '../components/LeanBlock'
@@ -116,16 +117,6 @@ export default function New({ project }: { project?: string | null }) {
     )
   }, [shelf, paperQ])
 
-  // Escape closes the shelf window, as it closes any floating surface
-  useEffect(() => {
-    if (!paperOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPaperOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [paperOpen])
-
   const togglePaper = (id: string) =>
     setPapers((old) => {
       const next = new Set(old)
@@ -237,7 +228,15 @@ export default function New({ project }: { project?: string | null }) {
         root: root.trim() === '' ? null : root,
         ...(papers.size > 0 ? { papers: [...papers] } : {}),
       })
-      navigate(`/problems/${encodeURIComponent(name)}`)
+      // Land on the new task where it now LIVES. `/problems/<name>` is
+      // the legacy address and only redirects — through the Sky, which
+      // is not what someone who just wrote a description is asking to
+      // see. When the shelf is known, address the task directly.
+      navigate(
+        project
+          ? projectPath(project, 'tasks', name)
+          : `/problems/${encodeURIComponent(name)}`,
+      )
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
@@ -463,93 +462,88 @@ export default function New({ project }: { project?: string | null }) {
       {/* The shelf, floating (owner, 2026-08-27). Browsing a
           collection to choose from it is a task of its own: inlined it
           buried the form, and a bounded inline list made the reader
-          choose through a slot. The delete-confirm's shape — backdrop
-          click or Escape closes, focus lands inside. Nothing here is
-          irreversible, so there is nothing to confirm: picks apply as
-          they are made and the window just closes. */}
+          choose through a slot. It wears the one floating shape like
+          every other window; the search box is where the focus lands,
+          so the window does not take it. Nothing here is irreversible,
+          so there is nothing to confirm: picks apply as they are made
+          and the window just closes. */}
       {paperOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-          onClick={() => setPaperOpen(false)}
+        <ConfirmWindow
+          title="Ground it in papers"
+          autoFocus={false}
+          onClose={() => setPaperOpen(false)}
         >
-          <div
-            className="flex max-h-[80vh] w-[38rem] max-w-[92vw] flex-col rounded-xl border border-edge bg-surface p-5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="text-sm font-medium text-ink">Ground it in papers</div>
-            <p className="mt-1 text-xs text-ink-dim">
-              the engine reads these for definitions and proof routes
-            </p>
-            <input
-              className="mt-3 w-full rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-              placeholder={`search ${shelf.length} papers by title or filename`}
-              value={paperQ}
-              onChange={(e) => setPaperQ(e.target.value)}
-              spellCheck={false}
-              autoFocus
-            />
-            <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded-lg border border-edge">
-              {offered.length === 0 ? (
-                <div className="px-3 py-3 text-[11px] text-ink-faint">
-                  nothing on the shelf matches
-                </div>
-              ) : (
-                offered.map((p) => {
-                  const bound = papers.has(p.id)
-                  return (
-                    <button
-                      key={p.id}
-                      data-paper-option
-                      data-bound={bound ? '' : undefined}
-                      className="flex w-full cursor-pointer items-baseline gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-wash"
-                      onClick={() => togglePaper(p.id)}
+          <p className="mt-1 text-xs text-ink-dim">
+            the engine reads these for definitions and proof routes
+          </p>
+          <input
+            className="mt-3 w-full rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            placeholder={`search ${shelf.length} papers by title or filename`}
+            value={paperQ}
+            onChange={(e) => setPaperQ(e.target.value)}
+            spellCheck={false}
+            autoFocus
+          />
+          <div className="mt-2 max-h-[52vh] overflow-y-auto rounded-lg border border-edge">
+            {offered.length === 0 ? (
+              <div className="px-3 py-3 text-[11px] text-ink-faint">
+                nothing on the shelf matches
+              </div>
+            ) : (
+              offered.map((p) => {
+                const bound = papers.has(p.id)
+                return (
+                  <button
+                    key={p.id}
+                    data-paper-option
+                    data-bound={bound ? '' : undefined}
+                    className="flex w-full cursor-pointer items-baseline gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-wash"
+                    onClick={() => togglePaper(p.id)}
+                  >
+                    {/* bound reads as brightness, as everywhere else:
+                        the mark is the same glyph in both states so
+                        the rows do not shift when one is taken */}
+                    <span
+                      className={
+                        'shrink-0 text-[11px] ' + (bound ? 'text-ink' : 'text-ink-faint/25')
+                      }
                     >
-                      {/* bound reads as brightness, as everywhere else:
-                          the mark is the same glyph in both states so
-                          the rows do not shift when one is taken */}
+                      ✓
+                    </span>
+                    <span className="min-w-0 flex-1">
                       <span
+                        data-paper-name
                         className={
-                          'shrink-0 text-[11px] ' +
-                          (bound ? 'text-ink' : 'text-ink-faint/25')
+                          'block truncate text-[12.5px] ' +
+                          (bound ? 'text-ink' : 'text-ink-dim') +
+                          (p.title ? '' : ' font-mono')
                         }
                       >
-                        ✓
+                        {paperName(p)}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span
-                          data-paper-name
-                          className={
-                            'block truncate text-[12.5px] ' +
-                            (bound ? 'text-ink' : 'text-ink-dim') +
-                            (p.title ? '' : ' font-mono')
-                          }
-                        >
-                          {paperName(p)}
-                        </span>
-                        <span className="block truncate font-mono text-[10.5px] text-ink-faint">
-                          {/* the filename earns a line only when it is
-                              NOT already the name above it */}
-                          {p.title ? `${p.source_name} · ` : ''}
-                          {p.pages} pp
-                        </span>
+                      <span className="block truncate font-mono text-[10.5px] text-ink-faint">
+                        {/* the filename earns a line only when it is
+                            NOT already the name above it */}
+                        {p.title ? `${p.source_name} · ` : ''}
+                        {p.pages} pp
                       </span>
-                    </button>
-                  )
-                })
-              )}
-            </div>
-            <div className="mt-3 flex items-center justify-between">
-              <span className="text-[11px] text-ink-faint">
-                {chosen.length === 0
-                  ? 'none bound — the engine will work from your description alone'
-                  : `${chosen.length} bound`}
-              </span>
-              <Button variant="outline" onClick={() => setPaperOpen(false)}>
-                Done
-              </Button>
-            </div>
+                    </span>
+                  </button>
+                )
+              })
+            )}
           </div>
-        </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[11px] text-ink-faint">
+              {chosen.length === 0
+                ? 'none bound — the engine will work from your description alone'
+                : `${chosen.length} bound`}
+            </span>
+            <Button variant="outline" onClick={() => setPaperOpen(false)}>
+              Done
+            </Button>
+          </div>
+        </ConfirmWindow>
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
@@ -6,6 +6,7 @@ import { relTime } from '../lib/format'
 import { projectPath } from '../lib/projectRoute'
 import { scopeCovers } from '../lib/programmeFocus'
 import { RunConfirm } from '../components/CommandConfirm'
+import { ConfirmWindow } from '../components/ConfirmWindow'
 import { Button, StatusBadge } from '../components/ui'
 import IntentEditor from '../components/IntentEditor'
 import RunControl from '../components/RunControl'
@@ -415,14 +416,11 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const match = typed === problem
-  useEffect(() => {
-    if (!open || busy) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, busy])
+  // the DELETE is in flight — neither Escape nor the backdrop may take
+  // the window away before it has answered
+  const close = useCallback(() => {
+    if (!busy) setOpen(false)
+  }, [busy])
   const doDelete = async () => {
     setBusy(true)
     setError(null)
@@ -447,44 +445,42 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
         delete this task…
       </button>
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-          onClick={() => setOpen(false)}
+        // the name field is the ceremony, so it takes the focus and the
+        // window stands back (`autoFocus={false}`)
+        <ConfirmWindow
+          title={`Delete ${problem}?`}
+          width="sm"
+          autoFocus={false}
+          onClose={close}
         >
-          <div
-            className="w-[26rem] rounded-xl border border-edge bg-surface p-5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="text-sm font-medium text-ink">Delete {problem}?</div>
-            <p className="mt-2 text-xs leading-relaxed text-ink-dim">
-              Erases this task's folder, proofs and history. It cannot be undone.
-            </p>
-            <input
-              className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-              placeholder={`type ${problem} to confirm`}
-              value={typed}
-              onChange={(e) => setTyped(e.target.value)}
-              autoFocus
-            />
-            {error && <div className="mt-2 text-xs text-danger">{error}</div>}
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <button
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  match && !busy
-                    ? 'cursor-pointer bg-destruct text-starlight hover:opacity-90'
-                    : 'cursor-default border border-edge text-ink-faint'
-                }`}
-                disabled={!match || busy}
-                onClick={() => void doDelete()}
-              >
-                {busy ? 'Deleting…' : 'Delete forever'}
-              </button>
-            </div>
+          <p className="mt-2 text-xs leading-relaxed text-ink-dim">
+            Erases this task's folder, proofs and history. It cannot be undone.
+          </p>
+          <input
+            className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            placeholder={`type ${problem} to confirm`}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoFocus
+          />
+          {error && <div className="mt-2 text-xs text-danger">{error}</div>}
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={close} disabled={busy}>
+              Cancel
+            </Button>
+            <button
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                match && !busy
+                  ? 'cursor-pointer bg-destruct text-starlight hover:opacity-90'
+                  : 'cursor-default border border-edge text-ink-faint'
+              }`}
+              disabled={!match || busy}
+              onClick={() => void doDelete()}
+            >
+              {busy ? 'Deleting…' : 'Delete forever'}
+            </button>
           </div>
-        </div>
+        </ConfirmWindow>
       )}
     </div>
   )

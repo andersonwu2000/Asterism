@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from '../lib/router'
+import { ConfirmWindow } from './ConfirmWindow'
 
 /*
  * The marks the shell is allowed (human_interface_design.md §1.4-2:
@@ -114,56 +115,39 @@ export function IconButton({
  * console must answer for itself. */
 export function HelpButton() {
   const [open, setOpen] = useState(false)
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
   return (
     <>
       <IconButton title="how Asterism works" onClick={() => setOpen(true)} active={open}>
         {HELP_GLYPH}
       </IconButton>
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-          onClick={() => setOpen(false)}
-        >
-          <div
-            className="w-[30rem] rounded-xl border border-edge bg-surface p-5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="font-display text-[17px] text-ink">How this works</div>
-            <ol className="mt-3 flex flex-col gap-2 text-xs leading-relaxed text-ink-dim">
-              <li>
-                <span className="text-ink">A project</span> is a shelf of tasks. A{' '}
-                <span className="text-ink">task</span> is one thing you want proved,
-                written in plain language.
-              </li>
-              <li>
-                Press <span className="text-ink">Run</span> on a task: the engine
-                decomposes it, searches the library, writes Lean, and checks every step
-                with the prover. The <span className="text-ink">sky</span> is that work —
-                a star per goal, lighting up as proofs land.
-              </li>
-              <li>
-                It never stops on its own. When it needs you — a decision, a sign-off —
-                the task says so, and so does its project tile.
-              </li>
-            </ol>
-            <div className="mt-4 flex justify-end">
-              <button
-                className="cursor-pointer rounded-lg border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
-                onClick={() => setOpen(false)}
-              >
-                Close
-              </button>
-            </div>
+        <ConfirmWindow title="How this works" width="sm" onClose={() => setOpen(false)}>
+          <ol className="mt-3 flex flex-col gap-2 text-xs leading-relaxed text-ink-dim">
+            <li>
+              <span className="text-ink">A project</span> is a shelf of tasks. A{' '}
+              <span className="text-ink">task</span> is one thing you want proved, written
+              in plain language.
+            </li>
+            <li>
+              Press <span className="text-ink">Run</span> on a task: the engine decomposes
+              it, searches the library, writes Lean, and checks every step with the
+              prover. The <span className="text-ink">sky</span> is that work — a star per
+              goal, lighting up as proofs land.
+            </li>
+            <li>
+              It never stops on its own. When it needs you — a decision, a sign-off — the
+              task says so, and so does its project tile.
+            </li>
+          </ol>
+          <div className="mt-4 flex justify-end">
+            <button
+              className="cursor-pointer rounded-lg border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+              onClick={() => setOpen(false)}
+            >
+              Close
+            </button>
           </div>
-        </div>
+        </ConfirmWindow>
       )}
     </>
   )

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, usePoll } from '../lib/api'
 import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
+import { ConfirmWindow } from './ConfirmWindow'
 import LeanDoc from './LeanDoc'
 import TexDoc from './TexDoc'
 import { Button } from './ui'
@@ -170,43 +170,26 @@ function DeleteDoc({
   busy: boolean
   error: string | null
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
-      onClick={onCancel}
-    >
-      <div
-        className="w-[26rem] max-w-full rounded-xl border border-edge bg-surface p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-sm font-medium text-ink">Delete this document?</div>
-        <p className="mt-2 font-mono text-xs break-all text-ink-dim">{path}</p>
-        <p className="mt-2 text-xs leading-relaxed text-ink-faint">
-          It is removed from disk. Nothing here keeps a copy.
-        </p>
-        {error && <div className="mt-2 text-xs text-danger">{error}</div>}
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <button
-            className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
-            disabled={busy}
-            onClick={onConfirm}
-          >
-            {busy ? 'Deleting…' : 'Delete'}
-          </button>
-        </div>
+  return (
+    <ConfirmWindow title="Delete this document?" width="sm" onClose={onCancel}>
+      <p className="mt-2 font-mono text-xs break-all text-ink-dim">{path}</p>
+      <p className="mt-2 text-xs leading-relaxed text-ink-faint">
+        It is removed from disk. Nothing here keeps a copy.
+      </p>
+      {error && <div className="mt-2 text-xs text-danger">{error}</div>}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <button
+          className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          disabled={busy}
+          onClick={onConfirm}
+        >
+          {busy ? 'Deleting…' : 'Delete'}
+        </button>
       </div>
-    </div>,
-    document.body,
+    </ConfirmWindow>
   )
 }
 

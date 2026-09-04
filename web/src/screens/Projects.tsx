@@ -3,6 +3,7 @@ import { ApiError, apiDelete, apiPatch, apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { projectPath } from '../lib/projectRoute'
+import { ConfirmWindow } from '../components/ConfirmWindow'
 import { GEAR, HelpButton, IconButton, MARK } from '../components/glyphs'
 import { Button, ErrorState } from '../components/ui'
 import type { ProjectCard } from '../lib/types'
@@ -75,16 +76,13 @@ function RenameProject({
   const [name, setName] = useState(p.name)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // the name is the thing being edited, so the focus lands there and
+  // the window does not take it back (`autoFocus={false}`)
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
     inputRef.current?.focus()
     inputRef.current?.select()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [])
   const save = async () => {
     setBusy(true)
     setErr(null)
@@ -99,43 +97,40 @@ function RenameProject({
     }
   }
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
-      onClick={onClose}
+    <ConfirmWindow
+      title="Rename this project"
+      subject={p.name}
+      width="sm"
+      autoFocus={false}
+      onClose={onClose}
     >
-      <div
-        className="w-[26rem] max-w-full rounded-xl border border-edge bg-surface p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="font-display text-[17px] text-ink">Rename this project</div>
-        <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
-          one identifier — a letter, then letters, digits or underscore. The tasks on
-          this shelf keep their names and their folders; only the shelf is renamed.
-        </p>
-        <input
-          ref={inputRef}
-          className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && name.trim() !== '' && !busy) void save()
-          }}
-        />
-        {err && <div className="mt-2 text-xs text-danger">{err}</div>}
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            disabled={busy || name.trim() === '' || name.trim() === p.name}
-            onClick={() => void save()}
-          >
-            {busy ? 'Renaming…' : 'Rename'}
-          </Button>
-        </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
+        one identifier — a letter, then letters, digits or underscore. The tasks on this
+        shelf keep their names and their folders; only the shelf is renamed.
+      </p>
+      <input
+        ref={inputRef}
+        className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && name.trim() !== '' && !busy) void save()
+        }}
+      />
+      {err && <div className="mt-2 text-xs text-danger">{err}</div>}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          disabled={busy || name.trim() === '' || name.trim() === p.name}
+          onClick={() => void save()}
+        >
+          {busy ? 'Renaming…' : 'Rename'}
+        </Button>
       </div>
-    </div>
+    </ConfirmWindow>
   )
 }
 
@@ -157,13 +152,6 @@ function DeleteProject({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const empty = p.problems === 0
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
   const remove = async () => {
     setBusy(true)
     setErr(null)
@@ -177,49 +165,40 @@ function DeleteProject({
     }
   }
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
-      onClick={onClose}
-    >
-      <div
-        className="w-[26rem] max-w-full rounded-xl border border-edge bg-surface p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-sm font-medium text-ink">Delete the {p.name} shelf?</div>
-        <p className="mt-2 text-xs leading-relaxed text-ink-dim">
-          {empty ? (
-            <>
-              It holds no tasks. The shelf and its description go; nothing else on disk
-              is touched.
-            </>
-          ) : (
-            <>
-              It still holds{' '}
-              <span className="tnum text-ink">
-                {p.problems} task{p.problems === 1 ? '' : 's'}
-              </span>
-              . A shelf is only deleted once it is empty — file them on another shelf,
-              or delete them first.
-            </>
-          )}
-        </p>
-        {err && <div className="mt-2 text-xs text-danger">{err}</div>}
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            {empty ? 'Cancel' : 'Close'}
-          </Button>
-          {empty && (
-            <button
-              className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void remove()}
-            >
-              {busy ? 'Deleting…' : 'Delete'}
-            </button>
-          )}
-        </div>
+    <ConfirmWindow title={`Delete the ${p.name} shelf?`} width="sm" onClose={onClose}>
+      <p className="mt-2 text-xs leading-relaxed text-ink-dim">
+        {empty ? (
+          <>
+            It holds no tasks. The shelf and its description go; nothing else on disk is
+            touched.
+          </>
+        ) : (
+          <>
+            It still holds{' '}
+            <span className="tnum text-ink">
+              {p.problems} task{p.problems === 1 ? '' : 's'}
+            </span>
+            . A shelf is only deleted once it is empty — file them on another shelf, or
+            delete them first.
+          </>
+        )}
+      </p>
+      {err && <div className="mt-2 text-xs text-danger">{err}</div>}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={onClose} disabled={busy}>
+          {empty ? 'Cancel' : 'Close'}
+        </Button>
+        {empty && (
+          <button
+            className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+            disabled={busy}
+            onClick={() => void remove()}
+          >
+            {busy ? 'Deleting…' : 'Delete'}
+          </button>
+        )}
       </div>
-    </div>
+    </ConfirmWindow>
   )
 }
 
@@ -270,15 +249,11 @@ function NewProject({ onDone }: { onDone: () => void }) {
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // the name field is what the window is for, so it takes the focus
+  // and the window stands back (`autoFocus={false}`)
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
-    if (!open) return
-    inputRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    if (open) inputRef.current?.focus()
   }, [open])
   const create = async () => {
     setBusy(true)
@@ -306,47 +281,43 @@ function NewProject({ onDone }: { onDone: () => void }) {
         new project
       </button>
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-          onClick={() => setOpen(false)}
+        <ConfirmWindow
+          title="New project"
+          width="sm"
+          autoFocus={false}
+          onClose={() => setOpen(false)}
         >
-          <div
-            className="w-[26rem] rounded-xl border border-edge bg-surface p-5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="font-display text-[17px] text-ink">New project</div>
-            <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
-              one identifier — a letter, then letters, digits or underscore. It becomes
-              the default prefix for the tasks you file here.
-            </p>
-            <input
-              ref={inputRef}
-              className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-              placeholder="Combinatorics"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <textarea
-              className="mt-2 h-20 w-full resize-none rounded-md border border-edge bg-bg px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-              placeholder="what this shelf is for (optional)"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-            {err && <div className="mt-2 text-xs text-danger">{err}</div>}
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                disabled={busy || name.trim() === ''}
-                onClick={() => void create()}
-              >
-                {busy ? 'Creating…' : 'Create'}
-              </Button>
-            </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
+            one identifier — a letter, then letters, digits or underscore. It becomes the
+            default prefix for the tasks you file here.
+          </p>
+          <input
+            ref={inputRef}
+            className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            placeholder="Combinatorics"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <textarea
+            className="mt-2 h-20 w-full resize-none rounded-md border border-edge bg-bg px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            placeholder="what this shelf is for (optional)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          {err && <div className="mt-2 text-xs text-danger">{err}</div>}
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy || name.trim() === ''}
+              onClick={() => void create()}
+            >
+              {busy ? 'Creating…' : 'Create'}
+            </Button>
           </div>
-        </div>
+        </ConfirmWindow>
       )}
     </>
   )
