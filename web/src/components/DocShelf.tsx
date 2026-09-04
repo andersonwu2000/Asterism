@@ -47,9 +47,37 @@ interface UploadItem {
   detail?: string
 }
 
-/** Where the column's fold is remembered. Its own key, beside the task
- * rail's — the two columns are different postures on different pages. */
-const COLUMN_KEY = 'asterism.docColumnOpen'
+/* The file column's fold, in two halves — the strip that brings the
+ * column back, and the button that puts it away. Both roots of the
+ * Documents section wear them, so they are written once here and the
+ * state that drives them lives one level up, in Docs.tsx. The shape is
+ * the task rail's (ProjectShell): a reading posture, kept. */
+
+export function ClosedColumn({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="shrink-0 border-r border-edge px-2 py-4">
+      <button
+        onClick={onOpen}
+        title="show the file list"
+        className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+      >
+        ›
+      </button>
+    </div>
+  )
+}
+
+export function HideColumn({ onHide }: { onHide: () => void }) {
+  return (
+    <button
+      onClick={onHide}
+      title="hide the file list"
+      className="cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+    >
+      ‹
+    </button>
+  )
+}
 
 const TEXT_EXT = ['.md', '.tex', '.txt', '.lean']
 const IMAGE_EXT = ['.png', '.jpg', '.svg']
@@ -259,9 +287,16 @@ function AreaRows({
 
 export default function DocShelf({
   project,
+  columnOpen,
+  onToggleColumn,
   onOpenChange,
 }: {
   project: string
+  /** the file column's fold. ONE column, ONE fold: Docs.tsx owns it
+   * for both roots, so switching root cannot change the posture the
+   * reader set (until 2026-09-04 only this root could fold at all) */
+  columnOpen: boolean
+  onToggleColumn: () => void
   /** which document is under the cursor — the Assistant is told, and
    * only the screen above may publish it (one focus, one author) */
   onOpenChange?: (path: string | null) => void
@@ -299,14 +334,6 @@ export default function DocShelf({
   const [renameNote, setRenameNote] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const renameRef = useRef<HTMLInputElement | null>(null)
-  /** the file column's fold, remembered — a reading posture, like the
-   * task rail's (App.tsx `asterism.railOpen`), not a per-visit choice */
-  const [columnOpen, setColumnOpen] = useState(
-    () => localStorage.getItem(COLUMN_KEY) !== '0',
-  )
-  useEffect(() => {
-    localStorage.setItem(COLUMN_KEY, columnOpen ? '1' : '0')
-  }, [columnOpen])
   /** papers being shelved — one line each while the extraction runs */
   const [uploads, setUploads] = useState<UploadItem[]>([])
   const seq = useRef(0)
@@ -562,17 +589,7 @@ export default function DocShelf({
         </div>
       )}
       {!columnOpen ? (
-        // the same fold the task rail carries (ProjectShell): a reading
-        // posture, kept, and the strip that brings it back
-        <div className="shrink-0 border-r border-edge px-2 py-4">
-          <button
-            onClick={() => setColumnOpen(true)}
-            title="show the file list"
-            className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
-          >
-            ›
-          </button>
-        </div>
+        <ClosedColumn onOpen={onToggleColumn} />
       ) : (
       <div className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-edge py-2">
         <div className="flex items-baseline gap-2 px-4 pt-1 pb-1">
@@ -621,13 +638,7 @@ export default function DocShelf({
             >
               paper
             </button>
-            <button
-              onClick={() => setColumnOpen(false)}
-              title="hide the file list"
-              className="cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
-            >
-              ‹
-            </button>
+            <HideColumn onHide={onToggleColumn} />
           </span>
         </div>
         {creating !== null && (

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { usePublishFocus } from '../lib/focus'
 import { Link } from '../lib/router'
@@ -6,7 +6,7 @@ import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
 import { Select } from '../components/ui'
-import DocShelf from '../components/DocShelf'
+import DocShelf, { ClosedColumn, HideColumn } from '../components/DocShelf'
 import { projectPath } from '../lib/projectRoute'
 import type { ProblemDetail } from '../lib/types'
 
@@ -26,7 +26,17 @@ import type { ProblemDetail } from '../lib/types'
  * root is the Project's own shelf and IS writable (§1.2, §3.6); it
  * lives in `DocShelf`, which owns the two areas, the editor and the
  * refusals.
+ *
+ * Two roots, but ONE column — so the fold is one fold, kept here
+ * rather than inside either root. Until 2026-09-04 only `documents`
+ * could be folded away, so the same strip appeared and vanished as the
+ * reader switched root, and the posture they had set was not honoured
+ * by half the section.
  */
+
+/** Where the column's fold is remembered. Its own key, beside the task
+ * rail's — the two columns are different postures on different pages. */
+const COLUMN_KEY = 'asterism.docColumnOpen'
 
 function Body({ path, content }: { path: string; content: string }) {
   if (path.endsWith('.lean'))
@@ -52,10 +62,14 @@ function ProofsView({
   problem,
   file,
   onPick,
+  columnOpen,
+  onToggleColumn,
 }: {
   problem: string
   file: string | null
   onPick: (path: string) => void
+  columnOpen: boolean
+  onToggleColumn: () => void
 }) {
   const { data: detail } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(problem)}`,
@@ -91,7 +105,13 @@ function ProofsView({
   )
   return (
     <>
+      {!columnOpen ? (
+        <ClosedColumn onOpen={onToggleColumn} />
+      ) : (
       <div className="w-72 shrink-0 overflow-y-auto border-r border-edge py-2">
+        <div className="flex justify-end px-3 pt-1">
+          <HideColumn onHide={onToggleColumn} />
+        </div>
         {files.map((f, i) => (
           <div key={f}>
             {/* one "proofs/" header instead of a 130-row prefix wall */}
@@ -116,6 +136,7 @@ function ProofsView({
           </div>
         ))}
       </div>
+      )}
       <div className="min-w-0 flex-1 overflow-auto p-4">
         {error && !data && (
           <div className="text-xs text-ink-faint">
@@ -157,6 +178,16 @@ export default function Docs({
   const [sel, setSel] = useState<string | null>(path.slice(1).join('/') || null)
   const [task, setTask] = useState<string | null>(problem)
   const [docPath, setDocPath] = useState<string | null>(null)
+  /** the file column's fold, remembered — a reading posture, like the
+   * task rail's (App.tsx `asterism.railOpen`), not a per-visit choice.
+   * It sits above the two roots because the column is one column. */
+  const [columnOpen, setColumnOpen] = useState(
+    () => localStorage.getItem(COLUMN_KEY) !== '0',
+  )
+  useEffect(() => {
+    localStorage.setItem(COLUMN_KEY, columnOpen ? '1' : '0')
+  }, [columnOpen])
+  const toggleColumn = () => setColumnOpen((v) => !v)
   const shown = task && tasks.includes(task) ? task : problem
   // ONE author for the screen's focus: the shelf hands its selection up
   // rather than publishing beside this, so the two cannot overwrite
@@ -218,7 +249,14 @@ export default function Docs({
       <div className="flex min-h-0 flex-1">
         {root === 'proofs' ? (
           shown ? (
-            <ProofsView key={shown} problem={shown} file={sel} onPick={setSel} />
+            <ProofsView
+              key={shown}
+              problem={shown}
+              file={sel}
+              onPick={setSel}
+              columnOpen={columnOpen}
+              onToggleColumn={toggleColumn}
+            />
           ) : loaded ? (
             <p className="p-6 text-xs text-ink-faint">
               No task on this shelf yet — proofs appear once one runs.
@@ -227,7 +265,12 @@ export default function Docs({
             <p className="late-fade p-6 text-xs text-ink-faint">Loading…</p>
           )
         ) : (
-          <DocShelf project={project} onOpenChange={setDocPath} />
+          <DocShelf
+            project={project}
+            columnOpen={columnOpen}
+            onToggleColumn={toggleColumn}
+            onOpenChange={setDocPath}
+          />
         )}
       </div>
     </div>
