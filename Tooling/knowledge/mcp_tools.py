@@ -205,6 +205,122 @@ def _audit_snapshot_here() -> "list[dict] | None":
     return _audit.read_roots_snapshot(own) if own else None
 
 
+#: The rubric a verdict is judged against, DECLARED by the wake that
+#: seated the judge — `{"criteria_keys": [...], "multi_clear": bool}`.
+#:
+#: Ownership again, one layer past `_audit_roots.json`. Shape cannot
+#: answer "is this rubric complete": criteria "1".."4" is a theory
+#: review's whole rubric AND a batch verdict missing criterion 5, and
+#: the generic branch below assumes the second — so a complete review
+#: verdict was told "`criteria` missing criterion 5", a framework fault
+#: worded as the judge's mistake, about a criterion its prompt does not
+#: have. The judge cannot act on that: it can only invent one.
+_RUBRIC_FILE = "_verdict_rubric.json"
+
+
+def _declared_rubric_here() -> "tuple[list[str], bool] | None":
+    """`(criteria_keys, multi_clear)` for THIS spawn, or None.
+
+    A missing OR malformed declaration reads as ABSENT, never as an
+    error: the judge did not write this file and cannot repair it, so
+    the worst a broken one may cost is the old generic check — a
+    refusal with no action behind it is the failure mode this whole
+    channel exists to remove."""
+    import json as _json
+    from . import workspace_query as _wq
+    own = _wq._own_attempt_dir()
+    if own is None:
+        return None
+    try:
+        obj = _json.loads((own / _RUBRIC_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    keys = obj.get("criteria_keys") if isinstance(obj, dict) else None
+    if not (isinstance(keys, list) and keys
+            and all(isinstance(k, str) and k for k in keys)):
+        return None
+    return keys, bool(obj.get("multi_clear"))
+
+
+def _render_keys(keys: "list[str]") -> str:
+    """`1–4` for a contiguous numeric rubric, else the list."""
+    if (len(keys) > 2 and all(k.isdigit() for k in keys)
+            and [int(k) for k in keys]
+            == list(range(int(keys[0]), int(keys[0]) + len(keys)))):
+        return f"{keys[0]}–{keys[-1]}"
+    return ", ".join(keys)
+
+
+def _declared_verdict_notes(obj: dict, keys: "list[str]",
+                            multi_clear: bool) -> "list[str]":
+    """What the declared rubric's parser would refuse.
+
+    STRING bullets, because that is what the declaration says. The
+    review parser also tolerates an object-rendered bullet and a bare
+    string, but a probe looser than the declaration teaches a shape the
+    declaration does not promise to keep — so this holds the declared
+    shape and the message names the one to write."""
+    import re as _re
+    crit = obj.get("criteria")
+    if not isinstance(crit, dict):
+        return [f"`criteria` is not an object — one list of bullets per "
+                f"criterion, keyed {_render_keys(keys)}"]
+    notes: "list[str]" = []
+    missing = [k for k in keys if k not in crit]
+    if missing:
+        notes.append(f"`criteria` missing criterion "
+                     f"{', '.join(missing)} — this rubric has "
+                     f"{len(keys)} criteria ({', '.join(keys)}), and "
+                     f"every one gets a line")
+    for k in keys:
+        if k not in crit:
+            continue
+        vals = crit[k]
+        if not (isinstance(vals, list) and vals
+                and all(isinstance(x, str) for x in vals)):
+            notes.append(f"criterion {k} must be a list of plain "
+                         f"strings, one bullet per item, each beginning "
+                         f"`clear:` or `fired:` — this rubric declares "
+                         f'STRING bullets, so an object bullet '
+                         f'({{"ruling": …}}) or a bare string is not it')
+            continue
+        heads = [("clear" if _re.match(r"clear\b", x.strip(), _re.I)
+                  else "fired" if _re.match(r"fired\b", x.strip(), _re.I)
+                  else "?") for x in vals]
+        if "?" in heads:
+            notes.append(f"criterion {k}: every bullet must begin "
+                         f'"clear" or "fired: <objection>"')
+            continue
+        if "clear" in heads and "fired" in heads:
+            notes.append(f'criterion {k} mixes "clear" and "fired" '
+                         f"bullets — a criterion is one ruling")
+            continue
+        if heads[0] == "clear":
+            # A criterion is clear iff EVERY bullet is: a document with
+            # several theorems or several leads is answered one bullet
+            # each. Where the declaration does not say `multi_clear`,
+            # the batch judge's rule stands (one proposal, one clear).
+            if not multi_clear and len(vals) > 1:
+                notes.append(f'criterion {k}: "clear" takes exactly one '
+                             f"entry under this rubric")
+                continue
+            if any(not x.strip()[len("clear"):].strip(" -—–:")
+                   for x in vals):
+                notes.append(f'criterion {k} never takes a bare "clear" '
+                             f"— say why it holds HERE: "
+                             f'`"clear: <one concrete reason>"`')
+            continue
+        if any(not (x.strip().split(":", 1)[1].strip() if ":" in x
+                    else x.strip()[len("fired"):].strip(" -—–:"))
+               for x in vals):
+            notes.append(f"criterion {k} is fired but carries no "
+                         f'objection — `"fired: <objection>"`')
+    if "reservations" in obj and not isinstance(
+            obj.get("reservations"), list):
+        notes.append("`reservations` must be a list of strings")
+    return notes
+
+
 @_seat_tool(structured_output=False)
 def validate_json(text: str = "", file: str = "") -> str:
     """Check your JSON hand-in (decision.json / verdict.json).
@@ -218,8 +334,10 @@ def validate_json(text: str = "", file: str = "") -> str:
     (adversary feedback, 2026-08-25).
 
     Returns `OK: <n> top-level key(s)` or the parser's own message with
-    the line and column. Read-only — it tells you nothing about whether
-    the framework will ACCEPT the decision, only that it can be read.
+    the line and column. A verdict is also checked against the rubric
+    YOUR wake declared, so the criteria it names are the ones your
+    prompt gave you. Read-only — it tells you nothing about whether the
+    framework will ACCEPT the decision, only that it can be read.
     """
     import json as _json
     if (file or "").strip():
@@ -282,6 +400,24 @@ def validate_json(text: str = "", file: str = "") -> str:
                         + "; ".join(notes))
             return (f"OK: audit-shaped, criteria 1-4 present, every line "
                     f"in flight ruled on ({len(snap)} line(s))")
+        # Next ownership signal, same rule: a wake that seats a judge on
+        # a rubric OTHER than the batch judge's 1-5 declares it, and
+        # the declaration — not the shape, and not this tool's default
+        # — is the key set the verdict is checked against.
+        rubric = _declared_rubric_here() if "criteria" in obj else None
+        if rubric is not None:
+            keys, multi_clear = rubric
+            notes = _declared_verdict_notes(obj, keys, multi_clear)
+            if notes:
+                # Who is refusing, not "the parser": most of these are
+                # parser refusals, but the string-bullet rule is the
+                # DECLARATION being stricter than the parser's
+                # tolerance, and a message that misnames its own
+                # authority is one an agent cannot argue with correctly.
+                return ("OK as JSON, review-shaped, but the declared "
+                        "rubric rejects it: " + "; ".join(notes))
+            return (f"OK as JSON, review-shaped "
+                    f"(keys {_render_keys(keys)})")
         if "criteria" in obj:
             crit = obj.get("criteria")
             if not isinstance(crit, dict):

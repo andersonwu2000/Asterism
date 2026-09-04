@@ -131,6 +131,121 @@ def test_validate_json_reads_a_theory_verdict_as_a_theory_verdict(
     assert "goal_id" not in out, out
 
 
+# ------------------------------------------ the declared verdict rubric
+
+_REVIEW_VERDICT = {"criteria": {
+    "1": ["clear: the same-universe theorem supplies the bound"],
+    "2": ["clear: I re-enumerated all 2^16 families on four points"],
+    "3": ["fired: the wall named in §2 is not the one that bites"],
+    "4": ["clear: the rank-three conjecture is motivated by Thm 2",
+          "clear: the cross-trace lead follows from the equality"]},
+    "reservations": []}
+
+
+def _seat(monkeypatch, tmp_path, verdict, rubric=None) -> str:
+    from Tooling.knowledge import mcp_tools, workspace_query
+    monkeypatch.setattr(workspace_query, "_own_attempt_dir",
+                        lambda: tmp_path)
+    (tmp_path / "verdict.json").write_text(json.dumps(verdict),
+                                           encoding="utf-8")
+    if rubric is not None:
+        (tmp_path / "_verdict_rubric.json").write_text(
+            json.dumps(rubric), encoding="utf-8")
+    return mcp_tools.validate_json(file="verdict.json")
+
+
+def test_a_declared_rubric_is_the_key_set_the_verdict_is_checked_against(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic branch assumes the batch judge's rubric 1-5, so a
+    theory-review verdict — criteria "1".."4", complete — was told
+    "`criteria` missing criterion 5": a framework fault worded as the
+    judge's mistake, on a rubric the judge cannot add a criterion to.
+
+    Shape cannot answer this ("1".."4" is also a batch verdict with one
+    criterion missing), so the wake that seats the judge DECLARES its
+    rubric — `_verdict_rubric.json` in the review dir, the same
+    ownership signal as `_audit_roots.json` one layer up."""
+    out = _seat(monkeypatch, tmp_path, _REVIEW_VERDICT,
+                {"criteria_keys": ["1", "2", "3", "4"],
+                 "multi_clear": True})
+    assert out.startswith("OK"), out
+    assert "review-shaped" in out and "1–4" in out, out
+    assert "criterion 5" not in out and "missing" not in out, out
+
+
+def test_a_declared_rubric_still_refuses_a_key_it_declares(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declaration narrows the key set; it does not switch the check
+    off. The criterion named is one the judge can actually write."""
+    verdict = {"criteria": {k: v
+                            for k, v in _REVIEW_VERDICT["criteria"].items()
+                            if k != "3"}, "reservations": []}
+    out = _seat(monkeypatch, tmp_path, verdict,
+                {"criteria_keys": ["1", "2", "3", "4"],
+                 "multi_clear": True})
+    assert "missing criterion 3" in out and "reject" in out, out
+    assert "5" not in out, out
+
+
+def test_a_declared_rubric_refuses_a_bare_clear_and_a_mixed_criterion(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two rules the real parser enforces and a judge loses a whole
+    round to: a criterion is one ruling, and "clear" alone leaves no
+    calibration trace."""
+    rubric = {"criteria_keys": ["1", "2", "3", "4"], "multi_clear": True}
+    bare = {"criteria": dict(_REVIEW_VERDICT["criteria"], **{"2": ["clear"]}),
+            "reservations": []}
+    out = _seat(monkeypatch, tmp_path, bare, rubric)
+    assert "criterion 2" in out and "bare" in out, out
+    mixed = {"criteria": dict(_REVIEW_VERDICT["criteria"],
+                              **{"4": ["clear: it follows from Thm 2",
+                                       "fired: lead three is unmotivated"]}),
+             "reservations": []}
+    out = _seat(monkeypatch, tmp_path, mixed, rubric)
+    assert "criterion 4" in out and "mixes" in out, out
+
+
+def test_a_declared_rubric_holds_the_string_bullet_it_declared(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declaration says STRING bullets, so this probe says string
+    bullets — even though the review parser also tolerates an
+    object-rendered bullet. A probe that is looser than the declaration
+    teaches a shape the declaration does not promise to keep, and the
+    teaching text names the shape to write rather than only refusing."""
+    obj_bullets = {"criteria": dict(
+        _REVIEW_VERDICT["criteria"],
+        **{"1": [{"ruling": "clear", "reason": "the bound is supplied"}]}),
+        "reservations": []}
+    out = _seat(monkeypatch, tmp_path, obj_bullets,
+                {"criteria_keys": ["1", "2", "3", "4"],
+                 "multi_clear": True})
+    assert "criterion 1" in out and "reject" in out, out
+    assert "string" in out.lower() and "clear:" in out, out
+
+
+def test_no_declaration_leaves_the_batch_judge_check_exactly_as_it_was(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The channel is opt-in: a spawn with no declaration is the batch
+    judge, and its rubric is still 1-5. A malformed declaration counts
+    as absent — the judge did not write that file and cannot repair
+    it, so it must never become a refusal with no action behind it."""
+    batch = {"criteria": {str(k): ["clear: a concrete reason"]
+                          for k in range(1, 6)}, "reservations": []}
+    out = _seat(monkeypatch, tmp_path, batch)
+    assert out.endswith("criteria 1-5 all present"), out
+    four = {"criteria": {str(k): ["clear: a concrete reason"]
+                         for k in range(1, 5)}, "reservations": []}
+    assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
+    (tmp_path / "_verdict_rubric.json").write_text("{ not json",
+                                                   encoding="utf-8")
+    assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
+
+
 def test_loogle_tool_reports_failure_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
