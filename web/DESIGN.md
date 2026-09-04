@@ -97,6 +97,12 @@ the ladder via `::picker(select)` where supported.
 ## Glyphs — the sky's vocabulary, reused everywhere
 
 - **Diamond = definition (data); circle = proposition.**
+- **A page (portrait rectangle) = a document** (2026-09-04). The
+  theory layer's product is prose about a wall — neither data nor
+  proposition — so it takes the third shape rather than borrowing one.
+  `glyphs.tsx` `PAGE` is the one drawing; the theorist lane, the
+  Timeline's theory rows and the Documents shelf's agent list all wear
+  it. It never appears in the sky: a document is not a star.
 - **Single ring = a sign-off surface** (root / claim / anchor); bigger
   = more important. No other permanent rings.
 - **A sign-off surface is one the READER signs.** v35 problems run

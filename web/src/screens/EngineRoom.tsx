@@ -4,12 +4,13 @@ import { duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { emitGoalHover, emitGoalOpen } from '../lib/goalFocus'
-import { providerLabel, windowLabel } from '../lib/vocab'
+import { isTheory, providerLabel, windowLabel } from '../lib/vocab'
 import { scopedRows } from '../lib/quota'
 import { projectPath } from '../lib/projectRoute'
 import { navigate } from '../lib/router'
 import { frameClass } from '../lib/textFrame'
 import { renderInline, renderProse } from '../lib/prose'
+import { PAGE } from '../components/glyphs'
 import { LeanProbe } from '../components/LeanProbe'
 import LogTail from '../components/LogTail'
 import { laneSignal } from '../lib/commands'
@@ -248,6 +249,26 @@ function GoalLink({
   )
 }
 
+/** The word that says what kind of agent a card is — and, for the
+ * theory layer, the mark that says what it answers with. A page is a
+ * document (DESIGN.md, 2026-09-04); every other kind hands back Lean or
+ * a decision and wears nothing, because the settled norm earns no ink.
+ * One drawing for the live lane and its landed ghost — the receipt must
+ * not be a second vocabulary for the same agent. */
+function KindWord({ kind, className }: { kind: string; className: string }) {
+  const word = kind.toLowerCase()
+  if (!isTheory(kind)) return <span className={className}>{word}</span>
+  return (
+    <span
+      className={`flex items-baseline gap-1.5 ${className}`}
+      title="the theory layer — answers one wall with a document; its group is the task's own argument"
+    >
+      {PAGE}
+      {word}
+    </span>
+  )
+}
+
 /** One agent, one lane: what it is, what it's on, what it's writing. */
 function Lane({
   w,
@@ -276,7 +297,7 @@ function Lane({
   return (
     <div className="rounded-xl border border-edge bg-surface p-3">
       <div className="flex items-baseline gap-2.5">
-        <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
+        <KindWord kind={w.kind} className="text-xs font-medium text-ink" />
         {laneProblem ? (
           <GoalLink project={project} problem={laneProblem} slug={w.slug} />
         ) : (
@@ -470,7 +491,9 @@ function Lane({
                 ? 'building new vocabulary and claims — each landed brick appears as a new star'
                 : w.kind === 'Librarian'
                   ? 'curating finished work into the Library'
-                  : 'nothing on disk yet — composing its prompt'}
+                  : w.kind === 'Theorist'
+                    ? 'reading the record against the question it was handed — it answers with a document, reviewed before it lands under documents'
+                    : 'nothing on disk yet — composing its prompt'}
         </div>
       )}
     </div>
@@ -625,11 +648,23 @@ export default function EngineRoom({
       ? 'stopping'
       : d.gateway === 'warming'
         ? 'warming the Lean toolchain'
-        : workers.length === 0 || workers.every((w) => w.kind === 'Strategist')
+        : /* what the room is DOING, read off the seats. A theorist
+             proves nothing — it reads the record and writes prose — so
+             a room holding only theorists said 'proving' about work
+             that cannot produce a proof. Alone it is theorizing; beside
+             a strategist the room is planning, which is the honest
+             umbrella for both. `length === 0` is answered first: every()
+             is vacuously true, and an empty room is between batches,
+             not theorizing. */
+          workers.length === 0
           ? 'planning'
-          : workers.every((w) => w.kind === 'Librarian')
-            ? 'harvesting'
-            : 'proving'
+          : workers.every((w) => w.kind === 'Theorist')
+            ? 'theorizing'
+            : workers.every((w) => w.kind === 'Strategist' || w.kind === 'Theorist')
+              ? 'planning'
+              : workers.every((w) => w.kind === 'Librarian')
+                ? 'harvesting'
+                : 'proving'
   const crashed =
     !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
   const st = d.slots
@@ -752,7 +787,7 @@ export default function EngineRoom({
                     className="min-h-24 rounded-xl border border-edge/60 bg-surface/50 p-3 opacity-70"
                   >
                     <div className="flex items-baseline gap-2.5">
-                      <span className="text-xs text-ink-dim">{g.kind.toLowerCase()}</span>
+                      <KindWord kind={g.kind} className="text-xs text-ink-dim" />
                       <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
                         {g.slug}
                       </span>
@@ -761,7 +796,11 @@ export default function EngineRoom({
                       </span>
                     </div>
                     <div className="mt-2 text-[11px] text-ink-faint">
-                      finished — the result lands on the task's sky
+                      {/* a theorist's product is not a star: it is a
+                          document, and one a reviewer may refuse */}
+                      {g.kind === 'Theorist'
+                        ? 'finished — its document, if accepted, is under documents › agent'
+                        : "finished — the result lands on the task's sky"}
                     </div>
                   </div>
                 )

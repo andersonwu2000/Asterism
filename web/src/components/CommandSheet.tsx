@@ -194,12 +194,24 @@ export function GoalCommandSheet({
   )
 }
 
+/** What the problem's own argument offers. `Theory` is a queued command
+ * with no target; the bench is not a command at all — so the two moves
+ * share a picker and nothing else. */
+type TopMove = 'Theory' | 'bench'
+
 /** A group node's commands (§1.3-2). A sub-group returns its charter
  * upward with a reason. The problem's own argument has no parent to
- * return to, so what §1.3-2 asks for there — "stop this task" — is the
- * BENCH (owner's ruling): the reversible move that takes one task off
- * the live path while the run keeps going. It is not a queued command,
- * so it goes through its own window rather than the receipt one. */
+ * return to, so what it offers instead is two moves: ask the theory
+ * layer about the wall it is stuck on, or stop the task — which is the
+ * BENCH (owner's ruling), the reversible move that takes one task off
+ * the live path while the run keeps going. The bench is not a queued
+ * command, so it goes through its own window rather than the receipt
+ * one.
+ *
+ * A theory request is offered on the TOP group only. It has no target
+ * and is filed on the problem's top group whatever node the reader
+ * stands on (`state/commands._group_for`), so offering it under a
+ * sub-group would file it somewhere other than where it was asked. */
 export function GroupCommandSheet({
   problem,
   groupId,
@@ -220,16 +232,37 @@ export function GroupCommandSheet({
   const [open, setOpen] = useState(false)
   // the top group's own move: bench, which is not a queued command
   const [benching, setBenching] = useState(false)
+  const [move, setMove] = useState<TopMove>('Theory')
+  const [fields, setFields] = useState<CommandFields>({})
   const [refusal, setRefusal] = useState<{ field: string | null; detail: string } | null>(null)
+  const set = (patch: Partial<CommandFields>) => {
+    setFields((f) => ({ ...f, ...patch }))
+    setRefusal(null)
+  }
   const payload = useMemo(
     () => payloadFor('ReturnToParent', { groupId, reason }),
     [groupId, reason],
   )
+  const theory = useMemo(() => payloadFor('Theory', fields), [fields])
+  const err = (name: string) =>
+    refusal !== null && refusal.field === name ? refusal.detail : null
+
+  // the bench row reads the direction it would move the task in — the
+  // same word the window it opens puts on its own title
+  const moves: { move: TopMove; word: string; term: string }[] = [
+    { move: 'Theory', word: commandTitle('Theory'), term: 'Theory' },
+    {
+      move: 'bench',
+      word: benched ? 'put this task back' : 'stop this task',
+      term: benched ? 'unbench' : 'bench',
+    },
+  ]
+
   return (
     <div className="mb-5 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] tracking-wider text-ink-faint uppercase">
-          {isTop ? 'stopping this task' : commandTitle('ReturnToParent')}
+          {isTop ? 'act on this task' : commandTitle('ReturnToParent')}
         </span>
         <button
           className="ml-auto cursor-pointer rounded-md px-1.5 text-[13px] text-ink-faint transition-colors hover:text-ink"
@@ -241,24 +274,101 @@ export function GroupCommandSheet({
       </div>
       {isTop ? (
         <>
-          <p className="mt-1.5 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
-            This is the task’s own argument — it has no parent to hand back to.{' '}
-            {benched
-              ? 'It is benched: dispatch skips it until you put it back, and everything it has is kept.'
-              : 'Stopping work on it means benching the task — dispatch skips it until you put it back, and the rest of the run carries on.'}{' '}
-            To park one line of work for good, open its star and park it there.
-          </p>
-          <div className="mt-2.5">
-            <Button variant="outline" onClick={() => setBenching(true)}>
-              {benched ? 'Put this task back…' : 'Stop this task…'}
-            </Button>
+          {/* the same picker shape the goal and signal sheets use: a
+              column of full-width rows, one selected */}
+          <div className="mt-2 flex flex-col gap-0.5">
+            {moves.map((m) => (
+              <button
+                key={m.move}
+                className={`cursor-pointer rounded-md px-2 py-1 text-left text-[11px] transition-colors ${
+                  move === m.move ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
+                }`}
+                aria-pressed={move === m.move}
+                title={m.term}
+                onClick={() => {
+                  setMove(m.move)
+                  setRefusal(null)
+                }}
+              >
+                {m.word}
+              </button>
+            ))}
           </div>
-          {benching && (
-            <BenchConfirm
-              problem={problem}
-              benched={benched !== true}
-              onClose={() => setBenching(false)}
-            />
+
+          {move === 'Theory' ? (
+            <>
+              <p className="mt-2 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
+                {COMMAND_NOTE.Theory}
+              </p>
+              <Field
+                label="objective"
+                hint="what would suffice: a statement whose proof or refutation moves the claim, or the wall to cross"
+                error={err('objective')}
+              >
+                <textarea
+                  className={`${INPUT} h-20 resize-y`}
+                  placeholder="a statement S such that S ⇒ the claim, and S holds in the landed cases — or a proof no such S exists"
+                  value={fields.objective ?? ''}
+                  onChange={(e) => set({ objective: e.target.value })}
+                />
+              </Field>
+              <Field
+                label="situation"
+                hint="where the record stands: what landed, what died and why, what is parked — with pointers"
+                error={err('situation')}
+              >
+                <textarea
+                  className={`${INPUT} h-28 resize-y`}
+                  placeholder="g8585 came back return_to_parent, the statement mis-stated; the two rewrites died at the same step; the low-rank case is landed"
+                  value={fields.situation ?? ''}
+                  onChange={(e) => set({ situation: e.target.value })}
+                />
+              </Field>
+              {refusal !== null && refusal.field === null && (
+                <div className="mt-2 text-[11px] text-warn">{refusal.detail}</div>
+              )}
+              <div className="mt-3 flex items-center gap-2">
+                <Button variant="outline" onClick={() => setOpen(true)}>
+                  Review…
+                </Button>
+                <span className="text-[11px] text-ink-faint">
+                  you see what it asks for before anything is queued
+                </span>
+              </div>
+              {open && (
+                <CommandConfirm
+                  problem={problem}
+                  kind="Theory"
+                  payload={theory}
+                  label={label}
+                  onClose={() => setOpen(false)}
+                  onFieldError={(field, detail) => setRefusal({ field, detail })}
+                  onApplied={onClose}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              <p className="mt-2 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
+                This is the task’s own argument — it has no parent to hand back to.{' '}
+                {benched
+                  ? 'It is benched: dispatch skips it until you put it back, and everything it has is kept.'
+                  : 'Stopping work on it means benching the task — dispatch skips it until you put it back, and the rest of the run carries on.'}{' '}
+                To park one line of work for good, open its star and park it there.
+              </p>
+              <div className="mt-2.5">
+                <Button variant="outline" onClick={() => setBenching(true)}>
+                  {benched ? 'Put this task back…' : 'Stop this task…'}
+                </Button>
+              </div>
+              {benching && (
+                <BenchConfirm
+                  problem={problem}
+                  benched={benched !== true}
+                  onClose={() => setBenching(false)}
+                />
+              )}
+            </>
           )}
         </>
       ) : (

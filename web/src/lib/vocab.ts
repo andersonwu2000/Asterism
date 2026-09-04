@@ -65,6 +65,10 @@ const DECISION_KIND_LABEL: Record<string, string> = {
   Delegate: 'handed off a claim',
   ReturnToParent: 'handed the claim back',
   CloseGroup: 'retired a group',
+  // the theory layer. Not a dispatch of proof work: what comes back is
+  // prose about the wall, so the words say what was ASKED FOR, not who
+  // was sent.
+  Theorize: 'asked for theory',
 }
 
 export function decisionKindLabel(kind: string): string {
@@ -94,6 +98,10 @@ const DECISION_KIND_TITLE: Record<string, string> = {
   CloseGroup:
     'engine term: CloseGroup — retired a group whose claim the route no longer needs' +
     ' (difficulty is never the reason)',
+  Theorize:
+    'engine term: Theorize — handed one wall to the theory layer; a theorist answers with' +
+    ' a document (theorems, attempts on the wall, leads), reviewed before it lands under' +
+    ' documents › agent',
 }
 
 export function decisionKindTitle(kind: string): string {
@@ -145,6 +153,13 @@ const EVENT_LABEL: Record<string, string> = {
   held: 'held',
   paper: 'paper',
   disproof: 'disproof',
+  // RAW decision kind, and the only key here that is one. serve's
+  // timeline (`_decision_events`) maps every other decision to a
+  // lowercase verb and has none for Theorize, so the row arrives
+  // carrying the engine's own word. The day serve mints a verb for it,
+  // move this entry — and the EVENT_TITLE and EVENT_CLS ones — onto
+  // that key and the console's copy travels with it unchanged.
+  Theorize: 'asked for theory',
 }
 
 export function eventLabel(kind: string): string {
@@ -194,6 +209,11 @@ const EVENT_TITLE: Record<string, string> = {
   held: 'looked at the state and changed nothing',
   paper: "a paper was pulled into the problem's sources",
   disproof: 'an attempt to prove the negation instead',
+  Theorize:
+    'engine term: Theorize — one wall was handed to the theory layer. A theorist'
+    + ' answers with a document (theorems, attempts on the wall, leads), reviewed before'
+    + ' it lands under documents › agent. The name beside the verb is the task it was'
+    + ' handed; a rejected run lands nothing',
 }
 
 export function eventTitle(kind: string): string {
@@ -224,6 +244,18 @@ export const EVENT_CLS: Record<string, string> = {
   directive: 'text-ink-dim',
   held: 'text-ink-faint',
   paper: 'text-ink-dim',
+  // asking for theory is the norm, so it earns no accent — the page
+  // mark beside the verb is what identifies the row
+  Theorize: 'text-ink-dim',
+}
+
+/** Does this wear the PAGE mark — the theory layer's one glyph? Two
+ * names for one thing: the decision the strategist writes (`Theorize`,
+ * on a Timeline row) and the worker it seats (`Theorist`, on an engine
+ * lane). The mark is identity, so the rule that decides it lives in one
+ * place rather than as a string literal at each render site. */
+export function isTheory(kind: string): boolean {
+  return kind === 'Theorize' || kind === 'Theorist'
 }
 
 /** dead_attempts.failure_reason — the engine's forensic enum. The words

@@ -163,3 +163,39 @@ describe('renderProse dead citation routes', () => {
     expect(html('see [problem:p1] instead')).toContain('role="link"')
   })
 })
+
+describe('renderProse preamble — provenance is not the document', () => {
+  /*
+   * Live, 2026-09-04: every theory document the landing writes opens
+   * with an HTML comment naming its group, its rounds and the four
+   * lines its reviewer cleared (`pipeline/theorist/landing.py::header`).
+   * The renderer had no notion of a comment, so the whole header came
+   * out as the file's FIRST PARAGRAPH — above the document's own title,
+   * in body ink, reading as prose the author wrote.
+   */
+  const withPreamble = (src: string) =>
+    renderToStaticMarkup(
+      renderProse(src, { mode: 'document', frontmatter: true }) as ReactElement,
+    )
+
+  it('draws a leading comment in the frontmatter frame, not as prose', () => {
+    const out = withPreamble(
+      '<!--\nWritten by the theory layer.\ngroup: 5\ncriterion 1: fine\n-->\n\n# Title\n\nBody.',
+    )
+    expect(out).not.toContain('&lt;!--')
+    expect(out).toContain('group: 5')
+    expect(out).toContain('Body.')
+  })
+
+  it('draws it in the SAME frame the `---` preamble uses — one drawing', () => {
+    expect(withPreamble('<!--\ngroup: 5\n-->\n\n# Title\n\nBody.')).toBe(
+      withPreamble('---\ngroup: 5\n---\n\n# Title\n\nBody.'),
+    )
+  })
+
+  it('leaves a comment that is not at the top exactly where it was', () => {
+    const out = withPreamble('# Title\n\n<!-- a note -->\n\nBody.')
+    expect(out).toContain('&lt;!--')
+    expect(out).toContain('Body.')
+  })
+})

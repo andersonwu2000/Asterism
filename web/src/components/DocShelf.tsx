@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, usePoll } from '../lib/api'
+import { agentRows, theoryLine } from '../lib/docShelf'
+import type { DocEntry, TheoryMeta } from '../lib/docShelf'
 import { Lean } from '../lib/lean'
 import { renderInline, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
 import { ConfirmWindow } from './ConfirmWindow'
+import { PAGE } from './glyphs'
 import LeanDoc from './LeanDoc'
 import TexDoc from './TexDoc'
 import { Button } from './ui'
@@ -32,11 +35,11 @@ import { Button } from './ui'
  * which lands it under `user/papers/`.
  */
 
-export interface DocEntry {
-  path: string
-  kind: 'file' | 'dir'
-  size?: number
-}
+/* The shelf's own vocabulary lives in `lib/docShelf` — a listing entry,
+ * the theory layer's record on one, and the two readings of them with a
+ * right answer. Re-exported here because this file is where the rest of
+ * the console has always asked what a document entry is. */
+export type { DocEntry, TheoryMeta }
 
 /** One paper on its way onto the shelf. Extraction is real server work,
  * so the strip says which file and how far it got. */
@@ -223,7 +226,13 @@ function DeleteDoc({
 
 /** One area's rows, indented by their own path depth. The API returns
  * the tree flat and root-relative on purpose — the nesting is in the
- * string, so "which file is open" stays a comparison. */
+ * string, so "which file is open" stays a comparison.
+ *
+ * `agent/` is read as a log rather than as a folder (`lib/docShelf`):
+ * the theory layer's documents first and newest first, each wearing the
+ * page mark and naming its group, its day and what the review cost. The
+ * four criteria the reviewer cleared ride in the row's `title` — the
+ * verdict is visible in the list without a fifth column for it. */
 function AreaRows({
   entries,
   area,
@@ -237,7 +246,10 @@ function AreaRows({
   dirty: Set<string>
   onPick: (p: string) => void
 }) {
-  const rows = entries.filter((e) => e.path === area || e.path.startsWith(`${area}/`))
+  const rows =
+    area === 'agent'
+      ? agentRows(entries)
+      : entries.filter((e) => e.path.startsWith(`${area}/`))
   if (rows.length === 0)
     return (
       <p className="px-4 py-1.5 text-[11px] leading-relaxed text-ink-faint">
@@ -248,39 +260,50 @@ function AreaRows({
     )
   return (
     <>
-      {rows
-        .filter((e) => e.path !== area)
-        .map((e) => {
-          const depth = e.path.split('/').length - 2
-          const name = e.path.split('/').pop() ?? e.path
-          const on = e.path === selected
-          return (
-            <button
-              key={e.path}
-              className={`flex w-full items-baseline gap-1.5 px-4 py-1 text-left font-mono text-xs ${
-                on ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
-              }`}
-              style={{ paddingLeft: `${16 + depth * 12}px` }}
-              onClick={() => onPick(e.path)}
-              title={e.path}
-            >
-              {e.kind === 'dir' && (
-                <span className="shrink-0 text-ink-faint" aria-hidden>
-                  /
+      {rows.map((e) => {
+        const depth = e.path.split('/').length - 2
+        const name = e.path.split('/').pop() ?? e.path
+        const on = e.path === selected
+        const t = e.theory ?? null
+        return (
+          <button
+            key={e.path}
+            className={`flex w-full items-baseline gap-1.5 px-4 py-1 text-left font-mono text-xs ${
+              on ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
+            }`}
+            style={{ paddingLeft: `${16 + depth * 12}px` }}
+            onClick={() => onPick(e.path)}
+            title={t === null ? e.path : [t.objective, ...t.verdict].join('\n')}
+          >
+            {e.kind === 'dir' && (
+              <span className="shrink-0 text-ink-faint" aria-hidden>
+                /
+              </span>
+            )}
+            {t !== null && (
+              <span className="shrink-0 text-ink-faint" aria-hidden>
+                {PAGE}
+              </span>
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{name}</span>
+              {t !== null && (
+                <span className="tnum block truncate text-[10px] text-ink-faint">
+                  {theoryLine(t)}
                 </span>
               )}
-              <span className="min-w-0 flex-1 truncate">{name}</span>
-              {dirty.has(e.path) && (
-                <span
-                  className="shrink-0 text-star"
-                  title="unsaved changes on this document"
-                >
-                  ·
-                </span>
-              )}
-            </button>
-          )
-        })}
+            </span>
+            {dirty.has(e.path) && (
+              <span
+                className="shrink-0 text-star"
+                title="unsaved changes on this document"
+              >
+                ·
+              </span>
+            )}
+          </button>
+        )
+      })}
     </>
   )
 }
@@ -346,6 +369,8 @@ export default function DocShelf({
   // the column opens on something rather than an empty frame
   const open = selected ?? files[0]?.path ?? null
   const openIsDir = entries.some((e) => e.path === open && e.kind === 'dir')
+  /** the record on what is open, when the theory layer wrote it */
+  const openTheory = entries.find((e) => e.path === open)?.theory ?? null
   const writable = open !== null && isUser(open) && isText(open)
   /** a document whose companion panel IS the page's right half — it has
    * no read mode to toggle into, because the editor already reads */
@@ -715,7 +740,15 @@ export default function DocShelf({
             {open ?? 'nothing open'}
           </span>
           {open !== null && !isUser(open) && (
-            <span className="text-[11px] text-ink-faint">the Assistant's — read-only</span>
+            /* whose writing this is, and it is not always the same
+             * hand: `agent/` holds what the Assistant wrote for the
+             * reader AND what the theory layer landed for its reviewer
+             * (theory_wake_design.md §4). The row says which */
+            <span className="text-[11px] text-ink-faint">
+              {openTheory !== null
+                ? "the theory layer's — read-only"
+                : "the Assistant's — read-only"}
+            </span>
           )}
           {writable && !split && (
             <span className="ml-2 flex items-center gap-1">

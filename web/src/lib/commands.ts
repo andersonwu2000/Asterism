@@ -28,8 +28,15 @@ import type { RunWorker } from './types'
 
 export const GOAL_COMMANDS = ['ConfirmShelve', 'MarkDeliverable', 'Inject', 'Delegate'] as const
 
+/** What the task's own argument offers, where there is no node to aim
+ * at. A `Theory` names no target (`state/commands.target_of` returns
+ * None for it): it is a question about the whole record, filed on the
+ * problem's TOP group whatever the reader is looking at. */
+export const PROBLEM_COMMANDS = ['Theory'] as const
+
 export const COMMAND_KINDS = [
   ...GOAL_COMMANDS,
+  ...PROBLEM_COMMANDS,
   'ReturnToParent',
   'Signal',
 ] as const
@@ -49,6 +56,7 @@ const TITLE: Record<CommandKind, string> = {
   Delegate: 'hand it to a new group',
   ReturnToParent: 'return this group to its parent',
   Signal: 'stop this worker',
+  Theory: 'ask for theory',
 }
 
 export function commandTitle(kind: CommandKind): string {
@@ -68,6 +76,8 @@ export const COMMAND_NOTE: Record<CommandKind, string> = {
   ReturnToParent:
     'closes this group and hands its charter back up. Every line still open under it is retired with it.',
   Signal: 'stops one worker that is running right now.',
+  Theory:
+    'hands one wall to the theory layer. A theorist reads the record, writes a document — theorems, attempts on the wall, leads — and it lands under documents › agent once its reviewer accepts it.',
 }
 
 // ---------------------------------------------------------------------
@@ -118,6 +128,10 @@ export interface CommandFields {
   brief?: string
   pipelineId?: string
   signal?: SignalKind | ''
+  /** Theory: what would suffice — the statement to settle, or the wall */
+  objective?: string
+  /** Theory: where the record stands, so the theorist does not re-derive it */
+  situation?: string
 }
 
 /** Build the payload the appliers already consume.
@@ -133,6 +147,15 @@ export function payloadFor(kind: CommandKind, f: CommandFields): Record<string, 
   const text = (v: string | undefined): string | null => {
     const s = (v ?? '').trim()
     return s === '' ? null : s
+  }
+  if (kind === 'Theory') {
+    // no target and no reason: the question is about the whole record,
+    // and the two boxes below are the whole of what it owes
+    const objective = text(f.objective)
+    if (objective !== null) out.objective = objective
+    const situation = text(f.situation)
+    if (situation !== null) out.situation = situation
+    return out
   }
   if (kind === 'ReturnToParent') {
     if (f.groupId !== undefined && f.groupId !== null) out.group_id = f.groupId
@@ -191,6 +214,8 @@ const FORM_FIELDS = new Set([
   'brief',
   'pipeline_id',
   'signal',
+  'objective',
+  'situation',
 ])
 
 /** Which input a 422 is about, or null.
@@ -254,6 +279,34 @@ export function affectedSummary(p: CommandPreview): string {
   if (groups === 0) return n(goals, 'goal')
   if (goals === 0) return n(groups, 'group')
   return `${p.affected.length} nodes — ${n(goals, 'goal')} and ${n(groups, 'group')}`
+}
+
+/** What the confirm window is reading while the preview is in flight.
+ *
+ * Every other kind closes something, so the wait is about a cascade. A
+ * theory request closes nothing by construction — saying it is reading
+ * what this would close would promise a list that never comes. */
+export function previewWaitLine(kind: CommandKind): string {
+  return kind === 'Theory'
+    ? 'reading the record this asks about…'
+    : 'reading what this would close…'
+}
+
+/** The sentence under an empty cascade, or null when the list speaks
+ * for itself.
+ *
+ * An empty `affected` means two different things. For a command that
+ * acts on a node it means the node is alone — nothing else comes down
+ * with it. For a `Theory` it is not about scope at all: the command
+ * queues a worker and moves no row, so the same empty list read as
+ * "nothing happens" would be the console flatly misreporting what
+ * Confirm does. */
+export function previewNote(kind: CommandKind, p: CommandPreview): string | null {
+  if (kind === 'Theory')
+    return 'nothing closes — a theorist is dispatched to answer; its document lands under documents › agent once its reviewer accepts it.'
+  if (p.affected.length === 0 && !p.pipeline)
+    return 'nothing else closes with it — the command acts on this one thing.'
+  return null
 }
 
 // ---------------------------------------------------------------------

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  COMMAND_KINDS,
+  GOAL_COMMANDS,
   RECEIPT_SLOW_POLLS,
   affectedSummary,
   commandTitle,
@@ -7,6 +9,8 @@ import {
   laneSignal,
   newIdempotencyKey,
   payloadFor,
+  previewNote,
+  previewWaitLine,
   receiptLine,
   receiptStart,
   receiptStep,
@@ -37,6 +41,15 @@ const row = (over: Partial<CommandRow> = {}): CommandRow => ({
   created_at: '2026-09-03T00:00:00Z',
   applied_at: null,
   ...over,
+})
+
+describe('the kinds the queue takes', () => {
+  it('a theory request is a command, but not one a star offers', () => {
+    // it acts on the problem's own argument, not on a node of it —
+    // a picker keyed to a goal would file it somewhere it is not about
+    expect(COMMAND_KINDS).toContain('Theory')
+    expect(GOAL_COMMANDS as readonly string[]).not.toContain('Theory')
+  })
 })
 
 describe('payloadFor', () => {
@@ -75,6 +88,23 @@ describe('payloadFor', () => {
       charter: 'settle the n=4 case',
     })
   })
+
+  it('a Theory names no target — it asks about the whole record', () => {
+    expect(payloadFor('Theory', { objective: ' x ', situation: '' })).toEqual({
+      objective: 'x',
+    })
+    expect(
+      payloadFor('Theory', {
+        targetGoalId: 12,
+        reason: 'because',
+        objective: 'a statement S with S ⇒ the claim',
+        situation: 'g12 came back return_to_parent',
+      }),
+    ).toEqual({
+      objective: 'a statement S with S ⇒ the claim',
+      situation: 'g12 came back return_to_parent',
+    })
+  })
 })
 
 describe('newIdempotencyKey', () => {
@@ -105,6 +135,19 @@ describe('fieldFromDetail', () => {
     expect(
       fieldFromDetail('Signal requires `pipeline_id` — a kill names the one worker it stops (§3.7)'),
     ).toBe('pipeline_id')
+  })
+
+  it('routes the theory request two boxes under the one it names', () => {
+    expect(
+      fieldFromDetail(
+        'Theory requires `objective` — the statement whose proof or refutation would move the claim, or the wall to be crossed — what would SUFFICE (§1.3)',
+      ),
+    ).toBe('objective')
+    expect(
+      fieldFromDetail(
+        'Theory requires `situation` — where the record stands: what has landed, what died and why, what is parked. Without it the Theorist re-derives the record and hands it back in new words (§1.3)',
+      ),
+    ).toBe('situation')
   })
 
   it('is null when the refusal is about no field of the form', () => {
@@ -203,6 +246,42 @@ describe('affectedSummary', () => {
   })
 })
 
+describe('previewNote', () => {
+  const empty = { affected: [], cascade: false, revision: 1 }
+
+  it('an empty preview on a theory request is not "nothing happens"', () => {
+    // every other kind closes something; this one dispatches a worker,
+    // and the empty cascade is the truth about the record, not about
+    // what the command does
+    const note = previewNote('Theory', empty)
+    expect(note).toMatch(/theorist/)
+    expect(note).toMatch(/documents › agent/)
+  })
+
+  it('keeps the old sentence for a kind that acts on one node', () => {
+    expect(previewNote('ConfirmShelve', empty)).toBe(
+      'nothing else closes with it — the command acts on this one thing.',
+    )
+  })
+
+  it('says nothing when the preview already lists what closes', () => {
+    expect(
+      previewNote('ConfirmShelve', {
+        cascade: false,
+        revision: 1,
+        affected: [{ id: 1, kind: 'goal', slug: 'a', status: 'open', effect: 'shelved' }],
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('previewWaitLine', () => {
+  it('says what is being read, and a theory request closes nothing', () => {
+    expect(previewWaitLine('Theory')).toBe('reading the record this asks about…')
+    expect(previewWaitLine('ConfirmShelve')).toBe('reading what this would close…')
+  })
+})
+
 describe('commandTitle', () => {
   it('speaks the reader language, not the enum', () => {
     expect(commandTitle('ConfirmShelve')).toBe('park this goal')
@@ -210,6 +289,7 @@ describe('commandTitle', () => {
     expect(commandTitle('Inject')).toBe('hand it a proof')
     expect(commandTitle('Delegate')).toBe('hand it to a new group')
     expect(commandTitle('ReturnToParent')).toBe('return this group to its parent')
+    expect(commandTitle('Theory')).toBe('ask for theory')
   })
 })
 
@@ -271,6 +351,24 @@ describe('splitPrepared', () => {
       payload: {},
     })}\n\`\`\``
     expect(splitPrepared(src).commands).toHaveLength(0)
+  })
+
+  it('takes a prepared theory request, which carries no target at all', () => {
+    const src = `\`\`\`json\n${JSON.stringify({
+      kind: 'Theory',
+      problem: 'Erdos.p1',
+      payload: {
+        objective: 'a statement S such that S ⇒ the claim',
+        situation: 'the two rewrites died at the same step',
+      },
+    })}\n\`\`\``
+    const out = splitPrepared(src)
+    expect(out.commands).toHaveLength(1)
+    expect(out.commands[0]).toMatchObject({
+      kind: 'Theory',
+      problem: 'Erdos.p1',
+      payload: { objective: 'a statement S such that S ⇒ the claim' },
+    })
   })
 
   it('several prepared commands in one answer all surface', () => {

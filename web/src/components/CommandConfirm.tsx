@@ -6,6 +6,8 @@ import {
   commandTitle,
   fieldFromDetail,
   newIdempotencyKey,
+  previewNote,
+  previewWaitLine,
   receiptLine,
   receiptStart,
   receiptStep,
@@ -357,9 +359,7 @@ export default function CommandConfirm({
       onClose={close}
     >
         {preview === null && error === null && (
-          <div className="late-fade mt-4 text-xs text-ink-faint">
-            reading what this would close…
-          </div>
+          <div className="late-fade mt-4 text-xs text-ink-faint">{previewWaitLine(kind)}</div>
         )}
 
         {preview && (
@@ -394,9 +394,9 @@ export default function CommandConfirm({
               </p>
             )}
             <Affected preview={preview} />
-            {preview.affected.length === 0 && !preview.pipeline && (
-              <p className="mt-3 text-[12px] text-ink-faint">
-                nothing else closes with it — the command acts on this one thing.
+            {previewNote(kind, preview) && (
+              <p className="mt-3 max-w-[52ch] text-[12px] leading-relaxed text-ink-faint">
+                {previewNote(kind, preview)}
               </p>
             )}
           </>

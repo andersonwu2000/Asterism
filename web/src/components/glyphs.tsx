@@ -57,6 +57,25 @@ export const ASSISTANT = (
   </svg>
 )
 
+/** A page — a DOCUMENT. The sky's two shapes are a diamond (data) and
+ * a circle (proposition); the theory layer's product is neither, it is
+ * prose about the wall, so it gets the third shape (DESIGN.md, 2026-09-04).
+ * `currentColor` throughout: the mark is identity, the ink around it is
+ * state, and the two channels stay separate. Sized for a text line. */
+export const PAGE = (
+  <svg
+    width="10"
+    height="11"
+    viewBox="0 0 10 11"
+    fill="none"
+    className="inline-block shrink-0 align-[-1px]"
+    aria-hidden
+  >
+    <rect x="1" y="1" width="8" height="9" rx="1" stroke="currentColor" strokeWidth="1" />
+    <path d="M3 4.25h4M3 6.75h2.5" stroke="currentColor" strokeWidth="0.9" strokeLinecap="round" opacity="0.55" />
+  </svg>
+)
+
 /** A circular glyph button — the shape the two corner affordances
  * share. `live` is a state dot on the mark itself (identity is the
  * shape, state is the brightness: DESIGN.md's two channels), and

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, usePoll } from '../lib/api'
 import { goalCode, goalLabel, groupCode, groupLabel } from '../lib/format'
-import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
+import { EVENT_CLS, eventLabel, eventTitle, failureLabel, isTheory } from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
+import { PAGE } from './glyphs'
 import JudgeVerdict from './JudgeVerdict'
 
 /*
@@ -155,9 +156,16 @@ function Row({
           {TIME_FMT.format(new Date(e.at))}
         </span>
         <span
-          className={`text-xs whitespace-nowrap ${EVENT_CLS[e.kind] ?? 'text-ink-dim'}`}
+          /* the theory layer's rows carry the PAGE mark: the verb says
+             what was asked, the mark says what comes back — a document,
+             which is neither a star nor a brick. Identity is shape, so
+             the ink stays the quiet default (DESIGN.md). */
+          className={`text-xs whitespace-nowrap ${
+            isTheory(e.kind) ? 'flex items-baseline gap-1.5 ' : ''
+          }${EVENT_CLS[e.kind] ?? 'text-ink-dim'}`}
           title={eventTitle(e.kind)}
         >
+          {isTheory(e.kind) && PAGE}
           {eventLabel(e.kind)}
           {e.n !== null && <span className="tnum"> {e.n}</span>}
         </span>

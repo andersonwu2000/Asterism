@@ -401,11 +401,39 @@ function renderTable(lines: string[], keyBase: string): ReactNode {
   )
 }
 
+/** A document's leading PREAMBLE — the part written ABOUT the document
+ * rather than in it — as `{ inner, rest }`, or null when it has none.
+ *
+ * Two spellings reach this renderer. `---` is a settings block. The
+ * HTML comment is what the theory layer's landing writes at the head of
+ * every document it lands (`pipeline/theorist/landing.py::header`): who
+ * it was written for, how many rounds it cost, and the reviewer's line
+ * per criterion. Both are provenance, and until 2026-09-04 only the
+ * first was known here — so a theory document opened with its whole
+ * header as the first PARAGRAPH, in body ink, above its own title.
+ *
+ * The comment ends at the FIRST `-->`: a header is one block, and
+ * scanning to the last one would swallow the document behind it. */
+function preamble(text: string): { inner: string; rest: string } | null {
+  if (text.startsWith('---\n')) {
+    const end = text.indexOf('\n---', 4)
+    if (end > 0) return { inner: text.slice(4, end), rest: text.slice(end + 4) }
+  }
+  if (text.startsWith('<!--')) {
+    const end = text.indexOf('-->', 4)
+    // the comment's own newlines are its delimiters, not blank lines
+    // the reader should see inside the frame
+    if (end > 0)
+      return { inner: text.slice(4, end).replace(/^\n+|\n+$/g, ''), rest: text.slice(end + 3) }
+  }
+  return null
+}
+
 /** Full prose body. `mode: 'chat'` = compact, heading marks stripped;
  * `mode: 'document'` = a reading page — real headings (the Programme's
  * title + sections, a document in the Files tab), more air between
- * blocks. `frontmatter` renders a leading `---` block as a quiet mono
- * preamble instead of prose (a settings block). */
+ * blocks. `frontmatter` renders a leading preamble block as a quiet
+ * mono preamble instead of prose (`preamble` above). */
 export function renderProse(
   text: string,
   {
@@ -415,16 +443,10 @@ export function renderProse(
 ): ReactNode {
   const doc = mode === 'document'
   let fmBlock: ReactNode = null
-  if (frontmatter && text.startsWith('---\n')) {
-    const end = text.indexOf('\n---', 4)
-    if (end > 0) {
-      fmBlock = (
-        <pre className={frameClass({ tone: 'faint' })}>
-          {text.slice(4, end)}
-        </pre>
-      )
-      text = text.slice(end + 4).replace(/^\n+/, '')
-    }
+  const pre = frontmatter ? preamble(text) : null
+  if (pre !== null) {
+    fmBlock = <pre className={frameClass({ tone: 'faint' })}>{pre.inner}</pre>
+    text = pre.rest.replace(/^\n+/, '')
   }
   const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
   return (
