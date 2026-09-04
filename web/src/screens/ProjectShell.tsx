@@ -228,18 +228,35 @@ export default function ProjectShell({
         </nav>
         {/* EXACTLY two, by the owner's ruling (§1.4-2) — the attribute
             is what the smoke suite counts, so a third one added later
-            fails a test instead of quietly landing */}
-        <div data-corner className="ml-auto flex items-center gap-1">
-          <IconButton to="/settings" title="settings — accounts, machine, appearance">
+            fails a test instead of quietly landing.
+
+            Both carry their word (2026-09-05): as two glyphs at residue
+            ink they were the quietest things on the page, and a
+            newcomer could not tell the Assistant was a core function
+            or where settings lived. Settings is a PLACE outside the
+            Project — it stays out of the section menu and reads like
+            the sections (word, dim ink). The Assistant is the header's
+            one ACT, so it is the one framed control: shape says which
+            is which, colour says nothing. They stay in the corner: the
+            drawer opens from the right edge, and its toggle belongs
+            where the drawer comes from. */}
+        <div data-corner className="ml-auto flex items-center gap-2">
+          <IconButton
+            to="/settings"
+            label="Settings"
+            title="settings — accounts, machine, appearance"
+          >
             {GEAR}
           </IconButton>
           <IconButton
+            label="Assistant"
+            framed
             title={
               chatStreaming && !chatOpen
-                ? 'assistant — thinking (Ctrl+/)'
+                ? 'the Assistant is thinking (Ctrl+/)'
                 : chatUnread && !chatOpen
-                  ? 'assistant — an answer is waiting (Ctrl+/)'
-                  : 'assistant — ask about this project (Ctrl+/)'
+                  ? 'an answer is waiting (Ctrl+/)'
+                  : 'ask about this project (Ctrl+/)'
             }
             onClick={onToggleChat}
             active={chatOpen}
