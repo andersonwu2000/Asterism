@@ -224,6 +224,65 @@ def _theorize_result_lines(row) -> list[str]:
     return out
 
 
+def _landing_phrase(row) -> str:
+    """WHAT a step's produced goal actually is, named from the goal's own
+    status — `proved`, `minted` (the row exists, nothing is proved yet),
+    or `aliased` (a dedupe twin carries the content).
+
+    One word used to cover all three: `landed`. For a no-target Inject,
+    `outcome=success` means the goal ROW landed — the mint succeeded and
+    a worker was dispatched — and it says nothing about a proof. The
+    line read `landed: <slug> (status=shelved)`, which is two opposite
+    claims side by side, and a reader who trusted the word over the
+    parenthesis got the wrong one: the 2026-09-04 judge replay of row
+    1345 rebutted a proposal for "re-dispatching landed work" on g10712,
+    an UNPROVED shelved goal that was only proved eleven hours after the
+    proposal was written (`docs/internal/experiments/
+    criterion2_replay_2026-09-04.md` §2.3). Same disease as the
+    2026-08-18 `CATALOG.md` fix: a bullet byte-shaped like a landed
+    brick silently matched unproved goals.
+
+    Derived from the record (`goals.status`, `strategist_decisions.
+    produced_kind`), never from prose — the gate/judgement rule.
+    Shared by the inline scoreboard and its `BATCHES.md` companion so
+    the two surfaces cannot disagree about a step (the `_bucket`
+    precedent above)."""
+    if str(row["produced_kind"] or "") == "alias":
+        return "aliased"
+    return "proved" if str(row["landed_status"] or "") == "proved" \
+        else "minted"
+
+
+def _landing_suffix(row) -> str:
+    """The status parenthesis that goes with `_landing_phrase`.
+
+    A proved landing needs no status (the verb IS the status); an
+    unproved one carries its exact state AND the word `unproved`, so the
+    line cannot be skimmed into its opposite. `is_deliverable` rides
+    along because a second `MarkDeliverable` on the same goal bounces at
+    the commit gate."""
+    try:
+        marked = int(row["landed_marked"] or 0)
+    except (IndexError, KeyError, TypeError, ValueError):
+        marked = 0
+    mark = ", already a deliverable" if marked else ""
+    status = str(row["landed_status"] or "")
+    if status == "proved":
+        return f" ({mark[2:]})" if mark else ""
+    return f" (status={status}, unproved{mark})"
+
+
+def _alias_twin(row) -> str:
+    """The decl a dedupe alias delegates to (`goals.alias_target_id`),
+    when it is an in-problem goal. A `library_alias` has no in-DB goal —
+    the canonical is a committed `Library/` decl — so there is nothing
+    to name and the caller falls back to the bare form."""
+    try:
+        return str(row["alias_twin_slug"] or "")
+    except (IndexError, KeyError):
+        return ""
+
+
 def _prose_label(decision_kind: "str | None") -> str:
     """What to CALL a decision's prose when showing it back to the agent.
 
@@ -346,8 +405,16 @@ def _write_batches_companion(conn: sqlite3.Connection,
             lines.append(f"### step {step_idx(r)} — outcome"
                          f" `{r['outcome'] or '(none)'}`")
             if r["landed_slug"]:
-                lines.append(f"landed `{r['landed_slug']}`"
-                             f" — `{r['landed_path'] or '?'}`")
+                # Same three words as the inline scoreboard, from the
+                # same two functions: this file carried a bare
+                # `landed <slug>` with no status at all, which is
+                # strictly worse than the line the 2026-09-04 replay
+                # misread.
+                twin = _alias_twin(r)
+                lines.append(f"{_landing_phrase(r)} `{r['landed_slug']}`"
+                             + (f" → `{twin}`" if twin else "")
+                             + _landing_suffix(r)
+                             + f" — `{r['landed_path'] or '?'}`")
             lines += _step_artifact_lines(conn, r)
             lines += ["", f"#### {_prose_label(r['decision_kind'])}", "",
                       _step_prose(r, empty="(none)"), ""]
@@ -502,9 +569,11 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         f" d.decision_kind, d.produced_group_id, d.produced_goal_id,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
         f" g.is_deliverable AS landed_marked,"
-        f" g.statement AS landed_statement, g.lean_path AS landed_path"
+        f" g.statement AS landed_statement, g.lean_path AS landed_path,"
+        f" t.slug AS alias_twin_slug"
         f" FROM strategist_decisions d"
         f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
+        f" LEFT JOIN goals t ON t.id = g.alias_target_id"
         f" WHERE d.batch_id IN ({placeholders})"
         f"   AND d.decision_kind IN {db._BATCH_KINDS_SQL}"
         f" ORDER BY MAX(d.updated_at) OVER (PARTITION BY d.batch_id) DESC,"
@@ -610,9 +679,14 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                         f"({_landed()}) — nothing new "
                         f"was minted; your statement matched it")
                 elif kind == "alias":
+                    # The twin is a column, so name it: the reader used
+                    # to have to open the file to learn WHICH decl
+                    # carries the content.
+                    twin = _alias_twin(r)
                     out.append(
-                        f"  landed as ALIAS: `{r['landed_slug']}` "
-                        f"({_landed()})"
+                        f"  aliased: `{r['landed_slug']}`"
+                        + (f" → `{twin}`" if twin else "")
+                        + _landing_suffix(r)
                         + (f" — `{stmt}`" if stmt else "")
                         + " — an existing decl carries the content; "
                           "cite this slug")
@@ -642,15 +716,21 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     # the signature below is whole and the brief is whole
                     # in BATCHES.md, so the comparison is available to
                     # the one reader who can actually read.
+                    #
+                    # `proved` / `minted` rather than one word for both
+                    # (2026-09-04): a no-target Inject's `success` is
+                    # the MINT succeeding, and `landed: <slug>
+                    # (status=shelved)` put the two opposite readings on
+                    # one line — see `_landing_phrase`.
                     out.append(
-                        f"  landed: `{r['landed_slug']}` "
-                        f"({_landed()})"
+                        f"  {_landing_phrase(r)}: `{r['landed_slug']}`"
+                        + _landing_suffix(r)
                         + (f" — `{stmt}`" if stmt else ""))
             elif str(r["outcome"] or "") in ("success", "proved"):
                 out.append(
-                    "  landed: (nothing attributed to this step — the "
-                    "brick may have landed renamed/merged; grep "
-                    "CATALOG.md before treating it as landed)")
+                    "  no goal attributed to this step — the brick may "
+                    "have landed renamed/merged; grep CATALOG.md before "
+                    "treating it as proved")
             if r["landed_path"]:
                 # Where the landed idioms live. The strategist had to
                 # hunt for `proofs/L_line_param.lean` to confirm a

@@ -523,7 +523,7 @@ def test_batch_outcomes_filter_non_inject_and_flag_unattributed(
     body = "\n".join(lines)
     assert "(1 steps)" in body            # EmitDirective row filtered out
     assert body.count("**step") == 1
-    assert "nothing attributed to this step" in body  # NULL produced_goal
+    assert "no goal attributed to this step" in body  # NULL produced_goal
 
 
 def test_inject_batch_done_surfaces_briefs_and_outcomes(
@@ -618,7 +618,7 @@ def test_inject_batch_done_surfaces_landed_decl(
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
-    assert "landed: `band_aug_bridge` (status=proved)" in text
+    assert "proved: `band_aug_bridge`" in text
     assert "aug_band = aug_sphere ∘ band_iso" in text
 
 
@@ -1423,8 +1423,8 @@ def test_delivered_vs_briefed_is_not_decided_by_a_regex(
     assert "RENAMED" not in text
     # What the Strategist needs to judge IS there: both landed slugs
     # with their status, and a pointer to the untruncated briefs.
-    assert "landed: `exists_fiber_count_eq`" in text
-    assert "landed: `g_mono`" in text
+    assert "proved: `exists_fiber_count_eq`" in text
+    assert "proved: `g_mono`" in text
     assert "BATCHES.md" in text
 
 
@@ -1564,7 +1564,7 @@ def test_a_normalized_slug_rename_is_narrated_by_nobody(
     text = out.read_text(encoding="utf-8")
     assert "RENAMED" not in text
     assert "RETARGETED" not in text
-    assert "landed: `is_perfect_cube`" in text
+    assert "proved: `is_perfect_cube`" in text
 
 
 def test_outcome_line_reads_full_signature_for_def(
@@ -2183,3 +2183,103 @@ def test_strategist_stats_name_every_section_they_measure(
         # minus its title line, so a dropped section shows up here.
         title = text.split("\n", 1)[0]
         assert stats["total_bytes"] == len(text) - len(title) - 1, trigger
+
+
+def test_batch_scoreboard_says_minted_not_landed_for_an_unproved_goal(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A no-target Inject's `outcome=success` means the goal ROW landed
+    — the mint succeeded — not that a proof did. The scoreboard printed
+    `landed: <slug> (status=shelved)` for exactly that, and a judge read
+    the word instead of the parenthesis: 2026-09-04 replay of row 1345
+    fired "re-dispatching landed work" on g10712, an UNPROVED shelved
+    goal whose proof arrived eleven hours after the proposal
+    (`docs/internal/experiments/criterion2_replay_2026-09-04.md` §2.3).
+    The three landings are now named from the goal's own status, so no
+    reader has to decide which half of the line to believe."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-mint",
+        briefs=["## Need\nthe cap-face matching brick",
+                "## Need\nthe boundary-to-main reduction"],
+        outcomes=["success", "success"])
+    for i, (slug, status) in enumerate(
+            [("actual_roots_free_cap_face", "shelved"),
+             ("boundary_implies_main", "proved")]):
+        gid = db.insert_goal(
+            conn, problem="p", slug=slug,
+            lean_path=f"Problems/p/proofs/L_{slug}.lean",
+            statement="Prop", origin="forward", status=status)
+        conn.execute(
+            "UPDATE strategist_decisions SET produced_goal_id = ?,"
+            " produced_kind = 'minted' WHERE id = ?", (gid, ids[i]))
+    conn.commit()
+    body = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=tmp_path))
+    assert "minted: `actual_roots_free_cap_face` (status=shelved," \
+           " unproved)" in body, body
+    assert "proved: `boundary_implies_main`" in body, body
+    # The word that made the two indistinguishable is gone from both.
+    assert "landed: `actual_roots_free_cap_face`" not in body, body
+    assert "landed: `boundary_implies_main`" not in body, body
+
+
+def test_batches_companion_names_the_landing_the_same_way(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """`BATCHES.md` is the second reader of the same rows and printed a
+    bare `landed <slug>` with no status at all — strictly worse than the
+    inline line the 2026-09-04 replay misread. One vocabulary for both
+    surfaces, so they cannot disagree about a step (the `_bucket`
+    precedent)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-comp",
+        briefs=["## Need\nthe residual compensation brick"],
+        outcomes=["success"])
+    gid = db.insert_goal(
+        conn, problem="p", slug="noncap_residual_compensation",
+        lean_path="Problems/p/proofs/L_noncap_residual_compensation.lean",
+        statement="Prop", origin="forward", status="shelved")
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id = ?,"
+        " produced_kind = 'minted' WHERE id = ?", (gid, ids[0]))
+    conn.commit()
+    phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=tmp_path)
+    companion = (tmp_path / "BATCHES.md").read_text(encoding="utf-8")
+    assert "minted `noncap_residual_compensation` (status=shelved," \
+           " unproved)" in companion, companion
+    assert "landed `noncap_residual_compensation`" not in companion
+
+
+def test_batch_scoreboard_names_the_alias_twin(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A dedupe alias said `landed as ALIAS: <slug>` and left the reader
+    to open the file to learn WHICH decl carries the content. The twin
+    is a column (`goals.alias_target_id`), so it belongs on the line."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-alias",
+        briefs=["## Need\nthe fibre-key bound"], outcomes=["success"])
+    twin = db.insert_goal(
+        conn, problem="p", slug="canonical_fibre_bound",
+        lean_path="Problems/p/proofs/L_canonical_fibre_bound.lean",
+        statement="Prop", origin="forward", status="proved")
+    gid = db.insert_goal(
+        conn, problem="p", slug="restated_fibre_bound",
+        lean_path="Problems/p/proofs/L_restated_fibre_bound.lean",
+        statement="Prop", origin="forward", status="proved")
+    db.set_alias_target(conn, gid, twin)
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id = ?,"
+        " produced_kind = 'alias' WHERE id = ?", (gid, ids[0]))
+    conn.commit()
+    body = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=tmp_path))
+    assert "aliased: `restated_fibre_bound` → `canonical_fibre_bound`" \
+        in body, body
