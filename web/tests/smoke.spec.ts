@@ -82,7 +82,7 @@ test('project shell: six sections, two corner glyphs', async ({ page, request })
     'Tasks',
     'Sky',
     'Groups',
-    'Engine room',
+    'Engine',
     'Timeline',
     'Documents',
   ])
@@ -138,7 +138,7 @@ test('sky: the constellation renders, or says why it cannot', async ({
   expect(page.url()).toContain(encodeURIComponent(s.task))
 })
 
-test('engine room: slots, plan usage, engine log', async ({ page, request }) => {
+test('engine: slots, plan usage, engine log', async ({ page, request }) => {
   await openShelf(page, request, 'engine', false)
   await expect(page.getByText('slots')).toBeVisible()
   // idle or live, the room says which - never a blank panel

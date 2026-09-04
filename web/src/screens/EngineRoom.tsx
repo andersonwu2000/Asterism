@@ -4,7 +4,8 @@ import { duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { emitGoalHover, emitGoalOpen } from '../lib/goalFocus'
-import { isTheory, providerLabel, windowLabel } from '../lib/vocab'
+import { cycleLine, isTheory, providerLabel, windowLabel } from '../lib/vocab'
+import type { CycleSubject } from '../lib/vocab'
 import { scopedRows } from '../lib/quota'
 import { projectPath } from '../lib/projectRoute'
 import { navigate } from '../lib/router'
@@ -21,7 +22,8 @@ import { UsageLedger } from './Usage'
 import type { Meta, RunStatus, RunWorker } from '../lib/types'
 
 /*
- * The engine room (human_interface_design.md §1.4-2, fourth bullet):
+ * The Engine section (human_interface_design.md §1.4-2, fourth bullet;
+ * the menu called it "Engine room" until 2026-09-05):
  * the SLOTS pulled out from under the sky, plus the engine log, the
  * usage ledger and each provider's quota bar. Read-only observation —
  * starting and stopping a run is the Tasks section's job, because that
@@ -148,24 +150,30 @@ const STRATEGIST_MODE: Record<string, string> = {
  * Copy describing a machine that no longer exists is worse than no
  * copy: a reader believes it. */
 
-/** The proposal↔reviewer cycle, narrated (research mode): the
- * strategist's main deliverable is the Programme, and the argument
- * with the adversarial reviewer lives in files the plan note never
- * touches — without this line the card reads as half an hour of
- * silence (owner, 2026-07-18). */
-export function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
-  const dur = cycle.since_sec !== null ? duration(cycle.since_sec) : null
-  const text =
-    cycle.phase === 'proposing'
-      ? 'drafting a programme proposal — the adversarial reviewer reads it next'
-      : cycle.phase === 'judging'
-        ? `round ${cycle.round} — the reviewer is examining the proposal${dur ? ` (${dur})` : ''}`
-        : cycle.phase === 'revising'
-          ? `round ${cycle.round} — rejected with ${cycle.objections.length} objection${cycle.objections.length === 1 ? '' : 's'}; revising the proposal`
-          : `round ${cycle.round} — passed review; committing the programme`
+/** The argument with a reviewer, narrated: the strategist's main
+ * deliverable is the Programme, and the argument with the adversarial
+ * reviewer lives in files the plan note never touches — without this
+ * line the card reads as half an hour of silence (owner, 2026-07-18).
+ * The Theorist's document goes through the same shape of review
+ * (`subject: 'document'`, 2026-09-05), so it wears the same line with
+ * its own nouns; the sentence itself is `vocab.cycleLine`, tested. */
+export function CycleLine({
+  cycle,
+  subject = 'programme',
+}: {
+  cycle: NonNullable<RunWorker['cycle']>
+  subject?: CycleSubject
+}) {
+  const text = cycleLine(cycle, subject)
   return (
     <div className="mt-1.5 text-[11px] text-ink-dim">
-      <span title="the proposal-review cycle: the strategist argues its research programme past an adversarial reviewer before it can act on it">
+      <span
+        title={
+          subject === 'document'
+            ? 'the review cycle: the theorist argues its document past a reviewer before it lands under Documents'
+            : 'the proposal-review cycle: the strategist argues its research programme past an adversarial reviewer before it can act on it'
+        }
+      >
         {text}
       </span>
       {cycle.objections.length > 0 && (
@@ -389,6 +397,9 @@ function Lane({
         />
       )}
       {w.kind === 'Strategist' && w.cycle && <CycleLine cycle={w.cycle} />}
+      {/* the theory layer's document goes past its reviewer the same
+          way — round, ruling, objections, on the Theorist's own files */}
+      {isTheory(w.kind) && w.cycle && <CycleLine cycle={w.cycle} subject="document" />}
       {w.file ? (
         // the tail folds away (owner: the sky owns the space) — the
         // activity line IS the summary, one click opens the text

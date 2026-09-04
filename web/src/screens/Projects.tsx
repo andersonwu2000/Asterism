@@ -339,7 +339,13 @@ export default function Projects() {
           <span className="font-display text-[17px] font-medium">Asterism</span>
         </span>
         <div className="ml-auto flex items-center gap-1">
-          <IconButton to="/settings" title="settings — accounts, machine, appearance">
+          {/* the same labelled control the Project header wears, so the
+              place is named the same way from both doors */}
+          <IconButton
+            to="/settings"
+            label="Settings"
+            title="settings — accounts, machine, appearance"
+          >
             {GEAR}
           </IconButton>
           <HelpButton />

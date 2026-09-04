@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   EVENT_CLS,
   countWord,
+  cycleLine,
   decisionKindLabel,
   decisionKindTitle,
   eventLabel,
@@ -108,5 +109,47 @@ describe('countWord', () => {
   it('leaves every other row`s count the bare number it already was', () => {
     expect(countWord('failed', 2)).toBe('2')
     expect(countWord('rev', 11)).toBe('11')
+  })
+})
+
+/* The review cycle, narrated. One sentence shape for both arguments the
+ * machine holds with a reviewer — a Programme proposal and a theory
+ * document — because a reader learns the rhythm once; the NOUN changes,
+ * so a Theorist card never claims to be drafting a programme. */
+describe('cycleLine', () => {
+  const at = (phase: string, round: number, objections: string[] = []) =>
+    ({ phase, round, objections, since_sec: null }) as never
+
+  it('narrates a document with the document`s own words', () => {
+    expect(cycleLine(at('drafting', 0), 'document')).toBe(
+      'writing the document — the reviewer reads it next',
+    )
+    expect(cycleLine(at('judging', 1), 'document')).toBe(
+      'round 1 — the reviewer is examining the document',
+    )
+    expect(cycleLine(at('revising', 2, ['a', 'b']), 'document')).toBe(
+      'round 2 — rejected with 2 objections; revising the document',
+    )
+    expect(cycleLine(at('passed', 2), 'document')).toBe(
+      'round 2 — passed review; landing the document under Documents',
+    )
+  })
+
+  it('keeps the programme`s words for the strategist', () => {
+    expect(cycleLine(at('proposing', 0), 'programme')).toBe(
+      'drafting a programme proposal — the adversarial reviewer reads it next',
+    )
+    expect(cycleLine(at('revising', 1, ['a']), 'programme')).toBe(
+      'round 1 — rejected with 1 objection; revising the proposal',
+    )
+    expect(cycleLine(at('passed', 3), 'programme')).toBe(
+      'round 3 — passed review; committing the programme',
+    )
+  })
+
+  it('shows how long the reviewer has been out', () => {
+    expect(
+      cycleLine({ phase: 'judging', round: 1, objections: [], since_sec: 90 }, 'document'),
+    ).toBe('round 1 — the reviewer is examining the document (1m 30s)')
   })
 })

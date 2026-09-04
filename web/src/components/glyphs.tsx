@@ -76,12 +76,20 @@ export const PAGE = (
   </svg>
 )
 
-/** A circular glyph button — the shape the two corner affordances
- * share. `live` is a state dot on the mark itself (identity is the
- * shape, state is the brightness: DESIGN.md's two channels), and
- * `pulse` is the same dot blinking — §1.4-2 asks the closed Assistant
- * glyph to carry two states, and brightness/blink is the axis that
- * carries them without touching the mark's identity. */
+/** A glyph button — the shape the corner affordances share. `live` is
+ * a state dot on the mark itself (identity is the shape, state is the
+ * brightness: DESIGN.md's two channels), and `pulse` is the same dot
+ * blinking — §1.4-2 asks the closed Assistant glyph to carry two
+ * states, and brightness/blink is the axis that carries them without
+ * touching the mark's identity.
+ *
+ * With a `label` the mark carries its word (2026-09-05). Two 15px
+ * glyphs at residue ink were the whole of the corner, and a newcomer
+ * could not tell that one of them was a core function or that the
+ * other was where settings live — a pictogram asks to be decoded, a
+ * word does not. `framed` draws the control rung's border around it:
+ * the one ACT in a header of places, told apart by shape rather than
+ * by colour. */
 export function IconButton({
   children,
   title,
@@ -90,6 +98,8 @@ export function IconButton({
   active,
   live,
   pulse,
+  label,
+  framed,
 }: {
   children: ReactNode
   title: string
@@ -101,29 +111,50 @@ export function IconButton({
   live?: boolean
   /** it is working right now */
   pulse?: boolean
+  /** the word beside the mark — the button reads as a labelled control */
+  label?: string
+  /** a bordered control (rounded-lg, the control rung) — for an act,
+   * never for a place; only meaningful with a label */
+  framed?: boolean
 }) {
-  const cls = `relative inline-flex cursor-pointer rounded-full p-1.5 transition-colors ${
-    active ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:bg-surface-2 hover:text-ink'
-  }`
+  const cls =
+    label === undefined
+      ? `relative inline-flex cursor-pointer rounded-full p-1.5 transition-colors ${
+          active ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:bg-surface-2 hover:text-ink'
+        }`
+      : framed
+        ? `relative inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+            active
+              ? 'border-edge-strong bg-surface-2 text-ink'
+              : 'border-edge bg-surface text-ink hover:border-edge-strong hover:bg-surface-2'
+          }`
+        : `relative inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+            active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2 hover:text-ink'
+          }`
   const dot =
     pulse || live ? (
       <span
-        className={`absolute top-1 right-1 h-1.5 w-1.5 rounded-full ${
-          pulse ? 'animate-pulse bg-ink-dim' : 'bg-starlight'
-        }`}
+        className={`absolute h-1.5 w-1.5 rounded-full ${
+          label === undefined ? 'top-1 right-1' : '-top-0.5 -right-0.5'
+        } ${pulse ? 'animate-pulse bg-ink-dim' : 'bg-starlight'}`}
       />
     ) : null
+  const body = (
+    <>
+      {children}
+      {label !== undefined && <span>{label}</span>}
+      {dot}
+    </>
+  )
   if (to !== undefined)
     return (
       <Link to={to} title={title} className={cls}>
-        {children}
-        {dot}
+        {body}
       </Link>
     )
   return (
     <button title={title} onClick={onClick} className={cls}>
-      {children}
-      {dot}
+      {body}
     </button>
   )
 }

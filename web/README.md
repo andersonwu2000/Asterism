@@ -65,7 +65,7 @@ are exactly two frames and no sidebar.
   and everything it has is kept. Its own window, because a bench is not
   a queued command; the shelf marks a benched row, since the status chip
   reads "paused" either way.
-- **Engine room** — observation: slots (one lane per agent, its unit,
+- **Engine** — observation: slots (one lane per agent, its unit,
   its statement, the tail it is writing, plus `cold-building sN` rows
   for promotion builds `in_flight` cannot see), each provider's quota
   bars, this Project's ledger, and the engine log. The one thing it can
