@@ -8,6 +8,7 @@ import {
   defaultTask,
   projectPath,
   railVisible,
+  shelfOrder,
   tasksOf,
 } from '../lib/projectRoute'
 import type { ProjectRoute, Section } from '../lib/projectRoute'
@@ -118,8 +119,12 @@ function TaskRail({
           ‹
         </button>
       </div>
+      {/* the shelf's ONE order (projectRoute.shelfOrder) — the column,
+          the shelf table and the task a section opens on are three
+          readings of one list, and a reader switching section must not
+          watch it reshuffle */}
       <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-        {rows.map((p) => (
+        {shelfOrder(rows).map((p) => (
           <TaskRow
             key={p.name}
             p={p}

@@ -105,29 +105,46 @@ export function tasksOf(rows: BoardProblem[], project: string): BoardProblem[] {
   return rows.filter((p) => p.project === project)
 }
 
-/** Which task a section opens on when the address names none.
+/** How much of the reader's attention a task has earned. Lower is
+ * sooner: the human's own move, then what is stuck, then what is
+ * moving, then everything settled. */
+function attention(p: BoardProblem): number {
+  return p.status === 'awaiting_human' || p.status === 'signoff_pending'
+    ? 0
+    : p.status === 'stalled'
+      ? 1
+      : p.status === 'proving' || p.in_flight > 0
+        ? 2
+        : 3
+}
+
+/** THE order the shelf is read in, wherever it is read.
  *
- * Attention order, the same order the shelf itself is read in: what is
- * blocked on the human, then what the engine is working, then whatever
- * moved most recently. Name order is the last resort — deterministic,
- * so a fresh Project does not open on a different task each reload. */
-export function defaultTask(rows: BoardProblem[]): string | null {
-  if (rows.length === 0) return null
-  const rank = (p: BoardProblem): number =>
-    p.status === 'awaiting_human' || p.status === 'signoff_pending'
-      ? 0
-      : p.status === 'stalled'
-        ? 1
-        : p.status === 'proving' || p.in_flight > 0
-          ? 2
-          : 3
-  const best = [...rows].sort(
+ * The task column, the shelf table and "which task does this section
+ * open on" are three readings of one list, and until 2026-09-04 they
+ * were three different orders — API order, a private status list, and
+ * a third rank inside `defaultTask`. Switching section reshuffled the
+ * list under the reader, which says the shelf changed when nothing
+ * did. One function, so a change of mind about attention lands on all
+ * three at once.
+ *
+ * Inside a rank: what moved most recently, and a task that has never
+ * moved last (an absent `last_event` sorts below any timestamp). Name
+ * order is the last resort — deterministic, so a fresh Project does
+ * not reshuffle itself on every reload. */
+export function shelfOrder(rows: BoardProblem[]): BoardProblem[] {
+  return [...rows].sort(
     (a, b) =>
-      rank(a) - rank(b) ||
+      attention(a) - attention(b) ||
       (b.last_event ?? '').localeCompare(a.last_event ?? '') ||
       a.name.localeCompare(b.name),
-  )[0]
-  return best.name
+  )
+}
+
+/** Which task a section opens on when the address names none: the top
+ * of the shelf as the shelf itself draws it. */
+export function defaultTask(rows: BoardProblem[]): string | null {
+  return shelfOrder(rows)[0]?.name ?? null
 }
 
 /** The task column is a chooser; with nothing to choose it is chrome

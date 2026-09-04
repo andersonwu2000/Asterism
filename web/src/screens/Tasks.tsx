@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
-import { projectPath } from '../lib/projectRoute'
+import { projectPath, shelfOrder } from '../lib/projectRoute'
 import { scopeCovers } from '../lib/programmeFocus'
 import { RunConfirm } from '../components/CommandConfirm'
 import { ConfirmWindow } from '../components/ConfirmWindow'
@@ -31,17 +31,6 @@ import type { BoardProblem, DaemonStatus } from '../lib/types'
 /* ------------------------------------------------------------------ */
 /* the shelf                                                          */
 /* ------------------------------------------------------------------ */
-
-const STATUS_ORDER = [
-  'awaiting_human',
-  'signoff_pending',
-  'stalled',
-  'proving',
-  'paused',
-  'ingested',
-  'bridged',
-  'idle',
-]
 
 const WEEK_MS = 7 * 86400_000
 
@@ -285,13 +274,10 @@ function Shelf({ project, rows }: { project: string; rows: BoardProblem[] }) {
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 5000)
   const q = query.trim().toLowerCase()
   const filtering = q !== ''
-  const sorted = [...rows]
-    .filter((p) => q === '' || p.name.toLowerCase().includes(q))
-    .sort(
-      (a, b) =>
-        STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
-        (b.last_event ?? '').localeCompare(a.last_event ?? ''),
-    )
+  // the shelf's ONE order, shared with the task column and with the
+  // task a section opens on — the sections below GROUP this list, they
+  // do not re-rank it
+  const sorted = shelfOrder(rows.filter((p) => q === '' || p.name.toLowerCase().includes(q)))
   const now = Date.now()
   const needsYou = sorted.filter(
     (p) =>

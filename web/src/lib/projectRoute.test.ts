@@ -5,6 +5,7 @@ import {
   parseProjectRoute,
   projectPath,
   railVisible,
+  shelfOrder,
   tasksOf,
 } from './projectRoute'
 import type { BoardProblem } from './types'
@@ -88,7 +89,72 @@ describe('projectPath', () => {
   })
 })
 
+describe('shelfOrder', () => {
+  // Live, 2026-09-04: the same shelf was ordered three ways — the task
+  // column in API order, the shelf table by its own status list, the
+  // default task by a third rule — so switching section reshuffled the
+  // list under the reader. One attention order, read everywhere.
+  it('puts the human`s move first, then what is stuck, then what moves', () => {
+    const rows = [
+      task('Erdos.quiet'),
+      task('Erdos.moving', { status: 'proving' }),
+      task('Erdos.stuck', { status: 'stalled' }),
+      task('Erdos.yours', { status: 'awaiting_human' }),
+    ]
+    expect(shelfOrder(rows).map((p) => p.name)).toEqual([
+      'Erdos.yours',
+      'Erdos.stuck',
+      'Erdos.moving',
+      'Erdos.quiet',
+    ])
+  })
+
+  it('counts a signoff as the human`s move and an agent in flight as motion', () => {
+    const rows = [
+      task('Erdos.a', { in_flight: 2 }),
+      task('Erdos.b', { status: 'signoff_pending' }),
+    ]
+    expect(shelfOrder(rows).map((p) => p.name)).toEqual(['Erdos.b', 'Erdos.a'])
+  })
+
+  it('reads the newest first inside one rank', () => {
+    const rows = [
+      task('Erdos.old', { last_event: '2026-08-01T00:00:00+00:00' }),
+      task('Erdos.new', { last_event: '2026-08-30T00:00:00+00:00' }),
+    ]
+    expect(shelfOrder(rows).map((p) => p.name)).toEqual(['Erdos.new', 'Erdos.old'])
+  })
+
+  it('keeps a task that has never moved below one that has', () => {
+    const rows = [
+      task('Erdos.never', { last_event: null }),
+      task('Erdos.once', { last_event: '2026-08-01T00:00:00+00:00' }),
+    ]
+    expect(shelfOrder(rows).map((p) => p.name)).toEqual(['Erdos.once', 'Erdos.never'])
+  })
+
+  it('breaks a tie by name, so a reload does not reshuffle the shelf', () => {
+    const rows = [task('Erdos.b'), task('Erdos.a')]
+    expect(shelfOrder(rows).map((p) => p.name)).toEqual(['Erdos.a', 'Erdos.b'])
+  })
+
+  it('leaves the caller`s array alone — the shelf is read, not rewritten', () => {
+    const rows = [task('Erdos.b'), task('Erdos.a')]
+    shelfOrder(rows)
+    expect(rows.map((p) => p.name)).toEqual(['Erdos.b', 'Erdos.a'])
+  })
+})
+
 describe('defaultTask', () => {
+  it('is the first row of the one order — the address agrees with the list', () => {
+    const rows = [
+      task('Erdos.a', { last_event: '2026-08-30T00:00:00+00:00' }),
+      task('Erdos.b', { status: 'stalled' }),
+      task('Erdos.c', { status: 'awaiting_human' }),
+    ]
+    expect(defaultTask(rows)).toBe(shelfOrder(rows)[0].name)
+  })
+
   it('is null for an empty shelf — an empty Project is legal', () => {
     expect(defaultTask([])).toBeNull()
   })
