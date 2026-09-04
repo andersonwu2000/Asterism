@@ -268,7 +268,18 @@ function RunBar({
   )
 }
 
-function Shelf({ project, rows }: { project: string; rows: BoardProblem[] }) {
+function Shelf({
+  project,
+  rows,
+  loaded,
+}: {
+  project: string
+  rows: BoardProblem[]
+  /** has the shelf answered? an unanswered question is not an answer of
+   * zero, and saying "No tasks on this shelf yet" for the beat before
+   * the first poll lands is a false sentence on every open */
+  loaded: boolean
+}) {
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 5000)
@@ -339,9 +350,13 @@ function Shelf({ project, rows }: { project: string; rows: BoardProblem[] }) {
       </div>
 
       {rows.length === 0 ? (
-        <div className="py-16 text-center text-xs text-ink-faint">
-          No tasks on this shelf yet — “New task” describes one in plain language.
-        </div>
+        loaded ? (
+          <div className="py-16 text-center text-xs text-ink-faint">
+            No tasks on this shelf yet — “New task” describes one in plain language.
+          </div>
+        ) : (
+          <div className="late-fade py-16 text-center text-xs text-ink-faint">Loading…</div>
+        )
       ) : (
         <table className="w-full table-fixed border-collapse text-left">
           <colgroup>
@@ -522,12 +537,14 @@ export default function Tasks({
   project,
   rows,
   problem,
+  loaded,
 }: {
   project: string
   rows: BoardProblem[]
   problem: string | null
+  loaded: boolean
 }) {
-  if (problem === null) return <Shelf project={project} rows={rows} />
+  if (problem === null) return <Shelf project={project} rows={rows} loaded={loaded} />
   return (
     <OneTask
       key={problem}

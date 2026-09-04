@@ -160,6 +160,14 @@ export default function ProjectShell({
     5000,
   )
   const rows = useMemo(() => tasksOf(data?.problems ?? [], project), [data, project])
+  // Has the shelf ANSWERED yet? Before the first reply `rows` is empty
+  // for the same reason an empty shelf is — so every screen below said
+  // "nothing here" for a beat on every open, about a Project holding
+  // eleven tasks (2026-09-04). An unanswered question is not an answer
+  // of zero, and `data` is null until one arrives (an error before the
+  // first reading leaves it null too, which is the honest reading: we
+  // still do not know what is on this shelf).
+  const loaded = data !== null
 
   // The address and the view must agree: a task section reached without
   // a task picks one (the attention order every other surface reads in)
@@ -255,7 +263,7 @@ export default function ProjectShell({
             from data rather than from a spinner. */}
         <main className="min-w-0 flex-1 overflow-y-auto">
           {section === 'tasks' ? (
-            <Tasks project={project} rows={rows} problem={problem} />
+            <Tasks project={project} rows={rows} problem={problem} loaded={loaded} />
           ) : section === 'sky' ? (
             current ? (
               <Sky
@@ -265,7 +273,12 @@ export default function ProjectShell({
                 initialGoal={route.goal}
               />
             ) : (
-              <Empty project={project} />
+              /* three different silences, and only one of them is
+                 "there is nothing here": the shelf has not answered
+                 (wait), it answered with tasks and the address is
+                 being rewritten to one (a blink — say nothing), or it
+                 answered empty (say so) */
+              <Waiting loaded={loaded} empty={rows.length === 0} project={project} />
             )
           ) : section === 'groups' ? (
             current ? (
@@ -276,7 +289,7 @@ export default function ProjectShell({
                 benched={rows.find((p) => p.name === current)?.benched}
               />
             ) : (
-              <Empty project={project} />
+              <Waiting loaded={loaded} empty={rows.length === 0} project={project} />
             )
           ) : section === 'engine' ? (
             <EngineRoom project={project} pin={problem} rows={rows} />
@@ -306,12 +319,35 @@ export default function ProjectShell({
               problem={current ?? defaultTask(rows)}
               tasks={rows.map((p) => p.name)}
               path={route.rest}
+              loaded={loaded}
             />
           )}
         </main>
       </div>
     </div>
   )
+}
+
+/** What a task section says when it has no task to draw.
+ *
+ * Only ONE of the three silences is an empty shelf, and saying so
+ * before the poll has answered was a false sentence on every open. The
+ * wait wears the console's 150ms-delayed idiom, so a read that answers
+ * in a blink draws nothing at all. */
+function Waiting({
+  loaded,
+  empty,
+  project,
+}: {
+  loaded: boolean
+  empty: boolean
+  project: string
+}) {
+  if (!loaded) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
+  // the shelf answered with tasks; the address is being rewritten to
+  // one of them this same beat
+  if (!empty) return null
+  return <Empty project={project} />
 }
 
 /** An empty shelf is legal (§3.1) — say what to do, do not draw a

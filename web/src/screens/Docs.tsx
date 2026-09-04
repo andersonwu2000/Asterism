@@ -133,6 +133,7 @@ export default function Docs({
   problem,
   tasks,
   path,
+  loaded,
 }: {
   project: string
   /** the task the column opens on — its proofs are one of the two roots */
@@ -143,6 +144,9 @@ export default function Docs({
   tasks: string[]
   /** `<root>/<path…>` out of the address */
   path: string[]
+  /** has the shelf answered? "No task on this shelf yet" before the
+   * first poll lands is a sentence about a shelf nobody has read */
+  loaded: boolean
 }) {
   const [root, setRoot] = useState<'proofs' | 'shelf'>(
     path[0] === 'shelf' ? 'shelf' : 'proofs',
@@ -215,10 +219,12 @@ export default function Docs({
         {root === 'proofs' ? (
           shown ? (
             <ProofsView key={shown} problem={shown} file={sel} onPick={setSel} />
-          ) : (
+          ) : loaded ? (
             <p className="p-6 text-xs text-ink-faint">
               No task on this shelf yet — proofs appear once one runs.
             </p>
+          ) : (
+            <p className="late-fade p-6 text-xs text-ink-faint">Loading…</p>
           )
         ) : (
           <DocShelf project={project} onOpenChange={setDocPath} />
