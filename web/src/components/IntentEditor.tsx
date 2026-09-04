@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
-import { projectPath } from '../lib/projectRoute'
+import { docAddress } from '../lib/docShell'
 import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
@@ -25,7 +25,7 @@ import type { IntentData, PaperShelfItem, ProblemPaperBinding } from '../lib/typ
  * Documents, which is where the paper lives now (§3.9). */
 function docHref(project: string, b: ProblemPaperBinding): string {
   const rel = b.path ?? `user/papers/${b.id}`
-  return `${projectPath(project, 'docs')}/shelf/${rel}/text.md`
+  return docAddress(project, { kind: 'doc', path: `${rel}/text.md` })
 }
 
 /** Papers bound to this problem. A binding is its own DB row, not part

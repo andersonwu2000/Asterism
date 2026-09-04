@@ -154,8 +154,11 @@ test('timeline and documents render inside the shell', async ({ page, request })
   const s = await openShelf(page, request, 'timeline')
   await expect(page.locator('[data-menu] a').first()).toBeVisible()
   await page.goto(at(s.project, 'docs'))
-  await expect(page.getByRole('button', { name: 'proofs' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'documents' })).toBeVisible()
+  // the two root buttons ('proofs' / 'documents') went with the
+  // 2026-09-04 rewrite: the tab is ONE rail whose groups are the kinds
+  // of writing, and the person's own is the primary one
+  await expect(page.getByPlaceholder('find by name')).toBeVisible()
+  await expect(page.getByRole('treeitem', { name: /yours/ })).toBeVisible()
 })
 
 test('legacy problem address redirects into its Project', async ({ page, request }) => {
@@ -214,8 +217,10 @@ test("Documents is where a paper is shelved", async ({ page, request }) => {
   // there.
   const shelf = await firstShelf(request)
   test.skip(!shelf, 'needs a workspace with a Project')
-  await page.goto(`/#/p/${encodeURIComponent(shelf!.project)}/docs/shelf`)
-  await expect(page.getByTitle(/shelve a paper under user\/papers\//)).toBeVisible()
+  // `docs/shelf` was the second root's address; the tab has one address
+  // now and the affordance sits on the `papers` group's header
+  await page.goto(`/#/p/${encodeURIComponent(shelf!.project)}/docs`)
+  await expect(page.getByTitle(/shelve a paper/)).toBeVisible()
 })
 
 test('api meta reachable and shaped', async ({ request }) => {

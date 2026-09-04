@@ -9,6 +9,7 @@ import { usePublishFocus } from '../lib/focus'
 import { goalStatusLabel } from '../lib/vocab'
 import { scopeCovers } from '../lib/programmeFocus'
 import { parseProjectRoute, projectPath } from '../lib/projectRoute'
+import { docAddress } from '../lib/docShell'
 import { ErrorState } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
@@ -414,8 +415,11 @@ export default function Sky({
             }}
             onSelectGoal={setSelectedGoal}
             onHoverGoals={setRouteHover}
+            /* the file belongs to THIS sky's task, and the address now
+               says so — the old link named no task and landed on
+               whichever one the Documents tab defaulted to */
             onOpenFile={(rel) =>
-              navigate(`${projectPath(project, 'docs')}/proofs/${encodeURIComponent(rel)}`)
+              navigate(docAddress(project, { kind: 'task', task: problem, path: rel }))
             }
           />
         )}

@@ -22,6 +22,7 @@ export function LeanEditor({
   placeholder,
   heightClass = 'h-40',
   frameless = false,
+  readOnly = false,
   autoFocus = false,
 }: {
   value: string
@@ -35,6 +36,11 @@ export function LeanEditor({
   heightClass?: string
   /** skip border/background chrome (host provides its own frame) */
   frameless?: boolean
+  /** the text may be read but not written. The editor is still the
+   * right surface for it: the caret is what drives the Info panel, so a
+   * read-only `.lean` keeps the same posture as one you can edit
+   * (docs_tab_spec.md §C3) rather than becoming a different object. */
+  readOnly?: boolean
   /** focus on mount (a probe opened by the user runs right away; a
    * background tab can't steal focus, so it stays dormant) */
   autoFocus?: boolean
@@ -70,6 +76,7 @@ export function LeanEditor({
         }
         style={{ caretColor: 'var(--color-ink)' }}
         value={value}
+        readOnly={readOnly}
         autoFocus={autoFocus}
         onFocus={onFocus}
         onChange={(e) => {

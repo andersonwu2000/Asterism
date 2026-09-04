@@ -4,6 +4,7 @@ import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
 import { projectPath } from '../lib/projectRoute'
+import { docAddress } from '../lib/docShell'
 import { Button, SectionLabel } from '../components/ui'
 import DiffView from '../components/DiffView'
 import ReviewTree from '../components/ReviewTree'
@@ -254,7 +255,15 @@ function SignoffCard({
               paper, in prose, before the anchor closure below it */}
           {report && (
             <Link
-              to={`${projectPath(project, 'docs')}/proofs/REPORT.md`}
+              /* the report of THIS task, named in the address: the old
+                 `docs/proofs/REPORT.md` link named none, so on a shelf
+                 running several tasks it silently opened whichever one
+                 the Documents tab defaulted to */
+              to={docAddress(project, {
+                kind: 'task',
+                task: s.problem,
+                path: 'REPORT.md',
+              })}
               className="underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
               title="the report this task wrote when it finished — statement, argument, what remains"
             >

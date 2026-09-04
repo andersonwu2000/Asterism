@@ -15,8 +15,9 @@ import { groupCode } from './format'
  * The three facts are nowhere in the prose (DESIGN.md, "a row names an
  * object"): the API carries them from `theory_documents`, and the
  * ordering and the wording of the line are the parts with a right
- * answer, so they live here and are tested rather than inline in
- * `DocShelf.tsx`.
+ * answer, so they live here and are tested rather than inline in the
+ * rail that draws them (`components/DocRail.tsx`, through
+ * `lib/docShell`'s `railGroups`).
  */
 
 /** The record the listing carries for a document the theory layer

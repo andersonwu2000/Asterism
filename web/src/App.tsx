@@ -3,6 +3,7 @@ import { RouterProvider, useRoute, navigate } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
 import { parseProjectRoute, projectPath } from './lib/projectRoute'
 import { stalePair } from './lib/freshness'
+import { onAssistantRequest } from './lib/focus'
 import Projects from './screens/Projects'
 import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
@@ -183,6 +184,10 @@ function Shell() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [setChat])
+
+  // a section asking for the Assistant (Documents' "ask the Assistant")
+  // can publish WHAT is open, but only the shell can open the drawer
+  useEffect(() => onAssistantRequest(() => setChat(true)), [setChat])
 
   // the task column's fold, remembered: it is a reading posture, not a
   // per-page choice

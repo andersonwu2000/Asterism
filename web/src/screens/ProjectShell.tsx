@@ -334,7 +334,6 @@ export default function ProjectShell({
               problem={current ?? defaultTask(rows)}
               tasks={rows.map((p) => p.name)}
               path={route.rest}
-              loaded={loaded}
             />
           )}
         </main>

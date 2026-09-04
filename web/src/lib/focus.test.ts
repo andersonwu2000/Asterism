@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { focusBody } from './focus'
+import { focusBody, onAssistantRequest, requestAssistant } from './focus'
 
 /*
  * What the Assistant is told about the screen (human_interface_design.md
@@ -48,5 +48,27 @@ describe('focusBody', () => {
     expect(focusBody('Erdos.p1', { problem: 'Erdos.p10' })).toEqual({
       problem: 'Erdos.p10',
     })
+  })
+})
+
+/* "ask the Assistant" is two acts — publish what is open (above) and
+ * OPEN the panel — and only the shell can do the second one. Same
+ * shape as `lib/goalFocus`: the section and the drawer live in
+ * different subtrees. */
+describe('requestAssistant', () => {
+  it('reaches the shell that is listening', () => {
+    let asked = 0
+    const off = onAssistantRequest(() => (asked += 1))
+    requestAssistant()
+    off()
+    expect(asked).toBe(1)
+  })
+
+  it('stops reaching a listener that unsubscribed', () => {
+    let asked = 0
+    const off = onAssistantRequest(() => (asked += 1))
+    off()
+    requestAssistant()
+    expect(asked).toBe(0)
   })
 })

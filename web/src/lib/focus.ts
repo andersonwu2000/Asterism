@@ -59,6 +59,28 @@ export function useScreenFocus(): ScreenFocus {
   )
 }
 
+/* "ask the Assistant", from a section to the shell that owns the
+ * drawer. Publishing the focus (above) says WHAT is open; this says
+ * open the panel — and only App.tsx can do that, since the drawer and
+ * the section live in different subtrees. Same tiny bus as
+ * `lib/goalFocus`, and it carries nothing: what the panel should be
+ * told is already published. */
+
+type AssistantListener = () => void
+
+const assistantListeners = new Set<AssistantListener>()
+
+export function onAssistantRequest(cb: AssistantListener): () => void {
+  assistantListeners.add(cb)
+  return () => {
+    assistantListeners.delete(cb)
+  }
+}
+
+export function requestAssistant(): void {
+  for (const cb of assistantListeners) cb()
+}
+
 /** The `focus` object the chat endpoint takes (`serve/chat.py`'s
  * ChatBody): one or more of problem / group_id / goal_id / doc_path,
  * each contributing its own section to the context block.

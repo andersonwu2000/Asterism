@@ -159,6 +159,12 @@ export interface ProblemDetail {
   citation_edges: { from: number; to: number }[]
   decisions: Decision[]
   proof_files: string[]
+  /** the TOP-LEVEL `.md` / `.lean` files in the task's own directory —
+   * exactly what `…/file?path=` can serve at depth 0 (BRIEF, Defs,
+   * PROGRAMME, REPORT, Root, TREE). Optional: a serve older than this
+   * field answers without it, and the Documents rail then lists no
+   * engine group rather than inventing names that may not be there. */
+  problem_files?: string[]
   /** current Programme rev (research mode); null before bootstrap —
    * the Programme tab only exists when this is set */
   programme_rev: number | null
