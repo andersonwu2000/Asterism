@@ -18,7 +18,15 @@ The rewind is an APPROXIMATION and says so:
     falls back to `proposed` (strategy history is not journaled);
   - groups touched after the cutoff go back to `active`; the routine /
     strategist clocks go back to the group's last surviving commit;
-  - proof files of the deleted rows are pruned from the scratch tree.
+  - `goal_events` statuses the schema has since retired are mapped
+    forward at the read (`RETIRED_GOAL_STATUSES`), never by rewriting
+    the journal;
+  - proof files are pruned from the scratch tree on two DB-derived
+    rules: the file of a row the rewind deleted, and the file of a
+    surviving goal whose proof landed after the cutoff
+    (`prune_proof_files` — the scratch's `Problems/` is copied from the
+    LIVE tree, so without this a rewound judge reads proofs that did
+    not exist yet).
 It refuses to open the live database (`open_copy_for_rewind`).
 """
 from __future__ import annotations
@@ -35,6 +43,41 @@ from Tooling.state import db, groups
 from Tooling.state import transitions as _transitions
 
 TERMINAL = _transitions.GOAL_TERMINALS
+
+#: Statuses `goal_events` still carries that `goals.status` no longer
+#: accepts, and what each one is now called.
+#:
+#: v51 (`8c1aba0d`) retired the goal status `dead` and narrowed the
+#: `goals.status` CHECK — and deliberately left the historical journal
+#: rows alone ("the history is the point": a park whose origin is
+#: invisible is indistinguishable from a threshold shelve). The rewind
+#: reads its statuses back OUT of that journal, so on any post-v51 DB
+#: with pre-v51 history it wrote `dead` into a column that no longer
+#: takes it and died on the CHECK — hit for real on 2026-09-04
+#: (`docs/internal/experiments/criterion2_replay_2026-09-04.md` §五.5).
+#:
+#: The mapping lives HERE, at the read, and not in a migration that
+#: rewrites `goal_events.to_status`: rewriting would erase exactly the
+#: forensics v51 went out of its way to keep, and every future reader of
+#: the journal would see a park that never happened. A retired status
+#: that is not in this table stops the rewind loudly rather than
+#: silently becoming something else.
+RETIRED_GOAL_STATUSES = {"dead": "shelved"}
+
+
+def _live_status(to_status: str) -> str:
+    """A journal status as today's `goals.status` spells it."""
+    if to_status in _transitions.GOAL_STATES:
+        return to_status
+    mapped = RETIRED_GOAL_STATUSES.get(to_status)
+    if mapped is None:
+        raise RuntimeError(
+            f"goal_events carries the status {to_status!r}, which"
+            f" `goals.status` no longer accepts and"
+            f" `timetravel.RETIRED_GOAL_STATUSES` does not map — add it"
+            f" there (with the migration that retired it) rather than"
+            f" guessing")
+    return mapped
 
 
 def _looks_live(path: Path) -> bool:
@@ -117,7 +160,7 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
             "SELECT to_status FROM goal_events WHERE goal_id = ? AND at <= ?"
             " ORDER BY at DESC, id DESC LIMIT 1", (int(g["id"]), cutoff)).fetchone()
         if ev is not None:
-            want = str(ev["to_status"])
+            want = _live_status(str(ev["to_status"]))
         elif str(g["status"]) in TERMINAL and str(g["origin"]) != "root":
             want = "open"
         else:
@@ -175,12 +218,39 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
 
 
 def prune_proof_files(conn: sqlite3.Connection, *, snapshot_db: Path,
-                      workspace: Path, problem: str) -> list[str]:
-    """Delete the proof files of rows the rewind removed, so disk matches
-    the rewound DB (a brick or strategy file born after the cutoff would
-    still show in CATALOG / inspect). Files the DB never knew are left
-    alone. Returns the removed file names."""
+                      workspace: Path, problem: str,
+                      cutoff: str) -> list[str]:
+    """Make `Problems/<p>/proofs/` match the rewound DB. Two rules, both
+    read off the record — never off a file's mtime, which a `copytree`
+    rewrites anyway:
+
+      1. the file of a ROW the rewind deleted (a brick or strategy born
+         after the cutoff), which would still show in CATALOG / inspect;
+      2. the file of a goal that SURVIVED the rewind but whose proof
+         landed after it — proved in the snapshot, not proved in the
+         rewound DB. At the cutoff that path held a `sorry` stub; on
+         disk it holds the finished proof.
+
+    Rule 2 is the 2026-09-04 defect. `run_matrix` and the judge-replay
+    scratch builder copy the problem directory from the LIVE tree,
+    `rewind` moves the DB only, and this function removed rule-1 files
+    only — so a judge rewound to 2026-09-02T23:31Z read
+    `L_actual_roots_free_cap_face_matching_or_compressed_core.lean` as a
+    landed proof and rebutted the proposal for "re-dispatching landed
+    work", eleven hours before that proof existed
+    (`docs/internal/experiments/criterion2_replay_2026-09-04.md` §2.3).
+    The rewound status is itself the journal's answer (`rewind` step 4),
+    so rule 2 introduces no second approximation.
+
+    Files the DB never knew are left alone. KNOWN GAP, not derivable
+    from the record: a goal proved BEFORE the cutoff whose file was
+    later rewritten (verify-collapse, a Librarian promote) keeps the
+    rewritten bytes — the DB journals the status, not the content.
+
+    Returns the removed file names.
+    """
     snap = sqlite3.connect(f"file:{Path(snapshot_db).as_posix()}?mode=ro", uri=True)
+    snap.row_factory = sqlite3.Row
     live_goal_paths = {str(r[0]) for r in conn.execute(
         "SELECT lean_path FROM goals WHERE problem = ?", (problem,))}
     live_strat_paths = {str(r[0]) for r in conn.execute(
@@ -195,13 +265,33 @@ def prune_proof_files(conn: sqlite3.Connection, *, snapshot_db: Path,
             " WHERE g.problem = ? AND s.scratch_path IS NOT NULL", (problem,)):
         if str(r[0]) not in live_strat_paths:
             gone.append(str(r[0]))
+    # Rule 2 — the proof postdates the cutoff. Matched by goal id, not by
+    # path: a path the rewind freed and a surviving goal's path are
+    # different facts, and rule 1 already owns the first.
+    unproved = {int(r[0]) for r in conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND status != 'proved'",
+        (problem,))}
+    late: list[str] = []
+    for r in snap.execute(
+            "SELECT id, lean_path, status FROM goals WHERE problem = ?",
+            (problem,)):
+        if (str(r["status"]) == "proved" and int(r["id"]) in unproved
+                and r["lean_path"]):
+            late.append(str(r["lean_path"]))
     snap.close()
     removed: list[str] = []
-    for rel in gone:
+    seen: set[str] = set()
+    for rel in gone + late:
+        if rel in seen:
+            continue
+        seen.add(rel)
         p = workspace / rel
         if p.exists():
             p.unlink()
             removed.append(p.name)
+    print(f"[timetravel] pruned {len(removed)} file(s) — "
+          f"{len(gone)} from deleted rows, {len(late)} proved after "
+          f"{cutoff}", flush=True)
     return removed
 
 
@@ -298,8 +388,8 @@ def main(argv=None) -> int:
     rep = rewind(conn, problem=a.problem, cutoff=a.cutoff)
     print("[timetravel] rewind:", rep)
     removed = prune_proof_files(conn, snapshot_db=snap / "asterism.db",
-                                workspace=dst, problem=a.problem)
-    print(f"[timetravel] pruned {len(removed)} post-cutoff proof file(s)")
+                                workspace=dst, problem=a.problem,
+                                cutoff=a.cutoff)
     written = refresh_derived_files(conn, workspace=dst, problem=a.problem)
     print(f"[timetravel] re-derived {len(written)} rendered file(s) (TREE.md, PROGRAMME.md)")
     for k, v in (("goals", conn.execute("SELECT COUNT(*) FROM goals WHERE problem=?", (a.problem,)).fetchone()[0]),

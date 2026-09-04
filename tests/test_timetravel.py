@@ -103,8 +103,12 @@ def test_rewind_clamps_group_clocks_to_the_last_surviving_commit(conn):
 
 def test_prune_proof_files_removes_files_of_deleted_rows(tmp_path, conn):
     """Files on disk must match the rewound DB: a brick or strategy
-    file born after the cutoff would still show in CATALOG / inspect."""
-    import shutil
+    file born after the cutoff would still show in CATALOG / inspect.
+
+    (`L_old.lean` leaves too, under the second rule the test below owns
+    — its goal survives the rewind but its PROOF postdates the cutoff.
+    What this one pins is that the deleted rows' files go and the rows
+    that survived unchanged keep theirs.)"""
     old, new, s_old, s_new = _seed(conn)
     snap = tmp_path / "snap.db"
     snap_conn = sqlite3.connect(snap)
@@ -114,9 +118,10 @@ def test_prune_proof_files_removes_files_of_deleted_rows(tmp_path, conn):
     for name in ("L_old.lean", "L_new.lean", "_strategy_s1.lean", "_strategy_s2.lean", "L_unrelated.lean"):
         (proofs / name).write_text("x", encoding="utf-8")
     tt.rewind(conn, problem="p", cutoff=CUT)
-    removed = tt.prune_proof_files(conn, snapshot_db=snap, workspace=tmp_path / "ws", problem="p")
-    assert sorted(removed) == ["L_new.lean", "_strategy_s2.lean"]
-    assert (proofs / "L_old.lean").exists() and (proofs / "_strategy_s1.lean").exists()
+    removed = tt.prune_proof_files(conn, snapshot_db=snap, workspace=tmp_path / "ws",
+                                   problem="p", cutoff=CUT)
+    assert "L_new.lean" in removed and "_strategy_s2.lean" in removed
+    assert (proofs / "_strategy_s1.lean").exists(),         "the surviving strategy's file stays"
     assert (proofs / "L_unrelated.lean").exists(), "files the DB never knew are left alone"
 
 
@@ -138,3 +143,62 @@ def test_refresh_derived_files_rewrites_tree_without_the_deleted_goals(tmp_path,
     assert f"[g{new}]" not in tree and "stale" not in tree
     assert f"[g{old}]" in tree
     assert any(p.name == "TREE.md" for p in written)
+
+
+def test_prune_removes_a_proof_that_landed_after_the_cutoff(tmp_path, conn):
+    """A goal that already EXISTED at the cutoff survives the rewind —
+    and its `proofs/L_<slug>.lean` survived with it, holding whatever
+    proof landed later. `_seed`'s `old` is exactly that shape: open at
+    the cutoff, proved after it.
+
+    The 2026-09-04 judge replay paid for it. `run_matrix` / the
+    judge-replay scratch builder copy `Problems/<p>/` from the LIVE
+    tree, `rewind` moves the DB only, and `prune_proof_files` removed
+    the files of DELETED rows only — so a rewound judge read a proof
+    that did not exist at the instant it was judging
+    (`docs/internal/experiments/criterion2_replay_2026-09-04.md` §2.3,
+    §五.3). Derived from the record, never from mtime: the goal is not
+    proved in the rewound DB and IS proved in the snapshot, so the
+    bytes on disk postdate the cutoff."""
+    old, new, s_old, s_new = _seed(conn)
+    snap = tmp_path / "snap.db"
+    snap_conn = sqlite3.connect(snap)
+    conn.backup(snap_conn); snap_conn.close()
+    proofs = tmp_path / "ws" / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    for name in ("L_old.lean", "L_new.lean", "_strategy_s1.lean",
+                 "_strategy_s2.lean", "L_unrelated.lean"):
+        (proofs / name).write_text("x", encoding="utf-8")
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    removed = tt.prune_proof_files(conn, snapshot_db=snap,
+                                   workspace=tmp_path / "ws", problem="p",
+                                   cutoff=CUT)
+    assert "L_old.lean" in removed, \
+        "the proof landed after the cutoff — the rewound scene has no such file"
+    assert not (proofs / "L_old.lean").exists()
+    assert (proofs / "L_unrelated.lean").exists(), \
+        "files the DB never knew are left alone"
+
+
+def test_rewind_maps_a_retired_status_out_of_the_event_journal(conn):
+    """v51 (`8c1aba0d`) retired the goal status `dead` and narrowed the
+    `goals.status` CHECK, but deliberately left the historical
+    `goal_events` rows alone — "the history is the point". `rewind`
+    reads its statuses back out of that journal, so on any post-v51 DB
+    with pre-v51 history it wrote `dead` into a column that no longer
+    accepts it and died on the CHECK. The mapping belongs at the read,
+    not in a migration that would erase the forensics v51 preserved."""
+    _seed(conn)
+    gid = db.insert_goal(conn, problem="p", slug="retired",
+                         lean_path="Problems/p/proofs/L_retired.lean",
+                         statement="T", origin="backward", depth=1)
+    conn.execute("UPDATE goals SET created_at=? WHERE id=?", (BEFORE, gid))
+    conn.execute(
+        "INSERT INTO goal_events (goal_id, problem, from_status, to_status,"
+        " event, reason, at) VALUES (?,?,?,?,?,?,?)",
+        (gid, "p", "attempting", "dead", "wrong_context", "", BEFORE))
+    db.update_goal_status(conn, gid, "shelved")
+    conn.commit()
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    assert db.get_goal(conn, gid)["status"] == "shelved", \
+        "the v51 dead→shelved mapping, applied where the journal is read"

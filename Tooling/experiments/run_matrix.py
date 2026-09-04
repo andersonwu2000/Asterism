@@ -102,6 +102,14 @@ DEFAULT_MATRIX = "arm2:2,arm4:2,arm24:2,arm3:2,arm3h:2"
 #: papers and the owner's notes live under `Problems/<project>/_docs`
 #: since §3.9 retired the workspace-global shelf, and a judge whose
 #: `{papers_dir}` does not exist burns a round finding that out.
+#:
+#: This tree is the LIVE one at build time, which is right for a matrix
+#: (it runs at now, `--since` is `now()`). A workspace built this way
+#: and then rewound to an earlier cutoff must additionally run
+#: `timetravel.prune_proof_files(..., cutoff=...)`: the DB rewind moves
+#: no files, so `proofs/` would still hold every proof that landed
+#: after the cutoff — the 2026-09-04 judge replay read one and rebutted
+#: the proposal for re-dispatching it.
 COPY_TREES = (
     "Problems/Combinatorics/union_closed",
     "Problems/Combinatorics/_docs",
