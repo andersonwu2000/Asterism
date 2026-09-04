@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { usePoll } from '../lib/api'
-import { Link, navigate } from '../lib/router'
+import { Link, navigate, replace } from '../lib/router'
 import {
   SECTIONS,
   SECTION_LABEL,
@@ -173,6 +173,12 @@ export default function ProjectShell({
   // a task picks one (the attention order every other surface reads in)
   // and REWRITES the address, so a reload, a back button and a mailed
   // link all land on the same page.
+  //
+  // `replace`, not `navigate`: this is the shell's own correction, not
+  // a move the reader made, and pushing it made Back unusable — it went
+  // to `…/sky`, this effect immediately pushed `…/sky/<task>` again, and
+  // the section became a trap you could not leave with the back button
+  // (measured in the browser, 2026-09-04).
   useEffect(() => {
     if (!TASK_SECTIONS.includes(section)) return
     if (section === 'tasks' && problem === null) return // the shelf itself
@@ -181,7 +187,7 @@ export default function ProjectShell({
     const pick = problem !== null && rows.some((p) => p.name === problem)
       ? problem
       : defaultTask(rows)
-    if (pick) navigate(projectPath(project, section, pick))
+    if (pick) replace(projectPath(project, section, pick))
   }, [project, section, problem, rows])
 
   // the shelf page IS the task list; drawing the column beside it would
