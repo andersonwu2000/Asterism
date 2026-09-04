@@ -42,7 +42,7 @@ from .verdict import (REPORT_BASENAME, clear_lines, parse_theory_verdict)
 #: wording (theory_wake_design.md §3.7): a rejection is not a bug
 #: report, it is an instruction — the request itself is what the next
 #: wake has to change.
-REJECTED_DETAIL = "Theorist 的產出未通過審核——重新審視你的請求"
+REJECTED_DETAIL = "The Theorist's document did not pass review — reconsider your request"
 
 #: Revision rounds a fired verdict may buy, on the SAME author session.
 #: Three, from the experiment: the author that has not answered the
