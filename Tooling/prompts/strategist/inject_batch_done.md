@@ -88,7 +88,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
 
 Plans showing these traits are sent back:
 
-- Substituting a reachable brick for the load-bearing work: formalizing something because it is easy — a `compute` table, an argument from the literature, a nearby known result — while the core the route actually faces is set aside. Literature and `compute` give direction and experiments; the charter does not necessarily consume them. Compute with `compute`; never mint a brick as a computational experiment.
+- Substituting a reachable brick for the load-bearing work: formalizing something because it is easy — a `compute` table, an argument from the literature, a nearby known result — while the core the route actually faces is set aside. Literature and `compute` give direction and evidence; the charter does not necessarily consume them. Compute with `compute`; never mint a brick to run a computation.
 - Giving up at difficulty: shelving because the brick was harder than expected; parking the wall in AHEAD, or handing it to the Theorist, and then avoiding the core of the problem. Find the next load-bearing point, attempt it or hand it to the Theorist, and say in ## Argument what was attempted on the core.
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
