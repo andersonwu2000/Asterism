@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { navigate } from '../lib/router'
+import { currentSegments, navigate, replace } from '../lib/router'
 import { goalCode, goalLabel } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
@@ -8,7 +8,7 @@ import { onGoalHover, onGoalOpen, takePendingGoalOpen } from '../lib/goalFocus'
 import { usePublishFocus } from '../lib/focus'
 import { goalStatusLabel } from '../lib/vocab'
 import { scopeCovers } from '../lib/programmeFocus'
-import { projectPath } from '../lib/projectRoute'
+import { parseProjectRoute, projectPath } from '../lib/projectRoute'
 import { ErrorState } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
@@ -265,6 +265,21 @@ export default function Sky({
   // the Assistant is told which star is open (§1.4-2): the panel and
   // this screen are in different subtrees, so it goes through the bus
   usePublishFocus({ problem, goal_id: selectedGoal })
+  // …and so is the ADDRESS. `…/sky/<task>/g/<id>` was already read on
+  // arrival but never written back, so a reload or a mailed link showed
+  // the star the reader had open three clicks ago, and a link followed
+  // from the Timeline kept saying `/g/123` whatever was open after it.
+  // `replace`, not `navigate`: a star click is not a move the back
+  // button should have to undo one star at a time.
+  useEffect(() => {
+    const here = parseProjectRoute(currentSegments())
+    // only ever rewrite THIS screen's own address — never one the shell
+    // has already walked away from
+    if (here === null || here.section !== 'sky') return
+    if (here.project !== project || here.problem !== problem) return
+    if (here.goal === selectedGoal) return
+    replace(projectPath(project, 'sky', problem, selectedGoal))
+  }, [project, problem, selectedGoal])
   // stars lit from elsewhere — a chat answer's citation, a lane in the
   // engine room: hovering lights the star, clicking selects it
   const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)

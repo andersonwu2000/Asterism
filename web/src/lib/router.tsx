@@ -48,6 +48,23 @@ export function navigate(path: string) {
   window.location.hash = '#' + (path.startsWith('/') ? path : '/' + path)
 }
 
+/** The same address change, without a stop on the back button.
+ *
+ * `navigate` is for a MOVE — the reader asked to be somewhere else, and
+ * Back should undo it. This is for an address that is merely keeping up
+ * with what is already on screen: the star the Sky has open lives in
+ * the hash so a reload or a mailed link shows it, but clicking around a
+ * constellation must not fill the history with one entry per star and
+ * make Back a slow rewind of the reader's own browsing. Back has to
+ * leave the section, the way it did before the address learned to say
+ * which star is open.
+ *
+ * `location.replace` on a hash-only URL still fires `hashchange`, so
+ * `useRoute` follows it exactly as it follows `navigate`. */
+export function replace(path: string) {
+  window.location.replace('#' + (path.startsWith('/') ? path : '/' + path))
+}
+
 type LinkProps = { to: string } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'>
 
 export function Link({ to, children, ...rest }: LinkProps) {
