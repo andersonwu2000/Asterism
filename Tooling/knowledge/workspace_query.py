@@ -624,7 +624,15 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
                 blk = [f"{rel}:{i + 1}:"] + [
                     f"  {n + 1:>5}  {lines[n]}" for n in range(lo, hi)]
             else:
-                blk = [f"{rel}:{i + 1}: {line.strip()}"]
+                # The line AS IT STANDS, indentation included. A hit is
+                # what an agent copies into `apply_edit`'s anchor, and
+                # that comparison is byte-for-byte — a `.strip()`ed hit
+                # could never match an indented line, so the commonest
+                # grep shape handed out anchors that were guaranteed to
+                # miss (21 reports 2026-08-29..09-04, two agent_timeout:
+                # a three-edit batch rolls back whole on one miss).
+                # `splitlines()` already dropped the newline.
+                blk = [f"{rel}:{i + 1}: {line}"]
             blocks.append((rel, i + 1, blk))
             if len(blocks) > want:
                 more = True
@@ -671,9 +679,16 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
 
 
 def _last_grep_anchor(kept: "list[str]") -> str:
-    """`file:line` of the last delivered hit, for the `after` handle."""
+    """`file:line` of the last delivered hit, for the `after` handle.
+
+    NON-greedy on purpose: the hit carries the matched line verbatim, so
+    a `foo:12:` inside the CONTENT is a second `:<digits>:` on the same
+    row and a greedy match walked to the rightmost one — handing back a
+    resume point the next call refuses as "outside this search". The
+    leftmost match is the real prefix, absolute Windows paths (`D:/…`)
+    included: `D` is followed by no digits, so the scan runs on."""
     for ln in reversed(kept):
-        m = re.match(r"(.+):(\d+):", ln)
+        m = re.match(r"(.+?):(\d+):", ln)
         if m:
             return f"{m.group(1)}:{m.group(2)}"
     return ""

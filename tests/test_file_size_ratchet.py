@@ -767,7 +767,7 @@ _WATERMARKS = {
     # to `Tooling/lsp/native_decide.py` (one source for both channels),
     # so what landed here is the call and why it is `.lean`-only. The
     # split promise below still stands and is now overdue.
-    "Tooling/knowledge/workspace_query.py": 1490,  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
+    "Tooling/knowledge/workspace_query.py": 1502,  # +12 2026-09-05 a grep hit is the file's own line (edit anchors) + a non-greedy resume-anchor parse  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,
     "Tooling/pipeline/forward.py": 1200,

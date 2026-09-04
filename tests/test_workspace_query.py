@@ -977,6 +977,52 @@ def test_a_multi_level_glob_expands_instead_of_dying_silently(tmp_path):
     assert "deep_hit" in out3 and "git_junk" not in out3
 
 
+def test_a_grep_hit_is_the_line_as_it_stands_in_the_file(tmp_path):
+    """A hit is an EDIT ANCHOR, so it has to be the file's own bytes.
+
+    `apply_edit` compares anchors byte-for-byte, and the hit line was
+    `.strip()`ed when no `context` was asked for — so an anchor copied
+    out of the commonest grep shape could never match an indented line.
+    21 reports 2026-08-29..09-04, two of them agent_timeout (a
+    three-edit batch rolled back whole on one indentation miss)."""
+    body = ("theorem t : True := by\n"
+            "    -- STRATEGY: peel one element\n"
+            "  trivial\n")
+    (tmp_path / "patch.lean").write_text(body, encoding="utf-8")
+    out = wq.run_queries([{"grep": "STRATEGY", "in": "patch.lean"}],
+                         cwd=tmp_path)
+    hit = next(ln for ln in out.splitlines()
+               if ln.startswith("patch.lean:"))
+    _rel, _n, shown = hit.split(":", 2)
+    assert shown[0] == " ", "one separator space, then the line itself"
+    assert shown[1:] == "    -- STRATEGY: peel one element"
+    assert shown[1:] in body, "an anchor must occur in the file verbatim"
+    # The `context` spelling already answered verbatim — same answer.
+    out2 = wq.run_queries([{"grep": "STRATEGY", "in": "patch.lean",
+                            "context": 1}], cwd=tmp_path)
+    assert "    -- STRATEGY: peel one element" in out2
+
+
+def test_a_resume_anchor_reads_the_hits_own_prefix_not_the_content(
+        tmp_path):
+    """Same hit line, second reader: `_last_grep_anchor` parses the
+    `file:line:` prefix off a row whose CONTENT is now verbatim — and a
+    matched line may itself carry `…:12:`. A greedy match took the
+    rightmost one, so the `after` handle named a file that does not
+    exist and the next call answered "outside this search"."""
+    (tmp_path / "log.md").write_text(
+        "".join(f"note {n} at src.lean:99: see there\n" for n in range(40)),
+        encoding="utf-8")
+    out = wq.run_queries([{"grep": "note", "in": "log.md"}], cwd=tmp_path,
+                         per_query_chars=300)
+    import re as _re
+    anchor = _re.search(r'after: "([^"]+)"', out).group(1)
+    assert anchor.startswith("log.md:"), anchor
+    out2 = wq.run_queries([{"grep": "note", "in": "log.md",
+                            "after": anchor}], cwd=tmp_path)
+    assert "outside this search" not in out2, out2
+
+
 def test_a_capped_grep_names_a_resume_handle_and_it_works(tmp_path):
     """The truncation note said only "narrow", which names no reachable
     action when the query is already narrow (2026-08-22 cluster). The
