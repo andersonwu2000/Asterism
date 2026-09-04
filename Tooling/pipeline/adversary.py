@@ -417,8 +417,12 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         + "_(Execution record below is assembled for this review; the "
         "problem's PROGRAMME.md file carries the revision text only.)_"
         + "\n\n"
-        + ("\n".join(outcome_lines) if outcome_lines else
-           "## Completed Inject batches\n(none since the last commit)")
+        # `_section_inject_batch_outcomes` always renders now — the
+        # heading plus a "(none)" body when there is nothing — so this
+        # weld no longer supplies a fallback of its own. One reader
+        # patching around a producer's silence was a fix only that
+        # reader got.
+        + "\n".join(outcome_lines)
         + "\n", encoding="utf-8")
 
     head = ""

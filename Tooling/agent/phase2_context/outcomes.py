@@ -549,7 +549,21 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     + ([parked_line, ""] if parked_line else [])
                     + ([*owner_lines, ""] if owner_lines else [])
                     + decline_lines)
-        return decline_lines
+        # Same reason as `_section_pending_reopens` above: nothing
+        # completed, nothing running, nothing parked, nothing handed
+        # over — that is a FACT about this group's dispatch, and it is
+        # the fact the reader is checking when it asks "is anything of
+        # mine still out there?". Say it instead of vanishing.
+        #
+        # The judge's projection used to supply this line itself when
+        # the section came back empty (`adversary.build_projection` and
+        # the two theory welds). One reader patching around a producer's
+        # silence is a fix that only that reader gets; now the producer
+        # answers and those fallbacks are gone.
+        return ["## Completed Inject batches", "",
+                "(none — no batch of yours has completed since your "
+                "last look, and none is running or parked.)", ""
+                ] + decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
     if in_flight or other_n:
         out += ["_Still running, so not listed below: "
@@ -965,7 +979,14 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         (problem, *running, problem),
     ))
     if not rows:
-        return []
+        # The heading is a stable API of this document; only its BODY
+        # varies. Dropping the whole section when the queue is empty
+        # made "nothing is due" and "this Context was compiled wrong"
+        # arrive as the same page, and a reader cannot act on an
+        # absence (8 strategist reports 2026-08-29..09-03).
+        return ["## Pending reopen-promises", "",
+                "(none — no shelved goal's promised batch has landed "
+                "since your last look.)", ""]
 
     out = [
         "## Pending reopen-promises",

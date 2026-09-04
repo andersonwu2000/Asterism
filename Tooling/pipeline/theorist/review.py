@@ -75,8 +75,9 @@ def build_review_projection(*, round_no: int, attempts_dir: Path,
         + "_(Execution record below is assembled for this review; the "
           "problem's PROGRAMME.md file carries the revision text "
           "only.)_\n\n"
-        + ("\n".join(outcome_lines) if outcome_lines else
-           "## Completed Inject batches\n(none since the last commit)")
+        # Always rendered by the section itself now (heading + "(none)"),
+        # so this weld carries no fallback of its own.
+        + "\n".join(outcome_lines)
         + "\n", encoding="utf-8")
     (proj / REPORT_BASENAME).write_text(report_body.rstrip("\n") + "\n",
                                         encoding="utf-8")
