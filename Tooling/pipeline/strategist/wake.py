@@ -24,7 +24,8 @@ from typing import Any
 from ...state import db, failures as _failures
 
 from .commit import commit_decisions
-from .model import Decision, _PACKAGE_EXEMPT_KINDS, parse_decisions
+from .model import (Decision, _PACKAGE_EXEMPT_KINDS, parse_decisions,
+                    prompt_kind)
 from .verify import _group_retired_status, verify_decisions
 
 
@@ -168,19 +169,14 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, problem)
-    # Per-trigger prompt: each trigger has its own focused prompt so
-    # the agent sees only the guidance relevant to this wake's kind
-    # (routine / pending_review / inject_batch_done).
-    # Loader validates that every TRIGGER_KIND has a corresponding
+    # Per-trigger prompt: a trigger with its own conversation gets its
+    # own focused prompt, so the agent sees only the guidance relevant
+    # to this wake (routine's audit vs. the decision wakes). The rest
+    # alias onto another kind's file — `model.PROMPT_ALIAS` says which
+    # and why, and is the ONE place that resolution lives.
+    # Loader validates that every TRIGGER_KIND resolves to an existing
     # file at startup via test_strategist_prompts_cover_all_triggers.
-    # A stall wake reads the batch-done prompt: it carries the
-    # mandatory-advance rule the rescue exists to invoke (there is no
-    # stall.md — the identity split is for the DB record, not for a
-    # different conversation).
-    _prompt_kind = ("inject_batch_done"
-                    if trigger_kind in ("stall", "routine_fired")
-                    else trigger_kind)
-    prompt_path = PROMPT_DIR / "strategist" / f"{_prompt_kind}.md"
+    prompt_path = PROMPT_DIR / "strategist" / f"{prompt_kind(trigger_kind)}.md"
     if not prompt_path.exists():
         return PipelineResult(
             outcome="failed",

@@ -339,10 +339,14 @@ def problems_with_pending_review(conn: sqlite3.Connection, *,
     spawn-time `_derive_strategist_trigger` then sees the pending goal and
     runs a `pending_review` wake.
 
-    No in-flight-batch suppression (unlike T0/T1): a pending review and an
-    unacknowledged Inject batch are not mutually exclusive — `_derive_
-    strategist_trigger` orders them (batch first), and the caller's per-root
-    Strategist dedup prevents a double-enqueue."""
+    Problem-wide and unsuppressed BY DESIGN: this selector names who has
+    a review outstanding, nothing more. The in-flight-batch suppression
+    T0/T1 carry belongs to the caller, which knows the GROUP that owes
+    the verdict (`has_active_inflight_inject(.., group_id=..)`) — the
+    suppression is per group, and a problem-wide answer here would hold a
+    sibling group's review behind a batch it has no part in. Both seat
+    sources apply it: `reconcile_stuck_states` class 1 and the
+    cascade-time `transitions._enqueue_strategist_review`."""
     sql = (
         "SELECT DISTINCT p.name"
         " FROM problems p"

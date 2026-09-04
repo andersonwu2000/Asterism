@@ -972,21 +972,23 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # the notes-only batch, not the note. Exempt: Ingest (terminal exit —
     # queued Strategists are dropped after it) and RequestUserAmend (the
     # awaiting_human gate pauses the wake pump itself).
-    # Scope (2026-07-12, periodic wakes outrank events): a routine
-    # wake may now legally fire WHILE goals await review — discharging
-    # them is the frontier wakes' job (the pending_review pressure keeps
-    # re-arming until the set empties), not the periodic survey's.
-    # Forcing the discharge here would bounce every periodic wake on a
-    # busy tree (the parse-fail pump shape, e1ecc5c).
-    pending_review_ids: set[int] = set()
-    if trigger_kind != "routine":
-        pending_review_ids = {
-            int(r["id"]) for r in conn.execute(
-                "SELECT id FROM goals WHERE problem = ?"
-                "  AND status = 'pending_strategist_review'",
-                (problem,),
-            )
-        }
+    # Scope: the wake's CONTEXT, not its trigger (owner ruling
+    # 2026-09-05). Every wake that reaches this gate is handed the
+    # dossier of every waiting goal (`phase2_context.compile`, same
+    # query), so every wake that reaches it owes the verdict. The
+    # 2026-07-12 exemption for `routine` was written when a routine wake
+    # still committed decisions and could be bounced by this rule; the
+    # routine wake is an AUDIT now (verdict.json, no verify pass), so
+    # the exemption guards nothing here and only left a trigger name
+    # that could read a review and answer around it — the one bypass
+    # T2's batch suppression must not re-open.
+    pending_review_ids: set[int] = {
+        int(r["id"]) for r in conn.execute(
+            "SELECT id FROM goals WHERE problem = ?"
+            "  AND status = 'pending_strategist_review'",
+            (problem,),
+        )
+    }
     if pending_review_ids:
         exempt = any(d.kind in ("Ingest", "RequestUserAmend")
                      for d in decisions)

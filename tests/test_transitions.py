@@ -594,8 +594,10 @@ _APPLY_EVENT_RE = re.compile(
     # is the terminal-flip wrapper around `apply_goal_transition`: since
     # 2026-09-04 it forwards a caller-chosen `event=`, so a label can reach
     # `goal_events` without ever appearing at a mutator call.
+    # `_enter_pending_review` (2026-09-05) is the same shape one status
+    # over — the review-entry wrapper, which forwards `event=` too.
     r"(?:apply_(?:goal|strategy|problem)_transition|set_status"
-    r"|_set_goal_terminal_and_propagate)"
+    r"|_set_goal_terminal_and_propagate|_enter_pending_review)"
     r"\(.*?event=[\"']([^\"']+)[\"']",
     re.DOTALL,
 )

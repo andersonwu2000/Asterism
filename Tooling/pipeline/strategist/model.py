@@ -1,6 +1,7 @@
 """Strategist decision vocabulary + schema: the `Decision` dataclass,
 the frozenset vocabularies (`DECISION_KINDS`, `RETURN_FLAVOURS`,
-`TRIGGER_KINDS`, `BATCH_DONE_LIKE`, `_PACKAGE_EXEMPT_KINDS`), `_as_bool`,
+`TRIGGER_KINDS`, `BATCH_DONE_LIKE`, `_PACKAGE_EXEMPT_KINDS`), the
+prompt resolution (`PROMPT_ALIAS` / `prompt_kind`), `_as_bool`,
 and the `decision.json` parser (`parse_decisions` / `parse_decision` /
 `_parse_one`).
 
@@ -97,6 +98,38 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 #: identity cannot silently drop one of the two.
 BATCH_DONE_LIKE: frozenset[str] = frozenset({"inject_batch_done", "stall",
                                               "routine_fired"})
+
+#: Trigger kinds with no prompt file of their own — they read another
+#: kind's. A trigger_kind is an identity for the RECORD (the DB CHECK,
+#: the timeline, the '[stall-wake]' rate); a prompt is a CONVERSATION,
+#: and the two need not be one-to-one.
+#:
+#: `pending_review` joined 2026-09-05 (owner ruling). Its own prompt was
+#: a near-mirror of `inject_batch_done.md` — the same tools, the same
+#: Programme proposal, the same failure modes, the same Ingest bullet —
+#: and mirrored prose drifts sentence by sentence, so every rule the
+#: owner rewrote had to be rewritten twice or land on one wake only.
+#: The review wake is a batch-done wake in substance too: with the
+#: producing Inject's outcome filled, the goal awaiting a verdict is one
+#: of the batch's own reports.
+#:
+#: Note this is NOT `BATCH_DONE_LIKE`: that set carries the
+#: mandatory-advance gate, which is about what a wake must DO, not what
+#: it reads.
+PROMPT_ALIAS: dict[str, str] = {
+    "stall": "inject_batch_done",
+    "routine_fired": "inject_batch_done",
+    "pending_review": "inject_batch_done",
+}
+
+
+def prompt_kind(trigger_kind: str) -> str:
+    """The prompt file a wake of this trigger_kind reads (without the
+    `.md`). The ONE resolution — `run_strategist` and the coverage
+    guard both ask here, so a retired prompt cannot survive in a copy of
+    the map."""
+    return PROMPT_ALIAS.get(trigger_kind, trigger_kind)
+
 
 # Research mode (research_mode_design.md §1) — the proposal-package
 # gate keys on decision SHAPE: a batch wholly within the exempt kinds

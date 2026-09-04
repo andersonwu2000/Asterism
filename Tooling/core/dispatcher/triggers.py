@@ -139,7 +139,9 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
          is no restart recovery for these, so they orphan permanently (P13
          left 2/3 stuck; BT g3246 waited 30+ min for the accidental 120-min
          T1). Enqueue a Strategist; the spawn's `_derive_strategist_trigger`
-         sees the pending goal and runs a `pending_review` wake.
+         sees the pending goal and runs a `pending_review` wake. HELD while
+         the owning group's batch is still working (2026-09-05) — see the
+         suppression comment at the enqueue.
 
       2. NULL-outcome Inject decisions whose worker died on infra failure
          with no artifact — this wedges the WHOLE problem (the in-flight-
@@ -181,6 +183,15 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
             gid = (int(owner["id"]) if owner is not None
                    else _groups.ensure_top_group(conn, prob))
             if _strategist_inflight(conn, gid, running):
+                continue
+            # Same in-flight-batch suppression the cascade-time fast
+            # path carries (owner ruling 2026-09-05), on the same
+            # predicate: while the group's batch still works, the
+            # review is one of that batch's reports and rides its
+            # wake. The hold is bounded — classes 2/3 below re-derive
+            # a sibling whose worker died, so a NULL that can never
+            # answer cannot park this seat forever.
+            if db.has_active_inflight_inject(conn, prob, group_id=gid):
                 continue
             _enqueue_strategist(conn, gid, prob, priority=20)
 

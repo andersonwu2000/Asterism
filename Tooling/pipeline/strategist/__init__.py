@@ -48,6 +48,8 @@ from .model import (
     RETURN_FLAVOURS,
     TRIGGER_KINDS,
     BATCH_DONE_LIKE,
+    PROMPT_ALIAS,
+    prompt_kind,
     _PACKAGE_EXEMPT_KINDS,
     Decision,
     parse_decisions,

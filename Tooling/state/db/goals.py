@@ -465,13 +465,26 @@ def propagate_inject_outcome_from_goal(
     (if any, and if its outcome is still NULL).
 
     Mapping: goal status='proved' → outcome='success'. disproved /
-    dead → outcome='failed:<status>'. Other statuses are not terminal
-    and this function is a no-op for them — IN PARTICULAR `shelved`,
-    which is a reopenable / parked soft-terminal: a shelved goal is NOT
-    a completed inject, so its outcome stays NULL (the stall predicate's
-    active-check, not a settled outcome, governs whether it suppresses
-    T4). Treating shelved as settling here re-fired `inject_batch_done`
-    every park (P13 4284 futile spin, 2026-06-15).
+    dead → outcome='failed:<status>'.
+    `pending_strategist_review` → 'returned:review' (owner ruling
+    2026-09-05): a brick handed back for a verdict is a DELIVERY, not
+    work still in flight — the step is finished and its result is a
+    question for the author. Left NULL it read as running forever, so
+    the batch could never complete while the T2 seat woke the author
+    beside it anyway; that bypass opened a fresh batch per wake
+    (union_closed 2026-09-04: five wakes, eight Injects, the group's
+    wall meanwhile with the Theorist). With the outcome filled the
+    review rides its own batch's report.
+    Other statuses are not terminal and this function is a no-op for
+    them — IN PARTICULAR `shelved`, which is a reopenable / parked
+    soft-terminal: a shelved goal is NOT a completed inject, so its
+    outcome stays NULL (the stall predicate's active-check, not a
+    settled outcome, governs whether it suppresses T4). Treating
+    shelved as settling here re-fired `inject_batch_done` every park
+    (P13 4284 futile spin, 2026-06-15). A review differs from a park in
+    the one way that matters here: it is ADDRESSED to the author, so
+    filling it hands the author a report instead of re-firing a wake
+    that had nothing new to say.
 
     Returns the affected decision row id (caller may then fire
     `_maybe_enqueue_inject_batch_done`), or None if nothing was
@@ -498,6 +511,8 @@ def propagate_inject_outcome_from_goal(
         outcome = "success"
     elif status in transitions.GOAL_FAILED_TERMINALS:
         outcome = f"failed:{status}"
+    elif status == "pending_strategist_review":
+        outcome = "returned:review"
     else:
         return None  # not terminal (incl. shelved — reopenable); wait
     conn.execute(

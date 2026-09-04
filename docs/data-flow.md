@@ -171,6 +171,13 @@ state in this priority order:
 `BATCH_DONE_LIKE` and must advance the group rather than leave it idle. No wake is accepted for
 a non-active problem, and a group that retires during dialogue aborts before commit.
 
+A review does not take a seat beside its own batch. A goal entering `pending_strategist_review`
+settles the Inject that produced it (`returned:review`), and while the owning group still has
+in-flight batch work no separate `pending_review` seat is queued — the verdict is one of that
+batch's reports and rides its wake. Every wake that reaches verify owes a verdict on the goals
+awaiting one, whatever the trigger. `pending_review` keeps its own recorded identity but reads
+`inject_batch_done.md`, as `stall` and `routine_fired` do (`strategist.PROMPT_ALIAS`).
+
 One wake runs this loop:
 
 1. compile the group's context, including every actionable pending-review dossier on a

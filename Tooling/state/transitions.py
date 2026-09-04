@@ -915,6 +915,31 @@ def _record_inject_decision_outcome(conn: sqlite3.Connection,
 _maybe_enqueue_inject_batch_done = db.maybe_enqueue_inject_batch_done
 
 
+def _enter_pending_review(conn: sqlite3.Connection, goal_id: int, *,
+                          event: str) -> None:
+    """Move a goal into `pending_strategist_review` and settle whatever
+    Inject produced it.
+
+    The ONE spelling for entering review, because the second half is the
+    part every site forgot: a brick handed back for a verdict is a
+    DELIVERY (owner ruling 2026-09-05), so its step's `outcome` fills
+    and the batch it belongs to can complete. There are two roads into
+    this state — the review escalation below and a citation whose
+    dependency parked — and a road that skipped the fill left its batch
+    reading as in-flight forever.
+
+    `_maybe_enqueue_inject_batch_done` fires only when the fill was the
+    LAST outcome the batch owed, exactly as every other propagation site
+    does: a batch still owing a `Theorize` stays quiet and the review
+    reaches its author on that batch's own report.
+    """
+    apply_goal_transition(conn, goal_id, "pending_strategist_review",
+                          event=event)
+    d = db.propagate_inject_outcome_from_goal(conn, goal_id)
+    if d is not None:
+        _maybe_enqueue_inject_batch_done(conn, d)
+
+
 def _queue_problem_of(conn: sqlite3.Connection, target_id,
                       target_kind: str) -> str:
     """The `problem` a queue row belongs to (v17 scope column). Problem-
@@ -977,9 +1002,10 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # Status transition: pending_strategist_review (not 'shelved').
     # update_goal_status() flips integrity_verified=0 for any
     # non-'proved' transition; we want that for stability since the
-    # goal may later be Reopen'd.
-    apply_goal_transition(
-        conn, goal_id, "pending_strategist_review", event="enqueue_review")
+    # goal may later be Reopen'd. The producing Inject settles with it
+    # (see `_enter_pending_review`) — BEFORE the seat decision below,
+    # which reads whether the group's batch is still working.
+    _enter_pending_review(conn, goal_id, event="enqueue_review")
 
     # Phase 6 — Strategist rows are problem-keyed (target_kind='Problem');
     # the old root-goal lookup returned early on pure-NL problems (no
@@ -1002,6 +1028,18 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     if db.is_in_queue(conn, target_id=str(gid), kind="Strategist"):
         return
     if db.is_in_queue(conn, target_id=problem, kind="Strategist"):
+        return
+    # In-flight BATCH suppression (owner ruling 2026-09-05) — the same
+    # rule T0/T1 carry, on the same predicate, narrowed to the group
+    # that owes the verdict. A review is a report of the group's own
+    # batch, so it rides that batch's `inject_batch_done` wake; seating
+    # it separately opened a SECOND batch while the first was still
+    # working, and each completion then relayed another wake
+    # (union_closed 2026-09-04: five wakes and eight Injects while the
+    # group's wall sat with the Theorist). The goal's review status
+    # above stands either way — the reconciler re-offers the seat every
+    # tick, so the hold ends when the batch does.
+    if db.has_active_inflight_inject(conn, problem, group_id=gid):
         return
     # Wake legality (FSM P3): a non-active problem takes no seats. The
     # goal's pending_review status above stands regardless — when the
@@ -1376,7 +1414,7 @@ def _review_cited_waiters(conn: sqlite3.Connection, goal_id: int) -> None:
         row = conn.execute("SELECT status FROM goals WHERE id = ?",
                            (wid,)).fetchone()
         if row is not None and str(row["status"]) in ("open", "attempting"):
-            apply_goal_transition(conn, wid, "pending_strategist_review",
+            _enter_pending_review(conn, wid,
                                   event="cited_dependency_parked")
 
 
