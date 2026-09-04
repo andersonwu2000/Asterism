@@ -113,7 +113,10 @@ function Row({
   problem?: string
   onFollow: (f: Follow) => void
   onOpenGoal?: (id: number, problem: string | null) => void
-  onOpenProgramme?: () => void
+  /** the row's own task — a shelf-wide feed merges several, so the
+   * Programme this row is about is not necessarily the one the reader
+   * is scoped to (the same shape `onOpenGoal` already carries) */
+  onOpenProgramme?: (problem: string | null) => void
 }) {
   const [open, setOpen] = useState(false)
   // a revision row opens onto the judge's ruling on it — criterion by
@@ -264,7 +267,7 @@ function Row({
             {e.object_kind === 'programme' && onOpenProgramme && (
               <button
                 className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-                onClick={onOpenProgramme}
+                onClick={() => onOpenProgramme(revProblem ?? null)}
               >
                 read the Programme
               </button>
@@ -300,7 +303,10 @@ export default function Timeline({
    * carries the history). The run view navigates to the problem's own
    * page — the second argument says which. */
   onSelectGoal?: (id: number, problem: string | null) => void
-  onOpenProgramme?: () => void
+  /** where "read the Programme" lands, told which task the row is
+   * about — on the shelf-wide feed that is the row's own, not the
+   * reader's scope */
+  onOpenProgramme?: (problem: string | null) => void
 }) {
   const { data, error, loading } = usePoll<{
     events: TimelineEvent[]

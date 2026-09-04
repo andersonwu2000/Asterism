@@ -311,6 +311,15 @@ export default function ProjectShell({
                   const target = p ?? problem
                   if (target) navigate(projectPath(project, 'sky', target, id))
                 }}
+                /* a revision row's expansion offers "read the
+                   Programme"; without somewhere for it to land the
+                   link simply never drew. On the shelf-wide feed the
+                   row's OWN task is the target — the reader is scoped
+                   to none. */
+                onOpenProgramme={(p) => {
+                  const target = p ?? problem
+                  if (target) navigate(projectPath(project, 'groups', target))
+                }}
               />
             </div>
           ) : (
