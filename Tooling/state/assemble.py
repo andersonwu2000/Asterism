@@ -68,6 +68,28 @@ DECL_HEAD_RE = re.compile(
 # protects structured patches from false hits).
 SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
+_SORRY_TOKEN_RE = re.compile(r"\bsorry\b")
+_LEAN_COMMENT_RE = (re.compile(r"/-.*?-/", re.DOTALL),
+                    re.compile(r"--[^\n]*"))
+
+
+def uses_sorry(text: str) -> bool:
+    """True iff `text` USES `sorry` — comments do not count.
+
+    Broader than `SORRY_STUB_RE`, which only sees the canonical fresh
+    stub `:= by sorry` at end of line: a stub whose body became
+    `:= by\\n  sorry` or `:= by simp <;> sorry` is just as unproved.
+    `sorry` inside `--` / `/- … -/` is prose ("builds sorry-free") and a
+    substring test flagged it; `\\bsorry\\b` also leaves `sorry_free`
+    alone, since `_` is a word character.
+
+    The kernel axiom probe (`sorryAx` outside the whitelist) stays the
+    authority; this is the cheap pre-check the read-side surfaces use."""
+    out = text
+    for rx in _LEAN_COMMENT_RE:
+        out = rx.sub(" ", out)
+    return bool(_SORRY_TOKEN_RE.search(out))
+
 
 # ── one brick, one declaration (owner ruling 2026-08-30, task #231) ──
 #

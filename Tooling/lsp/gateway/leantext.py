@@ -374,6 +374,7 @@ def _proved_sibling_import_lines(
 def _parity_for(
     content: str, problem: str, workspace: "Path", inlined_slugs: "list[str]",
     header: "dict", goal_id: "int | None" = None,
+    stub_texts: "dict[str, str] | None" = None,
 ) -> "dict":
     """Does the sandbox's verdict cover what the real build will see?
 
@@ -392,6 +393,9 @@ def _parity_for(
                   build will use whatever that goal eventually becomes.
                   Legitimate and common (that is how a batch works) — but
                   it is NOT the same green, and it must not render as one.
+                  "Not proved yet" is read off the goal row, and — when
+                  there is no row — off the stub's own text: an import
+                  resolves a NAME, it does not prove a declaration.
       unresolved  an inlined sibling is neither proved nor a declared stub
                   of this batch, and no commit import covers it. That is a
                   framework defect, not the agent's: the probe answered a
@@ -415,6 +419,21 @@ def _parity_for(
         mod = f"L_{slug}"
         return any(imp == mod or imp.endswith(f".{mod}")
                    for imp in import_names)
+
+    def _still_sorry(slug: str) -> bool:
+        """The stub the sandbox actually inlined still contains `sorry`.
+
+        Import coverage says the commit unit will RESOLVE the name; it
+        says nothing about whether the declaration is proved, and this
+        branch is reached precisely when there is no goal row to ask.
+        A freshly outsourced batch stub is that shape — no row yet,
+        `:= by sorry` inside — so eight of them were reported under
+        `proved_siblings` while each validated with `declaration uses
+        'sorry'` (2026-08-29, union_closed
+        second_mask_sources_c3_b4_a784). Unknowable without the text →
+        the old answer stands."""
+        text = (stub_texts or {}).get(slug)
+        return bool(text) and assemble.uses_sorry(text)
     proved: "list[str]" = []
     conditional: "list[str]" = []
     unresolved: "list[str]" = []
@@ -441,7 +460,7 @@ def _parity_for(
         elif st is not None:
             conditional.append(slug)
         elif _import_covers(slug):
-            proved.append(slug)
+            (conditional if _still_sorry(slug) else proved).append(slug)
         else:
             unresolved.append(slug)
     # Commit's strict-ancestor cycle predicate, mirrored (2026-08-26,

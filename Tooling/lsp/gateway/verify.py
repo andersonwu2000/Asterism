@@ -398,9 +398,19 @@ def validate_file(content: str = "", file: str = "") -> str:
     # can disagree, say so here rather than letting the disagreement reach
     # the agent later disguised as `Unknown identifier` (#179 hid behind
     # exactly that reading for a week, 37 reports).
+    # The stub TEXTS the unit inlined, read once and shared: `parity`
+    # needs them to tell an import-covered stub that is proved from one
+    # that still says `sorry`, and the split/collision predictors below
+    # need the same map.
+    attempts_dir = meta.target_path.parent
+    stub_map: "dict[str, str]" = {}
+    for _slug, _text in _collect_referenced_sibling_stubs(
+            attempts_dir, content, meta.target_path.name):
+        stub_map[_slug] = _text
     response["parity"] = _parity_for(
         content, meta.problem, meta.workspace, inlined_slugs,
-        response["commit_header"], goal_id=meta.goal_id)
+        response["commit_header"], goal_id=meta.goal_id,
+        stub_texts=stub_map)
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
@@ -436,11 +446,7 @@ def validate_file(content: str = "", file: str = "") -> str:
         submission["citation"] = cite
     # D-lite (task #5): predict the SPLIT — the deterministic commit-policy
     # verdicts the single-unit elaboration structurally cannot surface.
-    attempts_dir = meta.target_path.parent
-    stub_map: "dict[str, str]" = {}
-    for _slug, _text in _collect_referenced_sibling_stubs(
-            attempts_dir, content, meta.target_path.name):
-        stub_map[_slug] = _text
+    # `stub_map` was collected above (parity reads it too).
     # content itself may BE one of the batch stubs (agent validates
     # new_<slug>.lean directly) — include it under its own slug.
     _own = _GW_DECL_HEAD_RE.search(content)

@@ -95,6 +95,53 @@ def test_a_commit_import_covers_a_sibling_with_no_goal_row(ws: Path) -> None:
     assert out["state"] == "exact"
 
 
+def test_an_import_covered_stub_that_still_holds_sorry_is_not_proved(
+        ws: Path) -> None:
+    """A file whose body is `sorry` is not proved, whatever imports it.
+
+    `proved_siblings` is the DB-less fallback: no goal row, but a commit
+    import covers the module, so the slug was filed under `proved` with
+    nothing ever looking at the stub. A freshly outsourced batch stub is
+    exactly that shape — no row yet, and `:= by sorry` inside — so a
+    sorry-dependent parent read back as fully proved (2026-08-29,
+    union_closed second_mask_sources_c3_b4_a784: all eight
+    `new_*_b*.lean` stubs validated with `declaration uses 'sorry'`
+    while the parent still listed them as proved siblings)."""
+    _seed(ws, [])
+    header = {"imports": ["Problems.T.p.proofs.L_batch_mate"]}
+    out = gw._parity_for(
+        "x", "T.p", ws, ["batch_mate"], header,
+        stub_texts={"batch_mate":
+                    "theorem batch_mate : True := by sorry\n"})
+    assert out["state"] == "conditional", out
+    assert out["depends_on"] == ["batch_mate"]
+    # A `sorry` in a COMMENT is not a sorry (the shared comment-strip).
+    out2 = gw._parity_for(
+        "x", "T.p", ws, ["batch_mate"], header,
+        stub_texts={"batch_mate": "-- proved sorry-free\n"
+                                  "theorem batch_mate : True := trivial\n"})
+    assert out2["state"] == "exact" and out2["proved_siblings"] == [
+        "batch_mate"]
+
+
+def test_a_sorry_bearing_stub_reaches_the_headline_as_conditional(
+        ws: Path) -> None:
+    """The parity verdict is what `_hoist_conditional` reads, so the
+    same stub must move `ok` off "finished proof" at the top level —
+    that is the surface workers actually key on (#5, 21 reports)."""
+    from Tooling.lsp.gateway.verify import _hoist_conditional
+    _seed(ws, [])
+    response = _hoist_conditional({
+        "ok": True,
+        "parity": gw._parity_for(
+            "x", "T.p", ws, ["batch_mate"],
+            {"imports": ["Problems.T.p.proofs.L_batch_mate"]},
+            stub_texts={"batch_mate":
+                        "theorem batch_mate : True := by sorry\n"}),
+    })
+    assert response["conditional_on"] == ["batch_mate"]
+
+
 def test_parity_never_breaks_validate(tmp_path: Path) -> None:
     """No DB on disk at all — validate must still answer. A guard that
     can fail the thing it guards is worse than no guard."""

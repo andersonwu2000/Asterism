@@ -634,11 +634,11 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/governor.py": 1100,  # born 2026-08-29 from the gateway split (A1-2)
     "Tooling/lsp/gateway/sessions.py": 600,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/health.py": 150,  # born 2026-08-29 from the gateway split (A1-3)
-    "Tooling/lsp/gateway/leantext.py": 800,  # born 2026-08-29 from the gateway split (A1-4a)
+    "Tooling/lsp/gateway/leantext.py": 808,  # +8 2026-09-05: an import-covered stub that still says `sorry` is not proved  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/rpc.py": 950,  # 2026-08-29 wall (CPU-second meter) + native_decide gate; SPLIT before the next bump (gates/wall -> own module)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/gates.py": 500,  # 2026-08-30 ancestor-cycle refusal at the editing tools
-    "Tooling/lsp/gateway/verify.py": 880,  # +30 2026-08-31: #5 conditional headline hoist
+    "Tooling/lsp/gateway/verify.py": 883,  # +3 2026-09-05: the inlined stub texts are collected once and shared with parity  # +30 2026-08-31: #5 conditional headline hoist
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
     # `Tooling/core/cli.py` (3,307 lines, no prior watermark here) split
     # move-only into `Tooling/core/cli/` by command domain (task A3): the
