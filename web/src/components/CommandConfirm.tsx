@@ -132,7 +132,10 @@ export function RunConfirm({
   return (
     <ConfirmWindow
       title="run these tasks"
-      subject={`${problems.length} ticked`}
+      /* one task has a NAME; only a list needs counting. The task
+         page's Run opens this same window over a list of one, and
+         "1 ticked" there says nothing the reader did not just do. */
+      subject={problems.length === 1 ? problems[0] : `${problems.length} ticked`}
       badge="start-many"
       badgeTitle="the engine's own name for this endpoint — an explicit list, never a pattern"
       onClose={close}
@@ -194,7 +197,7 @@ export function RunConfirm({
           onClick={() => void start()}
           title="starts the engine on exactly these tasks — the run begins now"
         >
-          {busy ? 'Starting…' : `Confirm — run ${goes}`}
+          {busy ? 'Starting…' : goes === 1 ? 'Confirm — run it' : `Confirm — run ${goes}`}
         </Button>
       </div>
     </ConfirmWindow>

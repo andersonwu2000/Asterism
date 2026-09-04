@@ -417,8 +417,9 @@ function ShutDown() {
         </div>
         {engine && armed && (
           <div className="text-[11px] text-warn">
-            The engine drains when you stop a run from the Engine page; quitting
-            here does not wait for it. Stop the run first to lose nothing.
+            The engine drains when you stop a run from the Tasks page — the shelf,
+            or any task's own page; quitting here does not wait for it. Stop the
+            run first to lose nothing.
           </div>
         )}
         {err && <div className="text-[11px] text-danger">{err}</div>}

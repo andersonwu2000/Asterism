@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { ReactNode } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
@@ -9,7 +9,7 @@ import { RunConfirm } from '../components/CommandConfirm'
 import { ConfirmWindow } from '../components/ConfirmWindow'
 import { Button, StatusBadge } from '../components/ui'
 import IntentEditor from '../components/IntentEditor'
-import RunControl from '../components/RunControl'
+import RunControl, { StopButton } from '../components/RunControl'
 import RunParameters from '../components/RunParameters'
 import Inbox from './Inbox'
 import type { BoardProblem, DaemonStatus } from '../lib/types'
@@ -149,19 +149,9 @@ function RunBar({
   onClear: () => void
 }) {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
-  const [confirmForce, setConfirmForce] = useState(false)
   /** the run's confirm window (§1.3): a preview per ticked name, in the
    * same floating window every other consequential act wears */
   const [confirmRun, setConfirmRun] = useState(false)
-  const timer = useRef<number | null>(null)
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current)
-    },
-    [],
-  )
   // never nothing: the control is the reason this card exists, and a
   // vanished button for the beat before the first poll answers reads as
   // "you cannot run this" (screenshot pass, 2026-09-03)
@@ -174,20 +164,6 @@ function RunBar({
         <span className="text-[11px] text-ink-faint">asking the engine what it is doing…</span>
       </div>
     )
-  const act = async (fn: () => Promise<unknown>) => {
-    setBusy(true)
-    setMsg(null)
-    try {
-      await fn()
-      onClear()
-    } catch (e) {
-      setMsg(String((e as Error).message))
-    } finally {
-      setBusy(false)
-      setConfirmForce(false)
-      refresh()
-    }
-  }
   const running = d.running || d.starting
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -202,38 +178,21 @@ function RunBar({
                 : 'engine running'}
           </span>
           <span className="font-mono text-[11px] text-ink-faint">{d.scope ?? 'all tasks'}</span>
-          {confirmForce ? (
-            <Button
-              variant="danger"
-              disabled={busy}
-              onClick={() => void act(() => apiPost('/api/daemon/stop', { force: true }))}
-              title="kill the engine now; stranded leases are reclaimed"
-            >
-              Confirm force stop
-            </Button>
-          ) : (
-            <Button
-              disabled={busy}
-              onClick={() => {
-                if (d.stopping) {
-                  setConfirmForce(true)
-                  if (timer.current !== null) window.clearTimeout(timer.current)
-                  timer.current = window.setTimeout(() => setConfirmForce(false), 3000)
-                } else {
-                  void act(() => apiPost('/api/daemon/stop', { force: false }))
-                }
-              }}
-              title={d.stopping ? 'already stopping — press again to force' : 'finish in-flight work, then exit'}
-            >
-              {d.stopping ? 'Force stop…' : 'Stop'}
-            </Button>
-          )}
+          {/* the console's one Stop, force step and all — the same
+              control a task's own page presses (RunControl.tsx) */}
+          <StopButton
+            stopping={d.stopping}
+            onDone={(ok) => {
+              if (ok) onClear()
+              refresh()
+            }}
+          />
         </>
       ) : (
         <>
           <Button
             variant="primary"
-            disabled={busy || picked.length === 0}
+            disabled={picked.length === 0}
             title={
               picked.length === 0
                 ? 'tick the tasks to run — the engine takes an explicit list, never a pattern'
@@ -241,7 +200,7 @@ function RunBar({
             }
             onClick={() => setConfirmRun(true)}
           >
-            {busy ? 'Starting…' : `Run${picked.length > 0 ? ` ${picked.length}` : ''}…`}
+            {`Run${picked.length > 0 ? ` ${picked.length}` : ''}…`}
           </Button>
           {/* the names are no longer the sentence: WHAT would happen to
               them is, and the window is where that is read */}
@@ -252,7 +211,6 @@ function RunBar({
           </span>
         </>
       )}
-      {msg && <span className="text-[11px] text-danger">{msg}</span>}
       {confirmRun && (
         <RunConfirm
           project={project}
@@ -508,7 +466,11 @@ function OneTask({
         <span className="font-mono text-sm text-ink">{problem}</span>
         {row && <StatusBadge status={row.status} />}
         <span className="ml-auto flex items-center gap-3">
-          <RunControl problem={problem} engineHref={projectPath(project, 'engine')} />
+          <RunControl
+            project={project}
+            problem={problem}
+            engineHref={projectPath(project, 'engine')}
+          />
         </span>
       </div>
       <div className="px-6">
