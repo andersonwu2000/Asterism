@@ -13,7 +13,15 @@ import type { Amend, InboxResponse, ProblemDetail, Signoff } from '../lib/types'
  * side-by-side diff, and paused ingest sign-offs with the anchor
  * closure. Every action posts to a CLI/state chokepoint. */
 
-function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
+function AmendCard({
+  a,
+  project,
+  onDone,
+}: {
+  a: Amend
+  project: string
+  onDone: () => void
+}) {
   const [editing, setEditing] = useState(false)
   const [body, setBody] = useState(a.proposed_body)
   const [rejecting, setRejecting] = useState(false)
@@ -62,7 +70,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Link
-            to={`/problems/${encodeURIComponent(a.problem)}`}
+            to={projectPath(project, 'tasks', a.problem)}
             className="font-mono text-sm text-ink hover:underline"
           >
             {a.problem}
@@ -236,7 +244,7 @@ function SignoffCard({
     <div className="rounded-xl border border-warn/30 bg-surface p-4">
       <div className="mb-2 flex items-center justify-between">
         <Link
-          to={`/problems/${encodeURIComponent(s.problem)}`}
+          to={projectPath(project, 'tasks', s.problem)}
           className="font-mono text-sm text-ink hover:underline"
         >
           {s.problem}
@@ -356,22 +364,18 @@ export default function Inbox({ project }: { project: string }) {
   if (empty) return null
 
   return (
+    // no eyebrow of its own: the shelf directly below carries a NEEDS
+    // YOU section for a DIFFERENT set (tasks awaiting a person, plus
+    // stalled ones), and one page cannot say the same words twice
+    // about two things. The sub-labels name what each pile is.
     <section className="mb-7">
-      <div className="mb-2 flex items-baseline gap-3">
-        <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-          needs you
-        </span>
-        <span className="tnum text-[11px] text-ink-faint">
-          {data.amends.length + data.signoffs.length} waiting
-        </span>
-      </div>
       <div className="flex flex-col gap-6">
           {data.amends.length > 0 && (
             <section>
               <SectionLabel>amend requests ({data.amends.length})</SectionLabel>
               <div className="flex flex-col gap-3">
                 {data.amends.map((a) => (
-                  <AmendCard key={a.id} a={a} onDone={refresh} />
+                  <AmendCard key={a.id} a={a} project={project} onDone={refresh} />
                 ))}
               </div>
             </section>
