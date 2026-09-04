@@ -1118,8 +1118,7 @@ def test_the_antipatterns_are_one_text_in_every_prompt() -> None:
     # routine.md is the audit prompt (2026-08-30): no decisions, no
     # failure-mode paragraphs — the two DECISION wakes and the judge.
     files = [root / "adversary" / "adversary.md"] + [
-        root / "strategist" / f for f in
-        ("inject_batch_done.md", "pending_review.md")]
+        root / "strategist" / f for f in ("inject_batch_done.md",)]
     leads = {f.name: _failure_mode_leads(f.read_text(encoding="utf-8"))
              for f in files}
     judge = leads[files[0].name]
@@ -1162,7 +1161,7 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
         encoding="utf-8")
     wakes = "".join(
         (root / "strategist" / f).read_text(encoding="utf-8")
-        for f in ("inject_batch_done.md", "pending_review.md"))
+        for f in ("inject_batch_done.md",))
     wakes += _rendered_subgroup_section()
     body = section.split("\n\n`target_goal_id`")[0]
     blocks = _re.split(r"\n(?=- )", body)
@@ -1225,7 +1224,7 @@ def test_contract_standing_rules_are_real_wake_rules() -> None:
         encoding="utf-8")
     wakes = "".join(
         (root / "strategist" / f).read_text(encoding="utf-8")
-        for f in ("inject_batch_done.md", "pending_review.md"))
+        for f in ("inject_batch_done.md",))
     # Bounded at both ends by framework-authored prose, not by counting:
     # the standing rules start after the `target_goal_id` note and end
     # at the `ReturnToParent` sentence, which is a group-verb remark

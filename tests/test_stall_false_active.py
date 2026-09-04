@@ -711,12 +711,15 @@ def test_amend_identical_rerequest_rejected(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
-    """The periodic wake outranks events (2026-07-12): a routine wake
-    may fire while goals await review, and its curation/notes batch must
-    NOT be bounced by the discharge rule — disposal belongs to the
-    frontier wakes, whose pressure re-arms every tick. Frontier trigger
-    kinds (and the kind-less legacy default) keep the rule."""
+def test_review_discharge_binds_every_wake(tmp_path: Path) -> None:
+    """Requirement change (owner ruling 2026-09-05): the verdict is owed
+    by whichever wake reads the dossier, so the gate is
+    trigger-INDEPENDENT. The 2026-07-12 exemption spared `routine` when
+    a routine wake still committed decisions; it is an audit now
+    (verdict.json only, no verify pass), so the exemption protected
+    nothing and only left one trigger able to answer a review without
+    ruling on it — the escape hatch T2's new batch suppression must not
+    leave open."""
     import json
     from Tooling.pipeline import strategist
     conn = _conn(tmp_path)
@@ -724,10 +727,7 @@ def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Noop", "reason": "clean audit"},
     ]))
-    err = strategist.verify_decisions(ds, conn, problem=P,
-                                      trigger_kind="routine")
-    assert "review not discharged" not in err
-    for kind in ("pending_review", "inject_batch_done", ""):
+    for kind in ("routine", "pending_review", "inject_batch_done", ""):
         err = strategist.verify_decisions(ds, conn, problem=P,
                                           trigger_kind=kind)
         assert "review not discharged" in err and f"g{grev}" in err, kind

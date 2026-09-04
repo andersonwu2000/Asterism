@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = [
     ROOT / "Tooling" / "prompts" / "adversary" / "adversary.md",
     ROOT / "Tooling" / "prompts" / "strategist" / "routine.md",
-    ROOT / "Tooling" / "prompts" / "strategist" / "pending_review.md",
     ROOT / "Tooling" / "prompts" / "strategist" / "inject_batch_done.md",
 ]
 

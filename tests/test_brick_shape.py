@@ -129,7 +129,7 @@ _PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 
 
 def test_strategist_prompts_ask_for_the_two_part_brick():
-    for name in ("inject_batch_done.md", "pending_review.md"):
+    for name in ("inject_batch_done.md",):
         text = (_PROMPTS / "strategist" / name).read_text(encoding="utf-8")
         proof_line = text[text.index("## Proof"):text.index("## Roadmap")]
         assert "`Theorem.`" in proof_line and "`Proof.`" in proof_line, name

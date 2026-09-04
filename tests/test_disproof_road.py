@@ -175,7 +175,7 @@ def test_ingest_on_a_disproved_root_closes_the_problem_as_refuted(tmp_path):
 
 def test_strategist_surfaces_name_the_disproof_road():
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts" / "strategist"
-    for name in ("inject_batch_done.md", "pending_review.md"):
+    for name in ("inject_batch_done.md",):
         text = (root / name).read_text(encoding="utf-8")
         inject = text[text.index("- `Inject`"):text.index("- `ConfirmShelve`")]
         assert "_disproof" in inject and "disproved" in inject, name

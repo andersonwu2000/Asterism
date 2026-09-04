@@ -997,19 +997,25 @@ def test_strategist_prompts_cover_all_triggers() -> None:
     in-flight Strategist pipeline with `strategist_schema_invalid`."""
     prompt_dir = PROMPT_DIR / "strategist"
     assert prompt_dir.is_dir(), f"missing {prompt_dir}"
-    # 'stall' deliberately ALIASES inject_batch_done.md (v43 identity
-    # split is for the DB record, not a different conversation) — the
-    # alias map here mirrors run_strategist's prompt resolution.
-    _alias = {"stall": "inject_batch_done", "routine_fired": "inject_batch_done"}
+    # Several kinds deliberately ALIAS inject_batch_done.md (the
+    # identity split is for the DB record, not a different
+    # conversation). Read the resolution `run_strategist` itself uses
+    # rather than a copy of it — a hand-kept mirror is exactly the
+    # place a retirement gets missed.
     for tk in strategist.TRIGGER_KINDS:
-        p = prompt_dir / f"{_alias.get(tk, tk)}.md"
+        own = strategist.prompt_kind(tk)
+        p = prompt_dir / f"{own}.md"
         assert p.exists(), f"missing prompt file for trigger_kind={tk!r}: {p}"
         text = p.read_text(encoding="utf-8")
         assert text.strip(), f"empty prompt file: {p}"
-        # Each prompt must mention its trigger_kind explicitly so
-        # human reviewers can grep to find the right file.
-        assert tk in text, (
-            f"prompt {p} does not mention its trigger_kind {tk!r} in body")
+        # A prompt of its OWN must mention its trigger_kind explicitly so
+        # human reviewers can grep to find the right file. An aliased
+        # kind has no file to find — Context.md's `## Trigger` names it
+        # to the reader instead.
+        if own == tk:
+            assert tk in text, (
+                f"prompt {p} does not mention its trigger_kind {tk!r} "
+                f"in body")
 
 
 def test_pending_review_wake_reads_the_batch_done_prompt() -> None:
@@ -1042,8 +1048,9 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # offer the kind.
     # routine.md is the AUDIT prompt since 2026-08-30 — it emits no
     # decisions (verdict.json only), so it carries no decision kinds.
+    # pending_review.md retired 2026-09-05: the review wake reads
+    # inject_batch_done.md, so there is one decision prompt left.
     expected_kinds = {
-        "pending_review": {"Inject", "ConfirmShelve", "Delegate"},
         "inject_batch_done": {"Inject", "ConfirmShelve", "Delegate"},
     }
     for tk in expected_kinds:

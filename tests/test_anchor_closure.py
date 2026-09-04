@@ -591,7 +591,6 @@ def test_the_prompts_ask_for_the_report_the_gate_demands() -> None:
     from Tooling.pipeline.strategist import verify as _verify
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     files = [root / "strategist" / "inject_batch_done.md",
-             root / "strategist" / "pending_review.md",
              root / "adversary" / "_contract.md"]
     for f in files:
         line = next(ln for ln in f.read_text(encoding="utf-8").splitlines()
