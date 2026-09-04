@@ -65,7 +65,10 @@ test('picker: project tiles, or the empty shelf', async ({ page }) => {
   // a tile per Project, or the one affordance a workspace with none has
   const tiles = page.locator('main a[href^="#/p/"]')
   const mint = page.getByRole('button', { name: 'new project' })
-  await expect(tiles.first().or(mint)).toBeVisible()
+  // `.first()` on the union too: `or` is a union of LOCATORS, so on a
+  // workspace that has both it resolves to two elements and strict
+  // mode refuses the assertion
+  await expect(tiles.first().or(mint).first()).toBeVisible()
   // the picker has NO menu: the gear and the help glyph, and nothing
   // else (1.4-1)
   await expect(page.locator('main nav')).toHaveCount(0)
