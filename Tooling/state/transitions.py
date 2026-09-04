@@ -1655,6 +1655,20 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if outcome == "moot":
         return
 
+    if kind == "Theorist":
+        # The pipeline settles its own request on every road it
+        # controls; a worker that died of an exception controls none of
+        # them, and a NULL outcome is what "the theory layer is still
+        # working" means everywhere else — it would suppress the group's
+        # stall rescue forever and never wake it. This is the backstop,
+        # `outcome IS NULL`-guarded, so a normal return costs nothing.
+        if decision_id is not None:
+            _record_inject_decision_outcome(
+                conn, int(decision_id), outcome or "failed",
+                failure_reason, pipeline_id=pipeline_id)
+            _maybe_enqueue_inject_batch_done(conn, int(decision_id))
+        return
+
     if kind in ("Formalizer", "Builder"):
         # Merged worker (update_plan_2026_07 #1): goal jobs ride the
         # Backward cascade arm (the strategy-frame engine — identical

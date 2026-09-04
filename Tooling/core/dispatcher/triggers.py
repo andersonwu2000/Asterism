@@ -638,6 +638,17 @@ def _row_is_stale(conn: sqlite3.Connection,
         if row is None:
             return True
         return str(row["status"]) not in ("open", "attempting")
+    if kind == "Theorist":
+        # A theory request addressed to a group that has already left is
+        # not delayed, it is SPENT: the pipeline would compile a Context
+        # for a charter nobody is settling any more and spend an xhigh
+        # author turn on it. Same reading as the Strategist row below,
+        # one kind further.
+        if target_kind != "Group":
+            return False
+        row = conn.execute("SELECT status FROM groups WHERE id = ?",
+                           (int(target_id),)).fetchone()
+        return row is None or str(row["status"]) != "active"
     if kind != "Strategist":
         return False
     kind_str = str(target_kind or "Problem")

@@ -283,12 +283,12 @@ _WATERMARKS = {
     # fresh locks per module — the monolith never grows back.
     "Tooling/core/dispatcher/__init__.py": 260,  # +6 2026-09-04 the theory layer joins the quota seat roster
     "Tooling/core/dispatcher/refill.py": 300,
-    "Tooling/core/dispatcher/triggers.py": 668,  # +36 2026-09-03 `strategist_has_nothing_to_deliver` — the residual-case read of the classifier that door uses  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
+    "Tooling/core/dispatcher/triggers.py": 690,  # +11 2026-09-04 a Theorist row addressed to a group that already left is spent, not delayed  # +36 2026-09-03 `strategist_has_nothing_to_deliver` — the residual-case read of the classifier that door uses  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     # 650→660: +7 2026-09-02 HID §3.7 — `_run_pipeline` binds its thread to
     # its pipeline id (`core/spawn_registry`), which is what lets a
     # person's kill signal find THIS worker's process tree by pid rather
     # than by name — conscious bump.
-    "Tooling/core/dispatcher/worker.py": 660,
+    "Tooling/core/dispatcher/worker.py": 700,  # +31 2026-09-04 the Theorist arm: Group-targeted like a Strategist wake, handing the request row to the pipeline
     "Tooling/core/dispatcher/lock.py": 300,
     # 1325→1340: +12 2026-09-02 HID §3.7 — the loop builds the kill
     # signal's sink over its own futures map, hands it to the command
@@ -351,7 +351,7 @@ _WATERMARKS = {
     # consumers must not block Reopen on shared goals).
     # 08-25 +41: cited-wait conduction (`_review_cited_waiters` — a
     # shelve returns citing waiters to their group's review at once).
-    "Tooling/state/transitions.py": 2000,  # +6 2026-09-04 the Theorist layer: a Theorize is a batch delta  # +55 2026-09-04 goal status `dead` retired (v51): terminal vocabulary section + `_propagate_wrong_context` and the ordering it makes explicit  # +21 2026-09-02 HID §1.3: the shelve cascade splits into a read half (`shelve_cascade_targets`, what the confirm window names) and a write half  # +5 2026-08-30 problem terminal `refuted`  # +7 2026-09-02 v48 HID §3.2: a human ConfirmShelve is never a live promise (_awaiting_promised_batch)
+    "Tooling/state/transitions.py": 2020,  # +14 2026-09-04 the cascade's Theorist backstop: a worker that died of an exception settled nothing  # +6 2026-09-04 the Theorist layer: a Theorize is a batch delta  # +55 2026-09-04 goal status `dead` retired (v51): terminal vocabulary section + `_propagate_wrong_context` and the ordering it makes explicit  # +21 2026-09-02 HID §1.3: the shelve cascade splits into a read half (`shelve_cascade_targets`, what the confirm window names) and a write half  # +5 2026-08-30 problem terminal `refuted`  # +7 2026-09-02 v48 HID §3.2: a human ConfirmShelve is never a live promise (_awaiting_promised_batch)
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

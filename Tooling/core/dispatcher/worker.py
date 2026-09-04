@@ -422,6 +422,45 @@ def _run_pipeline(workspace: Path,
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
+            if task_kind == "Theorist":
+                # theory_wake_design.md §3.1 — a `Theorize` with a NULL
+                # outcome dispatches this the way an Inject dispatches a
+                # Formalizer. Group-targeted like a Strategist wake, and
+                # for the same reason: the Context it reads is a
+                # group's. `decision_id` is the request; the pipeline
+                # reads its objective and situation off that row and
+                # settles it before returning.
+                group_id, problem = _strategist_target(
+                    conn, target_id, target_kind)
+                if problem is None or not _ensure_intent(
+                        conn, intents, problem):
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="failed", outcome="failed")
+                    return WorkerDone(pipeline_id, task_kind, target_id,
+                                      target_kind, "failed",
+                                      "problem_not_found")
+                from ...pipeline import theorist as _theorist
+                r = _theorist.run_theorist(
+                    conn, problem=problem, workspace=workspace,
+                    intent=intents[problem], pipeline_id=pipeline_id,
+                    group_id=group_id, decision_id=decision_id)
+                status = ("succeeded" if r.outcome in ("proved", "success")
+                          else "failed")
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status=status, outcome=r.outcome)
+                if status == "failed":
+                    _arts = pipeline.collect_artifacts(attempts_dir)
+                    db.record_dead_attempt(
+                        conn, target_id=0, target_kind=target_kind,
+                        pipeline_id=pipeline_id,
+                        failure_reason=str(r.failure_reason or "failed"),
+                        failure_detail=str(r.failure_detail or ""),
+                        artifacts=(_json.dumps(_arts) if _arts else ""),
+                    )
+                return WorkerDone(pipeline_id, task_kind, target_id,
+                                  target_kind, r.outcome,
+                                  str(r.failure_reason or ""))
+
             if (task_kind == "Forward"
                     or (task_kind == "Formalizer"
                         and target_kind == "Problem")):

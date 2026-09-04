@@ -26,6 +26,7 @@ from Tooling.core.dispatcher import (
     reconcile_stuck_states,
     strategist_triggers,
 )
+from Tooling.core import dispatcher
 from Tooling.state import db
 from Tooling.state import groups
 
@@ -1528,3 +1529,134 @@ def test_dispatch_dup_builder_on_other_goal_not_blocked() -> None:
     different goal."""
     assert not _dispatch_is_duplicate({("42", "Builder", None)}, "43",
                                       "Builder", None)
+
+
+# ---------------------------------------------------------------------
+# Theorist dispatch (theory_wake_design.md 3.1)
+# ---------------------------------------------------------------------
+
+def _theorist_ws(tmp_path, monkeypatch):
+    """A workspace whose DB holds one open `Theorize` on the top group,
+    with `db.connect` pinned to it the way the dispatcher's own worker
+    thread opens it."""
+    from Tooling.pipeline.strategist import commit as _commit
+    from Tooling.pipeline.strategist import parse_decision
+    from Tooling.state import groups as _groups
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    dbfile = tmp_path / "asterism.db"
+    orig_connect = db.connect
+    c = orig_connect(dbfile)
+    db.init_schema(c)
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p', ?, 1)", (db.now(),))
+    c.commit()
+    gid = _groups.ensure_top_group(c, "p", charter="T")
+    d, err = parse_decision(json.dumps(
+        {"kind": "Theorize", "objective": "S implies MAIN",
+         "situation": "the bridge died"}))
+    assert err == "", err
+    out = _commit.commit_decisions(
+        [d], c, problem="p", tick=0, trigger_kind="routine",
+        workspace=tmp_path, group_id=gid)[0]
+    c.close()
+    monkeypatch.setattr(db, "connect",
+                        lambda path=None: orig_connect(dbfile))
+    from Tooling.state import intent as _intent
+    return (gid, int(out.decision_row_id), orig_connect, dbfile,
+            {"p": _intent.ProblemIntent(problem="p", charter="T")})
+
+
+def test_a_theorist_queue_row_runs_the_theory_pipeline(
+        tmp_path: Path, monkeypatch) -> None:
+    """A `Theorize` with a NULL outcome dispatches a Theorist the way an
+    Inject dispatches a Formalizer: the queue row is Group-targeted and
+    carries the decision id, and the worker hands both to the pipeline."""
+    from types import SimpleNamespace
+    from Tooling.pipeline import theorist as _theorist
+    gid, did, orig_connect, dbfile, intents = _theorist_ws(
+        tmp_path, monkeypatch)
+
+    q = orig_connect(dbfile).execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"
+    ).fetchone()
+    assert (q["kind"], q["target_id"], q["target_kind"]) == (
+        "Theorist", str(gid), "Group")
+    assert q["decision_id"] == did
+
+    seen: list = []
+    monkeypatch.setattr(
+        _theorist, "run_theorist",
+        lambda conn, **kw: seen.append(kw) or SimpleNamespace(
+            outcome="success", failure_reason="", failure_detail=""))
+    c = orig_connect(dbfile)
+    db.record_pipeline_start(c, pipeline_id="pid-th", kind="Theorist",
+                             target_id=str(gid), target_kind="Group")
+    c.close()
+    out = dispatcher._run_pipeline(
+        tmp_path, intents, "Theorist", str(gid), "Group", "pid-th", did)
+    assert out.outcome == "success"
+    assert len(seen) == 1
+    assert seen[0]["problem"] == "p"
+    assert seen[0]["group_id"] == gid
+    assert seen[0]["decision_id"] == did
+    assert seen[0]["pipeline_id"] == "pid-th"
+    row = orig_connect(dbfile).execute(
+        "SELECT status, outcome FROM pipelines WHERE id = 'pid-th'"
+    ).fetchone()
+    assert (row["status"], row["outcome"]) == ("succeeded", "success")
+
+
+def test_a_theorist_dispatch_that_dies_still_settles_its_request(
+        tmp_path: Path, monkeypatch) -> None:
+    """The pipeline settles the row on every road it controls — but a
+    worker that dies of an exception controls nothing, and a NULL
+    outcome would then suppress the group's stall rescue forever. The
+    cascade is the backstop: it fills what the pipeline could not."""
+    from Tooling.pipeline import theorist as _theorist
+    from Tooling.state import transitions as _t
+    gid, did, orig_connect, dbfile, intents = _theorist_ws(
+        tmp_path, monkeypatch)
+
+    def _boom(conn, **kw):
+        raise RuntimeError("the author's process vanished")
+
+    monkeypatch.setattr(_theorist, "run_theorist", _boom)
+    c = orig_connect(dbfile)
+    db.record_pipeline_start(c, pipeline_id="pid-boom", kind="Theorist",
+                             target_id=str(gid), target_kind="Group")
+    c.close()
+    with pytest.raises(RuntimeError):
+        dispatcher._run_pipeline(
+            tmp_path, intents, "Theorist", str(gid), "Group", "pid-boom", did)
+
+    c = orig_connect(dbfile)
+    assert c.execute("SELECT outcome FROM strategist_decisions"
+                     " WHERE id = ?", (did,)).fetchone()[0] is None
+    # …and this is what the pop loop does with a worker that died.
+    _t.cascade_one(c, pipeline_id="pid-boom", kind="Theorist",
+                   target_id=str(gid), target_kind="Group",
+                   outcome="failed", failure_reason="worker_exception",
+                   decision_id=did)
+    row = c.execute("SELECT outcome, outcome_detail FROM"
+                    " strategist_decisions WHERE id = ?",
+                    (did,)).fetchone()
+    assert str(row["outcome"]).startswith("failed")
+    assert "worker_exception" in str(row["outcome"])
+    assert not db.has_active_inflight_inject(c, "p", group_id=gid)
+    c.close()
+
+
+def test_a_theorist_row_for_a_finished_group_is_dropped(
+        tmp_path: Path, monkeypatch) -> None:
+    """A queue row addressed to a group that has already left is not
+    delayed, it is spent: the pipeline would compile a Context for a
+    charter nobody is settling any more."""
+    from Tooling.state import groups as _groups
+    gid, did, orig_connect, dbfile, intents = _theorist_ws(
+        tmp_path, monkeypatch)
+    c = orig_connect(dbfile)
+    assert not dispatcher._row_is_stale(c, str(gid), "Theorist", "Group")
+    _groups.set_status(c, gid, "delivered")
+    assert dispatcher._row_is_stale(c, str(gid), "Theorist", "Group")
+    c.close()
