@@ -446,3 +446,140 @@ def test_a_bullet_rendered_as_an_object_is_still_a_bullet() -> None:
     assert err == "" and v is not None
     assert v["verdict"] == "rebut"
     assert v["criticisms"] == ["[criterion 1] already in the notes"]
+
+
+# ---------------------------------------------------------------------
+# the surfaces that read a decision, a pipeline or a table
+# ---------------------------------------------------------------------
+
+def _batch_section(conn, workspace, attempts):
+    from Tooling.agent import phase2_context
+    return phase2_context._section_inject_batch_outcomes(
+        conn, "p", workspace=workspace,
+        group_id=groups_mod.ensure_top_group(conn, "p"),
+        attempts_dir=attempts)
+
+
+def _open_theorize(conn, workspace):
+    """One open Theorize plus the pipeline row its dispatch would make."""
+    did = _theorize(conn, workspace)
+    db.record_pipeline_start(
+        conn, pipeline_id="pid-th", kind="Theorist",
+        target_id=str(groups_mod.ensure_top_group(conn, "p")),
+        target_kind="Group")
+    return did
+
+
+def test_the_status_surfaces_read_a_theory_run_without_crashing(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A new pipeline kind and a new decision kind reach every reader of
+    those tables. None of them may die on it — a status command that
+    raises is the operator's only window going dark at exactly the
+    moment something new is running."""
+    from Tooling.core.cli import diagnose, run as _run
+    db.insert_goal(conn, problem="p", slug="main",
+                   lean_path="Problems/p/Root.lean", statement="T",
+                   origin="root", depth=0)
+    _open_theorize(conn, workspace)
+    payload = diagnose._status_payload(conn, "p")
+    assert payload["exists"] is True
+    # `daemon status` counts running pipelines; the Theorist is one.
+    running, _leases = _run._daemon_counts(workspace)
+    assert running >= 1
+    status = _run.daemon_status(workspace)
+    assert status["in_flight"] >= 1
+
+
+def test_the_tree_render_is_unmoved_by_a_theory_run(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A Theorize produces no goal, so TREE has nothing new to say — and
+    saying nothing is the correct answer, not an omission: the document
+    is listed under `## Notes on this problem`, which is where a reader
+    looking for prose goes."""
+    from Tooling.state import tree as _tree
+    db.insert_goal(conn, problem="p", slug="main",
+                   lean_path="Problems/p/Root.lean", statement="T",
+                   origin="root", depth=0)
+    before = _tree.render(conn, "p")
+    _open_theorize(conn, workspace)
+    assert _tree.render(conn, "p") == before
+
+
+def test_the_batch_surfaces_name_the_open_theory_request(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, tmp_path: Path,
+) -> None:
+    """An open step with no product renders as running — correct, since
+    a theory request has no parked state — and the companion carries the
+    request itself, because a Theorize has no `brief` column and a step
+    shown with "(no brief)" reads as a step about nothing."""
+    from Tooling.agent import phase2_context
+    _theorize(conn, workspace)
+    attempts = tmp_path / "_ctx"
+    attempts.mkdir()
+    lines = phase2_context._section_inject_batch_outcomes(
+        conn, "p", workspace=workspace,
+        group_id=groups_mod.ensure_top_group(conn, "p"),
+        attempts_dir=attempts)
+    text = "\n".join(lines)
+    assert "Dispatched, still running" in text
+    companion = (attempts / "BATCHES.md").read_text(encoding="utf-8")
+    assert "Theorize — a question for the theory layer" in companion
+    assert "**objective** — S such that S implies MAIN" in companion
+    assert "**situation** — the bridge died at PAST 3" in companion
+
+
+def test_a_finished_theory_request_reaches_the_completed_batches(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`## Completed Inject batches` is where a wake reads what its last
+    batch left. An accepted document must arrive there by its PATH — the
+    thing the next wake opens — and a refused one by its reason."""
+    from Tooling.agent import phase2_context
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear()])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    attempts = tmp_path / "_ctx2"
+    attempts.mkdir()
+    text = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", workspace=workspace,
+        group_id=groups_mod.ensure_top_group(conn, "p"),
+        attempts_dir=attempts))
+    assert "Completed Inject batches" in text
+    assert "THEORY request — objective: S such that S implies MAIN" in text
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    assert f"document: `{path}`" in text
+
+
+def test_a_refused_theory_request_says_so_on_the_scoreboard(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    attempts = tmp_path / "_ctx3"
+    attempts.mkdir()
+    text = "\n".join(_batch_section(conn, workspace, attempts))
+    assert theorist.REJECTED_DETAIL in text
+    assert "the relation is not argued" in text
+
+
+def test_carry_places_the_new_table(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """`asterism carry` refuses to run on a table it cannot place, and
+    the placement is DERIVED — `theory_documents` carries a `problem`
+    column, so it is problem-keyed with nothing to declare by hand."""
+    from Tooling.state import carry as _carry
+    kinds = _carry.assert_classified(conn)
+    assert kinds["theory_documents"] == _carry.PROBLEM_KEYED
