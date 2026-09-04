@@ -301,6 +301,50 @@ def reconcile_settled_inject_outcomes(
     return resolved
 
 
+def reconcile_spent_theorize_outcomes(conn: sqlite3.Connection, *,
+                                      scope: "str | None" = None) -> int:
+    """Settle every `Theorize` whose GROUP has left — the complement of
+    `null_theorize_redispatch_specs`, and the same division of labour
+    this file's reconciler above has with the Inject redispatch: one side
+    revives what still has a worker to run, the other closes what can
+    never get one.
+
+    A retired group's request is SPENT: the pop-time door refuses to
+    spawn on it (`_row_is_stale`, the Theorist arm), and no other road
+    fills the outcome — the pipeline settles its own row on both of ITS
+    roads, but only if it runs. Left NULL it goes on suppressing the
+    group's wakes forever, which is precisely the wedge
+    `_theorize_in_flight` documents as impossible for this kind. It is
+    also what makes the redispatch helper's group filter safe: without
+    this, skipping a retired group would trade a re-enqueue loop for a
+    permanent NULL.
+
+    Returns the count settled. Idempotent (`outcome IS NULL`-guarded)."""
+    sql = (
+        "SELECT sd.id, gr.status FROM strategist_decisions sd"
+        " JOIN groups gr ON gr.id = sd.group_id"
+        " WHERE sd.decision_kind = 'Theorize' AND sd.outcome IS NULL"
+        "   AND gr.status <> 'active'"
+    )
+    _sc, args = scope_sql(scope, "sd.problem")
+    if _sc:
+        sql += f" AND {_sc}"
+    from .. import transitions
+    settled = 0
+    for r in list(conn.execute(sql, args)):
+        transitions._record_inject_decision_outcome(
+            conn, int(r["id"]), "failed", "group_retired",
+            detail=("the group that asked left the tree"
+                    f" ({str(r['status'])}) before the theory layer"
+                    " answered"))
+        maybe_enqueue_inject_batch_done(conn, int(r["id"]))
+        settled += 1
+    if settled:
+        print(f"[theorist] settled {settled} spent theory request(s) "
+              f"— the group that asked has left", flush=True)
+    return settled
+
+
 def delete_strategy(conn: sqlite3.Connection, strategy_id: int) -> None:
     """Remove a strategy row outright.
 

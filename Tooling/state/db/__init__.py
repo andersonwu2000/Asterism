@@ -76,6 +76,7 @@ from .problems import (
     group_routine_due,
     problems_with_pending_review,
     null_inject_redispatch_specs,
+    null_theorize_redispatch_specs,
     queue_has_decision,
     _subtree_has_live_frontier,
     BATCH_DECISION_KINDS,
@@ -123,6 +124,7 @@ from .strategies import (
     update_strategy_status,
     maybe_enqueue_inject_batch_done,
     reconcile_settled_inject_outcomes,
+    reconcile_spent_theorize_outcomes,
     delete_strategy,
     strategies_ready_for_verify,
 )
@@ -139,6 +141,7 @@ from .pipelines import (
 
 # queue.py — Queue helpers
 from .queue import (
+    HUMAN_PRIORITY,
     enqueue,
     pop_queue,
     complete_queue_row,

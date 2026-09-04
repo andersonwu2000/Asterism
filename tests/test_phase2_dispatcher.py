@@ -1493,6 +1493,112 @@ def test_reconcile_reenqueues_null_inject_in_flight_gated(
 
 
 # ---------------------------------------------------------------------
+# Theorize — the theory layer's request has a WORKER, so it needs the
+# same per-tick self-heal an Inject has (2026-09-04 union_closed: two
+# Theorize rows, ids 5805/5808, were enqueued as Theorist queue rows
+# and the daemon hot-handed-off 8 minutes later; recovery cleared the
+# queue and re-enqueued Inject work only, so both requests sat NULL —
+# counted as in flight by `_theorize_in_flight`, dispatched by nobody).
+# ---------------------------------------------------------------------
+
+def _insert_theorize(conn: sqlite3.Connection, *, problem: str,
+                     group_id: int, actor: str = "strategist",
+                     outcome: "str | None" = None) -> int:
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, reason, payload,"
+        " batch_id, produced_kind, outcome, actor, created_at,"
+        " updated_at)"
+        " VALUES (?, 0, 'routine', 'Theorize', ?, 'wall', ?, ?,"
+        "         'document', ?, ?, ?, ?)",
+        (problem, int(group_id),
+         json.dumps({"objective": "O", "situation": "S"}),
+         f"batch-t{group_id}-{outcome}", outcome, actor, ts, ts))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_reconcile_reenqueues_unanswered_theorize_in_flight_gated(
+    conn: sqlite3.Connection,
+) -> None:
+    """A `Theorize` with a NULL outcome and no worker is a SILENT STALL:
+    `_theorize_in_flight` reads it as the theory layer working, so the
+    group's idle / stall gates stay shut while nothing runs. The tick
+    reconciler re-enqueues its Theorist — in-flight gated exactly as the
+    NULL-Inject arm above."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    d = _insert_theorize(conn, problem="alpha", group_id=gid)
+    _insert_theorize(conn, problem="alpha", group_id=gid, outcome="success")
+
+    reconcile_stuck_states(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind, decision_id, priority FROM queue"
+        " WHERE kind='Theorist'").fetchall()
+    assert len(q) == 1
+    assert q[0]["target_id"] == str(gid)
+    assert q[0]["target_kind"] == "Group"
+    assert q[0]["decision_id"] == d
+    assert q[0]["priority"] == 10
+    # already queued → no duplicate on the next tick
+    reconcile_stuck_states(conn, running=set())
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 1
+    # a live Theorist for this decision → not re-enqueued
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    reconcile_stuck_states(conn, running={(str(gid), "Theorist", d)})
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 0
+
+
+def test_reconcile_reenqueued_theorize_keeps_the_human_priority(
+    conn: sqlite3.Connection,
+) -> None:
+    """A person's `Theory` request is committed at the human band; the
+    recovery that revives it must not demote it to the machine band."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    _insert_theorize(conn, problem="alpha", group_id=gid, actor="human")
+
+    reconcile_stuck_states(conn, running=set())
+
+    row = conn.execute(
+        "SELECT priority FROM queue WHERE kind='Theorist'").fetchone()
+    assert row is not None and row["priority"] == db.HUMAN_PRIORITY
+
+
+def test_reconcile_settles_theorize_of_a_retired_group(
+    conn: sqlite3.Connection,
+) -> None:
+    """A request addressed to a group that has already left is SPENT —
+    the pop-time door drops such a row (`_row_is_stale`), so re-enqueuing
+    it would loop forever. Settle the outcome instead: a NULL that can
+    never be answered suppresses the problem's stall gates for good."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    top = int(groups.top_group(conn, "alpha")["id"])
+    gid = groups.open_group(conn, problem="alpha", parent_group_id=top,
+                            charter="a wall")
+    d = _insert_theorize(conn, problem="alpha", group_id=gid)
+    groups.set_status(conn, gid, "closed", event="test_retire")
+
+    reconcile_stuck_states(conn, running=set())
+
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 0
+    row = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (d,)).fetchone()
+    assert row["outcome"] is not None and str(row["outcome"]).startswith(
+        "failed")
+
+
+# ---------------------------------------------------------------------
 # _dispatch_is_duplicate — pop-loop dedup (Builder capped one-per-goal)
 # ---------------------------------------------------------------------
 

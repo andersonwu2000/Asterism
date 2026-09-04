@@ -130,8 +130,9 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
     re-triggers and that can persist in a LIVE daemon (not only across a
     crash, which `recover_at_startup` handles).
 
-    Two classes, both confirmed reachable mid-run and unrecoverable without
-    this (investigation 2026-06-13):
+    Three classes, all confirmed reachable mid-run and unrecoverable
+    without this (1-2: investigation 2026-06-13; 3: union_closed
+    2026-09-04):
 
       1. `pending_strategist_review` goals whose cascade-time Strategist
          enqueue was deduped (L355 queue-only race), lost, or dropped — there
@@ -145,7 +146,14 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
          batch clause suppresses T0/T1/T4), recoverable otherwise only at
          restart. Re-enqueue the worker.
 
-    Both are IN-FLIGHT GATED: an item whose worker is live (in `running`) or
+      3. Unanswered `Theorize` decisions with no Theorist behind them —
+         the same wedge one layer up (`_theorize_in_flight` reads the NULL
+         outcome as the theory layer working), and with nothing at all to
+         re-derive them from, since the request joins no artifact column.
+         Re-enqueue the worker; or, if the group that asked has left,
+         settle the outcome — the pop door would only drop the row.
+
+    All are IN-FLIGHT GATED: an item whose worker is live (in `running`) or
     already queued is skipped, so this never double-dispatches. That gating
     is the only thing this adds over the startup-recovery logic it shares
     (`db.null_inject_redispatch_specs`), which runs against a clean slate."""
@@ -196,6 +204,29 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
         db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
                    target_kind=spec["target_kind"], priority=10,
                    decision_id=did, problem=spec["problem"])
+
+    # 3 — the same two moves for a `Theorize`, whose executor is a worker
+    # too (unlike a Delegate's, which is a group's own seat). Both halves
+    # are needed and they are disjoint: a request whose group still works
+    # gets its Theorist back, a request whose group has LEFT gets its
+    # outcome, and neither can be re-derived from anywhere else — a
+    # Theorize joins no artifact column, so nothing but the queue row it
+    # was born with says the work is owed. Startup recovery covers the
+    # restart case; this covers a live daemon, and bounds the window to
+    # one tick.
+    db.reconcile_spent_theorize_outcomes(conn, scope=scope)
+    for spec in db.null_theorize_redispatch_specs(conn, scope=scope):
+        did = spec["decision_id"]
+        if any(len(r) > 2 and r[2] == did for r in running):
+            continue  # the Theorist answering it is live this run
+        if db.queue_has_decision(conn, did):
+            continue
+        db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
+                   target_kind=spec["target_kind"],
+                   priority=spec["priority"], decision_id=did,
+                   problem=spec["problem"])
+        print(f"[theorist] re-enqueued decision d{did} "
+              f"(group {spec['target_id']})", flush=True)
 
 
 # ---------------------------------------------------------------------

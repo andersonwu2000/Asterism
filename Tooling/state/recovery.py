@@ -5,10 +5,16 @@ Extracted from `dispatcher.py`. The dispatcher's main
 loop concerns itself with steady-state work; FS↔DB reconciliation is
 a structurally separate phase that runs once at startup.
 
-Six classes of stale state, each restored:
+Seven classes of stale state, each restored:
 
   1. queue rows         — live dispatch state, never persists across
                           daemon lifetimes; cleared unconditionally.
+  1a. unfinished dispatch INTENT — a NULL-outcome Inject or Theorize
+                          decision whose queue row died in the clear
+                          above. Re-enqueued per kind (Inject: 2.5,
+                          Theorize: 2.6); nothing else re-derives
+                          either, and both read as in-flight while
+                          unqueued.
   1b. 'running' pipelines rows (v38) — INSERTed at dispatch, finalized
                           at completion; a crashed daemon leaves them
                           'running' with no worker behind them. Marked
@@ -308,6 +314,46 @@ def recover_at_startup(conn: sqlite3.Connection,
             (db.now(), r["id"]))
         pipelines_finalized += 1
 
+    # Phase 2.6 — the theory layer's half of the 2.5 re-enqueue, and it
+    # runs HERE, after the finalization above, for the one reason that
+    # makes it correct: a `Theorize` is matched to its worker through the
+    # `pipelines` table (the row carries no decision_id), so a crashed
+    # daemon's stale 'running' Theorist would otherwise read as a live
+    # worker and veto the very re-enqueue this pass exists for. Once the
+    # corpses are finalized, a still-'running' Theorist means the one
+    # thing it should: a live spawn #90 spared, owned by a concurrent
+    # non-daemon driver, which already holds the request.
+    #
+    # 2026-09-04 union_closed: decisions 5805 / 5808 were committed at
+    # 08:49Z with their Theorist queue rows; the daemon hot-handed-off at
+    # 08:50:58Z, the queue clear above took both rows, and 2.5 only knew
+    # about Injects. Both requests stayed NULL — read by
+    # `_theorize_in_flight` as the theory layer working, dispatched by
+    # nobody. A silent stall of two whole groups.
+    #
+    # A request whose group has LEFT is not revived (the pop door would
+    # drop it as spent); those settle on the next tick's
+    # `reconcile_spent_theorize_outcomes`.
+    theorize_reenqueued = 0
+    for spec in db.null_theorize_redispatch_specs(conn, scope=scope):
+        if db.queue_has_decision(conn, spec["decision_id"]):
+            continue  # a LIVE lease survived the clear (concurrent driver)
+        if conn.execute(
+            "SELECT 1 FROM pipelines WHERE kind = 'Theorist'"
+            "   AND target_kind = 'Group' AND target_id = ?"
+            "   AND status = 'running' LIMIT 1",
+            (spec["target_id"],),
+        ).fetchone() is not None:
+            continue
+        db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
+                   target_kind=spec["target_kind"],
+                   priority=spec["priority"],
+                   decision_id=spec["decision_id"],
+                   problem=spec["problem"])
+        print(f"[theorist] re-enqueued decision d{spec['decision_id']} "
+              f"(group {spec['target_id']})", flush=True)
+        theorize_reenqueued += 1
+
     strategies_killed = conn.execute(
         "UPDATE strategies SET status = 'dead'"
         " WHERE status = 'proposed' AND scratch_path = ''"
@@ -473,7 +519,8 @@ def recover_at_startup(conn: sqlite3.Connection,
     from . import consistency as _consistency
     _consistency.repair_unambiguous(conn)
 
-    if (queue_cleared or inject_reenqueued or groups_relaunched
+    if (queue_cleared or inject_reenqueued or theorize_reenqueued
+            or groups_relaunched
             or pipelines_finalized or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or anchors_reparked
@@ -485,6 +532,8 @@ def recover_at_startup(conn: sqlite3.Connection,
             or groups_orphaned):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject pipelines, "
+              f"re-enqueued {theorize_reenqueued} unanswered theory "
+              f"request(s), "
               f"relaunched {groups_relaunched} never-woken group(s), "
               f"closed {groups_orphaned} orphaned sub-project(s), "
               f"finalized {pipelines_finalized} crashed 'running' "

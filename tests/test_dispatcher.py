@@ -1272,6 +1272,120 @@ def test_recover_at_startup_spares_live_attempts(
     assert not (att / "nomani-uuid").exists()  # manifest-less orphan nuked
 
 
+def _seed_theorize(conn: sqlite3.Connection, *, problem: str = "p",
+                   actor: str = "strategist") -> "tuple[int, int]":
+    """A problem with a top group and ONE unanswered `Theorize` on it.
+    Returns (group_id, decision_id)."""
+    from Tooling.state import groups as groups_store
+    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                    (problem,)).fetchone() is None:
+        conn.execute(
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)", (problem, db.now()))
+    gid = groups_store.ensure_top_group(conn, problem)
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, reason, payload,"
+        " batch_id, produced_kind, outcome, actor, created_at,"
+        " updated_at)"
+        " VALUES (?, 0, 'routine', 'Theorize', ?, 'wall',"
+        "         '{\"objective\": \"O\", \"situation\": \"S\"}',"
+        "         'batch-th', 'document', NULL, ?, ?, ?)",
+        (problem, int(gid), actor, ts, ts))
+    conn.commit()
+    return int(gid), int(cur.lastrowid)
+
+
+def test_recover_at_startup_reenqueues_unanswered_theorize(
+    conn: sqlite3.Connection,
+) -> None:
+    """A `Theorize` caught mid-flight by a restart MUST get its Theorist
+    back. The queue is cleared unconditionally at recovery, and until
+    2026-09-04 only Inject work was re-derived: two requests filed on
+    union_closed (decisions 5805 / 5808) died in that clear and never
+    came back, while `_theorize_in_flight` went on counting them as the
+    theory layer working — the group's idle and stall gates shut over
+    nothing running."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    gid, did = _seed_theorize(conn)
+
+    _recover_at_startup(conn)
+
+    q = list(conn.execute(
+        "SELECT target_id, target_kind, decision_id, priority, problem"
+        " FROM queue WHERE kind='Theorist'"))
+    assert len(q) == 1
+    assert q[0]["target_id"] == str(gid)
+    assert q[0]["target_kind"] == "Group"
+    assert q[0]["decision_id"] == did
+    assert q[0]["priority"] == 10
+    assert q[0]["problem"] == "p"
+    # A second recovery re-derives the same one row, never two.
+    _recover_at_startup(conn)
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 1
+
+
+def test_recover_at_startup_skips_theorize_with_a_live_theorist(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """The re-enqueue runs AFTER the crashed-'running'-pipelines pass, so
+    the only Theorist row still 'running' when it reads is one #90 spared
+    — a concurrent non-daemon driver's live spawn. That one owns the
+    request already; re-enqueuing would double-dispatch it."""
+    import json
+    import os
+    from Tooling.core.dispatcher import _recover_at_startup
+    gid, did = _seed_theorize(conn)
+    pid = "live-theorist"
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " started_at) VALUES (?, 'Theorist', ?, 'Group', 'running', ?)",
+        (pid, str(gid), db.now()))
+    conn.commit()
+    sandbox = tmp_path / ".attempts" / pid / "sandbox"
+    sandbox.mkdir(parents=True)
+    (sandbox / "_manifest.json").write_text(
+        json.dumps({"owner_pid": os.getpid()}), encoding="utf-8")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert conn.execute(
+        "SELECT status FROM pipelines WHERE id = ?", (pid,)
+    ).fetchone()["status"] == "running"       # #90 spare held
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 0
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?", (did,)
+    ).fetchone()["outcome"] is None
+
+
+def test_recover_at_startup_reenqueues_theorize_over_a_dead_lease(
+    conn: sqlite3.Connection,
+) -> None:
+    """A crashed daemon's Theorist row is a dead-owner LEASE, swept by the
+    clear above — so the request is unqueued and must come back. (The
+    live-lease case is the mirror: `queue_has_decision` sees it and the
+    re-enqueue stands down.)"""
+    from Tooling.core.dispatcher import _recover_at_startup
+    gid, did = _seed_theorize(conn)
+    db.enqueue(conn, kind="Theorist", target_id=str(gid),
+               target_kind="Group", priority=10, decision_id=did,
+               problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 2147483646, leased_at = ?",
+                 (db.now(),))
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+        "   AND owner_pid IS NULL").fetchone()["c"] == 1
+
+
 def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     conn: sqlite3.Connection,
 ) -> None:

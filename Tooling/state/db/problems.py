@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from .core import now, scope_sql
+from .queue import HUMAN_PRIORITY
 from .reach import ALIVE_CTE_PER_PROBLEM, open_goals
 
 
@@ -483,6 +484,58 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
     # 2026-06-15). Superseded NULL rows stay NULL here, harmlessly —
     # reconcile_settled_inject_outcomes settles them once the goal terminates.
     return specs
+
+
+def null_theorize_redispatch_specs(conn: sqlite3.Connection, *,
+                                   scope: str | None = None) -> list[dict]:
+    """Queue specs for every unanswered `Theorize` — the theory layer's
+    half of `null_inject_redispatch_specs`, and needed for the same
+    reason: a `Theorize` dispatches a WORKER, so a lost queue row leaves
+    work that nothing re-derives.
+
+    It leaves nothing to re-derive it FROM, which is why this reader is
+    kind-specific rather than a widening of the Inject one. A Theorize
+    joins no artifact column (its product is a document), so the
+    produced-goal / produced-strategy guards that decide an Inject's case
+    have nothing to read here — and `_theorize_in_flight` treats the bare
+    NULL outcome as "the theory layer is working". Unqueued, that reading
+    is a lie the group cannot get out of: its idle gate and its stall
+    rescue both stay shut waiting for a worker nobody is going to spawn
+    (2026-09-04 union_closed — decisions 5805 and 5808 were enqueued at
+    08:49Z, the daemon hot-handed-off at 08:50:58Z, and recovery's
+    unconditional queue clear took both Theorist rows with it).
+
+    A request whose GROUP has left is not returned: the pop-time door
+    drops such a row as SPENT (`_row_is_stale`), so re-enqueuing it would
+    loop every tick. Those are settled instead —
+    `reconcile_spent_theorize_outcomes`.
+
+    `priority` rides along because a person's `Theory` is committed at
+    the human band (`HUMAN_PRIORITY`): a revived request must come back
+    at the band it was filed at, not be demoted by its own recovery.
+
+    Returns dicts: `{decision_id, problem, kind, target_id, target_kind,
+    priority}` — the same shape the Inject specs take, plus the band."""
+    sql = (
+        "SELECT sd.id, sd.problem, sd.group_id, sd.actor"
+        " FROM strategist_decisions sd"
+        " JOIN groups gr ON gr.id = sd.group_id"
+        " WHERE sd.decision_kind = 'Theorize' AND sd.outcome IS NULL"
+        "   AND gr.status = 'active'"
+    )
+    _sc, args = scope_sql(scope, "sd.problem")
+    if _sc:
+        sql += f" AND {_sc}"
+    sql += " ORDER BY sd.id"
+    return [{
+        "decision_id": int(r["id"]),
+        "problem": str(r["problem"]),
+        "kind": "Theorist",
+        "target_id": str(int(r["group_id"])),
+        "target_kind": "Group",
+        "priority": (HUMAN_PRIORITY if str(r["actor"] or "") == "human"
+                     else 10),
+    } for r in conn.execute(sql, args)]
 
 
 def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:

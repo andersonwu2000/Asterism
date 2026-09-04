@@ -68,7 +68,9 @@ ACTOR_HUMAN = "human"
 #: promoting its own next experiment. A human Inject "只進佇列、不插隊"
 #: (§1.3, owner ruling 2026-09-02): it takes the ordinary band, so it
 #: neither outranks the goals BFS already queued nor sinks below them.
-_HUMAN_INJECT_PRIORITY = 2
+#: Defined in `db.queue` because the redispatch helpers have to restore
+#: the same band when they revive a lost human row.
+_HUMAN_INJECT_PRIORITY = db.HUMAN_PRIORITY
 
 
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,

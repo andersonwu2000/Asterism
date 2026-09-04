@@ -11,6 +11,19 @@ from .core import now, scope_sql
 # Queue helpers
 # ---------------------------------------------------------------------
 
+#: The band a PERSON's dispatch takes (human_interface_design §3.2). NOT a
+#: fast lane: 2 is the ordinary BFS band, so a human request "只進佇列、
+#: 不插隊" (owner ruling 2026-09-02) — it neither outranks the goals BFS
+#: already queued nor sinks below them, while a machine-authored Inject at
+#: 10 is the framework promoting its own next experiment.
+#:
+#: One home rather than two: the commit path stamps it when the command is
+#: applied, and the recovery / reconcile helpers that revive a lost queue
+#: row restore the SAME band — a request re-banded by the very pass that
+#: rescued it is a silent reordering nobody would look for.
+HUMAN_PRIORITY = 2
+
+
 def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
             problem: str,
             priority: int = 0, target_kind: str = "Goal",
