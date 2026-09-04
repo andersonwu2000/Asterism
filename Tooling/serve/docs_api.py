@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 from pathlib import Path
 
@@ -34,13 +35,35 @@ from ..state import project_docs as _docs
 from ..state import projects as _projects
 
 
+def _etag(data: bytes) -> str:
+    """A document's version, as the sha1 of its bytes.
+
+    The bytes rather than the mtime: while a person types, two saves
+    inside one filesystem tick are ordinary, and a timestamp cannot tell
+    "somebody changed it" from "written again with the same text" — the
+    second is not a conflict and must not be reported as one. No
+    security claim is being made here; what this guards against is a
+    stale tab, not an adversary.
+    """
+    return hashlib.sha1(data).hexdigest()
+
+
 class DocBody(BaseModel):
     """A write. `content` is text; `content_base64` carries an image or
     a pdf; `kind: "dir"` makes a folder instead of a file (§3.6: folder
-    creation and deletion share the path)."""
+    creation and deletion share the path).
+
+    `base_etag` and `create` are PRECONDITIONS, not content: they say
+    what the caller believed about the disk, so a write made on a stale
+    belief can be refused instead of silently winning. Omitted, the
+    write is the unconditional one this door has always done — the
+    editor opts in.
+    """
     content: "str | None" = None
     content_base64: "str | None" = None
     kind: str = "file"
+    base_etag: "str | None" = None
+    create: bool = False
 
 
 class DocMove(BaseModel):
@@ -187,21 +210,78 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                     filename=target.name,
                     content_disposition_type="inline")
             raw_bytes = _docs.read(workspace, project, path)
+            # `etag` on both shapes: it is the version the caller is now
+            # holding, and a save that names it can be refused when the
+            # disk has moved on. Off the BYTES, so it survives the
+            # decode above — a file with a bad byte in it still has one
+            # honest version, and `errors="replace"` would hash a
+            # different document than the one on disk.
+            tag = _etag(raw_bytes)
             if _docs.is_binary(path):
-                return {"path": path, "encoding": "base64",
+                return {"path": path, "encoding": "base64", "etag": tag,
                         "content_base64":
                             base64.b64encode(raw_bytes).decode()}
-            return {"path": path, "encoding": "utf-8",
+            return {"path": path, "encoding": "utf-8", "etag": tag,
                     "content": raw_bytes.decode("utf-8", errors="replace")}
+
+    def _check_preconditions(project: str, path: str,
+                             body: DocBody) -> None:
+        """Refuse a write whose belief about the disk is out of date.
+
+        409 rather than 422: nothing about the request is malformed —
+        the world moved between the read and the save, which is the one
+        answer a person can act on, so each refusal names the act. A
+        gate that only says no gets an invented way past it (memory:
+        `gate_must_name_a_reachable_action`).
+
+        Check-then-write is NOT atomic here. This is a localhost surface
+        with one person on it, so the window is the microseconds between
+        two lines and the only writer that could enter it is another tab
+        of the same browser — a lock file would buy nothing but a new
+        way to be stuck. Said out loud rather than left to be discovered.
+        """
+        if not body.create and body.base_etag is None:
+            return  # the unconditional write — no belief to check
+        base = _docs.root(workspace, project)
+        # the same three fences the write itself goes through: a caller
+        # that stats a path the fence has not judged is a caller that
+        # answers questions about `../../`
+        target = _docs.locate(workspace, project, path,
+                              area=_docs.AREA_USER)
+        rel = target.relative_to(base).as_posix()
+        if body.create and target.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"{rel!r} already exists — open it, or pick "
+                       f"another name")
+        if body.base_etag is not None:
+            if not target.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{rel!r} was removed since you opened it — "
+                           f"save without a base to recreate it")
+            # a folder under that name is the WRITE's refusal to make
+            # ("name a file inside it instead"), not a version conflict
+            if (target.is_file()
+                    and _etag(target.read_bytes()) != body.base_etag):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{rel!r} changed on disk since you opened "
+                           f"it — reload to take the disk's version, or "
+                           f"save again without a base to overwrite")
 
     @app.put("/api/projects/{project}/docs/{path:path}")
     def docs_write(project: str, path: str, body: DocBody) -> dict:
         """Write a document or make a folder — under `user/` only."""
         with _answers(project):
             if (body.kind or "file").strip() == "dir":
+                # a folder carries no bytes, so it has no version and
+                # `base_etag` / `create` say nothing about it — mkdir
+                # stays the idempotent call §3.6 made it
                 rel = _docs.mkdir(workspace, project, path,
                                   area=_docs.AREA_USER)
                 return {"path": rel, "kind": "dir"}
+            _check_preconditions(project, path, body)
             if body.content_base64 is not None:
                 try:
                     content: "str | bytes" = base64.b64decode(
@@ -214,7 +294,14 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                 content = body.content or ""
             rel = _docs.write(workspace, project, path, content,
                               area=_docs.AREA_USER)
-            return {"path": rel, "kind": "file"}
+            # the version the editor now holds, so its next save can name
+            # a base without a second read. Hashed from what was HANDED
+            # OVER, which is what landed: `project_docs.write` opens with
+            # `newline=""` precisely so no `\n` becomes `\r\n` on the way
+            # to disk.
+            return {"path": rel, "kind": "file",
+                    "etag": _etag(content.encode("utf-8")
+                                  if isinstance(content, str) else content)}
 
     @app.post("/api/projects/{project}/docs/{path:path}")
     def docs_move(project: str, path: str, body: DocMove) -> dict:

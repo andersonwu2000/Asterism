@@ -473,10 +473,20 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     except Exception:  # noqa: BLE001 — enrichment only, never fatal
         anchor_edges = []
 
-    proofs_dir = db.problem_dir(workspace, problem) / "proofs"
+    problem_root = db.problem_dir(workspace, problem)
+    proofs_dir = problem_root / "proofs"
     proof_files = sorted(
         f.name for f in proofs_dir.glob("*.lean")) if proofs_dir.is_dir() \
         else []
+    # The problem's OWN writing, beside its proofs: BRIEF/PROGRAMME/
+    # REPORT/TREE and the root Lean files. Top level and `.md`/`.lean`
+    # only, which is exactly what `/api/problems/{p}/file` will serve —
+    # a rail that listed `problem.json` or a `.groups/` internal would
+    # be offering to open things that door answers 404 for.
+    problem_files = sorted(
+        f.name for f in problem_root.iterdir()
+        if f.is_file() and f.suffix.lower() in (".md", ".lean")
+    ) if problem_root.is_dir() else []
 
     top_group_id = _top_group_id(conn, problem)
     awaiting = db.problem_has_awaiting_human(conn, problem)
@@ -538,6 +548,9 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             workspace, problem, goals, strategies, edges),
         "decisions": decisions,
         "proof_files": proof_files,
+        # the problem directory's own top-level documents (2026-09-04):
+        # what the Documents tab's engine group lists
+        "problem_files": problem_files,
         # research mode (v30): the current Programme's rev, or null
         # before bootstrap — the UI shows the Programme tab only when
         # there is a Programme to read. v35: of the TOP group, whose

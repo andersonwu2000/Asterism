@@ -8,6 +8,7 @@ ingest sign-off) with their side effects visible in the DB.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -367,6 +368,10 @@ def test_problem_detail_shape(workspace: Path) -> None:
     (proofs / "main.lean").write_text(
         "import Mathlib\n\ntheorem main : True := trivial",
         encoding="utf-8")
+    pdir = workspace / "Problems" / "p"
+    (pdir / "Root.lean").write_text("import Mathlib\n", encoding="utf-8")
+    (pdir / "PROGRAMME.md").write_text("# the programme\n", encoding="utf-8")
+    (pdir / "problem.json").write_text("{}", encoding="utf-8")
 
     c = _client(workspace)
     d = c.get("/api/problems/p").json()
@@ -382,6 +387,11 @@ def test_problem_detail_shape(workspace: Path) -> None:
         "link_kind": "minted"}
     assert d["decisions"][0]["decision_kind"] == "Noop"
     assert d["proof_files"] == ["main.lean"]
+    # The problem's OWN top-level writing, beside its proofs (2026-09-04):
+    # the Documents rail lists what a person can open, and that is exactly
+    # what `/file` can serve at depth 0 — `.md` and `.lean`. `problem.json`
+    # is the engine's record of the problem, not a document about it.
+    assert d["problem_files"] == ["PROGRAMME.md", "Root.lean"]
 
     g = c.get(f"/api/problems/p/goals/{sub}").json()
     assert g["dead_attempts"][0]["failure_reason"] == "agent_timeout"
@@ -2920,6 +2930,31 @@ def test_docs_round_trip_through_the_endpoints(workspace: Path) -> None:
                  ).status_code == 404
 
 
+def test_docs_read_carries_the_bytes_sha1_as_its_etag(
+        workspace: Path) -> None:
+    """A read says WHICH version it handed over (2026-09-04).
+
+    The editor sends it back with the save, so a change that landed
+    between the two is refused instead of silently overwritten. Without
+    it the last keystroke anywhere wins and the loser is never told —
+    and this tab is a document editor, where that is lost writing.
+
+    Both wire shapes carry it: an image is as capable of changing under
+    an open tab as prose is.
+    """
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/notes.md",
+          json={"content": "# hello\n"})
+    body = c.get("/api/projects/Erdos/docs/user/notes.md").json()
+    assert body["etag"] == hashlib.sha1(b"# hello\n").hexdigest()
+    png = (workspace / "Problems" / "Erdos" / "_docs" / "user" / "shot.png")
+    png.write_bytes(b"\x89PNG\r\n\x1a\n")
+    shot = c.get("/api/projects/Erdos/docs/user/shot.png").json()
+    assert shot["encoding"] == "base64"
+    assert shot["etag"] == hashlib.sha1(b"\x89PNG\r\n\x1a\n").hexdigest()
+
+
 def test_docs_listing_carries_each_theory_document_s_record(
         workspace: Path) -> None:
     """A theory document is a ROW, not just a file (theory_wake_design.md
@@ -3061,6 +3096,105 @@ def test_docs_put_creates_a_folder(workspace: Path) -> None:
     assert c.get("/api/projects/Erdos/docs").json()["entries"] == [
         {"path": "user", "kind": "dir"},
         {"path": "user/chapter", "kind": "dir"}]
+
+
+def test_docs_put_answers_with_the_etag_it_wrote(workspace: Path) -> None:
+    """The write says which version it just made, so the editor can
+    rebase on its own save. A read after every write would be a second
+    round trip for an answer the server already knows — and an editor
+    that skipped it would refuse its own next save."""
+    _with_project(workspace)
+    c = _client(workspace)
+    first = c.put("/api/projects/Erdos/docs/user/notes.md",
+                  json={"content": "one\n"})
+    assert first.status_code == 200, first.text
+    etag = first.json()["etag"]
+    assert etag == c.get(
+        "/api/projects/Erdos/docs/user/notes.md").json()["etag"]
+    # and it is a base the next save is accepted on
+    again = c.put("/api/projects/Erdos/docs/user/notes.md",
+                  json={"content": "two\n", "base_etag": etag})
+    assert again.status_code == 200, again.text
+    assert again.json()["etag"] == hashlib.sha1(b"two\n").hexdigest()
+
+
+def test_docs_put_with_create_refuses_an_existing_path(
+        workspace: Path) -> None:
+    """`create: true` means "a NEW one". Serving it by overwriting would
+    turn `+ file` on a name already in the tree into a delete of somebody
+    else's chapter, from a button that never said so."""
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/notes.md", json={"content": "mine\n"})
+    r = c.put("/api/projects/Erdos/docs/user/notes.md",
+              json={"content": "theirs\n", "create": True})
+    assert r.status_code == 409, r.text
+    assert "user/notes.md" in r.json()["detail"]
+    assert "already exists — open it, or pick another name" \
+        in r.json()["detail"]
+    assert c.get("/api/projects/Erdos/docs/user/notes.md"
+                 ).json()["content"] == "mine\n"
+
+
+def test_docs_put_with_a_base_etag_refuses_a_vanished_file(
+        workspace: Path) -> None:
+    """A base names the version being edited. With the file gone there is
+    nothing to reconcile with, so the save is refused rather than quietly
+    recreating a document somebody deleted on purpose — and the refusal
+    names the one move that gets the work onto disk."""
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/notes.md", json={"content": "one\n"})
+    assert c.delete("/api/projects/Erdos/docs/user/notes.md"
+                    ).status_code == 200
+    r = c.put("/api/projects/Erdos/docs/user/notes.md",
+              json={"content": "two\n",
+                    "base_etag": hashlib.sha1(b"one\n").hexdigest()})
+    assert r.status_code == 409, r.text
+    assert "user/notes.md" in r.json()["detail"]
+    assert "was removed since you opened it — save without a base to " \
+        "recreate it" in r.json()["detail"]
+    assert not (workspace / "Problems" / "Erdos" / "_docs" / "user"
+                / "notes.md").exists()
+
+
+def test_docs_put_with_a_stale_base_etag_refuses_the_overwrite(
+        workspace: Path) -> None:
+    """The conflict this whole mechanism exists for: the disk moved on
+    while the editor held an older copy. Nothing is written — the person
+    is offered the disk's version or an explicit overwrite, and picks."""
+    _with_project(workspace)
+    c = _client(workspace)
+    c.put("/api/projects/Erdos/docs/user/notes.md", json={"content": "one\n"})
+    stale = hashlib.sha1(b"one\n").hexdigest()
+    c.put("/api/projects/Erdos/docs/user/notes.md",
+          json={"content": "elsewhere\n"})
+    r = c.put("/api/projects/Erdos/docs/user/notes.md",
+              json={"content": "mine\n", "base_etag": stale})
+    assert r.status_code == 409, r.text
+    assert "user/notes.md" in r.json()["detail"]
+    assert "changed on disk since you opened it — reload to take the " \
+        "disk's version, or save again without a base to overwrite" \
+        in r.json()["detail"]
+    assert c.get("/api/projects/Erdos/docs/user/notes.md"
+                 ).json()["content"] == "elsewhere\n"
+    # and the named way out actually works
+    assert c.put("/api/projects/Erdos/docs/user/notes.md",
+                 json={"content": "mine\n"}).status_code == 200
+
+
+def test_docs_put_of_a_folder_ignores_the_etag_fields(
+        workspace: Path) -> None:
+    """A folder has no bytes, so it has no version. `kind: "dir"` is
+    idempotent and stays that way whatever the editor's fields say."""
+    _with_project(workspace)
+    c = _client(workspace)
+    body = {"kind": "dir", "create": True, "base_etag": "deadbeef"}
+    assert c.put("/api/projects/Erdos/docs/user/chapter",
+                 json=body).status_code == 200
+    second = c.put("/api/projects/Erdos/docs/user/chapter", json=body)
+    assert second.status_code == 200, second.text
+    assert second.json() == {"path": "user/chapter", "kind": "dir"}
 
 
 def test_docs_refuse_a_path_that_leaves_the_root(workspace: Path) -> None:
