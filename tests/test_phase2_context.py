@@ -622,12 +622,17 @@ def test_inject_batch_done_surfaces_landed_decl(
     assert "aug_band = aug_sphere ∘ band_iso" in text
 
 
-def test_inject_batch_section_omitted_when_no_unack_batch(
+def test_inject_batch_section_says_none_when_no_unack_batch(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
-    """Without any unack batch, the section doesn't appear (defensive —
-    rendering must not show stale data)."""
+    """Without any unack batch the section still renders — and says so.
+
+    The rule it was written for stands: rendering must never show stale
+    data, and no batch is listed here. What changed (2026-09-05) is the
+    reading of an empty section — an absent one is not a fact either,
+    and the Strategist could not tell it from a compile that dropped
+    the surface."""
     _insert_problem(conn)
     _insert_root(conn)
     attempts_dir = tmp_path / "_attempts_strategist"
@@ -637,7 +642,10 @@ def test_inject_batch_section_omitted_when_no_unack_batch(
         attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
     )
     text = out.read_text(encoding="utf-8")
-    assert "## Completed Inject batches" not in text
+    assert "## Completed Inject batches" in text
+    assert "(none — no batch of yours has completed" in text
+    assert "`" not in text.split("## Completed Inject batches")[1].split(
+        "\n##")[0], "no batch hash is listed: there are none"
 
 
 def test_routine_trigger_shows_unack_batch_section(
@@ -731,6 +739,13 @@ def test_inject_batch_section_omits_produced_lemma(
 # _section_pending_reopens — batch-scoped surfacing (brouwer 2026-05-22 G2)
 # ---------------------------------------------------------------------
 
+#: What an EMPTY promise queue must say. Requirement change 2026-09-05
+#: (8 strategist reports 2026-08-29..09-03): the section used to vanish
+#: with its rows, so "nothing is due" and "this Context was compiled
+#: wrong" arrived as the same page. A reader cannot act on an absence.
+NONE_PENDING = "## Pending reopen-promises"
+
+
 def _seed_shelved_goal(conn: sqlite3.Connection, *, slug: str,
                        problem: str = "p") -> int:
     gid = db.insert_goal(
@@ -808,9 +823,10 @@ def test_pending_reopens_suppresses_when_promised_batch_inflight(
         conn, goal_id=g, batch_id="batch-inflight",
         inject_outcomes=["success", None],  # one still in flight
     )
-    lines = phase2_context._section_pending_reopens(
-        conn, "p", "inject_batch_done")
-    assert lines == []
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_pending" not in body
+    assert NONE_PENDING in body, "the heading stays; it says there are none"
 
 
 def test_pending_reopens_fires_when_the_promised_helper_is_parked(
@@ -869,8 +885,8 @@ def test_pending_reopens_waits_on_a_live_delegate(
         " VALUES ('p', 0, 'inject_batch_done', 'Delegate', 'batch-dlg',"
         " NULL, '{}', ?, ?)", (ts, ts))
     conn.commit()
-    assert phase2_context._section_pending_reopens(
-        conn, "p", "inject_batch_done") == []
+    assert NONE_PENDING in "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
     # Group terminal → outcome filled → due, surfaces.
     conn.execute(
         "UPDATE strategist_decisions SET outcome='failed:returned'"
@@ -988,9 +1004,9 @@ def test_pending_reopens_skips_legacy_cs_with_null_batch_id(
         (str(g), ts, ts),
     )
     conn.commit()
-    lines = phase2_context._section_pending_reopens(
-        conn, "p", "inject_batch_done")
-    assert lines == []
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_legacy" not in body and NONE_PENDING in body
 
 
 def test_pending_reopens_skips_batch_with_only_confirmshelve_reopen(
@@ -1013,9 +1029,9 @@ def test_pending_reopens_skips_batch_with_only_confirmshelve_reopen(
         (str(g), ts, ts),
     )
     conn.commit()
-    lines = phase2_context._section_pending_reopens(
-        conn, "p", "inject_batch_done")
-    assert lines == []
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_no_inject" not in body and NONE_PENDING in body
 
 
 def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
@@ -1033,6 +1049,44 @@ def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
     )
     for trig in ("routine", "pending_review"):
         assert phase2_context._section_pending_reopens(conn, "p", trig) == []
+
+
+def test_an_empty_promise_queue_says_none_instead_of_vanishing(
+    conn: sqlite3.Connection,
+) -> None:
+    """A reader cannot act on an absence.
+
+    With no promise due the whole section disappeared, so "none pending"
+    and "this Context was compiled wrong" reached the Strategist as the
+    same page — it asked for the heading to be emitted either way 8
+    times, 2026-08-29..09-03. The heading is a stable API of this
+    document; its BODY is what varies."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert NONE_PENDING in body
+    assert "none" in body.lower()
+    # …and the trigger gate is a different statement: on a trigger this
+    # section does not evaluate, saying "none" would be a claim nobody
+    # checked. It still renders nothing.
+    assert phase2_context._section_pending_reopens(
+        conn, "p", "routine") == []
+
+
+def test_an_empty_batch_scoreboard_says_none_instead_of_vanishing(
+    conn: sqlite3.Connection,
+) -> None:
+    """Same shape, same ambiguity, one section over: with no completed
+    batch, nothing running, nothing parked and no decline, the whole
+    scoreboard vanished — and this is the surface a Strategist reads to
+    answer "is anything of mine still out there?"."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    body = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p"))
+    assert body.startswith("## ")
+    assert "none" in body.lower()
 
 
 # ---------------------------------------------------------------------
