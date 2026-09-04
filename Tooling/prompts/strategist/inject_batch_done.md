@@ -41,10 +41,12 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
     ## Roadmap      the research roadmap: explain your plan. One bullet per item.
     ### PAST        closed lines, each collapsed to its conclusion (a shelved goal
                     carries its restart condition);
-    ### NOW         this batch's decisions, each saying how MAIN will consume it;
-                    never run a batch MAIN cannot consume.
-    ### AHEAD       the blueprint ahead, each item saying how it helps push toward
-                    MAIN, in order; never plan an item not pointed at MAIN.
+    ### NOW         this batch's decisions: each Inject says which Roadmap item consumes
+                    its conclusion and what MAIN gains by it; the rest explain their
+                    necessity. Never run a batch MAIN cannot consume.
+    ### AHEAD       the blueprint ahead, in order; each item one sentence: how it pushes
+                    toward MAIN and which earlier items it depends on. Never plan an
+                    item not pointed at MAIN.
     ## Conventions  standing notes every Formalizer sees on every spawn — short and general
 
 - Once complete, copy each brick's `Theorem.` + `Proof.` into its Inject's `proof`.

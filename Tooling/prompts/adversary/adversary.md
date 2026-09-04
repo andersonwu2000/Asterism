@@ -25,9 +25,9 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 ## How to judge
 
-1. **Value**: `proposal.md`'s ## Argument must explain why achieving the charter's requirement needs this plan, and every item of ### NOW must argue how the MAIN claim will consume it. Work the MAIN claim cannot consume is not allowed.
-2. **Direction**: every item of `proposal.md`'s ### AHEAD must argue how it pushes toward the MAIN claim. A plan not pointed at the MAIN claim, an AHEAD item that names instead of argues, or a route re-walked against the record, is not allowed.
-3. **Honesty**: the assertions of `proposal.md`'s ### PAST must carry their evidence; a mathematical claim must rest on a complete argument, never on conjecture. An external circumstance is not a reason to restart.
+1. **Value**: `proposal.md`'s ## Argument must explain why achieving the charter's requirement needs this plan, and every Inject in ### NOW must state which Roadmap item consumes its conclusion and what the MAIN claim gains by it. Work the MAIN claim cannot consume is not allowed.
+2. **Direction**: every item of `proposal.md`'s ### AHEAD must argue how it pushes toward the MAIN claim, which earlier items it depends on, and why the plan's order is sound. A plan not pointed at the MAIN claim, an AHEAD item without that argument, or a route re-walked against the record, is not allowed.
+3. **Honesty**: the assertions of `proposal.md`'s ### PAST must carry their citations (node pointers, framework messages); a mathematical claim must rest on a complete argument, never on conjecture. An external circumstance is not a reason to restart.
 4. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
 5. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 
@@ -53,7 +53,7 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
 {"criteria": {
    "1": ["fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and point to a possible direction toward the goal>",
          "fired: <another objection under this criterion>"],
-   "2": ["clear: <how the MAIN claim consumes each NOW item> — <how the next AHEAD item pushes toward the MAIN claim>"],
+   "2": ["clear: <the next AHEAD item's push toward the MAIN claim> — <the earlier items it depends on, checked against the record>"],
    "3": ["clear: <one concrete reason this holds for THIS proposal>"],
    "4": ["clear: <one concrete reason>"], "5": ["clear: <one concrete reason>"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
@@ -61,11 +61,11 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
 
 Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass.
 
-No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 2's reason IS the naming: how the MAIN claim consumes each NOW item, and how the next AHEAD item pushes toward it.
+No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 1's clear names the consumption each NOW Inject states, checked and holding. Criterion 2's reason IS the naming: the next AHEAD item's push toward the MAIN claim, and the earlier items it depends on.
 
 Rules:
 - You review and point directions; never rewrite the proposal or the directive yourself.
-- For every NOW brick, answer independently of the author: how will the MAIN claim consume it? A brick you cannot answer for is rejected through criterion 1.
+- For every NOW Inject brick, answer independently of the author: how will the MAIN claim consume it? One you cannot derive is rejected through criterion 1.
 - A fired line gives the defect AND the way out — the defect, such as a search that cannot serve the charter; the way out, such as which prerequisite step to turn to, a latent property of high value behind it, or the unproven case.
 - When you see the author settling for a cheap substitute, giving up at a difficulty, or patching along a wrong route: name the wall the Programme is avoiding and require the revision to face it — a brick that bites it, or a `Theorize` that hands it to the theory layer with objective and situation.
 - Bookkeeping or format defects, and redundant Programme content, do not rebut — keep them in reservations.
