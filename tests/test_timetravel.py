@@ -11,6 +11,7 @@ the live DB is never opened for writing.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 
 from Tooling.experiments import timetravel as tt
@@ -202,3 +203,248 @@ def test_rewind_maps_a_retired_status_out_of_the_event_journal(conn):
     tt.rewind(conn, problem="p", cutoff=CUT)
     assert db.get_goal(conn, gid)["status"] == "shelved", \
         "the v51 dead→shelved mapping, applied where the journal is read"
+
+
+# ─── the surfaces the rewind did not reach (2026-09-04 replay §五.1) ───
+#
+# `26bccdef` rewound the DB and `proofs/`. Everything else the judge's
+# projection and the Strategist's Context read was still the LIVE file:
+# `_docs/{user,agent}/` (the judge's `{papers_dir}`), `.drafts/`,
+# `.presearch/`, `.groups/`, and the rendered `PROGRAMME.md` / `TREE.md`.
+# The clean replay report recorded the consequence: two fires in row 1362
+# cite `tw_restoration_equivalence.md`, written 10.4 h AFTER that row's
+# cutoff (`criterion2_replay2_2026-09-04.md` §五.1).
+
+def _stamp_mtime(path, iso: str) -> None:
+    from datetime import datetime
+    ts = datetime.fromisoformat(iso).timestamp()
+    os.utime(path, (ts, ts))
+
+
+def _snapshot(conn: sqlite3.Connection, tmp_path):
+    snap = tmp_path / "snap.db"
+    snap_conn = sqlite3.connect(snap)
+    conn.backup(snap_conn)
+    snap_conn.close()
+    return snap
+
+
+def _docs_ws(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "Problems" / "p" / "_docs" / "agent").mkdir(parents=True)
+    (ws / "Problems" / "p" / "_docs" / "user").mkdir(parents=True)
+    return ws
+
+
+def _insert_group(conn: sqlite3.Connection, created_at: str,
+                  parent=None) -> int:
+    cur = conn.execute(
+        "INSERT INTO groups (problem, parent_group_id, charter, status,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        ("p", parent, "c", "active", created_at, created_at))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_prune_project_docs_drops_a_theory_document_written_after_the_cutoff(
+        tmp_path, conn):
+    """`_docs/agent/` has a DB record: `theory_documents.path` +
+    `created_at`. A document the rewind's row-delete erased must leave
+    the scratch with it — the judge's `{papers_dir}` points straight at
+    this tree."""
+    _seed(conn)
+    ws = _docs_ws(tmp_path)
+    old_doc = "Problems/p/_docs/agent/g1_20260825-1200_old.md"
+    new_doc = "Problems/p/_docs/agent/g1_20260827-0000_new.md"
+    for rel in (old_doc, new_doc):
+        (ws / rel).write_text("<!--\npipeline: pid\n-->\n\n# doc\n",
+                              encoding="utf-8")
+    for rel, at in ((old_doc, BEFORE), (new_doc, AFTER)):
+        conn.execute(
+            "INSERT INTO theory_documents (problem, objective, situation,"
+            " path, status, rounds, created_at) VALUES (?,?,?,?,?,?,?)",
+            ("p", "o", "s", rel, "accepted", 1, at))
+    conn.commit()
+    snap = _snapshot(conn, tmp_path)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    assert conn.execute("SELECT COUNT(*) FROM theory_documents"
+                        ).fetchone()[0] == 1, \
+        "the rewind deletes the row before the file is judged"
+    led = tt.prune_project_docs(conn, snapshot_db=snap, workspace=ws,
+                                problem="p", cutoff=CUT)
+    assert not (ws / new_doc).exists()
+    assert (ws / old_doc).exists(), \
+        "the surviving row's document is dated by the DB, never by mtime"
+    agent = led["Problems/p/_docs/agent"]
+    assert agent["dropped"] == 1 and agent["kept"] == 1
+    assert "theory_documents" in agent["provenance"]
+
+
+def test_prune_project_docs_dates_owner_notes_by_mtime_and_says_which(
+        tmp_path, conn):
+    """`_docs/user/` is the owner's own writing — no DB row exists for
+    it (`theory_documents` is the agent's half). The rewind must date it
+    off git when the workspace is a checkout and off mtime otherwise,
+    and SAY which in the ledger: a reader who cannot tell which signal
+    was used cannot tell how much to trust the scene."""
+    _seed(conn)
+    ws = _docs_ws(tmp_path)
+    keep = ws / "Problems/p/_docs/user/anchor_note.md"
+    drop = ws / "Problems/p/_docs/user/tw_restoration_equivalence.md"
+    for p in (keep, drop):
+        p.write_text("note\n", encoding="utf-8")
+    _stamp_mtime(keep, BEFORE)
+    _stamp_mtime(drop, AFTER)
+    snap = _snapshot(conn, tmp_path)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    led = tt.prune_project_docs(conn, snapshot_db=snap, workspace=ws,
+                                problem="p", cutoff=CUT)
+    assert not drop.exists(), \
+        "written after the cutoff — the 1362 fires that cited it"
+    assert keep.exists()
+    user = led["Problems/p/_docs/user"]
+    assert user["provenance"] == "mtime", \
+        "the ledger names the signal actually used"
+    assert user["kept"] == 1 and user["dropped"] == 1
+
+
+def test_prune_project_docs_drops_every_owner_note_it_cannot_date(
+        tmp_path, conn, monkeypatch):
+    """No git history and no readable mtime = no way to tell which side
+    of the cutoff a note is on. A judge reading nothing is safer than a
+    judge reading the future, so the whole `_docs/user/` goes and the
+    ledger records that it did."""
+    _seed(conn)
+    ws = _docs_ws(tmp_path)
+    for name in ("a.md", "b.md"):
+        (ws / "Problems/p/_docs/user" / name).write_text("x", encoding="utf-8")
+    monkeypatch.setattr(tt, "_git_iso", lambda ws_, rel: None)
+    monkeypatch.setattr(tt, "_mtime_iso", lambda p: None)
+    snap = _snapshot(conn, tmp_path)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    led = tt.prune_project_docs(conn, snapshot_db=snap, workspace=ws,
+                                problem="p", cutoff=CUT)
+    assert list((ws / "Problems/p/_docs/user").glob("*.md")) == []
+    user = led["Problems/p/_docs/user"]
+    assert user["provenance"] == "none" and user["kept"] == 0
+    assert user["dropped"] == 2
+
+
+def test_prune_run_scratch_keeps_only_ids_alive_at_the_cutoff(tmp_path, conn):
+    """`.presearch/g<goal>.md`, `.drafts/*_g<goal>.md`,
+    `.drafts/strategist_plan_g<group>.md` and `.groups/<group>/` are all
+    id-keyed. An id the rewind deleted names a thing that did not exist
+    at the cutoff, so its file cannot either."""
+    old, new, s_old, s_new = _seed(conn)
+    g_old = _insert_group(conn, BEFORE)
+    g_new = _insert_group(conn, AFTER, parent=g_old)
+    pdir = tmp_path / "ws" / "Problems" / "p"
+    (pdir / ".presearch").mkdir(parents=True)
+    (pdir / ".drafts").mkdir()
+    (pdir / ".groups" / str(g_old)).mkdir(parents=True)
+    (pdir / ".groups" / str(g_new)).mkdir(parents=True)
+    files = {
+        f".presearch/g{old}.md": True,
+        f".presearch/g{new}.md": False,
+        f".drafts/backward_g{old}.md": True,
+        f".drafts/backward_g{new}.md": False,
+        f".drafts/strategist_plan_g{g_old}.md": True,
+        f".drafts/strategist_plan_g{g_new}.md": False,
+        f".groups/{g_old}/PROGRAMME.md": True,
+        f".groups/{g_new}/PROGRAMME.md": False,
+    }
+    for rel in files:
+        (pdir / rel).write_text("x", encoding="utf-8")
+        _stamp_mtime(pdir / rel, BEFORE)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    led = tt.prune_run_scratch(conn, workspace=tmp_path / "ws", problem="p",
+                               cutoff=CUT)
+    for rel, keep in files.items():
+        assert (pdir / rel).exists() is keep, rel
+    assert not (pdir / ".groups" / str(g_new)).exists(), \
+        "the group's whole directory goes with its id"
+    assert led["Problems/p/.presearch"]["dropped"] == 1
+    assert led["Problems/p/.groups"]["dropped"] == 1
+    # Signal ATOMS, deduplicated. An entry decided by a live id AND a
+    # date carries both, and joining the composite strings rendered the
+    # real `.presearch` as `goal_id+mtime+goal_id+decision_id+mtime+`
+    # `decision_id` — which reads like six signals.
+    assert led["Problems/p/.presearch"]["provenance"] == "goal_id+mtime"
+
+
+def test_prune_run_scratch_drops_a_live_ids_note_rewritten_after_the_cutoff(
+        tmp_path, conn):
+    """The 09-04 leak that had nothing to do with ids: group 691 existed
+    long before the cutoff, but `.drafts/strategist_plan_g691.md` is a
+    REWRITE-by-contract file and the copy in the scratch was the 09-04
+    one (`criterion2_replay2_2026-09-04.md` §五.1 — the judge's Context
+    showed 2305 chars where the era's note had 1660). A live id is not
+    enough; the bytes must also predate the cutoff."""
+    _seed(conn)
+    g = _insert_group(conn, BEFORE)
+    pdir = tmp_path / "ws" / "Problems" / "p"
+    (pdir / ".drafts").mkdir(parents=True)
+    note = pdir / ".drafts" / f"strategist_plan_g{g}.md"
+    note.write_text("tomorrow's plan\n", encoding="utf-8")
+    _stamp_mtime(note, AFTER)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    tt.prune_run_scratch(conn, workspace=tmp_path / "ws", problem="p",
+                         cutoff=CUT)
+    assert not note.exists()
+
+
+def test_refresh_derived_files_removes_a_programme_the_rewind_erased(
+        tmp_path, conn):
+    """`PROGRAMME.md` is a render of the current passed revision. When
+    the rewind deletes every passed revision a group had, `render`
+    returns None and writes nothing — so the LIVE file survived into the
+    scratch and the judge read a Programme that did not exist yet."""
+    _seed(conn)
+    g = _insert_group(conn, BEFORE)
+    conn.execute("UPDATE programme_revisions SET group_id = ? WHERE problem='p'",
+                 (g,))
+    conn.execute("DELETE FROM programme_revisions WHERE created_at = ?",
+                 (BEFORE,))
+    conn.commit()
+    pdir = tmp_path / "ws" / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "PROGRAMME.md").write_text("# rev 2 — from the future\n",
+                                       encoding="utf-8")
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    tt.refresh_derived_files(conn, workspace=tmp_path / "ws", problem="p")
+    assert not (pdir / "PROGRAMME.md").exists(), \
+        "no passed revision at the cutoff means no rendered Programme"
+
+
+def test_rewind_files_writes_a_ledger_of_every_directory(tmp_path, conn):
+    """One line per directory in the rewind output, and the same rows
+    durable in the scratch as `_rewind_ledger.json` — the experiment
+    that reads the scratch a week later must be able to state which
+    surfaces were rewound, on what signal, and what was dropped."""
+    import json
+    old, new, s_old, s_new = _seed(conn)
+    _insert_group(conn, BEFORE)
+    ws = _docs_ws(tmp_path)
+    pdir = ws / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_new.lean").write_text("x", encoding="utf-8")
+    (pdir / ".presearch").mkdir()
+    (pdir / ".presearch" / f"g{new}.md").write_text("x", encoding="utf-8")
+    (pdir / ".drafts").mkdir()
+    (pdir / ".groups").mkdir()
+    snap = _snapshot(conn, tmp_path)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    led = tt.rewind_files(conn, snapshot_db=snap, workspace=ws, problem="p",
+                          cutoff=CUT)
+    on_disk = json.loads(
+        (ws / "_rewind_ledger.json").read_text(encoding="utf-8"))
+    assert on_disk == led
+    dirs = led["directories"]
+    for key in ("Problems/p/proofs", "Problems/p/_docs/agent",
+                "Problems/p/_docs/user", "Problems/p/.drafts",
+                "Problems/p/.presearch", "Problems/p/.groups"):
+        assert key in dirs, key
+        assert {"kept", "dropped", "provenance"} <= set(dirs[key])
+    assert led["cutoff"] == CUT
+    assert not (pdir / "proofs" / "L_new.lean").exists()
+    assert any(p.endswith("TREE.md") for p in led["regenerated"])

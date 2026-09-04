@@ -106,10 +106,14 @@ DEFAULT_MATRIX = "arm2:2,arm4:2,arm24:2,arm3:2,arm3h:2"
 #: This tree is the LIVE one at build time, which is right for a matrix
 #: (it runs at now, `--since` is `now()`). A workspace built this way
 #: and then rewound to an earlier cutoff must additionally run
-#: `timetravel.prune_proof_files(..., cutoff=...)`: the DB rewind moves
-#: no files, so `proofs/` would still hold every proof that landed
-#: after the cutoff — the 2026-09-04 judge replay read one and rebutted
-#: the proposal for re-dispatching it.
+#: `timetravel.rewind_files(..., cutoff=...)`: the DB rewind moves no
+#: files, so BOTH trees above would still hold everything written after
+#: the cutoff. `proofs/` cost the 2026-09-04 judge replay a rebuttal for
+#: re-dispatching a proof that had not landed yet; `_docs/` cost the
+#: second one two fires citing an owner note written 10.4 hours later.
+#: `rewind_files` covers `proofs/`, `_docs/`, the run-scoped scratch and
+#: the rendered companions in one call — `prune_proof_files` alone is
+#: the state that produced the second leak.
 COPY_TREES = (
     "Problems/Combinatorics/union_closed",
     "Problems/Combinatorics/_docs",
