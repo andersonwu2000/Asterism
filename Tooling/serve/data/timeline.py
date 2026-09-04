@@ -161,7 +161,27 @@ _DECISION_VERB: "dict[str, str]" = {
     "EmitDirective": "directive",
     "Noop": "held",
     "AttemptDisproof": "disproof",
+    # v52 — the theory layer's request. Not a dispatch of proof work:
+    # what comes back is a DOCUMENT, so the verb says what was asked
+    # for, not who was sent (theory_wake_design.md §2).
+    "Theorize": "asked_theory",
 }
+
+# The theory layer's other four verbs are NOT decision verbs and so are
+# not in that table: `theorizing`/`theorized` are the WAKE (a `pipelines`
+# row — when the author started, when it came back and with what) and
+# `theory`/`theory_refused` are the ANSWER (a `theory_documents` row —
+# the document that landed, or the refusal that landed nothing). All
+# five are `object_kind='theory'` and all five name the OBJECTIVE, which
+# is the only string a reader can follow one request by. `_theory_events`
+# below writes the four.
+
+#: How much of an objective a row carries as its NAME. The objective is
+#: a REQUEST, not a title — the strategist prompt asks for a statement
+#: plus the wall around it, and the ones in the wild run to paragraphs.
+#: Same law the Programme's title gets: the headline is the first line,
+#: capped; the rest is expansion material.
+_OBJECTIVE_LABEL = 120
 
 #: decision outcomes that mean "the thing it asked for exists now" —
 #: the moment the produced goal became real. Mirrors the UI's OK set;
@@ -205,6 +225,12 @@ _LIFE_RANK: "dict[str, int]" = {
     "opened": 0, "asked": 1, "reopened": 1, "hiccup": 2, "failed": 3,
     "deliverable": 6, "proved": 7, "shelved": 7, "disproved": 7,
     "dead": 7, "ingested": 8,
+    # the theory request's own life, in the order the writers run it:
+    # the decision is filed, the wake starts, the document row is
+    # written INSIDE the pipeline, and only then does `finish_pipeline`
+    # stamp the wake's end.
+    "asked_theory": 1, "theorizing": 2, "theory": 6,
+    "theory_refused": 6, "theorized": 7,
 }
 
 #: What a dispatch ASKED FOR, when its goal does not exist yet (a
@@ -241,6 +267,18 @@ def _asked_for(brief: str) -> "str | None":
     return None
 
 
+def _objective_label(objective: str) -> "str | None":
+    """An objective's first non-empty line, capped at `_OBJECTIVE_LABEL`
+    — what a theory row calls itself. None when there is nothing to
+    read, so the caller can fall back rather than render a blank."""
+    for raw in str(objective or "").splitlines():
+        line = raw.strip()
+        if line == "":
+            continue
+        return line[:_OBJECTIVE_LABEL] or None
+    return None
+
+
 def _ev(at: str, kind: str, *, object_kind: str = "problem",
         label: str = "", goal_id: "int | None" = None,
         n: "int | None" = None, note: "str | None" = None,
@@ -248,7 +286,7 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         eid: str = "", batch_id: "str | None" = None,
         group_id: "int | None" = None,
         object_group_id: "int | None" = None,
-        rev_id: "int | None" = None,
+        rev_id: "int | None" = None, path: "str | None" = None,
         actor: str = "strategist") -> dict:
     # `group_id` = which ARGUMENT this event belongs to (v35). A problem
     # under real load runs several discussion groups at once — 7 on
@@ -267,6 +305,11 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         # N` of the same group (union_closed group 382 has seven rev
         # 1 rows), so the row id is the only handle that names one.
         "rev_id": rev_id,
+        # the artifact this event LANDED, workspace-relative — filled
+        # only by an accepted theory document, whose whole point is a
+        # file the reader can open. A refusal carries None because it
+        # landed nothing, and a dead link would be worse than silence.
+        "path": path,
         # who decided (v48, HID §3.2). Semantic, not an audit label: a
         # person's ConfirmShelve is a terminal stop, and a row that does
         # not say so offers it to the reader as a peer's opinion.
@@ -472,6 +515,15 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
                 if obj_group else None
             label = (card or {}).get("title") or (card or {}).get(
                 "charter") or (f"group {obj_group}" if obj_group else problem)
+        elif kind == "Theorize":
+            # a theory request names no goal and produces no group, so
+            # every fallback above leaves it labelled with the PROBLEM.
+            # What it names is the QUESTION — the objective the document
+            # is asked to answer, and the string every other row of this
+            # request is followed by.
+            okind = "theory"
+            label = (_objective_label(payload.get("objective") or "")
+                     or reason or "a theory question")
         elif verb == "asked":
             # a dispatch whose brick does not exist yet (failed or still
             # in flight) — name what was ASKED FOR, or the row is anonymous
@@ -491,6 +543,138 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
             group_id=int(own) if own is not None else None,
             object_group_id=obj_group,
             actor=str(who or "strategist")))
+    return out
+
+
+def _theory_requests(dec_rows: "list[sqlite3.Row]") -> "tuple[dict, dict]":
+    """The `Theorize` rows, indexed two ways.
+
+      * by decision id — how a `theory_documents` row finds the request
+        it answers (`decision_id` is the FK the landing writes).
+      * by group, oldest first — how a PIPELINE finds it. A Theorist
+        row is keyed by group and carries no decision id (the queue row
+        that did is deleted when the unit finishes), so the request is
+        the latest one FILED BEFORE the wake started. That is exact,
+        not a guess: a group may have only one theory request in flight
+        at a time (`verify_decision`, design §2), so no second candidate
+        can sit in the same window.
+
+    The request itself is `(batch_id, objective label)`; the group index
+    keys it by `(created_at, decision id)` — the id breaks a same-second
+    tie, and sorting on the payload instead would compare a NULL
+    batch_id against a string and raise.
+    """
+    by_dec: "dict[int, tuple]" = {}
+    by_group: "dict[int, list[tuple]]" = {}
+    has_group = "group_id" in (dec_rows[0].keys() if dec_rows else ())
+    for d in dec_rows:
+        if str(d["decision_kind"]) != "Theorize":
+            continue
+        try:
+            payload = json.loads(d["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        entry = (d["batch_id"],
+                 _objective_label(payload.get("objective") or "")
+                 or str(d["reason"] or "") or None)
+        by_dec[int(d["id"])] = entry
+        gid = d["group_id"] if has_group else None
+        if gid is not None:
+            by_group.setdefault(int(gid), []).append(
+                (str(d["created_at"]), int(d["id"]), entry))
+    for rows in by_group.values():
+        rows.sort(key=lambda r: (r[0], r[1]))
+    return by_dec, by_group
+
+
+def _theory_events(conn: sqlite3.Connection, problem: str,
+                   dec_rows: "list[sqlite3.Row]") -> "list[dict]":
+    """The theory layer's life, minus its first quarter (the `Theorize`
+    row is a decision and `_decision_events` files it).
+
+    Outcomes are events too (owner, 2026-09-04): a request nobody can
+    see, answered by a document nobody can see, is a whole layer running
+    off the record. Three more rows per request, from the two tables the
+    engine actually writes:
+
+      `pipelines`         → the WAKE started (`theorizing`) and came
+                            back (`theorized`, its note the outcome).
+                            An infra death never reaches a document row,
+                            and this pair is then the only trace of it.
+      `theory_documents`  → the ANSWER: `theory` with the path it landed
+                            and what the review cost, or `theory_refused`
+                            with the rounds and no path.
+
+    Every row carries the request's `batch_id`: a `Theorize` is an open
+    batch step whose settlement is what wakes the group
+    (`_maybe_enqueue_inject_batch_done`), so the answer's rows must name
+    the batch the request does or the relay is invisible.
+    """
+    by_dec, by_group = _theory_requests(dec_rows)
+    out: "list[dict]" = []
+    # (1) the answers. Written INSIDE the pipeline, on both roads.
+    by_pipeline: "dict[str, tuple]" = {}
+    try:
+        docs = conn.execute(
+            "SELECT id, group_id, pipeline_id, decision_id, objective,"
+            " path, status, rounds, created_at FROM theory_documents"
+            " WHERE problem = ? ORDER BY id", (problem,)).fetchall()
+    except sqlite3.OperationalError:
+        docs = []  # pre-v52 DB — the layer did not exist
+    for r in docs:
+        batch, asked = by_dec.get(
+            int(r["decision_id"]) if r["decision_id"] is not None else -1,
+            (None, None))
+        label = (_objective_label(str(r["objective"] or "")) or asked
+                 or "a theory question")
+        gid = None if r["group_id"] is None else int(r["group_id"])
+        accepted = str(r["status"]) == "accepted"
+        out.append(_ev(
+            str(r["created_at"]),
+            "theory" if accepted else "theory_refused",
+            object_kind="theory", label=label, n=int(r["rounds"]),
+            path=(str(r["path"]) if accepted and r["path"] else None),
+            eid=f"td{int(r['id'])}", batch_id=batch, group_id=gid))
+        if r["pipeline_id"]:
+            by_pipeline[str(r["pipeline_id"])] = (batch, label)
+    # (2) the wakes. `pipelines` carries no problem, and a Theorist row
+    # is Group-targeted (worker.py) — so the problem's groups are the
+    # key, exactly as the dispatcher wrote them (`str(int(group_id))`).
+    try:
+        gids = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM groups WHERE problem = ?", (problem,))]
+    except sqlite3.OperationalError:
+        gids = []  # pre-v35 DB — no groups, hence no theory layer
+    if not gids:
+        return out
+    rows = conn.execute(
+        "SELECT id, target_id, status, outcome, started_at, finished_at"
+        " FROM pipelines WHERE kind = 'Theorist' AND target_kind = 'Group'"
+        f"   AND target_id IN ({','.join('?' * len(gids))})",
+        tuple(str(g) for g in gids)).fetchall()
+    for r in rows:
+        pid = str(r["id"])
+        try:
+            gid = int(r["target_id"])
+        except (TypeError, ValueError):
+            gid = None
+        batch, label = by_pipeline.get(pid, (None, None))
+        if label is None:
+            # still in flight, or dead before review: the request it
+            # answers is the last one filed before it started
+            prior = [e for at, _id, e in by_group.get(gid, [])
+                     if at <= str(r["started_at"])]
+            batch, label = prior[-1] if prior else (None, None)
+        if label is None:
+            label = f"group {gid}" if gid is not None else problem
+        out.append(_ev(str(r["started_at"]), "theorizing",
+                       object_kind="theory", label=label,
+                       eid=f"ts{pid}", batch_id=batch, group_id=gid))
+        if r["finished_at"]:
+            out.append(_ev(
+                str(r["finished_at"]), "theorized", object_kind="theory",
+                label=label, note=str(r["outcome"] or r["status"]),
+                eid=f"tf{pid}", batch_id=batch, group_id=gid))
     return out
 
 
@@ -598,6 +782,9 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
     events += [e for e in _transition_events(conn, problem, goals, dec_rows)
                if e["goal_id"] not in covered]
     events += _attempt_events(conn, goals)
+    # the theory layer's wake and its answer (v52). The `Theorize` row
+    # itself is a decision and is already above.
+    events += _theory_events(conn, problem, dec_rows)
 
     # a goal nobody dispatched (a decomposition cut it out of its
     # parent) still has a birthday, and its insert dates it exactly
