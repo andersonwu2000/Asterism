@@ -52,23 +52,81 @@ def _criterion_line(n: str) -> str:
                 if re.match(rf"^{re.escape(n)}\.\s+\*\*", ln))
 
 
-def _naming_rule_halves() -> "list[str]":
-    """The two halves of the prompt's "…'s reason IS the naming: A, and
-    B." sentence."""
-    m = re.search(r"'s reason IS the naming:\s*(.+?)\.\s*$", TEXT, re.M)
-    assert m, "the prompt no longer spells out what the naming must say"
-    return [h.strip() for h in m.group(1).split(", and ")]
+def _naming_rules() -> "dict[str, str]":
+    """`{criterion: what its clear must name}` — every "Criterion N's
+    reason IS the naming: …" sentence the prompt states.
+
+    There is more than one as of v6 (d5916446): criterion 1's reason is
+    each NOW Inject's consumption chain and endpoint, criterion 2's is
+    the Relation's argument and the handling of the wall. Read as a
+    SET, never as "the naming criterion" — how many there are is the
+    rubric's to decide, and the parser has to enforce exactly them."""
+    rules = {n: clause.strip() for n, clause in re.findall(
+        r"Criterion (\d)'s reason IS the naming:\s*(.+?)\.(?:\s|$)", TEXT)}
+    assert rules, ("the prompt no longer says whose reason is the "
+                   "naming — if it moved, move `NAMING_CRITERIA` with it")
+    return rules
 
 
-def _template_naming_entry() -> str:
-    """The output template's `clear: …` entry for the naming criterion,
-    as the judge copies it."""
+def _template_naming_entry(n: str) -> str:
+    """The output template's `clear: …` entry for criterion `n`, as the
+    judge copies it."""
     tmpl = TEXT.split("```json", 1)[1].split("```", 1)[0]
-    m = re.search(rf'"{re.escape(adversary.NAMING_CRITERION)}"\s*:\s*'
-                  r'\[\s*"(clear:[^"]*)"', tmpl)
+    m = re.search(rf'"{re.escape(n)}"\s*:\s*\[\s*"(clear:[^"]*)"', tmpl)
     assert m, ("the output template no longer shows a `clear:` entry on "
-               f"criterion {adversary.NAMING_CRITERION}")
+               f"criterion {n}")
     return m.group(1)
+
+
+def _subjects(text: str) -> "set[str]":
+    """The things a clause names, crudely stemmed: every word of four
+    letters or more, cut to its first four.
+
+    Crude ON PURPOSE. What has to agree between a naming rule and the
+    template that illustrates it is the SUBJECTS the judge must name,
+    not the words used for them — v6 asks for "the handling of the
+    wall" in the rule and "how this batch handles it" in the template,
+    and a verbatim pin would have to be hand-edited on every reword,
+    which is how the two sides drift apart in the first place."""
+    return {w.lower()[:4] for w in re.findall(r"[A-Za-z']{4,}", text)}
+
+
+def _route_criterion() -> str:
+    """The numbered criterion that judges the ROUTE — found by what its
+    line does, never by its number or its name (both have been
+    reassigned, and the obligation did not move with either). Exactly
+    one criterion holds that job; two would mean the rubric has grown a
+    second, unpinned copy of it."""
+    hits = [n for n in sorted(_criteria_in_prompt())
+            if "route" in _criterion_line(n).lower()]
+    assert len(hits) == 1, (
+        f"expected exactly one criterion judging the route, found "
+        f"{hits or 'none'}")
+    return hits[0]
+
+
+def _citation_criterion() -> str:
+    """The numbered criterion that demands citations — where the
+    fired/reservation boundary sends an assertion that lost its."""
+    hits = [n for n in sorted(_criteria_in_prompt())
+            if "citation" in _criterion_line(n).lower()]
+    assert len(hits) == 1, (
+        f"expected exactly one criterion demanding citations, found "
+        f"{hits or 'none'}")
+    return hits[0]
+
+
+def _reference_point_words() -> "list[str]":
+    """The names the prompt itself declares mean its fixed reference
+    point. Read, not written down here: v6 states criterion 1 in the
+    charter's words where v5 said "MAIN claim", and the prompt's own
+    sentence is what says the two mean the same thing."""
+    m = re.search(r"The fixed reference point[^.]*?every (.+?) "
+                  r"in the criteria mean it", TEXT)
+    assert m, "the prompt no longer declares its fixed reference point"
+    words = re.findall(r'"([^"]+)"', m.group(1))
+    assert words, m.group(1)
+    return words
 
 
 def test_the_prompt_still_declares_five_numbered_criteria() -> None:
@@ -82,33 +140,45 @@ def test_the_prompt_still_declares_five_numbered_criteria() -> None:
 def test_the_naming_rule_names_the_same_criterion_in_both_places() -> None:
     """The exact drift the renumber nearly shipped. Since 2026-08-29 the
     bare-clear ban is five-wide, so the prompt states the general rule
-    plus which criterion's reason IS the naming — both halves must track
-    the parser."""
+    plus whose reason IS the naming — every half must track the parser.
+
+    v6 (d5916446) hangs a naming on TWO criteria: the consumption chain
+    with its endpoint (1), and the Relation with the handling of the
+    wall (2). Both directions cost a round: a criterion the parser
+    demands and the prompt does not refuses a judge that obeyed its
+    rubric, and a criterion the prompt demands and the parser does not
+    is a naming that quietly stops being written."""
     assert "No criterion takes a bare `clear`" in TEXT, (
         "the prompt no longer states the five-wide bare-clear rule the "
         "parser enforces")
-    m = re.search(r"Criterion (\d)'s reason IS the naming", TEXT)
-    assert m, ("the prompt no longer says whose reason is the naming — "
-               "if it moved, move `NAMING_CRITERION` with it")
-    assert m.group(1) == adversary.NAMING_CRITERION, (
-        f"prompt hangs the naming on criterion {m.group(1)}; the parser "
-        f"enforces it on {adversary.NAMING_CRITERION}. A judge obeying "
-        f"the prompt would have its verdict refused.")
+    named = set(_naming_rules())
+    assert named == set(adversary.NAMING_CRITERIA), (
+        f"prompt hangs the naming on {sorted(named)}; the parser "
+        f"enforces it on {sorted(adversary.NAMING_CRITERIA)}. A judge "
+        f"obeying the prompt has its verdict refused, or clears a "
+        f"naming criterion bare and is not caught.")
 
 
 def test_the_naming_criterion_is_the_one_about_reaching_the_claim() -> None:
-    """Which criterion carries the naming is not arbitrary: the naming
-    is about the route to the MAIN claim, so it belongs to a criterion
-    whose own line judges the route against that claim. Pinned by what
-    the line SAYS, not by the name it currently wears — the name has
-    been reassigned twice and the obligation did not move with it."""
-    line = _criterion_line(adversary.NAMING_CRITERION)
-    assert "MAIN claim" in line, (
-        f"criterion {adversary.NAMING_CRITERION} carries the naming but "
-        f"its own line no longer judges anything against the MAIN "
-        f"claim:\n{line}")
-    assert _criteria_in_prompt()[adversary.NAMING_CRITERION], (
-        "the naming criterion lost its name")
+    """Which criteria carry the naming is not arbitrary: the naming is
+    about the route reaching the claim this judgment settles, so it
+    belongs to criteria whose own line judges something against that
+    claim. Pinned by what the line SAYS, not by the name it currently
+    wears — the name has been reassigned twice and the obligation did
+    not move with it.
+
+    Which WORDS name that claim is read from the prompt too: v6 states
+    criterion 1 in terms of the charter where v5 said "MAIN claim", and
+    the prompt's own "What you see" declares the two mean the one fixed
+    reference point."""
+    points = _reference_point_words()
+    for n in sorted(_naming_rules()):
+        line = _criterion_line(n)
+        assert any(p in line for p in points), (
+            f"criterion {n} carries the naming but its own line no "
+            f"longer judges anything against "
+            f"{' / '.join(points)}:\n{line}")
+        assert _criteria_in_prompt()[n], "a naming criterion lost its name"
 
 
 def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
@@ -116,18 +186,25 @@ def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
     different number than the rule demands, the example loses — the
     same failure the strategist prompts had with `brief`/`proof`.
 
-    And the template must demonstrate the rule it illustrates: the
-    rule's first half is the template's first placeholder, verbatim. A
-    reworded criterion that updates one and not the other hands the
-    judge two different jobs under one number."""
-    entry = _template_naming_entry()          # asserts the number itself
-    first_half = _naming_rule_halves()[0]
-    assert entry.startswith(f"clear: <{first_half}>"), (
-        f"the rule asks for {first_half!r} first; the template's first "
-        f"placeholder is {entry!r}")
-    # Two placeholders, em-dash separated — the shape the parser's
-    # refusal message quotes back at a judge that clears this bare.
-    assert entry.count("<") == 2 and " — " in entry, entry
+    And each template entry must demonstrate the rule it illustrates:
+    EVERY subject the rule names appears in the placeholder the judge
+    copies. A reworded criterion that updates one and not the other
+    hands the judge two different jobs under one number.
+
+    v5 pinned the rule's first half verbatim and its second half only
+    as a placeholder count; v6 words the two sides differently ("the
+    handling of the wall" against "how this batch handles it"), so the
+    pin moved onto the subjects — and it now covers the whole rule
+    instead of its first half."""
+    for n, clause in sorted(_naming_rules().items()):
+        entry = _template_naming_entry(n)     # asserts the number itself
+        assert "<" in entry, (
+            f"criterion {n}'s template entry shows the judge no "
+            f"placeholder to fill: {entry!r}")
+        dropped = _subjects(clause) - _subjects(entry)
+        assert not dropped, (
+            f"criterion {n}'s rule asks the judge to name {clause!r}; "
+            f"the template's entry {entry!r} drops {sorted(dropped)}")
 
 
 def test_the_bare_clear_refusal_quotes_the_prompts_own_template() -> None:
@@ -158,7 +235,7 @@ def test_the_refusal_follows_the_rubric_when_it_is_reworded(
     afterwards."""
     import json
     reworded = TEXT.replace(
-        _template_naming_entry(),
+        _template_naming_entry(adversary.NAMING_CRITERION),
         "clear: <the reworded first half> — <the reworded second half>")
     monkeypatch.setattr(adversary, "_prompt_text", lambda: reworded)
     bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
@@ -205,12 +282,28 @@ def test_the_fired_reservation_boundary_is_substantive() -> None:
     checking" escape hatch: a wrong pointer or a false claim now fires
     through criterion 5's own text (node pointers, complete argument),
     not through a rider on the boundary rule. Reservations must also
-    never patch over a fired criterion."""
-    assert ("Bookkeeping or format defects, and redundant Programme "
-            "content, do not rebut") in TEXT
+    never patch over a fired criterion.
+
+    v6 (d5916446) trims the boundary to one clause and puts the escape
+    hatch back as a worked case instead of a rider: "A PAST line
+    without its citation is criterion 3." That pointer is checked
+    against the criterion that actually demands citations, so the next
+    renumber cannot leave the boundary directing a real defect at
+    nothing."""
+    assert ("Format defects and redundant Programme content do not "
+            "rebut — keep them in reservations") in TEXT
     assert "a reservation must not be used to patch over one" in TEXT
     assert "A defect you can name belongs on its criterion's line" \
         not in TEXT, "the superseded sentence is still there, contradicting"
+    m = re.search(r"A PAST line without its citation is criterion (\d)",
+                  TEXT)
+    assert m, ("the boundary no longer says which defects it does NOT "
+               "send to reservations — a rule that forbids without "
+               "naming the way out is the gate an agent cannot obey")
+    assert m.group(1) == _citation_criterion(), (
+        f"the boundary sends a missing citation to criterion "
+        f"{m.group(1)}, but criterion {_citation_criterion()} is the "
+        f"one whose line demands citations")
 
 
 def test_a_verified_record_still_refuses_a_contradicting_route() -> None:
@@ -227,14 +320,23 @@ def test_a_verified_record_still_refuses_a_contradicting_route() -> None:
 
     The explicit override-path sentence ("overridden by proof, not
     conjecture") was retired in the owner's 2026-08-18 finalized
-    wording; the honesty criterion's "a mathematical claim must rest on
-    a complete argument, never on conjecture" carries the proof-not-
-    conjecture standard now."""
-    line = _criterion_line(adversary.NAMING_CRITERION)
-    assert "record" in line, (
+    wording; the honesty criterion carries the proof-not-conjecture
+    standard now, so that half is read off the criterion that demands
+    citations rather than off a quoted sentence (v6 rewrote it as
+    "Conjecture treated as fact … is not allowed")."""
+    route = _route_criterion()
+    line = _criterion_line(route)
+    assert "record" in line and "not allowed" in line, (
         "the route criterion no longer refuses a route the record has "
         f"already settled:\n{line}")
-    assert "never on conjecture" in TEXT
+    assert route in adversary.NAMING_CRITERIA, (
+        f"the route is judged by criterion {route}, which no longer "
+        f"carries a naming obligation — the judge can clear the route "
+        f"without saying where it goes")
+    honesty = _criterion_line(_citation_criterion())
+    assert "conjecture" in honesty.lower(), (
+        "nothing holds a mathematical claim to a complete argument "
+        f"rather than conjecture:\n{honesty}")
 
 
 def test_the_finalized_wording_keeps_its_new_anchors() -> None:
@@ -253,17 +355,28 @@ def test_the_route_clause_keeps_all_of_its_refusals() -> None:
     listed three since 2026-08-13; what is pinned is that three are
     still there and still say what is NOT ALLOWED, not which words say
     it — a rewrite that comes back with two is a route the gate stops
-    catching, and that is what this has to catch."""
-    line = _criterion_line(adversary.NAMING_CRITERION)
+    catching, and that is what this has to catch.
+
+    v6 (d5916446) rewrote all three at once (items beyond the wall, an
+    unargued Relation, a route that contradicts the record or re-walks
+    it in the same shape) and made the closing verb plural, which is
+    why the sentence's shape is matched rather than quoted. The
+    record refusal is pinned as one of the LISTED items: a rubric that
+    only mentions the record somewhere in the line has stopped
+    disallowing a route that runs against it."""
+    line = _criterion_line(_route_criterion())
     refusal = line.rsplit(". ", 1)[-1]
-    assert refusal.rstrip().endswith("is not allowed."), (
+    assert re.search(r"\b(is|are) not allowed\.$", refusal.rstrip()), (
         f"the route criterion no longer closes with a refusal:\n{line}")
     items = [p for p in refusal.split(", ")
-             if p.strip() and not p.startswith("is not allowed")]
+             if p.strip() and not re.match(r"(is|are) not allowed", p)]
     assert len(items) >= 3, (
         f"the route clause is down to {len(items)} refusal(s); it has "
         f"listed three since 2026-08-13:\n{refusal}")
     assert any(p.startswith("or ") for p in items), refusal
+    assert any("record" in p for p in items), (
+        f"a route against the record is no longer one of the refused "
+        f"items:\n{refusal}")
 
 
 def test_every_criterion_refuses_a_bare_clear() -> None:
