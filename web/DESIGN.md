@@ -211,6 +211,15 @@ the ladder via `::picker(select)` where supported.
   The audience is mathematicians: human words in the UI, engine
   vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word
   layer).
+- **An act lives on the thing's row, and a refusal sits where the act
+  would have been** (2026-09-04, the Documents rail). Rename, move and
+  delete are offered under the SELECTED row — never on hover, never in
+  the header a second time — and a row that cannot be acted on says
+  `read-only — the engine's` in that same strip, so the person who
+  would have tried finds the answer at the place they tried. Every API
+  refusal renders at the item it concerns (the create row, the renamed
+  row, the delete window), not in a banner about something else. Keys
+  walk the same grammar as the pointer (arrows, Enter, F2, m, Delete).
 - Drop targets (Documents is the reference): the WHOLE route area
   accepts the drop; while a file is over it, a dashed `border-2
   border-ink-faint` frame at `inset-3 rounded-xl` floats over

@@ -81,18 +81,23 @@ are exactly two frames and no sidebar.
   and the name opens it on the Sky. With no task in the address it is
   the whole shelf's history, each row stamped with its task and paged by
   `load earlier`; naming a task scopes it to that one.
-- **Documents** — two roots in one file column: `proofs` (what the
-  engine wrote for a task, read-only, opening on its REPORT.md when the
-  Ingest terminal wrote one) and `documents`, the Project's own `_docs/`
-  shelf. That one is writable: `user/` takes an editor for `.md` /
-  `.tex` / `.txt`, plus new file, new folder and delete; `agent/` is
-  what the Assistant wrote and is marked read-only. `.lean` opens in the
-  Lean viewer, images render inline, and a refused path shows the
-  engine's own sentence about it. Papers live here too (§3.9): each is
-  a `papers/<id>/` folder holding the original pdf (shown in the
-  reader), the extracted `text.md` and its `map.md`. Dropping files
-  anywhere on this page — or "paper" in the column header — shelves
-  them under `user/papers/`, extraction and all.
+- **Documents** — one rail, one shell. The rail reads in five groups:
+  `yours` (the Project's `_docs/user/`, primary, always open), then
+  `papers`, `agent` (what the Assistant and the theory layer wrote,
+  newest first), `engine` (one task's REPORT / PROGRAMME / BRIEF / TREE /
+  Root / Defs, task chosen on the header) and `proofs` — the last four
+  folded by default, with a name filter over all of them. Every file
+  opens in the same shell: source on the left, a panel on the right —
+  `.md` renders, `.tex` compiles to a pdf preview (or says there is no
+  engine), `.lean` gets the Info panel on the reserved slot, pdf and
+  images view — behind a `source | split | render` control. Editing is
+  exactly on `yours`: Save (Ctrl+S) with dirty marks, drafts that survive
+  walking the rail, a conflict line when the disk moved on, and the
+  selected row's own strip for `rename · move · delete` (keys: F2, m,
+  Delete; `+ file` / `+ folder` inline, n / N). Rows outside `yours` say
+  read-only in that same strip. "ask the Assistant" hands the open file
+  to the panel. Dropping files anywhere — or `+ paper` — shelves papers
+  under `user/papers/`, extraction and all.
 
 ### Outside a Project
 
