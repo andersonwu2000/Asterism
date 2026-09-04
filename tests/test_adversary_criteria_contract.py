@@ -17,6 +17,14 @@ Adversary round per proposal, on the gate that decides what lands.
 So the pin below is not "the prompt says 2". It is that the prompt and
 the parser say the SAME thing, derived from each side rather than from
 a constant repeated here.
+
+Nothing here spells a criterion's MEANING out either. The rubric has
+been reordered and renamed more than once, and a test that writes
+"Reachability" down is a second copy of the rubric that has to be
+hand-edited every time — which is how a criterion's name and its rule
+drift apart in the first place. Every assertion below reads the
+prompt's own words and pins the STRUCTURE that must hold whatever
+those words become.
 """
 from __future__ import annotations
 
@@ -35,6 +43,32 @@ _CRITERION = re.compile(r"^(\d)\.\s+\*\*([^*]+)\*\*:", re.M)
 
 def _criteria_in_prompt() -> "dict[str, str]":
     return {n: name.strip() for n, name in _CRITERION.findall(TEXT)}
+
+
+def _criterion_line(n: str) -> str:
+    """The whole `n. **<Name>**: …` line, found by NUMBER — never by
+    the name, which is what changes."""
+    return next(ln for ln in TEXT.splitlines()
+                if re.match(rf"^{re.escape(n)}\.\s+\*\*", ln))
+
+
+def _naming_rule_halves() -> "list[str]":
+    """The two halves of the prompt's "…'s reason IS the naming: A, and
+    B." sentence."""
+    m = re.search(r"'s reason IS the naming:\s*(.+?)\.\s*$", TEXT, re.M)
+    assert m, "the prompt no longer spells out what the naming must say"
+    return [h.strip() for h in m.group(1).split(", and ")]
+
+
+def _template_naming_entry() -> str:
+    """The output template's `clear: …` entry for the naming criterion,
+    as the judge copies it."""
+    tmpl = TEXT.split("```json", 1)[1].split("```", 1)[0]
+    m = re.search(rf'"{re.escape(adversary.NAMING_CRITERION)}"\s*:\s*'
+                  r'\[\s*"(clear:[^"]*)"', tmpl)
+    assert m, ("the output template no longer shows a `clear:` entry on "
+               f"criterion {adversary.NAMING_CRITERION}")
+    return m.group(1)
 
 
 def test_the_prompt_still_declares_five_numbered_criteria() -> None:
@@ -63,24 +97,75 @@ def test_the_naming_rule_names_the_same_criterion_in_both_places() -> None:
 
 
 def test_the_naming_criterion_is_the_one_about_reaching_the_claim() -> None:
-    """Which criterion carries the naming is not arbitrary: the line it
-    must carry is "the entry that closes the MAIN claim", so it belongs
-    to the criterion that judges whether the route gets there."""
-    assert _criteria_in_prompt()[adversary.NAMING_CRITERION] == "Reachability"
+    """Which criterion carries the naming is not arbitrary: the naming
+    is about the route to the MAIN claim, so it belongs to a criterion
+    whose own line judges the route against that claim. Pinned by what
+    the line SAYS, not by the name it currently wears — the name has
+    been reassigned twice and the obligation did not move with it."""
+    line = _criterion_line(adversary.NAMING_CRITERION)
+    assert "MAIN claim" in line, (
+        f"criterion {adversary.NAMING_CRITERION} carries the naming but "
+        f"its own line no longer judges anything against the MAIN "
+        f"claim:\n{line}")
+    assert _criteria_in_prompt()[adversary.NAMING_CRITERION], (
+        "the naming criterion lost its name")
 
 
 def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
     """The template is what a judge copies. If it shows the naming on a
     different number than the rule demands, the example loses — the
-    same failure the strategist prompts had with `brief`/`proof`."""
-    tmpl = TEXT.split("```json", 1)[1].split("```", 1)[0]
-    # 2026-08-28: criteria take LISTS (one bullet per objection) — the
-    # naming shape sits inside the list brackets now.
-    m = re.search(r'"(\d)":\s*\["clear: <the entry that closes', tmpl)
-    assert m, "the template no longer shows the naming shape at all"
-    assert m.group(1) == adversary.NAMING_CRITERION, (
-        f"the template demonstrates the naming on criterion {m.group(1)} "
-        f"but the parser enforces it on {adversary.NAMING_CRITERION}")
+    same failure the strategist prompts had with `brief`/`proof`.
+
+    And the template must demonstrate the rule it illustrates: the
+    rule's first half is the template's first placeholder, verbatim. A
+    reworded criterion that updates one and not the other hands the
+    judge two different jobs under one number."""
+    entry = _template_naming_entry()          # asserts the number itself
+    first_half = _naming_rule_halves()[0]
+    assert entry.startswith(f"clear: <{first_half}>"), (
+        f"the rule asks for {first_half!r} first; the template's first "
+        f"placeholder is {entry!r}")
+    # Two placeholders, em-dash separated — the shape the parser's
+    # refusal message quotes back at a judge that clears this bare.
+    assert entry.count("<") == 2 and " — " in entry, entry
+
+
+def test_the_bare_clear_refusal_quotes_the_prompts_own_template() -> None:
+    """The refusal is the judge's ONLY instruction at the moment its
+    verdict is thrown away, so it must name the shape THIS rubric asks
+    for. Written as a literal it kept describing the pre-reword
+    criterion, and a gate naming an action the prompt no longer
+    describes is a gate the agent cannot obey (memory:
+    `gate_must_name_a_reachable_action`)."""
+    import json
+    shape = adversary.naming_clear_shape()
+    assert shape in TEXT, (
+        f"`naming_clear_shape()` is not quoting the prompt: {shape!r} "
+        f"does not appear in adversary.md")
+    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+    bare[adversary.NAMING_CRITERION] = "clear"
+    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert v is None
+    assert shape in err, (
+        f"the refusal must show the rubric's own way out; got {err!r}")
+
+
+def test_the_refusal_follows_the_rubric_when_it_is_reworded(
+        monkeypatch) -> None:
+    """The one that proves DERIVATION rather than coincidence: reword
+    the template and the way out must reword with it. A literal passes
+    the test above on the day it is written and fails every reader
+    afterwards."""
+    import json
+    reworded = TEXT.replace(
+        _template_naming_entry(),
+        "clear: <the reworded first half> — <the reworded second half>")
+    monkeypatch.setattr(adversary, "_prompt_text", lambda: reworded)
+    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+    bare[adversary.NAMING_CRITERION] = "clear"
+    _v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert "<the reworded first half>" in err, (
+        f"the refusal ignored the rubric it is supposed to quote: {err!r}")
 
 
 def test_the_parser_actually_refuses_a_bare_clear_there() -> None:
@@ -129,20 +214,26 @@ def test_the_fired_reservation_boundary_is_substantive() -> None:
 
 
 def test_a_verified_record_still_refuses_a_contradicting_route() -> None:
-    """Criterion 2 refuses a route that contradicts a verified Programme
-    record — the case the pre-08-13 wording missed, because such a route
-    was never WALKED and so never "failed". union_closed had
-    kernel-verified that reaching 1/2 must exploit exact closure; a
-    proposal denying that should die at the gate rather than after the
-    machine time.
+    """The naming criterion refuses a route that runs against the
+    verified Programme record — the case the pre-08-13 wording missed,
+    because such a route was never WALKED and so never "failed".
+    union_closed had kernel-verified that reaching 1/2 must exploit
+    exact closure; a proposal denying that should die at the gate rather
+    than after the machine time.
+
+    Pinned on the RECORD, not on the sentence that mentions it: the
+    clause is rewritten whenever the criterion is, and the refusal is
+    the thing that has to survive the rewording.
 
     The explicit override-path sentence ("overridden by proof, not
     conjecture") was retired in the owner's 2026-08-18 finalized
-    wording; criterion 5's "a mathematical claim must rest on a
-    complete argument, never on conjecture" carries the proof-not-
+    wording; the honesty criterion's "a mathematical claim must rest on
+    a complete argument, never on conjecture" carries the proof-not-
     conjecture standard now."""
-    crit2 = _CRITERION.sub(lambda m: m.group(0), TEXT)  # keep TEXT intact
-    assert "contradicts a verified Programme record" in crit2
+    line = _criterion_line(adversary.NAMING_CRITERION)
+    assert "record" in line, (
+        "the route criterion no longer refuses a route the record has "
+        f"already settled:\n{line}")
     assert "never on conjecture" in TEXT
 
 
@@ -157,13 +248,22 @@ def test_the_finalized_wording_keeps_its_new_anchors() -> None:
     assert "patch over" in TEXT
 
 
-def test_the_route_clause_kept_its_two_original_refusals() -> None:
-    """Adding a third refusal must not quietly drop the first two."""
-    line = next(ln for ln in TEXT.splitlines()
-                if ln.startswith("2. **Reachability**"))
-    assert "stops short of it" in line
-    assert "re-walks a failed route unchanged" in line
-    assert "contradicts a verified Programme record" in line
+def test_the_route_clause_keeps_all_of_its_refusals() -> None:
+    """Adding a refusal must not quietly drop another. The clause has
+    listed three since 2026-08-13; what is pinned is that three are
+    still there and still say what is NOT ALLOWED, not which words say
+    it — a rewrite that comes back with two is a route the gate stops
+    catching, and that is what this has to catch."""
+    line = _criterion_line(adversary.NAMING_CRITERION)
+    refusal = line.rsplit(". ", 1)[-1]
+    assert refusal.rstrip().endswith("is not allowed."), (
+        f"the route criterion no longer closes with a refusal:\n{line}")
+    items = [p for p in refusal.split(", ")
+             if p.strip() and not p.startswith("is not allowed")]
+    assert len(items) >= 3, (
+        f"the route clause is down to {len(items)} refusal(s); it has "
+        f"listed three since 2026-08-13:\n{refusal}")
+    assert any(p.startswith("or ") for p in items), refusal
 
 
 def test_every_criterion_refuses_a_bare_clear() -> None:

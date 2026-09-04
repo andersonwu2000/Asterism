@@ -106,14 +106,23 @@ def test_a_killed_revision_still_says_why(conn: sqlite3.Connection):
 
 
 def test_the_rubric_names_and_orders_the_criteria(conn: sqlite3.Connection):
-    """The names come from the prompt, never a third copy of the rubric:
-    Value and Reachability swapped places on 2026-08-13."""
+    """The names come from the prompt, never a third copy of the rubric.
+    Value and Reachability swapped places on 2026-08-13, and the owner
+    revises the list again whenever the rubric changes — so the
+    expectation is READ from the rubric here too. Writing the names down
+    in the test would only pin whichever rubric was current the day it
+    was written, and the page would keep rendering yesterday's labels
+    with the test green."""
+    from Tooling.pipeline import adversary
+    names = adversary.criteria_names()
+    assert names, "the rubric's names no longer parse out of the prompt"
     rid = _row(conn, verdict=REBUT)
     v = data.programme_verdict(conn, "p", rid)
     assert [c["key"] for c in v["criteria"]] == ["1", "2", "3", "4", "5"], (
         "the JSON put 3 first; the page follows the rubric's order")
-    assert all(c["name"] for c in v["criteria"])
-    assert [c["name"] for c in v["criteria"]][:2] == ["Value", "Reachability"]
+    assert [c["name"] for c in v["criteria"]] == [
+        names[k] for k in adversary.CRITERIA_KEYS], (
+        "the page must label a criterion with the rubric's own name")
 
 
 def test_the_seat_rides_and_says_nothing_when_unrecorded(

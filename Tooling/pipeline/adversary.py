@@ -112,7 +112,7 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
     The field dump has NO allowlist (2026-09-03, union_closed group
     693). A hand list of rendered fields grew stale the moment the
     contract gained a field: `Ingest.report` — the mathematician-facing
-    paper criterion 2 holds the judge responsible for — and
+    paper the judge is held responsible for ruling on — and
     `MarkDeliverable.paper_ref` were both written in decision.json and
     both absent from this projection, so three consecutive rounds fired
     "bare Ingest with no report" / "MarkDeliverable omits paper_ref" at
@@ -184,8 +184,8 @@ def _standing_directive_digest(conn: sqlite3.Connection,
     """The directive in force RIGHT NOW, whether or not this batch
     touches it.
 
-    Criterion 5 asks whether the directive contradicts the Programme,
-    but `decisions.md` only carries a directive body when the batch
+    The rubric holds the batch against the directive in force, but
+    `decisions.md` only carries a directive body when the batch
     emits one — so on an unchanged directive the judge was ruling on
     text it could not read, and a possibly-real mis-citation had to be
     demoted to a reservation (07-29 SG judge feedback). Every worker on
@@ -341,8 +341,8 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         # pointed the judge at the staler of two renders and called it
         # authoritative). A long debate (7 and 10 rounds, 60-90min,
         # 2026-08-06) widens that gap monotonically while sibling groups
-        # land bricks, and the judge then fires criterion 5 on "roadmap
-        # says landed, TREE says open" — a contradiction the packet
+        # land bricks, and the judge then fires the honesty criterion on
+        # "roadmap says landed, TREE says open" — a contradiction the packet
         # itself created. The judge said so in its own feedback 5×
         # ("a stale snapshot shipped alongside live TREE/CATALOG, which
         # manufactures exactly the status-drift defects the adversary
@@ -438,31 +438,72 @@ CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 NAMING_CRITERION = "2"
 
 
+def _prompt_text() -> str:
+    """The judge's rubric as it stands right now, or "" if unreadable.
+
+    ONE reader for every consumer of the rubric's own words, so a
+    renumber, a rename or a reword reaches all of them at once. Nothing
+    in this module spells a criterion's meaning out for itself: the
+    numbers and the names have been reassigned before (Value and
+    Reachability swapped on 2026-08-13) and are reassigned again
+    whenever the owner revises the rubric, so every hard-coded copy is
+    a silent mislabel waiting for the next revision."""
+    from . import PROMPT_DIR
+    try:
+        return (PROMPT_DIR / "adversary" / "adversary.md").read_text(
+            encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def criteria_names() -> "dict[str, str]":
-    """`{"1": "Value", ...}` — the rubric's own names for its criteria,
+    """`{"1": <name>, ...}` — the rubric's own names for its criteria,
     read from the prompt that states them.
 
     The console shows a verdict criterion by criterion and a bare "3"
     says nothing; the names must not become a THIRD copy of the rubric.
-    Value and Reachability swapped places on 2026-08-13, so a hard-coded
-    list would silently mislabel every verdict it renders. Read from the
-    prompt, a renumbering carries.
+    A hard-coded list would silently mislabel every verdict it renders
+    the first time the rubric is reordered. Read from the prompt, a
+    renumbering carries.
 
     Empty when the prompt cannot be read or its list does not parse —
     the caller falls back to bare numbers, which are what the verdict
     actually stores."""
-    from . import PROMPT_DIR
-    try:
-        text = (PROMPT_DIR / "adversary" / "adversary.md").read_text(
-            encoding="utf-8")
-    except OSError:
-        return {}
     out: "dict[str, str]" = {}
-    for m in re.finditer(r"^(\d)\.\s+\*\*(.+?)\*\*\s*:", text,
+    for m in re.finditer(r"^(\d)\.\s+\*\*(.+?)\*\*\s*:", _prompt_text(),
                          re.MULTILINE):
         if m.group(1) in CRITERIA_KEYS:
             out[m.group(1)] = m.group(2).strip()
     return out if len(out) == len(CRITERIA_KEYS) else {}
+
+
+#: Fallback for `naming_clear_shape` — used only when the prompt or its
+#: output template cannot be read. It describes where the shape lives
+#: instead of guessing at its words, because a refusal that quotes a
+#: shape the rubric no longer asks for is worse than one that quotes
+#: none: the judge obeys it and is refused again.
+_NAMING_SHAPE_FALLBACK = ("clear: <the naming this criterion's output "
+                          "template asks for>")
+
+
+def naming_clear_shape() -> str:
+    """The `clear: …` entry the output template shows for the naming
+    criterion, quoted from the prompt itself.
+
+    `parse_verdict` refuses a bare `clear` there, and that refusal is
+    the judge's only instruction at the moment its verdict is thrown
+    away — so the way out has to be the shape the CURRENT rubric asks
+    for. Written as a literal it kept saying "the entry that closes the
+    MAIN claim" for exactly as long as it took someone to reword the
+    criterion, and a gate naming an action the prompt no longer
+    describes is the class of gate an agent cannot obey."""
+    text = _prompt_text()
+    if "```json" not in text:
+        return _NAMING_SHAPE_FALLBACK
+    tmpl = text.split("```json", 1)[1].split("```", 1)[0]
+    m = re.search(r'"' + re.escape(NAMING_CRITERION)
+                  + r'"\s*:\s*\[\s*"(clear:[^"]*)"', tmpl)
+    return m.group(1).strip() if m else _NAMING_SHAPE_FALLBACK
 
 
 def split_criterion(val: Any) -> "tuple[str, list[str]]":
@@ -563,27 +604,27 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         # "clearly…" stays malformed); suffix prose is tolerated.
         if re.match(r"clear\b", s, re.IGNORECASE):
             # #159 (2026-08-04): the naming criterion's judgment IS the
-            # naming — the entry that closes the MAIN claim and the
-            # remaining distance. Ten SLC revs cleared it with the bare
-            # word, leaving the attention device without an auditable
-            # trace, on the one criterion built to catch a main claim
-            # orbiting untouched. Mechanical, not honor-system.
+            # naming. Ten SLC revs cleared it with the bare word,
+            # leaving the attention device without an auditable trace,
+            # on the one criterion built to catch a main claim orbiting
+            # untouched. Mechanical, not honor-system.
             #
-            # It is criterion 2 as of 2026-08-13, when Value and
-            # Reachability swapped places: the naming belongs to
-            # Reachability (does this route reach the MAIN claim), and
-            # Reachability moved to 2. This constant is the ENFORCEMENT
-            # half of a prompt rule — the prompt says "Criterion 2 never
-            # takes a bare clear" — and the two must move together or a
-            # judge that obeys the prompt has its verdict refused.
+            # `NAMING_CRITERION` is the ENFORCEMENT half of a prompt
+            # rule — the prompt says whose reason IS the naming — and
+            # the two must move together or a judge that obeys the
+            # prompt has its verdict refused (the 2026-08-13 renumber
+            # nearly shipped exactly that).
             # `test_adversary_criteria_contract.py` holds them level.
+            #
+            # WHAT that naming must say is not spelled out here: it is
+            # quoted from the rubric's own output template, so a
+            # reworded criterion rewords its own way out.
             rest = s[len("clear"):].strip(" -—–:")
             if k == NAMING_CRITERION and not rest:
                 return None, (
                     f"criterion {NAMING_CRITERION} never takes a bare "
-                    f"\"clear\" — its judgment IS the naming: `\"clear: "
-                    f"<entry that closes the MAIN claim> — <what still "
-                    f"stands>\"`")
+                    f"\"clear\" — its judgment IS the naming: "
+                    f"`\"{naming_clear_shape()}\"`")
             if not rest:
                 # Calibration survey 2026-08-29: 70-94% of clears on
                 # criteria 3/4/5 were the bare word, and the survey's

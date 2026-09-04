@@ -6,8 +6,9 @@ rendered fresh, `CATALOG.md` / `BATCHES.md` / `ADJUDICATIONS.md`
 regenerated); the author's companions were written once, when the wake
 spawned, and never again. So a goal proved — or parked, or delegated —
 while a 7-to-10-round debate ran was visible to the judge and invisible
-to the author, and the judge then fired criterion 5 on "roadmap says
-landed, TREE says open": a contradiction the packet itself created.
+to the author, and the judge then fired the honesty criterion on
+"roadmap says landed, TREE says open": a contradiction the packet
+itself created.
 Four remedies LABELLED that asymmetry (07-29 the snapshot label, 08-01
 the verbatim Context.md, 08-15 the label's precedence sentence, 08-31
 the fresh TREE render) — none removed it, because the author was never
