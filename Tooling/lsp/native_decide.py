@@ -48,8 +48,9 @@ TEACHING = (
     "kernel `decide` on an instance small enough to reduce, `omega`/"
     "`simp` with the finite case split written out, or lift the heavy "
     "check into its own `new_<slug>.lean` as smaller bricks. — Resend "
-    "this identical write to confirm and it will be applied; changing "
-    "the content asks again."
+    "this identical write to confirm and it is written to the file for "
+    "diagnostics only; the commit gate still refuses it. Changing the "
+    "content asks again."
 )
 
 #: The tools-server side's confirmed set, per spawn. Named like the
