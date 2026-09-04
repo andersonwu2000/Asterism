@@ -510,14 +510,20 @@ export interface RunWorker {
   /** tail of the file it is writing — spawn writes go through to the
    * real path, so this is the live view; null = nothing on disk yet */
   file: { tail: string; size: number; quiet_sec: number } | null
-  /** Strategist only (research mode): the live proposal↔reviewer
-   * cycle read from its working files — the argument would otherwise
-   * be half an hour of silence */
+  /** The live argument with a reviewer, read from the worker's own
+   * files — it would otherwise be half an hour of silence. A
+   * Strategist's is its proposal↔Adversary cycle (research mode,
+   * `proposing` first); a Theorist's is its document↔reviewer rounds
+   * (`drafting` first; serve `_theory_cycle`, 2026-09-05). Null on
+   * every other kind. */
   cycle?: {
-    phase: 'proposing' | 'judging' | 'revising' | 'passed'
+    phase: 'proposing' | 'drafting' | 'judging' | 'revising' | 'passed'
     round: number
     objections: string[]
     since_sec: number | null
+    /** the reviewer's LAST ruling as such — null while it is out.
+     * Theorist lanes only; a serve older than the field omits it. */
+    verdict?: 'pass' | 'rebut' | null
   } | null
 }
 

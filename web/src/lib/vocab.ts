@@ -5,6 +5,9 @@
  * identifiers.
  */
 
+import { duration } from './format'
+import type { RunWorker } from './types'
+
 const GOAL_STATUS_LABEL: Record<string, string> = {
   open: 'open',
   attempting: 'attempting',
@@ -296,6 +299,51 @@ export function isTheory(kind: string): boolean {
 export function countWord(kind: string, n: number): string {
   if (kind !== 'theory' && kind !== 'theory_refused') return String(n)
   return n === 1 ? '1 round' : `${n} rounds`
+}
+
+/** What a worker argues past its reviewer: the Strategist a Programme
+ * proposal, the Theorist a document. */
+export type CycleSubject = 'programme' | 'document'
+
+/** The review cycle in one sentence — round, ruling, what happens
+ * next. One rhythm for both subjects (a reader learns it once), the
+ * nouns each subject's own: a Theorist card must never say it is
+ * drafting a programme, and the two land in different places (the
+ * Programme is committed; a document lands under Documents). The
+ * Strategist's phase vocabulary opens on `proposing`, the Theorist's on
+ * `drafting`; either word means "no round yet". */
+export function cycleLine(
+  cycle: NonNullable<RunWorker['cycle']>,
+  subject: CycleSubject,
+): string {
+  const dur = cycle.since_sec !== null ? duration(cycle.since_sec) : null
+  const held = dur ? ` (${dur})` : ''
+  const n = cycle.objections.length
+  const objections = `${n} objection${n === 1 ? '' : 's'}`
+  if (subject === 'document') {
+    switch (cycle.phase) {
+      case 'proposing':
+      case 'drafting':
+        return 'writing the document — the reviewer reads it next'
+      case 'judging':
+        return `round ${cycle.round} — the reviewer is examining the document${held}`
+      case 'revising':
+        return `round ${cycle.round} — rejected with ${objections}; revising the document`
+      default:
+        return `round ${cycle.round} — passed review; landing the document under Documents`
+    }
+  }
+  switch (cycle.phase) {
+    case 'proposing':
+    case 'drafting':
+      return 'drafting a programme proposal — the adversarial reviewer reads it next'
+    case 'judging':
+      return `round ${cycle.round} — the reviewer is examining the proposal${held}`
+    case 'revising':
+      return `round ${cycle.round} — rejected with ${objections}; revising the proposal`
+    default:
+      return `round ${cycle.round} — passed review; committing the programme`
+  }
 }
 
 /** dead_attempts.failure_reason — the engine's forensic enum. The words

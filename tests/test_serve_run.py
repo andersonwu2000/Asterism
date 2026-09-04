@@ -568,6 +568,141 @@ def test_proposal_cycle_never_invents_a_pass(tmp_path: Path) -> None:
         assert _proposal_cycle(tmp_path)["phase"] == "judging", bad
 
 
+# ---------------------------------------------------------------------
+# the Theorist lane — a document under review, not a proposal
+# ---------------------------------------------------------------------
+
+def _theory_verdict_json(**fired: str) -> str:
+    """A theory verdict in the shape the REVIEWER writes: four
+    criteria, each a list of reasoned bullets. Built off the rubric's
+    own keys so the fixture cannot freeze a shape the parser has moved
+    past (the lesson `_verdict_json` carries)."""
+    import json as _json
+    from Tooling.pipeline.theorist.verdict import CRITERIA_KEYS
+    body = {"criteria": {k: [fired[f"c{k}"]] if f"c{k}" in fired
+                         else [f"clear: criterion {k} holds here"]
+                         for k in CRITERIA_KEYS},
+            "reservations": []}
+    return _json.dumps(body)
+
+
+def test_theory_cycle_phases(tmp_path: Path) -> None:
+    """`_theory_cycle` narrates the author↔reviewer rounds from the
+    Theorist workarea's own files: `report.md` at the root is the
+    draft, `review/r<n>/` is each round's dossier and `verdict.json`
+    inside it is the ruling — read through the theory verdict's OWN
+    parser (`pipeline.theorist.verdict`), never a private copy."""
+    from Tooling.serve.run import _theory_cycle
+    wa = tmp_path
+    assert _theory_cycle(wa) is None
+    (wa / "report.md").write_text("# Doc\n\nfirst draft\n", encoding="utf-8")
+    c = _theory_cycle(wa)
+    assert c["phase"] == "drafting" and c["round"] == 0
+    assert c["verdict"] is None
+    assert c["_tail_path"].endswith("report.md")
+    r1 = wa / "review" / "r1"
+    r1.mkdir(parents=True)
+    (r1 / "report.md").write_text("# Doc\n\nfirst draft\n", encoding="utf-8")
+    c = _theory_cycle(wa)
+    assert c["phase"] == "judging" and c["round"] == 1
+    assert c["verdict"] is None
+    # the on-trial copy is what the reviewer reads, so it is the tail
+    assert Path(c["_tail_path"]) == r1 / "report.md"
+    (r1 / "verdict.json").write_text(
+        _theory_verdict_json(c2="fired: Theorem 1 is not proved",
+                             c4="fired: no lead is tested"),
+        encoding="utf-8")
+    c = _theory_cycle(wa)
+    assert c["phase"] == "revising" and c["round"] == 1
+    assert c["verdict"] == "rebut"
+    assert c["objections"] == ["[criterion 2] Theorem 1 is not proved",
+                               "[criterion 4] no lead is tested"]
+    # the author rewrites the ROOT report on the same session
+    assert Path(c["_tail_path"]) == wa / "report.md"
+    r2 = wa / "review" / "r2"
+    r2.mkdir(parents=True)
+    (r2 / "report.md").write_text("# Doc\n\nsecond draft\n", encoding="utf-8")
+    (r2 / "verdict.json").write_text(_theory_verdict_json(),
+                                     encoding="utf-8")
+    c = _theory_cycle(wa)
+    assert c["phase"] == "passed" and c["round"] == 2
+    assert c["verdict"] == "pass"
+    assert c["objections"] == []
+
+
+def test_theory_cycle_never_invents_a_pass(tmp_path: Path) -> None:
+    """A verdict the theory parser REFUSES leaves the reviewer out:
+    the pipeline re-spawns it, so `judging` is the honest phase. Same
+    law as the proposal cycle, under the other rubric — a bare `clear`
+    and a mixed criterion are both refusals here."""
+    from Tooling.serve.run import _theory_cycle
+    r1 = tmp_path / "review" / "r1"
+    r1.mkdir(parents=True)
+    (r1 / "report.md").write_text("# Doc\n", encoding="utf-8")
+    for bad in ('{"verdict": "pass"}',
+                '{"criteria": {"1": ["clear"], "2": ["clear: x"],'
+                ' "3": ["clear: x"], "4": ["clear: x"]}}',   # bare clear
+                '{"criteria": {"1": ["clear: x", "fired: y"],'
+                ' "2": ["clear: x"], "3": ["clear: x"], "4": ["clear: x"]}}',
+                '{"criteria":'):
+        (r1 / "verdict.json").write_text(bad, encoding="utf-8")
+        c = _theory_cycle(tmp_path)
+        assert c["phase"] == "judging" and c["verdict"] is None, bad
+
+
+def test_run_theorist_lane_streams_the_draft_and_the_review(
+        workspace: Path, monkeypatch) -> None:
+    """The Theorist card was the one slot with no live view: its
+    workarea holds no `.lean`, no `_plan.md` and no `proposal.md`, so
+    the lane fell through every reader and said "nothing on disk yet"
+    for the whole of an author turn. The lane now tails the document
+    the author is writing (`report.md`) and narrates the review rounds
+    (`review/r<n>/verdict.json`) the way a Strategist lane narrates its
+    proposal cycle — round number, last verdict, the fired objections.
+    """
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    top = _groups.ensure_top_group(conn, "p")
+    db.enqueue(conn, kind="Theorist", target_id=str(top),
+               target_kind="Group", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Theorist'", (db.now(),))
+    db.record_pipeline_start(conn, pipeline_id="th-live", kind="Theorist",
+                             target_id=str(top), target_kind="Group")
+    conn.commit()
+    conn.close()
+    wa = workspace / ".attempts" / "th-live"
+    wa.mkdir(parents=True)
+    (wa / "Context.md").write_text("# p — BRIEF\n\n## Trigger\n\n"
+                                   "`trigger_kind`: theory\n",
+                                   encoding="utf-8")
+    (wa / "report.md").write_text(
+        "# The unit-imbalance erasure\n\n## Abstract\n\n"
+        "It reduces MAIN to a smaller claim.\n", encoding="utf-8")
+    r1 = wa / "review" / "r1"
+    r1.mkdir(parents=True)
+    (r1 / "report.md").write_text("# The unit-imbalance erasure\n",
+                                  encoding="utf-8")
+    (r1 / "verdict.json").write_text(
+        _theory_verdict_json(c2="fired: Theorem 1 is not proved"),
+        encoding="utf-8")
+
+    _fake_daemon(monkeypatch, scope="p")
+    body = _client(workspace).get("/api/run").json()
+    assert len(body["workers"]) == 1
+    lane = body["workers"][0]
+    assert lane["kind"] == "Theorist"
+    assert lane["pipeline_id"] == "th-live"
+    assert lane["path"] == ".attempts/th-live/report.md"
+    assert "reduces MAIN" in lane["file"]["tail"]
+    assert lane["cycle"]["phase"] == "revising"
+    assert lane["cycle"]["round"] == 1
+    assert lane["cycle"]["verdict"] == "rebut"
+    assert lane["cycle"]["objections"] == [
+        "[criterion 2] Theorem 1 is not proved"]
+
+
 def test_context_preamble_extraction() -> None:
     """_context_preamble: opens + multi-line variable block ride along;
     docstring prose starting with "open" does not leak in."""

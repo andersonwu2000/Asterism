@@ -449,6 +449,80 @@ def _proposal_cycle(workarea: Path) -> "dict | None":
             "_tail_path": str(rdir / "proposal.md")}
 
 
+def _theory_cycle(workarea: Path) -> "dict | None":
+    """The Theorist's author↔reviewer rounds, read from its workarea
+    (`pipeline.theorist`; display-only). The author writes `report.md`
+    at the root and rewrites it in place after a rebut; each review
+    round stages the on-trial copy and its ruling under
+    `review/r<n>/`. Phases: `drafting` (no round yet) → `judging`
+    (round dir, no readable verdict) → `revising` (rebut; the fired
+    criteria ride along) → `passed`. `verdict` is the reviewer's last
+    ruling as such — null while it is out — because the card names it
+    beside the round. The ruling comes through `parse_theory_verdict`,
+    the rubric's owner, for the reason `_proposal_cycle` gives: a
+    private copy of the shape is a console that lies after the next
+    migration."""
+    from ..pipeline.theorist.review import PROJECTION_DIRNAME
+    from ..pipeline.theorist.verdict import (REPORT_BASENAME,
+                                             VERDICT_BASENAME,
+                                             parse_theory_verdict)
+    report = workarea / REPORT_BASENAME
+    rounds: "list[tuple[int, Path]]" = []
+    rev = workarea / PROJECTION_DIRNAME
+    if rev.is_dir():
+        try:
+            for p in rev.iterdir():
+                if p.is_dir() and re.fullmatch(r"r\d+", p.name):
+                    rounds.append((int(p.name[1:]), p))
+        except OSError:
+            pass
+        rounds.sort()
+    if not rounds and not report.is_file():
+        return None
+
+    def _mtime(p: Path) -> "float | None":
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return None
+
+    def _since(m: "float | None") -> "int | None":
+        return max(0, int(time.time() - m)) if m is not None else None
+
+    if not rounds:
+        return {"phase": "drafting", "round": 0, "verdict": None,
+                "objections": [], "since_sec": _since(_mtime(report)),
+                "_tail_path": str(report)}
+    n, rdir = rounds[-1]
+    on_trial = rdir / REPORT_BASENAME
+    verdict_p = rdir / VERDICT_BASENAME
+    v = None
+    if verdict_p.is_file():
+        try:
+            v, _err = parse_theory_verdict(
+                verdict_p.read_text(encoding="utf-8"))
+        except OSError:
+            v = None
+    if v is None:
+        # no verdict yet, half-written, or one the framework refuses —
+        # the pipeline re-spawns the reviewer on a refusal, so in every
+        # case the reviewer is still out
+        return {"phase": "judging", "round": n, "verdict": None,
+                "objections": [],
+                "since_sec": _since(_mtime(on_trial) or _mtime(rdir)),
+                "_tail_path": str(on_trial)}
+    if v.get("verdict") == "rebut":
+        return {"phase": "revising", "round": n, "verdict": "rebut",
+                "objections": [str(c) for c in
+                               (v.get("criticisms") or [])][:6],
+                "since_sec": _since(_mtime(verdict_p)),
+                "_tail_path": str(report if report.is_file()
+                                  else on_trial)}
+    return {"phase": "passed", "round": n, "verdict": "pass",
+            "objections": [], "since_sec": _since(_mtime(verdict_p)),
+            "_tail_path": str(on_trial)}
+
+
 #: The run log is a live poll, not an archive read: bound BOTH sides of
 #: the merge. A pattern scope can hold a dozen problems and stokes alone
 #: yields 1148 events, so an unbounded merge would ship megabytes every
@@ -740,6 +814,24 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                         # all — narrate the cycle instead of half an hour
                         # of silence (owner, 2026-07-18)
                         cyc = _proposal_cycle(match[3])
+                        if cyc is not None:
+                            tail_path = cyc.pop("_tail_path", None)
+                            lane["cycle"] = cyc
+                            if tail_path is not None:
+                                cand = Path(tail_path)
+                                ptail = _tail(cand)
+                                if ptail is not None:
+                                    lane["path"] = cand.relative_to(
+                                        workspace).as_posix()
+                                    lane["file"] = ptail
+                    elif lane["kind"] == "Theorist":
+                        # the theory layer's product is a DOCUMENT under
+                        # review: no .lean, no plan note, no proposal —
+                        # every reader above fell through and the card
+                        # read "nothing on disk yet" for a whole author
+                        # turn. Same treatment as the Strategist's
+                        # cycle, on the Theorist's own files.
+                        cyc = _theory_cycle(match[3])
                         if cyc is not None:
                             tail_path = cyc.pop("_tail_path", None)
                             lane["cycle"] = cyc
