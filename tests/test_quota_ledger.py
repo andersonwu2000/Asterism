@@ -158,6 +158,7 @@ def test_every_spawning_pipeline_has_a_seat():
     — it would spawn into an exhausted window and nobody would know."""
     from Tooling.core import dispatcher
     for kind in ("strategist", "adversary", "formalizer", "presearch",
+                 "theorist", "theory_reviewer",
                  ):
         assert kind in dispatcher._QUOTA_SEATS
 
@@ -457,3 +458,30 @@ def test_the_seat_to_kind_translation_has_one_home(monkeypatch):
         "expected QUEUE kinds, not seat names — got " + repr(sorted(out)))
     # pre-search is a station: held through its group, never on its own
     assert "presearch" not in out and "Presearch" not in out
+
+
+def test_the_theory_layer_is_a_seat_pair():
+    """The Theorist and its reviewer are seats like every other spawning
+    pipeline (theory_wake_design.md §1). Two facts the ledger needs: the
+    author's queue kind, so a hold on the theory layer reaches the
+    dispatcher at all, and the BOUND pair, so a document nobody can
+    review is never authored — the same coupling strategist/adversary
+    have, for the same reason (a proposal with no judge is discarded
+    work)."""
+    from Tooling.core import dispatcher
+    assert "theorist" in dispatcher._QUOTA_SEATS
+    assert "theory_reviewer" in dispatcher._QUOTA_SEATS
+    assert quota.DISPATCH_KIND["theorist"] == "Theorist"
+    assert "theory_reviewer" not in quota.DISPATCH_KIND
+    assert frozenset({"theorist", "theory_reviewer"}) in quota.BOUND
+
+
+def test_blocking_the_reviewer_holds_the_theorist():
+    """A theory document with no reviewer never lands — it burns the
+    author's window and dies at the review loop."""
+    led = Ledger(ttl=0.0, clock=lambda: 1_000.0)
+    seats = _seats(theorist=("codex", "gpt-5.6-sol"),
+                   theory_reviewer=("claude", "claude-fable-5"))
+    led.observe("claude", "claude-fable-5")
+    blocked = led.blocked_kinds(seats)
+    assert "theorist" in blocked and "theory_reviewer" in blocked

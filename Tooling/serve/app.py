@@ -571,7 +571,8 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         from ..core import config as _cfg
         roles: list[dict] = []
         for role in ("strategist", "adversary", "formalizer", "presearch",
-                     "librarian", "scholar", "explainer"):
+                     "librarian", "scholar", "explainer",
+                     "theorist", "theory_reviewer"):
             try:
                 prov = _cfg.get(f"{role}.provider",
                                 env_var=f"ASTERISM_{role.upper()}_PROVIDER",

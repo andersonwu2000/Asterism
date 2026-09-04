@@ -238,7 +238,8 @@ LIVENESS_TIMEOUT_ONLY = "timeout"
 #: silence while the stream had never been quiet for 3.5s). Lives here
 #: rather than in `claude_cli` because the choice is now made through
 #: `liveness_clock`, which every provider consults.
-STREAM_IDLE_KINDS: "frozenset[str]" = frozenset({"strategist", "adversary"})
+STREAM_IDLE_KINDS: "frozenset[str]" = frozenset(
+    {"strategist", "adversary", "theorist", "theory_reviewer"})
 
 
 @dataclass(frozen=True)

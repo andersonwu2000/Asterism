@@ -104,6 +104,15 @@ SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "formalizer": _NL_TOOLS,     # intake/mint turns; Lean phase adds
                                  # the lsp server via _write_mcp_config
     "librarian": _NL_TOOLS,
+    # The theory layer (theory_wake_design.md §5). The author reads
+    # the literature — it is the one seat whose errand is the
+    # unknown, and the record is not where the answer is — so it
+    # carries the strategist's paper pair. The reviewer does not:
+    # it rules on THIS document against the record it was handed,
+    # and a judge that goes shopping for its own sources is judging
+    # a different packet than the author answered.
+    "theorist": _NL_TOOLS | {"paper_search", "paper_fetch"},
+    "theory_reviewer": _NL_TOOLS,
     "explainer": _ASSISTANT_TOOLS,
 }
 

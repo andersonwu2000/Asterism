@@ -32,6 +32,13 @@ _PINNED = {
     "presearch.model",
     "librarian.model",
     "adversary.model",
+    # 2026-09-04 (theory_wake_design.md §1): the theory layer is two
+    # seats of its own, and a seat whose model the page cannot show
+    # is a seat nobody can tell is running the wrong tier.
+    "theorist.provider",
+    "theory_reviewer.provider",
+    "theorist.model",
+    "theory_reviewer.model",
     # dispatch knobs a mathematician tunes
     "dispatch.pool",
     "ledger.idle_spares",   # 2026-08-31: warm-pool spares (owner ruling)

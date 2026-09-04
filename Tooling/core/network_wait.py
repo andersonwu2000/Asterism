@@ -51,7 +51,7 @@ CHANNEL_PROBE_INTERVAL_SEC = 30.0
 #: The seat kinds whose provider choice can arm the channel probe —
 #: the yaml seat table's own vocabulary.
 _SEAT_KINDS = ("strategist", "adversary", "formalizer", "presearch",
-               "librarian")
+               "librarian", "theorist", "theory_reviewer")
 
 
 def channel_url_for(kind: "str | None" = None) -> "str | None":

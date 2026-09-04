@@ -123,4 +123,26 @@ def test_codex_tells_the_tools_server_which_attempt_it_serves(
     assert ATTEMPT_DIR_ENV in toml
     assert str(spec.write_roots[0]) in toml
 
+def test_the_theory_layer_seats_declare_their_own_surface() -> None:
+    """`asterism_tools_for` fails loudly on an undeclared seat, and the
+    failure lands at MCP-config write time — before the spawn. Both
+    theory seats therefore need an entry, and the two are NOT the same
+    surface: the author may go to the literature (theory_wake_design.md
+    §5), the reviewer rules on the packet it was handed.
 
+    `validate_json` is on both because both prompts name it
+    (`prompts/theorist/theory.md`, `review.md`) — a tool a prompt names
+    and the surface withholds is denied at the prompt, which is how
+    g7491's worker lost `inspect`."""
+    from Tooling.llm.envelope import asterism_tools_for
+
+    author = asterism_tools_for("theorist")
+    reviewer = asterism_tools_for("theory_reviewer")
+    for seat in (author, reviewer):
+        assert {"inspect", "write_file", "compute", "loogle",
+                "validate_json"} <= seat
+    assert {"paper_search", "paper_fetch"} <= author
+    assert not ({"paper_search", "paper_fetch"} & reviewer)
+    # No Lean surface on either: the LSP server rides a different config
+    # (`_write_mcp_config`), and the NL layer never receives it.
+    assert not any(t.startswith("lean") for t in author | reviewer)

@@ -358,3 +358,24 @@ adversary:
                                # weekly cap is also what stalled the 08-06
                                # run; opus draws on the shared window.
                                # Lowest-volume pipeline — cost negligible.
+# ── the theory layer (theory_wake_design.md §1) ──────────────────────
+# Four NL seats, two layers, each layer priced on its own: the THEORY
+# layer (theorist / theory_reviewer) writes and reviews the mathematics
+# the record does not have, the STRATEGY layer (strategist / adversary,
+# above) decides how the programme runs inside the known. User ruling
+# 2026-09-04: sol at `xhigh` up here, sol at `high` on the strategy
+# layer — the theory seat is the one whose product is a proof nobody
+# has written, so it gets the deeper budget. The two move together
+# (`quota.BOUND`): a document with no reviewer never lands.
+theorist:
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: xhigh
+
+theory_reviewer:
+  # The judge matches its author, the 08-23 shape one layer up: the
+  # reviewer re-derives the proofs and reproduces the computations, so
+  # it must not sit below the seat it is checking.
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: xhigh

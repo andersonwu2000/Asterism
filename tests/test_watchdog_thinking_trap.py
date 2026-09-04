@@ -590,7 +590,12 @@ def test_stream_idle_kinds_match_the_dispatch_spelling() -> None:
     pass to `spawn_llm` (`strategist.py`, `adversary.py`). A near-miss
     spelling would be a silent no-op, which is the exact shape the quota
     ledger shipped with on the morning of the same day."""
-    assert claude_cli._STREAM_IDLE_KINDS == {"strategist", "adversary"}
+    assert claude_cli._STREAM_IDLE_KINDS == {
+        "strategist", "adversary",
+        # The theory layer joined 2026-09-04: it is the same NL
+        # work — the thinking IS the product — so the tool clock
+        # would read a long derivation as a stall.
+        "theorist", "theory_reviewer"}
 
 
 # ---------------------------------------------------------------------

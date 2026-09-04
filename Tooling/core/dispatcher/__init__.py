@@ -38,7 +38,12 @@ _quota_ledger = quota.Ledger()
 #: decision-maker. (`scholar` retired 2026-08-22: paper fetching became
 #: the Strategist's own tool surface.)
 _QUOTA_SEATS = ("strategist", "adversary", "formalizer", "presearch",
-                "librarian", "paper_index")
+                "librarian", "paper_index",
+                # The theory layer (theory_wake_design.md §1): its
+                # author and its reviewer are two seats of their own,
+                # so the theory layer can be priced — and run out —
+                # independently of the strategy layer above it.
+                "theorist", "theory_reviewer")
 
 
 def _pipeline_seats() -> "dict[str, tuple[str, str | None]]":

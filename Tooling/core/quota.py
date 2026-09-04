@@ -51,6 +51,12 @@ from typing import Callable, Optional
 BOUND: "tuple[frozenset[str], ...]" = (
     frozenset({"strategist", "adversary"}),
     frozenset({"presearch", "formalizer"}),
+    #   theorist + theory_reviewer: the same author/judge shape one
+    #     layer up (theory_wake_design.md §3). A theory document with
+    #     no reviewer never lands — the pipeline's only landing path
+    #     is an accepted verdict — so authoring one into a capped
+    #     reviewer is the strategist/adversary waste, verbatim.
+    frozenset({"theorist", "theory_reviewer"}),
 )
 
 
@@ -67,6 +73,7 @@ DISPATCH_KIND: "dict[str, str]" = {
     "strategist": "Strategist",
     "formalizer": "Formalizer",
     "librarian": "Librarian",
+    "theorist": "Theorist",
 }
 
 
