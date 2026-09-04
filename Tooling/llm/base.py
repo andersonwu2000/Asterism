@@ -35,6 +35,27 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Protocol
 
+#: The ceiling an MCP CLIENT puts on ONE tool call, shared by every
+#: provider adapter that configures one: claude's `MCP_TOOL_TIMEOUT`
+#: (which takes milliseconds) and codex's `tool_timeout_sec`. It must
+#: outlive everything the framework is entitled to spend INSIDE a tool,
+#: or the client hangs up while the gateway is still working and a
+#: measured failure ("stopped at the 900s limit, shrink the search")
+#: reaches the agent as a tool error with no cause in it.
+#:
+#: Two things set it and the larger wins — both in packages far too
+#: heavy to import from a dispatcher, so the RELATION is held by tests
+#: (`test_compute_sandbox`, `test_elab_wall_and_native_decide`) rather
+#: than computed here:
+#:   * `compute` — `knowledge/mcp_tools._GATEWAY_TIMEOUT_SEC`, a queue
+#:     wait plus a full sandbox wall (2×900 + 60 = 1860s). BINDING.
+#:   * Lean elaboration — `lsp/gateway/wall.ELAB_WALL_HEAVY_SEC` (900)
+#:     plus the slot re-warm behind it (~300).
+#: 1500 -> 2100 on 2026-09-04, when the 15-minute compute wall pushed
+#: the first of those past the old ceiling; the 240s of headroom over
+#: the binding constraint is the same margin 1500 carried over 1260.
+MCP_TOOL_TIMEOUT_SEC = 2100
+
 
 def which_launchable(name: "str") -> "str | None":
     """`shutil.which`, minus the Windows trap that costs a whole spawn.

@@ -3355,7 +3355,7 @@ def test_interactive_register_claims_off_the_event_loop(monkeypatch, tmp_path):
 
 
 def test_compute_route_runs_at_most_two_sandboxes_at_once(monkeypatch):
-    """Owner ruling 2026-09-03 widened the sandbox wall to 10 minutes,
+    """Owner ruling 2026-09-04 widened the sandbox wall to 15 minutes,
     and `sandbox.run` is SYNCHRONOUS — `asyncio.to_thread` parks one
     default-executor thread for the whole run, in the same pool every
     other route offloads to. N agents must not become N parked threads

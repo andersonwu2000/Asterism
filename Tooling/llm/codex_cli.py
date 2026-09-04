@@ -85,8 +85,8 @@ import threading
 import time
 from pathlib import Path
 
-from .base import (LLMRequest, SpawnRC, transcript_dest,
-                   which_launchable)
+from .base import (MCP_TOOL_TIMEOUT_SEC, LLMRequest, SpawnRC,
+                   transcript_dest, which_launchable)
 from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
 
@@ -203,10 +203,12 @@ def _mcp_servers_toml(mcp_config_path: "Path | None",
             out.append("args = ["
                        + ", ".join(_toml_str(str(a)) for a in args) + "]")
         out.append('default_tools_approval_mode = "approve"')
-        # Above the gateway heavy elaboration wall (rpc.ELAB_WALL_HEAVY_SEC 900s
-        # + re-warm): a client that hangs up first turns a measured failure
-        # into a mystery tool error mid-elaboration.
-        out.append("tool_timeout_sec = 1500")
+        # Above everything the framework may spend inside one tool —
+        # the heavy elaboration wall + re-warm, and a queued `compute`
+        # call. A client that hangs up first turns a measured failure
+        # into a mystery tool error mid-elaboration. See
+        # `base.MCP_TOOL_TIMEOUT_SEC`.
+        out.append(f"tool_timeout_sec = {MCP_TOOL_TIMEOUT_SEC}")
         out.append("required = true")
         env = dict(entry.get("env") or {})
         if name == "asterism_tools":

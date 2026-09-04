@@ -410,7 +410,7 @@ def compute(code: str = "") -> str:
     numpy is available. There is no filesystem, no network and no shell:
     put the data you need inline in the code and return results with
     `print()`. Each call is a fresh process, so define everything you
-    use. Time and memory are capped by the framework: 10 minutes of
+    use. Time and memory are capped by the framework: 15 minutes of
     wall clock and 512 MB, which is room for an exhaustive sweep of a
     few million cases — size the search to fit rather than sampling it.
     """
@@ -444,7 +444,7 @@ def compute(code: str = "") -> str:
 #:
 #: DERIVED, never typed twice: the client must outlive everything the
 #: framework is entitled to spend before answering. A client that hangs
-#: up first turns "stopped at the 600s limit, shrink the search" — an
+#: up first turns "stopped at the 900s limit, shrink the search" — an
 #: instruction — into "the compute service did not answer", which is
 #: the wait-vs-report fork with no way to choose.
 #:
@@ -456,8 +456,14 @@ def compute(code: str = "") -> str:
 #: two ways to close that gap were both refused: a soft gate that lets
 #: a third sandbox through loses the invariant it exists to hold, and
 #: refusing the queued caller hands the agent a fault it cannot act on.
-#: 1260 still sits under every client on the path (claude's
-#: MCP_TOOL_TIMEOUT 1500s, codex's tool_timeout_sec 1500).
+#:
+#: The 15-minute wall (owner ruling 2026-09-04) makes this 1860, which
+#: is PAST the 1500s ceiling every provider's MCP client used to put on
+#: one tool call — so that ceiling moved with it and is now
+#: `llm/base.MCP_TOOL_TIMEOUT_SEC`. The relation is pinned by
+#: `tests/test_compute_sandbox.py`, because neither this module nor the
+#: gateway can be imported from a dispatcher cheaply enough to compute
+#: it there.
 #:
 #: The import is one stdlib-only module (`sandbox.provision` reaches no
 #: further), so it does not breach this server's rule against pulling

@@ -39,9 +39,14 @@ def test_default_wall_and_heavy_wall_follow_the_declared_budget(tmp_path):
 
 
 def test_walls_sit_under_the_client_timeouts_and_wedge_watchdog():
+    from Tooling.llm.base import MCP_TOOL_TIMEOUT_SEC
     from Tooling.lsp.gateway import backend as _b
     assert wall.ELAB_WALL_SEC < wall.ELAB_WALL_HEAVY_SEC < _b._BACKEND_WEDGE_SEC
-    assert wall.ELAB_WALL_HEAVY_SEC + 300 <= 1500  # codex tool_timeout_sec
+    # The MCP client ceiling every provider spends (codex's
+    # `tool_timeout_sec`, claude's `MCP_TOOL_TIMEOUT`): the wall plus a
+    # slot re-warm has to finish inside it, or a measured failure
+    # reaches the agent as a mystery tool error.
+    assert wall.ELAB_WALL_HEAVY_SEC + 300 <= MCP_TOOL_TIMEOUT_SEC
 
 
 class _Backend:
@@ -178,11 +183,16 @@ def test_native_decide_gate_stays_silent_otherwise(tmp_path):
 # ------------------------------------------------ client-side timeouts
 
 def test_codex_toml_carries_a_tool_timeout_above_the_heavy_wall(tmp_path):
+    from Tooling.llm.base import MCP_TOOL_TIMEOUT_SEC
     cfg = tmp_path / "mcp.json"
     cfg.write_text('{"mcpServers": {"lsp": {"url": "http://127.0.0.1:1/mcp"}}}',
                    encoding="utf-8")
     toml = codex_cli._mcp_servers_toml(cfg)
-    assert "tool_timeout_sec = 1500" in toml
+    # The number is the shared constant's, never typed here: the ceiling
+    # moved on 2026-09-04 when the compute wall did, and a literal in
+    # this test is how one adapter gets left behind.
+    assert f"tool_timeout_sec = {MCP_TOOL_TIMEOUT_SEC}" in toml
+    assert MCP_TOOL_TIMEOUT_SEC >= wall.ELAB_WALL_HEAVY_SEC + 300
 
 
 def test_cpu_mode_rebases_on_a_replacement_worker_and_survives_a_respawn_gap(

@@ -12,8 +12,11 @@ a job bigger than that "is searching, and a search that big belongs in
 a designed experiment". Owner ruling 2026-09-03 reverses the reading,
 not the containment: the search IS the experiment, and the exhaustive
 pass over the 1,385,552 union-closed families on 5 points that settles
-a Frankl-shaped question takes ~2.5 min of pure Python. The caps below
-are sized to that; everything under HOW IT IS CONTAINED is unchanged.
+a Frankl-shaped question takes ~2.5 min of pure Python. Owner ruling
+2026-09-04 sets the wall at FIFTEEN minutes everywhere — one number
+across the framework rather than a per-caller opinion of how long a
+search may take. The caps below are sized to that; everything under
+HOW IT IS CONTAINED is unchanged.
 
 WHAT IT PROVES: NOTHING. A Python computation is not a proof, whatever
 it prints and whichever direction the result points. The only thing in
@@ -82,7 +85,13 @@ from . import provision
 #: framework was not choosing "calculator over search"; it was refusing
 #: every search the agents actually had to run, and the refusal read as
 #: a tool that was merely slow.
-TIMEOUT_SEC = 600
+#:
+#: 600 -> 900 (owner ruling 2026-09-04): the compute budget is fifteen
+#: minutes EVERYWHERE. This is the single source — the kill message,
+#: the tool docstring an agent sizes its sweep from, and the client
+#: socket that has to outlive a queued call are all derived from it,
+#: so the number is changed here and nowhere else.
+TIMEOUT_SEC = 900
 #: Sized to the same sweeps: a set of ~1.4M ints is ~100 MB, and the
 #: enumeration that builds it needs room beside it (owner ruling
 #: 2026-09-03). Still a ceiling and not a workstation — a job that

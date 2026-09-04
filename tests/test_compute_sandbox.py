@@ -60,12 +60,13 @@ def test_the_kill_message_names_the_widened_limit() -> None:
     """Owner ruling 2026-09-03: this sandbox is also the agents'
     counterexample-search instrument — an exhaustive sweep of all
     1,385,552 union-closed families on 5 points is ~2.5 min of pure
-    Python, which the 30s cap refused outright. The caps are 600s and
-    512 MB, and the agent SIZES ITS NEXT SEARCH from this message, so
-    the message carries the real numbers and both ways out."""
-    assert (sandbox.TIMEOUT_SEC, sandbox.MEMORY_MB) == (600, 512)
-    t = sandbox.ComputeResult(0, "", 600.0, killed="timeout").render()
-    assert "600s" in t and "10 min" in t
+    Python, which the 30s cap refused outright. Owner ruling
+    2026-09-04 sets the budget at FIFTEEN minutes everywhere; memory
+    is unchanged. The agent SIZES ITS NEXT SEARCH from this message,
+    so the message carries the real numbers and both ways out."""
+    assert (sandbox.TIMEOUT_SEC, sandbox.MEMORY_MB) == (900, 512)
+    t = sandbox.ComputeResult(0, "", 900.0, killed="timeout").render()
+    assert "900s" in t and "15 min" in t
     assert "Shrink" in t and "split" in t
     m = sandbox.ComputeResult(0, "", 0.3, killed="memory").render()
     assert "512 MB" in m and "batches" in m
@@ -85,13 +86,13 @@ def test_the_tool_docstring_sizes_the_search_from_the_real_caps() -> None:
 def test_the_gateway_client_outlives_a_queue_wait_plus_a_full_run() -> None:
     """The HTTP client must never hang up on a run the framework is
     still entitled to make: it would turn a measured "stopped at the
-    600s limit, shrink the search" into "the compute service did not
+    900s limit, shrink the search" into "the compute service did not
     answer", which sends the agent to the wait-vs-report fork with no
     way to choose.
 
     The budget is QUEUE PLUS RUN, not one run. `/compute` admits two
     sandboxes, so a third caller can legitimately wait a full wall for
-    a slot and then run a full wall of its own — 2*600 + startup. A
+    a slot and then run a full wall of its own — 2*900 + startup. A
     client sized for one run would time out on exactly the caller the
     gate created, and the 2-slot invariant is not negotiable (owner
     ruling 2026-09-03: no soft gate). Derived from the sandbox's own
@@ -99,6 +100,30 @@ def test_the_gateway_client_outlives_a_queue_wait_plus_a_full_run() -> None:
     assert (mcp_tools._GATEWAY_TIMEOUT_SEC
             >= 2 * sandbox.TIMEOUT_SEC + 60), (
         "a queued caller plus its own run must fit inside the socket")
+
+
+def test_every_mcp_client_outlives_the_compute_socket() -> None:
+    """The socket above is not the outermost clock on a `compute` call.
+
+    The provider's own MCP client caps ONE tool call — claude's
+    `MCP_TOOL_TIMEOUT`, codex's `tool_timeout_sec` — and if that fires
+    first the gateway is still working while the agent is told the tool
+    failed: the same wait-vs-report fork one layer out, and this time
+    with no message at all. It was 1500s, sized above the heavy
+    elaboration wall (900) plus a slot re-warm and comfortably above
+    the old 1260s compute socket. The 15-minute wall pushes that socket
+    to 1860, straight through the client ceiling — so the ceiling moves
+    with it (owner ruling 2026-09-04).
+
+    Pinned as a RELATION, not a number: `mcp_tools` and the gateway
+    both live in packages too heavy to import from a dispatcher, so the
+    constant stays a literal in `llm/base` and this test is what keeps
+    it honest."""
+    from Tooling.llm import base as _base
+
+    assert _base.MCP_TOOL_TIMEOUT_SEC >= mcp_tools._GATEWAY_TIMEOUT_SEC, (
+        "the MCP client would hang up on a queued compute call the "
+        "gateway is still entitled to be running")
 
 
 def test_env_is_an_allowlist_with_no_path_and_no_secrets(monkeypatch) -> None:
@@ -162,8 +187,8 @@ def test_runaway_time_is_stopped_by_the_wall_clock(
 
     The limit is shrunk to 2s: the kill loop reads the module constant
     each tick, so the enforcement path under test is byte-identical to
-    the production one — waiting out the real wall (600s since the
-    2026-09-03 ruling) would be the whole suite's wall time twice
+    the production one — waiting out the real wall (900s since the
+    2026-09-04 ruling) would be the whole suite's wall time twice
     over."""
     monkeypatch.setattr(sandbox, "TIMEOUT_SEC", 2)
     r = sandbox.run("while True: pass")

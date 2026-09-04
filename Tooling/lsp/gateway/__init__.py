@@ -679,12 +679,12 @@ async def verify_session(request: Request):
 
 
 #: How many sandboxes may run at once. `sandbox.run` is synchronous and
-#: its wall clock is 10 minutes since the 2026-09-03 ruling, so every
+#: its wall clock is 15 minutes since the 2026-09-04 ruling, so every
 #: in-flight call parks one thread of the DEFAULT EXECUTOR — the same
 #: pool `/verify`, `/release` and every `_offload_to_thread` tool share
 #: (min(32, cpu+4) threads; 20 on this workstation, so two is nowhere
 #: near the pool and the pool is not what this bounds). What it bounds
-#: is the machine: N agents calling a 10-minute sweep at once would be
+#: is the machine: N agents calling a 15-minute sweep at once would be
 #: N sandbox interpreters against the Lean workers' RAM.
 #:
 #: A third caller QUEUES; it is never refused. A refusal would reach
