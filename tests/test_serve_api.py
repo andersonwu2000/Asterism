@@ -2920,6 +2920,100 @@ def test_docs_round_trip_through_the_endpoints(workspace: Path) -> None:
                  ).status_code == 404
 
 
+def test_docs_listing_carries_each_theory_document_s_record(
+        workspace: Path) -> None:
+    """A theory document is a ROW, not just a file (theory_wake_design.md
+    §4). Its group, its date, the reviewer's ruling and how many rounds
+    it cost are nowhere in the prose, so the listing that draws the shelf
+    carries them — the same three facts the agent roster reads off
+    `theory_documents`.
+
+    The verdict is rendered by the rubric's OWN parser: a hand-written
+    shape here would be a second reading of the reviewer's file living in
+    the serve layer, which is the drift that made every rebut report as
+    passed for a week (44ff4321).
+    """
+    from Tooling.pipeline.theorist import verdict as _verdict
+    from Tooling.state import groups as _groups
+    from Tooling.state import project_docs as _pd
+
+    _with_project(workspace)
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    gid = _groups.ensure_top_group(conn, "Erdos.p1")
+    ruling = {"criteria": {k: [f"clear: criterion {k} holds for this one"]
+                           for k in _verdict.CRITERIA_KEYS}}
+    name = f"g{gid}_20260904-1612_the_unit_imbalance.md"
+    rel = _pd.write(workspace, "Erdos", f"agent/{name}",
+                    "# The unit-imbalance erasure\n", area=_pd.AREA_AGENT)
+    _pd.write(workspace, "Erdos", "agent/notes.md", "a plain one\n",
+              area=_pd.AREA_AGENT)
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, verdict_json, created_at)"
+        " VALUES ('Erdos.p1', ?, 'what breaks the counting?', 's', ?,"
+        " 'accepted', 2, ?, '2026-09-04T16:12:00+00:00')",
+        (gid, f"Problems/Erdos/_docs/{rel}", json.dumps(ruling)))
+    # A REFUSED run keeps its row and lands no file — the row is the
+    # evidence for why the answer was refused, and the shelf lists files.
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, verdict_json, created_at)"
+        " VALUES ('Erdos.p1', ?, 'the refused question', 's', NULL,"
+        " 'rejected', 3, NULL, '2026-09-04T17:00:00+00:00')", (gid,))
+    conn.commit()
+    conn.close()
+
+    entries = _client(workspace).get(
+        "/api/projects/Erdos/docs").json()["entries"]
+    by_path = {e["path"]: e for e in entries}
+    assert set(by_path) == {"agent", f"agent/{name}", "agent/notes.md"}
+    assert by_path[f"agent/{name}"]["theory"] == {
+        "group_id": gid,
+        "created_at": "2026-09-04T16:12:00+00:00",
+        "status": "accepted",
+        "rounds": 2,
+        "objective": "what breaks the counting?",
+        "verdict": _verdict.clear_lines(ruling)}
+    assert len(_verdict.clear_lines(ruling)) == 4
+    # a file with no row carries no record at all — absent, not null
+    assert "theory" not in by_path["agent/notes.md"]
+    # and the refused run is on no row of the shelf
+    assert "refused" not in json.dumps(entries)
+
+
+def test_docs_listing_survives_an_unreadable_theory_verdict(
+        workspace: Path) -> None:
+    """The record is the point; the verdict is one field of it. A row
+    whose `verdict_json` cannot be parsed (a pre-rubric row, a truncated
+    write) must cost the reader the four lines and nothing else — the
+    shelf still names the document, its group and its date."""
+    _with_project(workspace)
+    conn = _open_db(workspace)
+    _add_problem(conn, "Erdos.p1")
+    rel = _pd_write(workspace, "agent/g7_20260904-0900_x.md")
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, verdict_json, created_at)"
+        " VALUES ('Erdos.p1', NULL, 'o', 's', ?, 'accepted', 1,"
+        " '{not json', '2026-09-04T09:00:00+00:00')",
+        (f"Problems/Erdos/_docs/{rel}",))
+    conn.commit()
+    conn.close()
+    entries = _client(workspace).get(
+        "/api/projects/Erdos/docs").json()["entries"]
+    t = next(e for e in entries if e["path"] == rel)["theory"]
+    assert t["verdict"] == []
+    assert t["group_id"] is None and t["rounds"] == 1
+
+
+def _pd_write(workspace: Path, path: str) -> str:
+    """One agent-area document on disk; returns its root-relative path."""
+    from Tooling.state import project_docs as _pd
+    return _pd.write(workspace, "Erdos", path, "# x\n",
+                     area=_pd.AREA_AGENT)
+
+
 def test_docs_read_raw_streams_the_bytes(workspace: Path) -> None:
     """A pdf is not read into a JSON field. §3.6 allows either shape;
     base64-in-JSON is the wrong one for a paper — the shelf holds a

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import json
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -82,14 +83,75 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
+    def _theory_records(project: str) -> "dict[str, dict]":
+        """Every landed theory document's ROW, by root-relative path.
+
+        A theory document is a row before it is a file
+        (theory_wake_design.md §4): whose wall it was written for, when,
+        that a reviewer passed it and what the reviewer checked are all
+        absent from the prose, so the listing that draws the shelf
+        carries them the way the agent roster does.
+
+        Found by PATH. `theory_documents.path` is workspace-relative and
+        this Project's agent area is exactly one prefix of it, so no
+        problem→Project join is needed — and a row whose `path` is NULL
+        (the refused run, which lands no file) never matches, which is
+        the right answer for a listing of files.
+        """
+        prefix = (_docs.root(workspace, project)
+                  .relative_to(workspace).as_posix() + "/")
+        with ro(workspace) as conn:
+            rows = conn.execute(
+                "SELECT group_id, created_at, status, rounds, objective,"
+                " verdict_json, path FROM theory_documents"
+                " WHERE path LIKE ?", (f"{prefix}{_docs.AREA_AGENT}/%",)
+            ).fetchall()
+        # The rubric's own parser renders the reviewer's four lines — a
+        # second reading of the verdict living here is the drift that
+        # made every rebut report as `passed` for a week (44ff4321).
+        # Lazily, on `data/verdict.py`'s precedent: the shape belongs to
+        # the code that writes it, not to the door that serves it.
+        from ..pipeline.theorist.verdict import clear_lines
+        out: "dict[str, dict]" = {}
+        for r in rows:
+            rel = str(r["path"]).replace("\\", "/")[len(prefix):]
+            try:
+                ruling = json.loads(r["verdict_json"] or "")
+            except ValueError:
+                ruling = None
+            out[rel] = {
+                "group_id": (None if r["group_id"] is None
+                             else int(r["group_id"])),
+                "created_at": str(r["created_at"] or ""),
+                "status": str(r["status"]),
+                "rounds": int(r["rounds"] or 0),
+                "objective": str(r["objective"] or ""),
+                # a row the parser cannot read costs the four lines and
+                # nothing else — the record is the point
+                "verdict": (clear_lines(ruling)
+                            if isinstance(ruling, dict) else []),
+            }
+        return out
+
     @app.get("/api/projects/{project}/docs")
     def docs_tree(project: str) -> dict:
         """The whole tree, flat and root-relative — what the left rail
         draws. A Project that has written nothing yet has an empty one;
-        the root is created by the first write, not by the Project."""
+        the root is created by the first write, not by the Project.
+
+        An entry the theory layer wrote carries its `theory` record;
+        every other one carries no such key, so "is this a theory
+        document" stays a question about the entry rather than a name
+        pattern the shelf would have to parse.
+        """
         with _answers(project):
-            return {"project": project, "entries": _docs.tree(workspace,
-                                                              project)}
+            entries = _docs.tree(workspace, project)
+            theory = _theory_records(project)
+            for e in entries:
+                rec = theory.get(e["path"])
+                if rec is not None and e["kind"] == "file":
+                    e["theory"] = rec
+            return {"project": project, "entries": entries}
 
     #: What `?raw=1` calls each kind, for the browser that will render
     #: it. Anything else is served as bytes with no claim about them.
