@@ -18,12 +18,17 @@ export const SECTIONS = ['tasks', 'sky', 'groups', 'engine', 'timeline', 'docs']
 
 export type Section = (typeof SECTIONS)[number]
 
-/** English labels, in the owner's order (§1.4-2). */
+/** English labels, in the owner's order (§1.4-2). One word each: the
+ * menu is read at a glance, and `engine` was "Engine room" until
+ * 2026-09-05 — the surface is where the engine is watched, and every
+ * sentence in the UI already calls the machine "the engine"; the room
+ * was a metaphor spending a second word. The address segment did not
+ * change. */
 export const SECTION_LABEL: Record<Section, string> = {
   tasks: 'Tasks',
   sky: 'Sky',
   groups: 'Groups',
-  engine: 'Engine room',
+  engine: 'Engine',
   timeline: 'Timeline',
   docs: 'Documents',
 }

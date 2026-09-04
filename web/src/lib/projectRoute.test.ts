@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  SECTION_LABEL,
   TASK_SECTIONS,
   defaultTask,
   parseProjectRoute,
@@ -23,6 +24,18 @@ function task(name: string, over: Partial<BoardProblem> = {}): BoardProblem {
     ...over,
   } as BoardProblem
 }
+
+describe('the menu', () => {
+  it('names the engine in one word, and keeps its address (2026-09-05)', () => {
+    // the tab was "Engine room": two words beside five one-word peers,
+    // for a surface every sentence in the UI already calls "the
+    // engine". The route segment is unchanged — bookmarks and mailed
+    // links to `…/engine` keep landing.
+    expect(SECTION_LABEL.engine).toBe('Engine')
+    expect(Object.values(SECTION_LABEL).every((l) => !l.includes(' '))).toBe(true)
+    expect(parseProjectRoute(['p', 'Erdos', 'engine'])?.section).toBe('engine')
+  })
+})
 
 describe('parseProjectRoute', () => {
   it('reads project, section and task out of #/p/<project>/<section>/<task>', () => {

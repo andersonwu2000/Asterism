@@ -116,7 +116,7 @@ export default function RunControl({
    * it, the way the shelf's own Run asks */
   project: string
   problem: string
-  /** the engine room of the Project this control sits in — the busy
+  /** the Engine section of the Project this control sits in — the busy
    * message has to name a place the reader can actually reach */
   engineHref?: string
 }) {
@@ -183,7 +183,7 @@ export default function RunControl({
                 to={engineHref}
                 className="underline decoration-ink-faint underline-offset-2 hover:text-ink"
               >
-                engine room
+                Engine
               </Link>
             </>
           )}
@@ -199,8 +199,8 @@ export default function RunControl({
               <span className="max-w-96 text-[11px] leading-snug text-danger">
                 the last run crashed
                 {d.last_exit.error?.includes('gateway')
-                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, read the engine log in the engine room'
-                  : ` (${d.last_exit.error ?? 'unknown error'}) — read the engine log in the engine room`}
+                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, read the engine log under Engine'
+                  : ` (${d.last_exit.error ?? 'unknown error'}) — read the engine log under Engine`}
               </span>
             )}
           <Button
