@@ -1238,6 +1238,64 @@ def test_reconcile_enqueues_strategist_for_orphaned_pending_review(
         (_top(conn, "alpha"), "Group")]
 
 
+def test_reconcile_pending_review_waits_for_the_group_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """The reconciler's review arm carries the same in-flight-batch
+    suppression the cascade-time fast path now carries — one rule, both
+    roads. While the group's batch still owes a `Theorize`, the review
+    rides that batch's own wake instead of taking a seat beside it."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    _insert_theorize(conn, problem="alpha", group_id=gid)
+
+    reconcile_stuck_states(conn, running=set())
+
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()["c"] == 0
+
+
+def test_pending_review_held_by_a_null_sibling_fires_once_it_resolves(
+    conn: sqlite3.Connection,
+) -> None:
+    """The failure class the suppression could create: a sibling whose
+    outcome never lands would orphan the review forever. It cannot —
+    the same tick that holds the seat re-derives the sibling (class 3
+    re-enqueues the Theorist), and when the request settles the review
+    takes its seat on the next tick."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    d = _insert_theorize(conn, problem="alpha", group_id=gid)
+
+    reconcile_stuck_states(conn, running=set())
+    # premise: the seat is HELD, and the sibling holding it is
+    # re-dispatched on the very same tick — so the hold is bounded by
+    # the sibling's own recovery, never by nothing.
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()["c"] == 0
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+    ).fetchone()["c"] == 1
+
+    conn.execute("UPDATE strategist_decisions SET outcome = 'success'"
+                 " WHERE id = ?", (d,))
+    conn.execute("DELETE FROM queue WHERE kind='Theorist'")
+    conn.commit()
+    reconcile_stuck_states(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        (_top(conn, "alpha"), "Group")]
+
+
 def test_reconcile_pending_review_pure_nl_problem_without_root(
     conn: sqlite3.Connection,
 ) -> None:

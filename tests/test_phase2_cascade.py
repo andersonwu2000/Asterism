@@ -578,6 +578,90 @@ def test_enqueue_strategist_review_dedups_in_flight(
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
 
 
+def _seed_theorize(conn: sqlite3.Connection, *, batch_id: str,
+                   group_id: int, problem: str = "p",
+                   outcome: str | None = None) -> int:
+    """An unanswered theory request riding an Inject batch — the step
+    that made union_closed's batch un-completable on 2026-09-04."""
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, reason, payload,"
+        " batch_id, outcome, actor, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Theorize', ?, 'wall',"
+        "         '{\"objective\":\"O\",\"situation\":\"S\"}', ?, ?,"
+        "         'strategist', ?, ?)",
+        (problem, int(group_id), batch_id, outcome, ts, ts))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_review_fills_the_producing_inject_outcome(
+    conn: sqlite3.Connection,
+) -> None:
+    """A brick handed back for a verdict is a DELIVERY, not work still
+    in flight: the Inject that produced it gets `returned:review`, so
+    the batch can complete once its siblings answer. Left NULL the step
+    read as running forever (union_closed 2026-09-04)."""
+    _insert_goal(conn, slug="main", origin="root")
+    sub = _insert_goal(conn, slug="sub", status="attempting")
+    rid, _sibling = _seed_inject_batch_rows(
+        conn, batch_id="batch-rev", count=2)
+    db.set_inject_decision_produced_goal(conn, rid, sub)
+
+    _enqueue_strategist_review(conn, sub)
+
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (rid,)).fetchone()["outcome"] == "returned:review"
+
+
+def test_review_does_not_complete_a_batch_that_still_owes_a_theorize(
+    conn: sqlite3.Connection,
+) -> None:
+    """The fill obeys the rule it joins: a batch is done when EVERY
+    sibling has an outcome. A review filling one step while the theory
+    layer still owes an answer must not report the batch complete."""
+    _insert_goal(conn, slug="main", origin="root")
+    sub = _insert_goal(conn, slug="sub", status="attempting")
+    gid = int(_top(conn, "p"))
+    [rid] = _seed_inject_batch_rows(conn, batch_id="batch-rev", count=1)
+    conn.execute("UPDATE strategist_decisions SET group_id = ? WHERE id = ?",
+                 (gid, rid))
+    conn.commit()
+    db.set_inject_decision_produced_goal(conn, rid, sub)
+    _seed_theorize(conn, batch_id="batch-rev", group_id=gid)
+
+    _enqueue_strategist_review(conn, sub)
+
+    assert [r["outcome"] for r in conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id = 'batch-rev' ORDER BY id")] == [
+        "returned:review", None]
+    assert db.unacknowledged_inject_batches(conn, "p", gid) == []
+
+
+def test_review_seat_waits_for_the_group_batch_in_flight(
+    conn: sqlite3.Connection,
+) -> None:
+    """T2 gets T0/T1's in-flight-batch suppression. While the group's
+    batch is still working — here an unanswered `Theorize` — the review
+    rides that batch's own wake instead of taking a seat beside it. On
+    union_closed 2026-09-04 the bypass bought five wakes and eight
+    Injects while the wall was with the Theorist."""
+    _insert_goal(conn, slug="main", origin="root")
+    sub = _insert_goal(conn, slug="sub", status="attempting")
+    gid = int(_top(conn, "p"))
+    _seed_theorize(conn, batch_id="batch-rev", group_id=gid)
+
+    _enqueue_strategist_review(conn, sub)
+
+    assert db.get_goal(conn, sub)["status"] == "pending_strategist_review"
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()["n"] == 0
+
+
 def test_enqueue_strategist_review_skips_orphan_guard_when_detached(
     conn: sqlite3.Connection,
 ) -> None:

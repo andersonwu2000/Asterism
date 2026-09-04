@@ -1012,6 +1012,17 @@ def test_strategist_prompts_cover_all_triggers() -> None:
             f"prompt {p} does not mention its trigger_kind {tk!r} in body")
 
 
+def test_pending_review_wake_reads_the_batch_done_prompt() -> None:
+    """`pending_review.md` was a near-mirror of `inject_batch_done.md`,
+    so the two conversations drifted apart sentence by sentence. The
+    review wake now reads the batch-done prompt, exactly as `stall` and
+    `routine_fired` already do; the trigger_kind survives because the
+    DB record and the timeline still distinguish WHY the wake fired."""
+    assert strategist.prompt_kind("pending_review") == "inject_batch_done"
+    assert "pending_review" in strategist.TRIGGER_KINDS
+    assert not (PROMPT_DIR / "strategist" / "pending_review.md").exists()
+
+
 def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     """Each per-trigger prompt must reference at least the decision
     kinds it can legitimately emit. Catches drift where a prompt
