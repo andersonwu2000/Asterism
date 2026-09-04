@@ -170,6 +170,60 @@ def _step_artifact_lines(conn: sqlite3.Connection,
     return out
 
 
+def _step_prose(row, empty: str = "(no brief)") -> str:
+    """The step's own prose. `brief` for every kind that has one — and
+    for a `Theorize`, which has none, the request itself: the objective
+    and the situation are what a reader of this step needs, and they
+    live in the payload because a decision carries one brief column and
+    this kind writes two pieces of prose."""
+    if str(row["decision_kind"]) != "Theorize":
+        return str(row["brief"] or empty).strip()
+    try:
+        payload = json.loads(str(row["payload"]) or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    parts = [f"**objective** — {str(payload.get('objective') or '').strip()}",
+             f"**situation** — {str(payload.get('situation') or '').strip()}"]
+    return "\n\n".join(parts)
+
+
+def _theorize_result_lines(row) -> list[str]:
+    """What the theory layer answered, on the one surface the Strategist
+    reads a finished batch from.
+
+    A `Theorize` step has no landed slug and no produced goal, so every
+    attribution line below it renders nothing — and without this the
+    scoreboard would show `outcome=success` over a blank step, which is
+    the shape a reader treats as "it did not really happen". The two
+    roads say different things and both are actionable: an accepted
+    document names its PATH (read it; it is under the Project's shelf
+    and the next wake's `## Notes on this problem` lists it), a refused
+    one names the refusal and the verdict, which is the evidence the
+    next request on the same wall is written against."""
+    try:
+        payload = json.loads(str(row["payload"]) or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    objective = " ".join(str(payload.get("objective") or "").split())
+    if len(objective) > 300:
+        objective = objective[:300].rstrip() + "…"
+    out = [f"  THEORY request — objective: {objective}"
+           if objective else "  THEORY request"]
+    detail = str(row["outcome_detail"] or "").strip()
+    outcome = str(row["outcome"] or "")
+    if outcome.startswith("success"):
+        out.append(f"  document: `{detail}`" if detail else
+                   "  accepted, but no path was recorded — grep "
+                   "`_docs/agent/` for this group's newest document")
+    elif detail:
+        if len(detail) > 1200:
+            detail = detail[:1200].rstrip() + "…"
+        out.append(f"  {detail}")
+    else:
+        out.append("  no document came back and no reason was recorded")
+    return out
+
+
 def _prose_label(decision_kind: "str | None") -> str:
     """What to CALL a decision's prose when showing it back to the agent.
 
@@ -199,7 +253,7 @@ def _bucket(step: dict) -> str:
     One function so the inline scoreboard and the `BATCHES.md` companion
     cannot disagree about a step — the disease this whole section keeps
     paying for (SP7 2026-09-03)."""
-    if step.get("human_delegate"):
+    if step.get("owner_line"):
         return "owner"
     return "run" if step["running"] else "park"
 
@@ -271,6 +325,8 @@ def _write_batches_companion(conn: sqlite3.Connection,
                 if key == "owner":
                     tgt = (f"{r['produced_ref']}, opened by the owner"
                            " — it runs independently of your line")
+                elif str(r["decision_kind"]) == "Theorize":
+                    tgt = "a question for the theory layer"
                 elif r["target_slug"]:
                     tgt = (f"target `{r['target_slug']}` "
                            f"({r['target_status']})")
@@ -282,7 +338,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
                             f" {r['produced_status']}; yours to reopen,"
                             f" re-dispatch or leave")
                 lines += [f"### {r['decision_kind']} — {tgt}", "",
-                          str(r["brief"] or "(no brief)").strip(), ""]
+                          _step_prose(r), ""]
     for bid in order:
         lines.append(f"## Batch `{bid[:8]}`")
         lines.append("")
@@ -294,7 +350,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
                              f" — `{r['landed_path'] or '?'}`")
             lines += _step_artifact_lines(conn, r)
             lines += ["", f"#### {_prose_label(r['decision_kind'])}", "",
-                      str(r["brief"] or "(none)").strip(), ""]
+                      _step_prose(r, empty="(none)"), ""]
             detail = str(r["outcome_detail"] or "").strip()
             if detail:
                 lines += ["#### worker reply", "", detail, ""]
@@ -450,7 +506,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         f" FROM strategist_decisions d"
         f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
         f" WHERE d.batch_id IN ({placeholders})"
-        f"   AND d.decision_kind IN ('Inject', 'Delegate')"
+        f"   AND d.decision_kind IN {db._BATCH_KINDS_SQL}"
         f" ORDER BY MAX(d.updated_at) OVER (PARTITION BY d.batch_id) DESC,"
         f"          d.batch_id, d.id",
         batch_ids,
@@ -493,6 +549,10 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
+            if str(r["decision_kind"]) == "Theorize":
+                out += _theorize_result_lines(r)
+                out.append("")
+                continue
             if str(r["decision_kind"]) == "Delegate":
                 # v35 — a delegated burden's result is the whole reason
                 # the parent was woken. Without this it reached the

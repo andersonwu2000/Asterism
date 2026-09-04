@@ -2660,3 +2660,160 @@ def test_strict_ancestor_ids_walks_the_chain(conn):
     assert g1 in anc and g2 in anc      # parent AND grandparent
     assert g3 not in anc                # strict
     assert _strict_ancestor_ids(conn, g1) == set()  # top has none
+
+
+# ---------------------------------------------------------------------
+# Theorize (theory_wake_design.md 2) - the hand-off to the theory layer
+# ---------------------------------------------------------------------
+
+_THEORIZE = {
+    "kind": "Theorize",
+    "objective": "S: S implies MAIN, or a proof that no such S exists.",
+    "situation": "The bridge g12 came back returned; PAST 3-4 died there.",
+}
+
+
+def _theorize(**over):
+    return json.dumps({**_THEORIZE, **over})
+
+
+def test_theorize_parses_with_both_fields_in_payload(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Neither field is the `brief` column: a Theorize carries TWO
+    pieces of prose and the column holds one, so both ride the payload
+    - which is also what puts them in front of the judge (the
+    projection renders every payload field)."""
+    d, err = strategist.parse_decision(_theorize())
+    assert err == "" and d is not None
+    assert d.brief is None
+    assert d.payload["objective"].startswith("S:")
+    assert d.payload["situation"].startswith("The bridge")
+
+
+@pytest.mark.parametrize("missing", ["objective", "situation"])
+def test_verify_theorize_requires_both_fields(
+    workspace: Path, conn: sqlite3.Connection, missing: str,
+) -> None:
+    """A request with no objective is a request the Theorist cannot
+    answer, and one with no situation makes it re-derive the record it
+    was supposed to build on."""
+    d, _ = strategist.parse_decision(_theorize(**{missing: "   "}))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert missing in err, err
+    ok, _ = strategist.parse_decision(_theorize())
+    assert strategist.verify_decision(ok, conn, problem="p") == ""
+
+
+def test_verify_theorize_allows_only_one_in_flight_per_group(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """One wall at a time (design 2). The predicate is the DB's own
+    signal - a Theorize row of this group whose outcome is still NULL -
+    not a count of anything the wake said."""
+    from Tooling.state import groups as _groups
+    top = _groups.ensure_top_group(conn, "p")
+    d, _ = strategist.parse_decision(_theorize())
+    assert strategist.verify_decision(
+        d, conn, problem="p", group_id=top) == ""
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace, group_id=top)
+    err = strategist.verify_decision(
+        d, conn, problem="p", group_id=top)
+    assert "in flight" in err, err
+    # a sibling group is not blocked by it
+    kid = _groups.open_group(conn, problem="p", parent_group_id=top,
+                             charter="the sub-charter")
+    assert strategist.verify_decision(
+        d, conn, problem="p", group_id=kid) == ""
+    # and once it settles, the group may ask again
+    conn.execute("UPDATE strategist_decisions SET outcome = 'success'"
+                 " WHERE decision_kind = 'Theorize'")
+    conn.commit()
+    assert strategist.verify_decision(
+        d, conn, problem="p", group_id=top) == ""
+
+
+def test_theorize_is_a_batch_delta_and_an_action_on_a_blocked_root(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Handing the wall to the theory layer IS the state change the
+    anti-idle gates ask for: the stall gate counts it as a delta, and
+    the blocked-root gate counts it as an action."""
+    from Tooling.state import transitions as _t
+    d, _ = strategist.parse_decision(_theorize())
+    assert _t.predicted_batch_delta(conn, [d]) >= 1
+    assert "Theorize" in db.BATCH_DECISION_KINDS
+
+
+def test_commit_theorize_files_an_open_step_and_dispatches_a_theorist(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The row is an OPEN batch step - outcome NULL until the document
+    comes back - and its executor is a Theorist pipeline on this group,
+    the way an Inject's is a Formalizer on this problem."""
+    from Tooling.state import groups as _groups
+    top = _groups.ensure_top_group(conn, "p")
+    d, _ = strategist.parse_decision(_theorize())
+    out = strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace, group_id=top)
+    assert out.batch_id is not None
+    row = conn.execute(
+        "SELECT decision_kind, group_id, outcome, batch_id, payload,"
+        " produced_kind FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()
+    assert row["decision_kind"] == "Theorize"
+    assert row["outcome"] is None
+    assert row["batch_id"] == out.batch_id
+    assert int(row["group_id"]) == top
+    assert row["produced_kind"] == "document"
+    payload = json.loads(row["payload"])
+    assert payload["objective"] == _THEORIZE["objective"]
+    assert payload["situation"] == _THEORIZE["situation"]
+    q = conn.execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"
+        " WHERE kind = 'Theorist'").fetchone()
+    assert q is not None
+    assert (q["target_id"], q["target_kind"]) == (str(top), "Group")
+    assert q["decision_id"] == out.decision_row_id
+
+
+def test_an_open_theorize_is_in_flight_for_the_idle_gates(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A Theorize produces no goal, no strategy and no group, so the
+    three artifact arms cannot see it - and without an arm of its own
+    the group would read as idle while the Theorist works, and T4 would
+    wake it to invent something beside the question it just asked."""
+    from Tooling.state import groups as _groups
+    top = _groups.ensure_top_group(conn, "p")
+    assert not db.has_active_inflight_inject(conn, "p", group_id=top)
+    d, _ = strategist.parse_decision(_theorize())
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace, group_id=top)
+    assert db.has_active_inflight_inject(conn, "p", group_id=top)
+    assert db.has_live_inflight_inject(conn, "p", group_id=top)
+    conn.execute("UPDATE strategist_decisions SET outcome = 'success'"
+                 " WHERE decision_kind = 'Theorize'")
+    conn.commit()
+    assert not db.has_active_inflight_inject(conn, "p", group_id=top)
+
+
+def test_a_theorize_the_owner_filed_does_not_freeze_the_group(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The `_NOT_HUMAN_OPENED` rule, one kind further: a person's
+    request runs BESIDE the group's line, not instead of it, so the
+    group still owes its own next move."""
+    from Tooling.state import groups as _groups
+    from Tooling.pipeline.strategist import commit as _commit
+    top = _groups.ensure_top_group(conn, "p")
+    d, _ = strategist.parse_decision(_theorize())
+    _commit.commit_decisions(
+        [d], conn, problem="p", tick=0, trigger_kind="human",
+        workspace=workspace, group_id=top, actor=_commit.ACTOR_HUMAN)
+    assert not db.has_active_inflight_inject(conn, "p", group_id=top)
+    assert not db.has_live_inflight_inject(conn, "p", group_id=top)

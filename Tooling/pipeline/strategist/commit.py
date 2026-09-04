@@ -269,6 +269,66 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     )
 
 
+def _commit_theorize(decision: Decision, conn: sqlite3.Connection, *,
+                     problem: str, tick: int, trigger_kind: str,
+                     group_id: "int | None",
+                     batch_id_override: "str | None" = None,
+                     step_index: int = 0, batch_size: int = 1,
+                     actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
+    """File a `Theorize` and dispatch the Theorist that answers it
+    (theory_wake_design.md §2-§3).
+
+    The row is an OPEN batch step — `outcome` NULL — for the Inject
+    reason: the answer is not written yet, and a row that settled at
+    commit would close the batch before its work existed, so nothing
+    would ever wake the group with the document. The pipeline fills it
+    on both roads (a path on acceptance, the refusal on three fired
+    rounds) and then rides `maybe_enqueue_inject_batch_done` like any
+    other step.
+
+    Its executor is a WORKER, unlike a Delegate's: the queue row is
+    Group-targeted because the Context the Theorist reads is this
+    group's — the same target shape a Strategist wake takes, for the
+    same reason.
+
+    Nothing is verified here. `verify_decision` owns the fields and the
+    one-per-group rule; the human channel skips it deliberately (§1.3),
+    and a person asking a second question is a person's call.
+    """
+    batch_id = batch_id_override or uuid.uuid4().hex
+    ts = db.now()
+    if group_id is None:
+        group_id = _groups.ensure_top_group(conn, problem)
+    row_payload = {
+        "objective": str(decision.payload.get("objective") or ""),
+        "situation": str(decision.payload.get("situation") or ""),
+        "step_index": step_index,
+        "batch_size": batch_size,
+    }
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, batch_id, produced_kind, outcome, actor,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Theorize', ?, NULL, NULL, ?, ?, ?,"
+        " 'document', NULL, ?, ?, ?)",
+        (problem, tick, trigger_kind, int(group_id), decision.reason,
+         json.dumps(row_payload, ensure_ascii=False), batch_id, actor,
+         ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    db.enqueue(
+        conn, kind="Theorist", target_id=str(int(group_id)),
+        target_kind="Group",
+        priority=_HUMAN_INJECT_PRIORITY if actor == ACTOR_HUMAN else 10,
+        decision_id=row_id, problem=problem,
+    )
+    conn.commit()
+    return CommitOutcome(decision_row_id=row_id, enqueued_forward=False,
+                         final_outcome="committed", batch_id=batch_id,
+                         batch_decision_row_ids=[row_id])
+
+
 def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
                      *, problem: str, tick: int, trigger_kind: str,
                      group_id: "int | None",
@@ -884,6 +944,13 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             step_index=inject_step_index,
             batch_size=inject_batch_size, actor=actor,
         )
+
+    if k == "Theorize":
+        return _commit_theorize(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, group_id=group_id,
+            batch_id_override=inject_batch_id, step_index=inject_step_index,
+            batch_size=inject_batch_size, actor=actor)
 
     if k == "CloseGroup":
         return _commit_close_group(

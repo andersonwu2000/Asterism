@@ -79,6 +79,7 @@ from .problems import (
     queue_has_decision,
     _subtree_has_live_frontier,
     BATCH_DECISION_KINDS,
+    _BATCH_KINDS_SQL,
     propagate_inject_outcome_from_group,
     has_active_inflight_inject,
     has_live_inflight_inject,

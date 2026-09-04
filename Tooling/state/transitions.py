@@ -326,7 +326,13 @@ def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
         k = getattr(d, "kind", None)
         if k in ("Inject", "FetchPaper", "Ingest",
                  "RequestUserAmend", "Delegate", "ReturnToParent",
-                 "CloseGroup"):
+                 "CloseGroup",
+                 # Handing the wall to the theory layer IS a change of
+                 # state: a request goes out, a pipeline runs, and the
+                 # answer comes back as this batch's outcome. A stalled
+                 # group whose honest next move is "the mathematics is
+                 # not there yet" must be able to say so.
+                 "Theorize"):
             # New dispatch (Inject/FetchPaper/Delegate — a delegated
             # burden is work handed to a new group, not a self-edge),
             # or a lifecycle edge (active→ingest_signoff

@@ -566,7 +566,11 @@ def _subtree_has_live_frontier(conn: sqlite3.Connection,
 #: strategy. `null_inject_redispatch_specs` deliberately does NOT use this
 #: set: it re-enqueues a WORKER, and a Delegate has none — its executor is
 #: the group's own Strategist seat.
-BATCH_DECISION_KINDS = ("Inject", "Delegate")
+#:
+#: `Theorize` (v52) produces a DOCUMENT and none of those three columns,
+#: which is why the two in-flight predicates below need an arm of their
+#: own for it: an artifact join cannot see a row that joins nothing.
+BATCH_DECISION_KINDS = ("Inject", "Delegate", "Theorize")
 _BATCH_KINDS_SQL = "(" + ", ".join(
     f"'{k}'" for k in BATCH_DECISION_KINDS) + ")"
 
@@ -655,6 +659,33 @@ def _group_args(problem: str, group_id: "int | None") -> tuple:
 _NOT_HUMAN_OPENED = " AND COALESCE(sd.actor, '') <> 'human'"
 
 
+def _theorize_in_flight(conn: sqlite3.Connection, problem: str, *,
+                        group_id: "int | None" = None) -> bool:
+    """An unanswered `Theorize` of this group — the theory layer is
+    working and the group is waiting on it.
+
+    `outcome IS NULL` is the WHOLE predicate here, and that is safe for
+    exactly one reason: unlike a goal or a strategy, a theory request
+    has no parked state. The Theorist pipeline settles the row on both
+    roads (accepted lands a path, three fired rounds land the refusal),
+    so a NULL outcome means the document is still being written or
+    reviewed — never "the Strategist parked what it produced", which is
+    the reading that made `outcome IS NULL` a lie for the other kinds.
+
+    `_NOT_HUMAN_OPENED`: a request the OWNER filed runs beside this
+    group's line, not instead of it (the 2026-09-03 ruling, one kind
+    further). The answer still reaches the group — the pipeline fills
+    this row's outcome and wakes it exactly as a machine request does —
+    what changes is only the waiting."""
+    return conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " WHERE sd.problem = ? AND sd.decision_kind = 'Theorize'"
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        + _NOT_HUMAN_OPENED + _group_clause(group_id) + " LIMIT 1",
+        _group_args(problem, group_id),
+    ).fetchone() is not None
+
+
 def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
                                group_id: "int | None" = None) -> bool:
     """True iff `problem` has a NULL-outcome batch decision whose produced
@@ -705,6 +736,8 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
     branches now recurse: `attempting` counts only with a live frontier.
     This only LOOSENS suppression — every previously-inactive state stays
     inactive."""
+    if _theorize_in_flight(conn, problem, group_id=group_id):
+        return True
     for row in conn.execute(
         "SELECT g.id AS gid, g.status AS st FROM strategist_decisions sd"
         " JOIN goals g ON g.id = sd.produced_goal_id"
@@ -790,6 +823,8 @@ def has_live_inflight_inject(conn: sqlite3.Connection, problem: str, *,
     (`_NOT_HUMAN_OPENED`): a group the OWNER opened moves without this
     Strategist, but it did not take this Strategist's burden with it, so
     it is not an escape hatch for a `Noop` here."""
+    if _theorize_in_flight(conn, problem, group_id=group_id):
+        return True
     if conn.execute(
         "SELECT 1 FROM strategist_decisions sd"
         " JOIN groups gr ON gr.id = sd.produced_group_id"
@@ -934,11 +969,15 @@ def open_batch_steps(conn: sqlite3.Connection,
     product is shelved / stalled / closed — no worker exists and only
     the Strategist can move it).
 
-    `human_delegate` is a THIRD reading of a running step, not a fourth
+    `owner_line` is a THIRD reading of a running step, not a fourth
     state: the work moves, but it moves on the OWNER's line, not the
     reading group's (`_NOT_HUMAN_OPENED`). Kept as a flag rather than
     folded into `running` because the two surfaces need both halves —
-    "it is not parked" and "it is not yours to wait for".
+    "it is not parked" and "it is not yours to wait for". Same question
+    the in-flight predicates ask, so it is answered the same way: a
+    step a PERSON filed that hands over no burden — a Delegate that
+    opened a group beside this line, or a Theorize that asked the
+    theory layer a question of the owner's own.
 
     Problem-wide on purpose: the batch surfaces show a group its own
     hashes and a COUNT of the others', so the caller filters on `grp`.
@@ -967,8 +1006,10 @@ def open_batch_steps(conn: sqlite3.Connection,
             "produced_at": None if at is None else str(at),
             "updated_at": str(r["updated_at"] or ""),
             "running": _step_is_running(conn, r),
-            "human_delegate": (r["produced_group_id"] is not None
-                               and str(r["actor"] or "") == "human"),
+            "owner_line": (
+                str(r["actor"] or "") == "human"
+                and (r["produced_group_id"] is not None
+                     or str(r["decision_kind"]) == "Theorize")),
         })
     steps.sort(key=lambda s: s["updated_at"], reverse=True)
     return steps

@@ -433,6 +433,51 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 "proposal.md instead (it is optional, comes after "
                 "`## Roadmap`, and workers receive it verbatim)")
 
+    if k == "Theorize":
+        # theory_wake_design.md §2. Two fields, and each one is a
+        # question the author cannot answer without: the objective says
+        # what would SUFFICE (a statement whose proof or refutation
+        # moves the claim, or the wall to be crossed), the situation
+        # says where the record already stands. A request without the
+        # second makes the Theorist re-derive what is landed and hand
+        # back the record in new words — the failure the reviewer's
+        # first criterion exists to catch, bought a whole pipeline
+        # earlier and cheaper here.
+        for field, what in (
+                ("objective", "the statement whose proof or refutation "
+                              "would move the claim, or the wall to be "
+                              "crossed"),
+                ("situation", "where the record stands — what has "
+                              "landed, what died and why, what is "
+                              "parked, with pointers (goal ids, dead "
+                              "attempts, PAST lines)")):
+            v = decision.payload.get(field)
+            if not isinstance(v, str) or not v.strip():
+                return (f"Theorize requires non-empty `{field}` "
+                        f"(string): {what}")
+        # ONE wall at a time (design §2). Not a style rule: the theory
+        # layer is a seat pair with its own quota, and a group that can
+        # ask three questions at once spends the layer on breadth while
+        # the wall it is actually stopped at waits its turn.
+        me = _authoring_group(conn, problem, group_id)
+        open_row = conn.execute(
+            "SELECT id FROM strategist_decisions"
+            " WHERE problem = ? AND decision_kind = 'Theorize'"
+            "   AND outcome IS NULL"
+            + ("" if me is None else " AND group_id = ?")
+            + " LIMIT 1",
+            (problem,) if me is None else (problem, int(me["id"])),
+        ).fetchone()
+        if open_row is not None:
+            return (
+                f"a Theorize of yours is already in flight (decision "
+                f"#{int(open_row['id'])}) — one per group at a time. "
+                f"Its document comes back as a batch outcome; wait for "
+                f"it, or ask a different question next batch. If the "
+                f"wall has moved since, that is what the NEXT request's "
+                f"`situation` is for.")
+        return ""
+
     if k == "ConfirmShelve":
         if decision.target_id is None:
             return "ConfirmShelve requires target_goal_id"
