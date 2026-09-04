@@ -83,12 +83,29 @@ export function GoalCommandSheet({
 
   return (
     <div className="shrink-0 border-t border-edge px-4 py-3">
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] tracking-wider text-ink-faint uppercase">
+          act on this goal
+        </span>
+        <button
+          className="ml-auto cursor-pointer rounded-md px-1.5 text-[13px] text-ink-faint transition-colors hover:text-ink"
+          onClick={onClose}
+          title="close"
+          aria-label="close the command sheet"
+        >
+          ×
+        </button>
+      </div>
+      {/* one picker shape in this file: a column of full-width rows,
+          the same as the signal sheet's. Four chips wrapped to two
+          rows in a 24rem panel — three on one line and an orphan
+          under them, which reads as two groups of choices. */}
+      <div className="mt-2 flex flex-col gap-0.5">
         {GOAL_COMMANDS.map((k) => (
           <button
             key={k}
-            className={`cursor-pointer rounded-md px-2 py-0.5 text-[11px] transition-colors ${
-              kind === k ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:text-ink-dim'
+            className={`cursor-pointer rounded-md px-2 py-1 text-left text-[11px] transition-colors ${
+              kind === k ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
             }`}
             aria-pressed={kind === k}
             title={k}
@@ -100,14 +117,6 @@ export function GoalCommandSheet({
             {commandTitle(k)}
           </button>
         ))}
-        <button
-          className="ml-auto cursor-pointer rounded-md px-1.5 text-[13px] text-ink-faint transition-colors hover:text-ink"
-          onClick={onClose}
-          title="close"
-          aria-label="close the command sheet"
-        >
-          ×
-        </button>
       </div>
 
       <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">{COMMAND_NOTE[kind]}</p>
