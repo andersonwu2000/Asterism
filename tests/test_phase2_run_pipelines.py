@@ -122,10 +122,11 @@ def test_run_strategist_inject_enqueues_forward(
             (kw["attempts_dir"] / "verdict.json").write_text(
                 json.dumps({"criteria": {
                     **{str(i): "clear: holds" for i in range(1, 6)},
-                    # The naming criterion is read, never written as a
-                    # number: it moved 1 → 2 on 2026-08-13.
-                    _adv.NAMING_CRITERION:
-                        "clear: the closer entry — nothing stands"},
+                    # The naming criteria are read, never written as
+                    # numbers: they moved 1 → 2 on 2026-08-13, and v6
+                    # (d5916446) made it two of them.
+                    **{n: "clear: the closer entry — nothing stands"
+                       for n in _adv.NAMING_CRITERIA}},
                             "reservations": []}),
                 encoding="utf-8")
             return 0

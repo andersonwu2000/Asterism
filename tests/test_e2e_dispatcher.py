@@ -190,9 +190,10 @@ def test_e2e_root_proved_through_dispatcher(
                 _json.dumps({"criteria": {
                     **{str(i): "clear: holds" for i in range(1, 6)},
                     # Read, never written as a literal: the naming
-                    # criterion moved 1 → 2 on 2026-08-13.
-                    _adversary.NAMING_CRITERION:
-                        "clear: the closer entry — nothing stands"},
+                    # criterion moved 1 → 2 on 2026-08-13, and v6
+                    # (d5916446) made it two of them.
+                    **{n: "clear: the closer entry — nothing stands"
+                       for n in _adversary.NAMING_CRITERIA}},
                              "reservations": []}),
                 encoding="utf-8")
         return 0

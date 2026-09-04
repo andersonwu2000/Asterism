@@ -213,18 +213,24 @@ def test_the_bare_clear_refusal_quotes_the_prompts_own_template() -> None:
     for. Written as a literal it kept describing the pre-reword
     criterion, and a gate naming an action the prompt no longer
     describes is a gate the agent cannot obey (memory:
-    `gate_must_name_a_reachable_action`)."""
+    `gate_must_name_a_reachable_action`).
+
+    Per naming criterion, since v6: the two ask for different namings
+    (a consumption chain, a Relation and its wall), so one shared way
+    out would send half the refusals to the wrong job."""
     import json
-    shape = adversary.naming_clear_shape()
-    assert shape in TEXT, (
-        f"`naming_clear_shape()` is not quoting the prompt: {shape!r} "
-        f"does not appear in adversary.md")
-    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
-    bare[adversary.NAMING_CRITERION] = "clear"
-    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None
-    assert shape in err, (
-        f"the refusal must show the rubric's own way out; got {err!r}")
+    for n in sorted(_naming_rules()):
+        shape = adversary.naming_clear_shape(n)
+        assert shape in TEXT, (
+            f"`naming_clear_shape({n!r})` is not quoting the prompt: "
+            f"{shape!r} does not appear in adversary.md")
+        bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+        bare[n] = "clear"
+        v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert v is None
+        assert shape in err, (
+            f"the refusal on criterion {n} must show the rubric's own "
+            f"way out; got {err!r}")
 
 
 def test_the_refusal_follows_the_rubric_when_it_is_reworded(
@@ -232,33 +238,37 @@ def test_the_refusal_follows_the_rubric_when_it_is_reworded(
     """The one that proves DERIVATION rather than coincidence: reword
     the template and the way out must reword with it. A literal passes
     the test above on the day it is written and fails every reader
-    afterwards."""
+    afterwards. Each naming criterion is reworded on its own, so a
+    refusal that quotes SOME naming entry rather than the one it is
+    refusing does not pass."""
     import json
-    reworded = TEXT.replace(
-        _template_naming_entry(adversary.NAMING_CRITERION),
-        "clear: <the reworded first half> — <the reworded second half>")
-    monkeypatch.setattr(adversary, "_prompt_text", lambda: reworded)
-    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
-    bare[adversary.NAMING_CRITERION] = "clear"
-    _v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert "<the reworded first half>" in err, (
-        f"the refusal ignored the rubric it is supposed to quote: {err!r}")
+    for n in sorted(_naming_rules()):
+        marker = f"clear: <the reworded naming for criterion {n}>"
+        reworded = TEXT.replace(_template_naming_entry(n), marker)
+        monkeypatch.setattr(adversary, "_prompt_text",
+                            lambda text=reworded: text)
+        bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+        bare[n] = "clear"
+        _v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert marker in err, (
+            f"the refusal on criterion {n} ignored the rubric it is "
+            f"supposed to quote: {err!r}")
 
 
 def test_the_parser_actually_refuses_a_bare_clear_there() -> None:
     """Behavioural, so the constant cannot drift away from the code that
-    reads it."""
+    reads it — on every criterion the constant lists."""
     import json
-    n = adversary.NAMING_CRITERION
-    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
-    bare[n] = "clear"
-    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None and f"criterion {n}" in (err or ""), (
-        f"a bare clear on {n} must be refused; got {err!r}")
-    named = dict(bare)
-    named[n] = "clear: the closure entry — two lemmas still stand"
-    v, err = adversary.parse_verdict(json.dumps({"criteria": named}))
-    assert v is not None, f"a NAMED clear on {n} must be accepted: {err}"
+    for n in adversary.NAMING_CRITERIA:
+        bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+        bare[n] = "clear"
+        v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert v is None and f"criterion {n}" in (err or ""), (
+            f"a bare clear on {n} must be refused; got {err!r}")
+        named = dict(bare)
+        named[n] = "clear: the closure entry — two lemmas still stand"
+        v, err = adversary.parse_verdict(json.dumps({"criteria": named}))
+        assert v is not None, f"a NAMED clear on {n} must be accepted: {err}"
 
 
 # ─── fired vs reservation, and the verified-record clause ────────────
@@ -388,7 +398,8 @@ def test_every_criterion_refuses_a_bare_clear() -> None:
     import json
     for k in adversary.CRITERIA_KEYS:
         crit = {c: "clear: holds here" for c in adversary.CRITERIA_KEYS}
-        crit[adversary.NAMING_CRITERION] = "clear: entry — distance"
+        for n in adversary.NAMING_CRITERIA:
+            crit[n] = "clear: entry — distance"
         crit[k] = "clear"
         v, err = adversary.parse_verdict(json.dumps({"criteria": crit}))
         assert v is None, f"bare clear on {k} must be refused"

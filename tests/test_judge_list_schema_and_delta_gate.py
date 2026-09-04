@@ -15,8 +15,8 @@ from Tooling.pipeline import adversary
 def _verdict(criteria):
     base = {k: ["clear: holds for this batch"]
             for k in adversary.CRITERIA_KEYS}
-    base[adversary.NAMING_CRITERION] = [
-        "clear: the closure entry — two lemmas still stand"]
+    for n in adversary.NAMING_CRITERIA:
+        base[n] = ["clear: the closure entry — two lemmas still stand"]
     base.update(criteria)
     return json.dumps({"criteria": base})
 
@@ -46,7 +46,8 @@ def test_clear_takes_exactly_one_entry() -> None:
 
 def test_the_legacy_single_string_form_still_parses() -> None:
     base = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
-    base[adversary.NAMING_CRITERION] = "clear: the entry — one gap"
+    for n in adversary.NAMING_CRITERIA:
+        base[n] = "clear: the entry — one gap"
     base["1"] = "fired: a load-bearing objection"
     v, err = adversary.parse_verdict(json.dumps({"criteria": base}))
     assert v is not None, err
@@ -54,9 +55,9 @@ def test_the_legacy_single_string_form_still_parses() -> None:
 
 
 def test_the_naming_rule_survives_the_list_form() -> None:
-    v, err = adversary.parse_verdict(_verdict(
-        {adversary.NAMING_CRITERION: ["clear"]}))
-    assert v is None and adversary.NAMING_CRITERION in err
+    for n in adversary.NAMING_CRITERIA:
+        v, err = adversary.parse_verdict(_verdict({n: ["clear"]}))
+        assert v is None and n in err
 
 
 

@@ -160,16 +160,16 @@ def test_the_verifier_no_longer_reads_the_brief_at_all(tmp_path: Path):
 # ------------------------------------------------- verdict contract
 
 def _criteria(**fired: str) -> dict:
-    """All-clear criteria dict, with named criteria fired. The naming
+    """All-clear criteria dict, with named criteria fired. Every naming
     criterion carries its mandatory naming (#159: a bare clear there is
-    malformed). Read from `adversary.NAMING_CRITERION` rather than
-    written as "1": the criteria were renumbered on 2026-08-13 and a
-    hard-coded number here would have made six tests assert yesterday's
-    contract."""
+    malformed). Read from `adversary.NAMING_CRITERIA` rather than
+    written as "1": the criteria were renumbered on 2026-08-13 and v6
+    (d5916446) hung a naming on a second one, and a hard-coded number
+    here would have made six tests assert yesterday's contract."""
     c = {k: "clear: holds for this batch"
          for k in adversary.CRITERIA_KEYS}
-    c[adversary.NAMING_CRITERION] = (
-        "clear: the closer entry — one prerequisite stands")
+    for n in adversary.NAMING_CRITERIA:
+        c[n] = "clear: the closer entry — one prerequisite stands"
     for k, reason in fired.items():
         c[k.lstrip("c")] = f"fired: {reason}"
     return c
@@ -207,22 +207,24 @@ def test_criterion_one_never_takes_a_bare_clear():
     went five-wide (calibration survey: 70-94% of clears on c3/c4/c5
     were the bare word, and reasons appear only where the parser
     demands them) — every criterion now refuses a bare clear; the
-    naming criterion keeps its own message."""
-    n = adversary.NAMING_CRITERION
+    naming criterion keeps its own message (v6, d5916446: there are two
+    of them — the consumption chain and the Relation with its wall)."""
     bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
-    bare[n] = "clear"
-    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None and f"criterion {n}" in err and "naming" in err
-    # Punctuation-only annotation is still bare.
-    bare[n] = "clear: "
-    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None and f"criterion {n}" in err
-    # A real naming passes.
-    bare[n] = "clear: entry closing the main claim — two steps stand"
-    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert err == "" and v["verdict"] == "pass"
+    for n in adversary.NAMING_CRITERIA:
+        bare[n] = "clear"
+        v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert v is None and f"criterion {n}" in err and "naming" in err
+        # Punctuation-only annotation is still bare.
+        bare[n] = "clear: "
+        v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert v is None and f"criterion {n}" in err
+        # A real naming passes.
+        bare[n] = "clear: entry closing the main claim — two steps stand"
+        v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+        assert err == "" and v["verdict"] == "pass"
     # And a bare clear on any OTHER criterion is refused too (08-29).
-    other = next(k for k in adversary.CRITERIA_KEYS if k != n)
+    other = next(k for k in adversary.CRITERIA_KEYS
+                 if k not in adversary.NAMING_CRITERIA)
     bare[other] = "clear"
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
     assert v is None and f"criterion {other}" in err

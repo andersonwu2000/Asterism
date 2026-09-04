@@ -430,12 +430,19 @@ def build_projection(*, round_no: int, attempts_dir: Path,
 
 CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 
-#: The criterion whose `clear` must carry its naming (see the check in
+#: The criteria whose `clear` must carry its naming (see the check in
 #: `parse_verdict`). Held to `Tooling/prompts/adversary/adversary.md` by
 #: `tests/test_adversary_criteria_contract.py`: the prompt states the
 #: rule, this enforces it, and a judge that obeys a prompt its verifier
 #: disagrees with loses the round.
-NAMING_CRITERION = "2"
+#:
+#: A SET, not a number, since v6 (d5916446): the rubric hangs a naming
+#: on criterion 1 (each NOW Inject's consumption chain and endpoint)
+#: and on criterion 2 (the Relation's argument and the handling of the
+#: wall). Each has its own way out, quoted from its own template entry
+#: — one shared shape would answer half the refusals with the wrong
+#: job.
+NAMING_CRITERIA = ("1", "2")
 
 
 def _prompt_text() -> str:
@@ -486,22 +493,23 @@ _NAMING_SHAPE_FALLBACK = ("clear: <the naming this criterion's output "
                           "template asks for>")
 
 
-def naming_clear_shape() -> str:
-    """The `clear: …` entry the output template shows for the naming
-    criterion, quoted from the prompt itself.
+def naming_clear_shape(criterion: str) -> str:
+    """The `clear: …` entry the output template shows for `criterion`,
+    quoted from the prompt itself.
 
-    `parse_verdict` refuses a bare `clear` there, and that refusal is
-    the judge's only instruction at the moment its verdict is thrown
-    away — so the way out has to be the shape the CURRENT rubric asks
-    for. Written as a literal it kept saying "the entry that closes the
-    MAIN claim" for exactly as long as it took someone to reword the
-    criterion, and a gate naming an action the prompt no longer
-    describes is the class of gate an agent cannot obey."""
+    `parse_verdict` refuses a bare `clear` on every naming criterion,
+    and that refusal is the judge's only instruction at the moment its
+    verdict is thrown away — so the way out has to be the shape the
+    CURRENT rubric asks for, on the criterion being refused. Written as
+    a literal it kept saying "the entry that closes the MAIN claim" for
+    exactly as long as it took someone to reword the criterion, and a
+    gate naming an action the prompt no longer describes is the class
+    of gate an agent cannot obey."""
     text = _prompt_text()
     if "```json" not in text:
         return _NAMING_SHAPE_FALLBACK
     tmpl = text.split("```json", 1)[1].split("```", 1)[0]
-    m = re.search(r'"' + re.escape(NAMING_CRITERION)
+    m = re.search(r'"' + re.escape(criterion)
                   + r'"\s*:\s*\[\s*"(clear:[^"]*)"', tmpl)
     return m.group(1).strip() if m else _NAMING_SHAPE_FALLBACK
 
@@ -609,22 +617,25 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
             # on the one criterion built to catch a main claim orbiting
             # untouched. Mechanical, not honor-system.
             #
-            # `NAMING_CRITERION` is the ENFORCEMENT half of a prompt
+            # `NAMING_CRITERIA` is the ENFORCEMENT half of a prompt
             # rule — the prompt says whose reason IS the naming — and
             # the two must move together or a judge that obeys the
             # prompt has its verdict refused (the 2026-08-13 renumber
-            # nearly shipped exactly that).
+            # nearly shipped exactly that), or names nothing on a
+            # criterion the prompt tells it to name (v6, d5916446,
+            # added a second naming criterion).
             # `test_adversary_criteria_contract.py` holds them level.
             #
             # WHAT that naming must say is not spelled out here: it is
-            # quoted from the rubric's own output template, so a
-            # reworded criterion rewords its own way out.
+            # quoted from the rubric's own output template FOR THIS
+            # criterion, so a reworded criterion rewords its own way
+            # out and no refusal points at the other one's job.
             rest = s[len("clear"):].strip(" -—–:")
-            if k == NAMING_CRITERION and not rest:
+            if k in NAMING_CRITERIA and not rest:
                 return None, (
-                    f"criterion {NAMING_CRITERION} never takes a bare "
+                    f"criterion {k} never takes a bare "
                     f"\"clear\" — its judgment IS the naming: "
-                    f"`\"{naming_clear_shape()}\"`")
+                    f"`\"{naming_clear_shape(k)}\"`")
             if not rest:
                 # Calibration survey 2026-08-29: 70-94% of clears on
                 # criteria 3/4/5 were the bare word, and the survey's
