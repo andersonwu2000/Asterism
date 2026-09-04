@@ -12,7 +12,9 @@ import pytest
 from Tooling.core import dispatcher
 from Tooling.state import db
 
-_NL_KINDS = {"Strategist", "Scholar"}
+# Theorist joined 2026-09-04 (theory_wake_design.md §3): an NL wake
+# like the Strategist — no Lean file open, so no warm gateway slot.
+_NL_KINDS = {"Strategist", "Scholar", "Theorist"}
 
 
 @pytest.fixture

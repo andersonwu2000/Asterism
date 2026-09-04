@@ -2077,7 +2077,7 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
               for t in ("strategist_decisions", "queue", "pipelines",
                         "programme_revisions")}
     db_migrations.apply(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 51  # 50→51 2026-09-04 v51: the goal status `dead` retired
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 52  # 50→51 2026-09-04 v51: the goal status `dead` retired
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
              for t in before}
     assert before == after
@@ -2101,7 +2101,7 @@ def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
     """
     conn = _v34_db(tmp_path)
     db.init_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 51  # 50→51 2026-09-04 v51: the goal status `dead` retired
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 52  # 50→51 2026-09-04 v51: the goal status `dead` retired
     cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     assert {"group_id", "produced_group_id"} <= cols

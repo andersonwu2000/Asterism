@@ -332,6 +332,9 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- v23 — `kind` adds 'Scholar' (paper pipeline v2: citation resolution +
 -- fetch worker; docs/internal/archive/paper_pipeline_design.md D11).
 -- v33 — `kind` adds 'Formalizer' (merged worker, update_plan_2026_07 #1).
+-- v52 — `kind` adds 'Theorist' (theory_wake_design.md §3): the theory
+-- layer's own pipeline, dispatched from a `Theorize` decision the way a
+-- Formalizer is dispatched from an Inject. Group-targeted, NL-only.
 -- 'Builder'/'Backward'/'Forward' stay VALID for historical rows — never
 -- rewrite history; archaeology keys on these strings.
 CREATE TABLE IF NOT EXISTS pipelines (
@@ -339,7 +342,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
                                    'Strategist','Forward','Librarian',
-                                   'Scholar','Formalizer')),
+                                   'Scholar','Formalizer','Theorist')),
     target_id   TEXT NOT NULL,
     -- 'Group' (v35): a Strategist wake belongs to ONE discussion group, so
     -- the seat is per group, not per problem. Pre-v35 Strategist rows are
@@ -381,7 +384,7 @@ CREATE TABLE IF NOT EXISTS queue (
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
                                    'Strategist','Forward','Librarian',
-                                   'Scholar','Formalizer')),
+                                   'Scholar','Formalizer','Theorist')),
     target_id   TEXT NOT NULL,
     -- 'Group' (v35): see the pipelines note — one Strategist seat per
     -- discussion group is what lets sibling groups run concurrently.
@@ -421,7 +424,8 @@ CREATE TABLE IF NOT EXISTS problem_papers (
     -- 'scholar' stays for historical rows; 'agent' is the
     -- in-process (shim) path where no ASTERISM_SEAT env exists.
     origin     TEXT NOT NULL CHECK(origin IN ('manifest','scholar','user','agent',
-        'strategist','adversary','formalizer','librarian','presearch')),
+        'strategist','adversary','formalizer','librarian',
+        'presearch','theorist')),
     reason     TEXT NULL DEFAULT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (problem, paper_id)
@@ -529,13 +533,21 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- which has no parent to return to; that is the
                             -- wall keeping the difficulty escape hatch away
                             -- from the human channel.
+                            -- 'Theorize' (v52, theory_wake_design.md §2):
+                            -- hand ONE load-bearing unknown to the theory
+                            -- layer. Its own kind for the Delegate reasons
+                            -- one level over: its produced artifact is a
+                            -- DOCUMENT (`theory_documents`), its verify asks
+                            -- different questions (objective / situation,
+                            -- one in flight per group), and its executor is
+                            -- a pipeline, not a group's seat.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
                                    'RequestUserAmend','Noop','MarkDeliverable',
                                    'Ingest','FetchPaper','AttemptDisproof',
                                    'Delegate','ReturnToParent',
-                                   'CloseGroup')),
+                                   'CloseGroup','Theorize')),
     -- v35 — which group AUTHORED this decision. Backfilled to the problem's
     -- top group for every pre-v35 row. SET NULL on delete: see the note on
     -- `groups.opened_by` — the two tables reference each other.
@@ -650,6 +662,46 @@ CREATE TABLE IF NOT EXISTS library_decls (
 -- `problem\x1ffile` (per-file migrate/cleanup unit). Pure new table → a plain
 -- CREATE TABLE IF NOT EXISTS suffices for fresh + existing DBs (no user_version
 -- bump; init_schema re-runs SCHEMA each start).
+-- theory_documents (v52, theory_wake_design.md §4) — what the theory
+-- layer produced, one row per Theorist pipeline that reached a verdict.
+-- The Theorist's product is a DOCUMENT, the one artifact the decision
+-- log had no table for: a goal has `goals`, a group has `groups`, and a
+-- theory document had only a path in a payload nobody could query.
+--
+-- A REJECTED run keeps its row. The document itself stays in the
+-- attempts dir (it did not earn a place in the Project's shelf), but
+-- the request, the round count and the last verdict are the evidence
+-- for why the answer was refused — and the next `Theorize` on the same
+-- wall is written by a Strategist reading exactly that. `path` is NULL
+-- for those; `status` is the review's verdict, never a workflow state.
+CREATE TABLE IF NOT EXISTS theory_documents (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem      TEXT NOT NULL REFERENCES problems(name),
+    -- The group whose charter the document was written for. SET NULL on
+    -- delete, the `strategist_decisions.group_id` rule: the two tables
+    -- reference each other through the decision row.
+    group_id     INTEGER NULL DEFAULT NULL
+                     REFERENCES groups(id) ON DELETE SET NULL,
+    pipeline_id  TEXT NULL DEFAULT NULL,
+    decision_id  INTEGER NULL DEFAULT NULL
+                     REFERENCES strategist_decisions(id),
+    objective    TEXT NOT NULL,
+    situation    TEXT NOT NULL,
+    -- Workspace-relative, under `Problems/<project>/_docs/agent/`.
+    -- NULL exactly when `status = 'rejected'`.
+    path         TEXT NULL DEFAULT NULL,
+    status       TEXT NOT NULL CHECK(status IN ('accepted','rejected')),
+    -- Author turns spent: 1 = accepted on the cold wake, N = N-1
+    -- revisions bought by a fired verdict.
+    rounds       INTEGER NOT NULL DEFAULT 0,
+    -- The LAST verdict, verbatim JSON. On a rejection it is the ruling
+    -- the Strategist is told to re-read its request against.
+    verdict_json TEXT NULL DEFAULT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_theory_docs_problem
+    ON theory_documents(problem, created_at);
+
 -- routine_verdicts — the routine wake as an AUDIT (owner design
 -- 2026-08-30). One row per routine wake: the verdict.json it handed in,
 -- its fired findings, and the roots it never ruled on. A fired row
@@ -846,7 +898,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 51
+_CURRENT_USER_VERSION = 52
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

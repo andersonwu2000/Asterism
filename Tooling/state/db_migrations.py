@@ -1077,6 +1077,19 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v51(conn)
         conn.execute("PRAGMA user_version = 51")
         conn.commit()
+    if v < 52:
+        # v52 — the Theorist layer (theory_wake_design.md §4). Four
+        # CHECK widenings, one step: a `Theorize` decision, the
+        # `Theorist` pipeline and queue row it dispatches, the human
+        # `Theory` command that can file one, and the papers the author
+        # binds. They ride together because they are one feature — a
+        # disk that took three of the four would accept the decision and
+        # then die at dispatch. `theory_documents` arrives through the
+        # SCHEMA's own CREATE TABLE IF NOT EXISTS, which `init_schema`
+        # runs before this ladder.
+        _migrate_to_v52(conn)
+        conn.execute("PRAGMA user_version = 52")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -3170,6 +3183,112 @@ def _migrate_to_v45(conn: sqlite3.Connection) -> None:
                   flush=True)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+#: v52's four widenings: table -> (the token in its live DDL, what it
+#: becomes). ONE table per row and one token per table — the v49
+#: channel, four times. Each edit is on the table's OWN sqlite_master
+#: text rather than a literal re-declaration here, so every UNIQUE,
+#: index and foreign key the table carries survives by construction and
+#: a fresh disk ends byte-identical to a migrated one.
+#: v52's five widenings: table -> (the regex that finds the CHECK's
+#: LAST member and its closing paren, what it becomes).
+#:
+#: A regex and not a literal, because the same CHECK is spelled with
+#: different line breaks depending on which earlier rebuild last wrote
+#: the table: a v33-vintage `pipelines` carries `'Scholar',
+
+#: 'Formalizer'))`, a fresh one carries `'Scholar','Formalizer','...')`.
+#: The stable fact is that the new value goes after the CHECK's last
+#: member, so the pattern is that member followed by its closing paren —
+#: which is also what keeps it off the COLUMN COMMENTS that name the
+#: same values above the constraint (`'CloseGroup' (v35): ...` is
+#: followed by `(`, never by `)`).
+_V52_WIDENINGS: "tuple[tuple[str, str, str, str], ...]" = (
+    ("strategist_decisions", "decision_kind",
+     r"'CloseGroup'\s*\)", "'CloseGroup','Theorize')"),
+    ("pipelines", "kind", r"'Formalizer'\s*\)", "'Formalizer','Theorist')"),
+    ("queue", "kind", r"'Formalizer'\s*\)", "'Formalizer','Theorist')"),
+    ("human_commands", "kind", r"'Signal'\s*\)", "'Signal','Theory')"),
+    ("problem_papers", "origin",
+     r"'presearch'\s*\)", "'presearch','theorist')"),
+)
+
+
+def _migrate_to_v52(conn: sqlite3.Connection) -> None:
+    """The Theorist layer's CHECK widenings (theory_wake_design.md §4).
+
+    SQLite widens no CHECK in place, so each is a table rebuild — the
+    v49 channel, five times: the edit is on the table's OWN sqlite_master
+    text rather than a literal re-declaration here, so every UNIQUE,
+    index and foreign key survives by construction and a fresh disk ends
+    with the same constraint a migrated one does.
+
+    The ROWS ARE CARRIED for all five. `queue` and `human_commands` are
+    live state — a command a person queued seconds before a version step
+    is still their command, and a queued worker is still owed its spawn
+    — and the other three are the record itself.
+
+    Self-healing and idempotent: a table already carrying the value is
+    skipped, and a `_tmp` left by an interrupted attempt is dropped
+    before the retry. A table whose CHECK the pattern cannot find stops
+    the step: the disk is not the shape this edit was written against,
+    and guessing is the one thing a migration must never do.
+
+    `theory_documents` is NOT here — it is a new table, so the SCHEMA's
+    own `CREATE TABLE IF NOT EXISTS` (run by `init_schema` before this
+    ladder) covers the fresh disk and the old one alike.
+    """
+    for table, column, pattern, repl in _V52_WIDENINGS:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = ?", (table,)).fetchone()
+        sql = (row["sql"] or "") if row is not None else ""
+        if not sql:
+            # A disk that never minted it (a v48 that died before its
+            # CREATE): creation is that step's job, not this one's.
+            continue
+        new_sql, n = re.subn(pattern, repl, sql, count=1)
+        if not n:
+            # Already widened is the ONLY other legal reading, and it is
+            # read off the CONSTRAINT, not off the presence of the new
+            # value anywhere in the text: every one of these columns
+            # names its own values in the comment block above the CHECK,
+            # so "the word is in the DDL" would skip a table whose
+            # constraint had not moved at all.
+            if repl in sql:
+                continue
+            if not re.search(rf"CHECK\s*\(\s*{column}\s+IN", sql):
+                # The column carries NO value list at all — an old
+                # vintage, or a table an earlier step rebuilt without
+                # one. There is nothing to widen: the new value is
+                # already accepted, and rebuilding to add a constraint
+                # nobody asked for would be this step inventing one.
+                continue
+            raise RuntimeError(
+                f"v52: {table}.{column} has a CHECK this edit cannot "
+                f"end ({pattern}) — refusing to guess at its shape")
+        tmp = f"_{table}_v52"
+        new_sql = re.sub(rf'CREATE TABLE\s+"?{table}"?',
+                         f"CREATE TABLE {tmp}", new_sql, count=1)
+        indexes = [r["sql"] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND tbl_name = ? AND sql IS NOT NULL", (table,))]
+        conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+        _disarm_foreign_keys(conn, f"v52 {table} rebuild")
+        try:
+            conn.execute(new_sql)
+            n_rows = conn.execute(
+                f"INSERT INTO {tmp} SELECT * FROM {table}").rowcount
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
+            for stmt in indexes:
+                conn.execute(stmt)
+            if n_rows:
+                print(f"[v52] {table} rebuilt with {repl} in its CHECK"
+                      f" ({n_rows} row(s) carried)", flush=True)
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v51(conn: sqlite3.Connection) -> None:

@@ -281,7 +281,7 @@ _WATERMARKS = {
     # here. Conscious bump.
     # dispatcher.py split move-only into core/dispatcher/ (B4, 2026-08-29);
     # fresh locks per module — the monolith never grows back.
-    "Tooling/core/dispatcher/__init__.py": 250,
+    "Tooling/core/dispatcher/__init__.py": 260,  # +6 2026-09-04 the theory layer joins the quota seat roster
     "Tooling/core/dispatcher/refill.py": 300,
     "Tooling/core/dispatcher/triggers.py": 668,  # +36 2026-09-03 `strategist_has_nothing_to_deliver` — the residual-case read of the classifier that door uses  # 2026-08-31 bench seat guard  # +18 2026-08-31 active-group seat guard + moot-verdict extinguish  # +suppress_stall (promotion gate) 2026-08-30
     # 650→660: +7 2026-09-02 HID §3.7 — `_run_pipeline` binds its thread to
@@ -475,7 +475,7 @@ _WATERMARKS = {
     # every symbol so `db.X` call sites are unaffected. See the born-
     # 2026-08-29 entries below.
     "Tooling/state/db/__init__.py": 200,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/core.py": 975,  # +4 2026-09-04 goal status `dead` retired (v51): the goals.status split-rule comment rewritten around parks  # +1 2026-09-03 strategist_decisions.report_carried_at: the batch-report carry-over mark the clock ratchet cannot express  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/core.py": 1030,  # +52 2026-09-04 the Theorist layer (v52): `theory_documents` plus the four widened CHECKs  # +4 2026-09-04 goal status `dead` retired (v51): the goals.status split-rule comment rewritten around parks  # +1 2026-09-03 strategist_decisions.report_carried_at: the batch-report carry-over mark the clock ratchet cannot express  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
     "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/goals.py": 663,  # +12 2026-09-04 goal status `dead` retired (v51): `set_inject_outcome_detail` also SETTLES, since a park never settles an inject  # born 2026-08-29 from the db.py split
     "Tooling/state/db/problems.py": 1420,  # +57 2026-09-03 `_NOT_HUMAN_OPENED` — a Delegate a PERSON filed hands over no line, so the group it opened is not the parent's in-flight work and does not freeze its routine clock (owner ruling; union_closed 691 idle 2h)  # +9 2026-09-03 the batch-report ratchet takes `>=`: a batch settling inside the commit's own clock tick used to lose the strict comparison and reach no wake  # +145 2026-09-03 `open_batch_steps` / `batch_has_running_step` — the one place that splits an outcome-NULL batch step into running vs parked (SP7 phantom "still running" batches)  # +9 2026-09-03 `unacknowledged_inject_batches` also honours the carry-over mark (a mid-debate batch nobody acted on is still owed its report)  # born 2026-08-29 from the db.py split
@@ -529,7 +529,7 @@ _WATERMARKS = {
     # for the `Signal` kind, + the ladder-level FK re-arm its constraint
     # test exposed (every rebuild's own `finally` re-arm is a no-op
     # inside the rebuild's transaction) — conscious bump.
-    "Tooling/state/db_migrations.py": 3255,  # +93 2026-09-04 goal status `dead` retired (v51): `_migrate_to_v51` — the dead→shelved rewrite plus the CHECK-narrowing rebuild  # +13 2026-09-03 v50 report_carried_at (an additive column, but since v15 those ship as a version step)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 3380,  # +125 2026-09-04 the Theorist layer (v52): five CHECK widenings on one live-DDL regex channel  # +93 2026-09-04 goal status `dead` retired (v51): `_migrate_to_v51` — the dead→shelved rewrite plus the CHECK-narrowing rebuild  # +13 2026-09-03 v50 report_carried_at (an additive column, but since v15 those ship as a version step)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

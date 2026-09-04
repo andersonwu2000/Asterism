@@ -20,7 +20,9 @@ from Tooling.state import db
 # mark — an additive column, and since v15 those ship as version steps
 # too (the frozen block below is why). 50→51 2026-09-04: the goal status
 # `dead` is retired, which narrows the `goals.status` CHECK — another
-# rebuild, and the migration also rewrites the surviving rows.
+# rebuild, and the migration also rewrites the surviving rows. 51→52
+# 2026-09-04: the Theorist layer (theory_wake_design.md §4) - four
+# CHECK widenings and one new table.
 
 
 def _fresh(tmp_path):
@@ -31,7 +33,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
 
 
 def test_queue_accepts_librarian(tmp_path):
@@ -82,7 +84,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -95,7 +97,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
@@ -132,7 +134,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -161,7 +163,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -238,7 +240,7 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"
@@ -369,7 +371,7 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 
     db.init_schema(c)
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert c.execute("SELECT status FROM goals WHERE id = ?",
                      (gid,)).fetchone()[0] == "shelved"
     assert c.execute("SELECT status FROM goals WHERE id = ?",
@@ -391,5 +393,142 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 def test_v51_is_idempotent_on_a_dead_free_db(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
     assert c.execute("SELECT count(*) FROM goal_events").fetchone()[0] == 0
+
+
+# -- v52: the Theorist layer (theory_wake_design.md 4) ----------------
+
+def _downgrade_to_v51(c) -> None:
+    """Put a fresh disk back to the v51 shape: the four CHECKs without
+    their new value, and no `theory_documents`. The rebuilds are the
+    same live-DDL edit the migration uses, run backwards, so the
+    fixture cannot drift from the table it is pretending to be."""
+    c.execute("PRAGMA foreign_keys = OFF")
+    for table, old, new in (
+            ("strategist_decisions", "'CloseGroup','Theorize')",
+             "'CloseGroup')"),
+            ("pipelines", "'Scholar','Formalizer','Theorist')",
+             "'Scholar','Formalizer')"),
+            ("queue", "'Scholar','Formalizer','Theorist')",
+             "'Scholar','Formalizer')"),
+            ("human_commands", "'Signal','Theory')", "'Signal')"),
+            ("problem_papers", "'presearch','theorist')",
+             "'presearch')")):
+        sql = c.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table,)).fetchone()[0]
+        assert old in sql, (table, sql)
+        idx = [r[0] for r in c.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index'"
+            " AND tbl_name=? AND sql IS NOT NULL", (table,))]
+        tmp = "_%s_old" % table
+        c.execute("DROP TABLE IF EXISTS %s" % tmp)
+        c.execute(re.sub(r'CREATE TABLE\s+"?%s"?' % table,
+                         "CREATE TABLE %s" % tmp,
+                         sql.replace(old, new, 1), count=1))
+        c.execute("INSERT INTO %s SELECT * FROM %s" % (tmp, table))
+        c.execute("DROP TABLE %s" % table)
+        c.execute("ALTER TABLE %s RENAME TO %s" % (tmp, table))
+        for s in idx:
+            c.execute(s)
+    c.execute("DROP TABLE IF EXISTS theory_documents")
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("PRAGMA user_version = 51")
+    c.commit()
+
+
+def test_v52_widens_the_four_checks_the_theory_layer_needs(tmp_path):
+    """A `Theorize` decision, the `Theorist` pipeline and queue row it
+    dispatches, the human `Theory` command that can file one, and the
+    papers the author binds - each is a value in a CHECK SQLite cannot
+    widen in place, so all of them ride one version step."""
+    c = _fresh(tmp_path)
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (db.now(),))
+    c.commit()
+    _downgrade_to_v51(c)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 51
+
+    db.init_schema(c)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52
+    ts = db.now()
+    c.execute("INSERT INTO strategist_decisions (problem,"
+              " triggered_at_tick, trigger_kind, decision_kind, payload,"
+              " created_at, updated_at) VALUES ('p',0,'routine',"
+              " 'Theorize','{}',?,?)", (ts, ts))
+    c.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
+              " status, started_at) VALUES ('pid','Theorist','1','Group',"
+              " 'running',?)", (ts,))
+    c.execute("INSERT INTO queue (kind, target_id, target_kind, problem,"
+              " created_at) VALUES ('Theorist','1','Group','p',?)", (ts,))
+    c.execute("INSERT INTO human_commands (problem, kind, payload,"
+              " idempotency_key, status, created_at)"
+              " VALUES ('p','Theory','{}','k','queued',?)", (ts,))
+    c.execute("INSERT INTO problem_papers (problem, paper_id, origin,"
+              " created_at) VALUES ('p','a1','theorist',?)", (ts,))
+    c.commit()
+
+
+def test_v52_carries_the_rows_it_rebuilds(tmp_path):
+    """`human_commands` and `queue` are LIVE state - a command a person
+    queued seconds before the step is still their command."""
+    c = _fresh(tmp_path)
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (db.now(),))
+    c.commit()
+    _downgrade_to_v51(c)
+    ts = db.now()
+    c.execute("INSERT INTO human_commands (problem, kind, payload,"
+              " idempotency_key, status, created_at)"
+              " VALUES ('p','Inject','{}','keep','queued',?)", (ts,))
+    c.execute("INSERT INTO queue (kind, target_id, target_kind, problem,"
+              " created_at) VALUES ('Formalizer','p','Problem','p',?)",
+              (ts,))
+    c.commit()
+
+    db.init_schema(c)
+    assert c.execute("SELECT idempotency_key FROM human_commands"
+                     ).fetchone()[0] == "keep"
+    assert c.execute("SELECT kind FROM queue").fetchone()[0] == "Formalizer"
+    # the UNIQUE that makes a retried command the same command survives
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO human_commands (problem, kind, payload,"
+                  " idempotency_key, status, created_at)"
+                  " VALUES ('p','Inject','{}','keep','queued',?)", (ts,))
+
+
+def test_v52_mints_theory_documents(tmp_path):
+    """The Theorist's product is a DOCUMENT - the one artifact the
+    decision log had no table for. Status is the review's verdict, and
+    a rejected run keeps its row (the verdict is the evidence) with no
+    path."""
+    c = _fresh(tmp_path)
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (db.now(),))
+    c.commit()
+    _downgrade_to_v51(c)
+    db.init_schema(c)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(theory_documents)")}
+    assert cols == {"id", "problem", "group_id", "pipeline_id",
+                    "decision_id", "objective", "situation", "path",
+                    "status", "rounds", "verdict_json", "created_at"}
+    ts = db.now()
+    c.execute("INSERT INTO theory_documents (problem, objective,"
+              " situation, status, rounds, created_at)"
+              " VALUES ('p','o','s','accepted',1,?)", (ts,))
+    c.execute("INSERT INTO theory_documents (problem, objective,"
+              " situation, status, rounds, created_at)"
+              " VALUES ('p','o','s','rejected',3,?)", (ts,))
+    c.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO theory_documents (problem, objective,"
+                  " situation, status, rounds, created_at)"
+                  " VALUES ('p','o','s','maybe',1,?)", (ts,))
+
+
+def test_v52_is_idempotent(tmp_path):
+    c = _fresh(tmp_path)
+    db.init_schema(c)
+    db.init_schema(c)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 52

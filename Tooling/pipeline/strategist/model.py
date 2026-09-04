@@ -37,6 +37,11 @@ DECISION_KINDS: frozenset[str] = frozenset({
     # The reverse of Delegate: a parent retires a child whose line its
     # own route no longer needs.
     "CloseGroup",
+    # v52 (theory_wake_design.md §2) — hand ONE load-bearing unknown to
+    # the theory layer. Where Delegate splits a KNOWN plan into
+    # sub-programmes to execute, Theorize asks for the mathematics the
+    # record does not have, and what comes back is a document.
+    "Theorize",
 })
 
 #: The three shapes a `ReturnToParent` can take. They differ in what the

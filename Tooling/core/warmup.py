@@ -18,15 +18,17 @@ from pathlib import Path
 
 # Queue kinds that need the warm Lean gateway. A drift test pins this
 # against the queue-kind enum so a new kind must pick a side of the
-# partition (NL side today: Strategist, Scholar). Forward/Backward/
-# Builder are pre-merge legacy rows; Formalizer is the live worker.
+# partition (NL side today: Strategist, Scholar, Theorist).
+# Forward/Backward/Builder are pre-merge legacy rows; Formalizer is
+# the live worker.
 LEAN_QUEUE_KINDS: "tuple[str, ...]" = (
     "Formalizer", "Forward", "Backward", "Builder", "Librarian", "Verify")
 
 #: The other side of the same partition — the RAM ledger's NL admission
 #: excludes these when only Lean capacity is available (and vice
 #: versa). The partition drift test pins LEAN | NL == the queue enum.
-NL_QUEUE_KINDS: "tuple[str, ...]" = ("Strategist", "Scholar")
+NL_QUEUE_KINDS: "tuple[str, ...]" = ("Strategist", "Scholar",
+                                     "Theorist")
 
 
 def start_background(workspace: Path) -> dict:
