@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, usePoll } from '../lib/api'
 import { goalCode, goalLabel, groupCode, groupLabel } from '../lib/format'
-import { EVENT_CLS, eventLabel, eventTitle, failureLabel, isTheory } from '../lib/vocab'
+import {
+  EVENT_CLS,
+  countWord,
+  eventLabel,
+  eventTitle,
+  failureLabel,
+  isTheory,
+} from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
 import { PAGE } from './glyphs'
@@ -65,6 +72,9 @@ function followFor(e: TimelineEvent): Follow {
   if (e.object_kind === 'programme') return { kind: 'programme' }
   if (e.object_kind === 'group')
     return { kind: 'group', id: e.object_group_id, label: e.label }
+  // everything else follows BY LABEL, its id null where there is no
+  // goal — which is what makes a theory request followable at all: its
+  // five rows share one objective and nothing else (serve `602c6614`)
   return { kind: 'goal', id: e.goal_id, label: e.label }
 }
 
@@ -96,6 +106,7 @@ function Row({
   onFollow,
   onOpenGoal,
   onOpenProgramme,
+  onOpenDocument,
 }: {
   e: TimelineEvent
   /** the log is filtered to this object — the header names it, so the
@@ -118,6 +129,9 @@ function Row({
    * Programme this row is about is not necessarily the one the reader
    * is scoped to (the same shape `onOpenGoal` already carries) */
   onOpenProgramme?: (problem: string | null) => void
+  /** where the document a theory row landed opens, by its
+   * workspace-relative path — the one row whose object is a FILE */
+  onOpenDocument?: (path: string) => void
 }) {
   const [open, setOpen] = useState(false)
   // a revision row opens onto the judge's ruling on it — criterion by
@@ -128,7 +142,10 @@ function Row({
     e.object_kind === 'programme' && typeof e.rev_id === 'number' && revProblem
       ? { problem: revProblem, revId: e.rev_id }
       : null
-  const expandable = Boolean(e.body || e.note || argument || verdictOf)
+  // an accepted theory document is a FILE, and the row's whole point is
+  // that the reader can open it (serve fills `path` on no other row)
+  const docOf = e.path && onOpenDocument ? e.path : null
+  const expandable = Boolean(e.body || e.note || argument || verdictOf || docOf)
   const note = e.kind === 'failed' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
@@ -167,7 +184,7 @@ function Row({
         >
           {isTheory(e.kind) && PAGE}
           {eventLabel(e.kind)}
-          {e.n !== null && <span className="tnum"> {e.n}</span>}
+          {e.n !== null && <span className="tnum"> {countWord(e.kind, e.n)}</span>}
         </span>
         <span className="flex min-w-0 items-baseline gap-2">
           {!following && (
@@ -280,6 +297,15 @@ function Row({
                 read the Programme
               </button>
             )}
+            {docOf && (
+              <button
+                className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
+                title="the document this run landed, on the Documents shelf"
+                onClick={() => onOpenDocument?.(docOf)}
+              >
+                read the document
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -294,6 +320,7 @@ export default function Timeline({
   problem,
   onSelectGoal,
   onOpenProgramme,
+  onOpenDocument,
 }: {
   /** where the log comes from. Two framings of one renderer
    * (`419dcb31`): the problem page reads its own archive, the Engine
@@ -315,6 +342,10 @@ export default function Timeline({
    * about — on the shelf-wide feed that is the row's own, not the
    * reader's scope */
   onOpenProgramme?: (problem: string | null) => void
+  /** where "read the document" lands, given the workspace-relative path
+   * the row carries. Documents are the PROJECT's shelf, so the path is
+   * the whole address — no task has to be told to it. */
+  onOpenDocument?: (path: string) => void
 }) {
   const { data, error, loading } = usePoll<{
     events: TimelineEvent[]
@@ -477,6 +508,7 @@ export default function Timeline({
               onFollow={setFollow}
               onOpenGoal={onSelectGoal}
               onOpenProgramme={onOpenProgramme}
+              onOpenDocument={onOpenDocument}
             />
           </div>
         )

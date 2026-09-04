@@ -12,6 +12,7 @@ import {
   tasksOf,
 } from '../lib/projectRoute'
 import type { ProjectRoute, Section } from '../lib/projectRoute'
+import { docAddress, docRefFromWorkspacePath } from '../lib/docShell'
 import { ASSISTANT, GEAR, IconButton, MARK } from '../components/glyphs'
 import Timeline from '../components/Timeline'
 import Tasks from './Tasks'
@@ -325,6 +326,14 @@ export default function ProjectShell({
                 onOpenProgramme={(p) => {
                   const target = p ?? problem
                   if (target) navigate(projectPath(project, 'groups', target))
+                }}
+                /* a theory row landed a FILE, and its expansion offers
+                   it. The path is workspace-relative, the Documents tab
+                   is root-relative, and a path this Project's shelf does
+                   not hold simply has nowhere to go. */
+                onOpenDocument={(p) => {
+                  const ref = docRefFromWorkspacePath(project, p)
+                  if (ref) navigate(docAddress(project, ref))
                 }}
               />
             </div>

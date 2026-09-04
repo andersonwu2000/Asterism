@@ -153,13 +153,15 @@ const EVENT_LABEL: Record<string, string> = {
   held: 'held',
   paper: 'paper',
   disproof: 'disproof',
-  // RAW decision kind, and the only key here that is one. serve's
-  // timeline (`_decision_events`) maps every other decision to a
-  // lowercase verb and has none for Theorize, so the row arrives
-  // carrying the engine's own word. The day serve mints a verb for it,
-  // move this entry — and the EVENT_TITLE and EVENT_CLS ones — onto
-  // that key and the console's copy travels with it unchanged.
-  Theorize: 'asked for theory',
+  // the theory layer's whole life, five rows of it (serve `602c6614`):
+  // the request, the wake at both ends, and the answer. The verb says
+  // what was asked for and what came back; the PAGE mark beside it says
+  // a DOCUMENT is the product, which is neither a star nor a brick.
+  asked_theory: 'asked for theory',
+  theorizing: 'theorist at work',
+  theorized: 'theorist came back',
+  theory: 'theory landed',
+  theory_refused: 'theory refused',
 }
 
 export function eventLabel(kind: string): string {
@@ -209,11 +211,25 @@ const EVENT_TITLE: Record<string, string> = {
   held: 'looked at the state and changed nothing',
   paper: "a paper was pulled into the problem's sources",
   disproof: 'an attempt to prove the negation instead',
-  Theorize:
+  asked_theory:
     'engine term: Theorize — one wall was handed to the theory layer. A theorist'
     + ' answers with a document (theorems, attempts on the wall, leads), reviewed before'
-    + ' it lands under documents › agent. The name beside the verb is the task it was'
-    + ' handed; a rejected run lands nothing',
+    + ' it lands under documents › agent. The name beside the verb is the question it'
+    + ' was handed; a refused run lands nothing',
+  theorizing:
+    'engine term: Theorist — the wake that answers this question started. The name'
+    + ' beside the verb is the question it was handed',
+  theorized:
+    'engine term: Theorist — the wake came back, and the note is its outcome. A run'
+    + ' that died in the infrastructure never reaches a document, and this row is then'
+    + ' the only trace it left',
+  theory:
+    'engine term: theory_documents — a document landed under documents › agent after'
+    + ' the review rounds counted beside the verb. Open it from this row',
+  theory_refused:
+    'engine term: theory_documents — the reviewer refused the document after the rounds'
+    + ' counted beside the verb, so nothing landed. Not a failure of the question: the'
+    + ' request can be filed again',
 }
 
 export function eventTitle(kind: string): string {
@@ -244,18 +260,42 @@ export const EVENT_CLS: Record<string, string> = {
   directive: 'text-ink-dim',
   held: 'text-ink-faint',
   paper: 'text-ink-dim',
-  // asking for theory is the norm, so it earns no accent — the page
-  // mark beside the verb is what identifies the row
-  Theorize: 'text-ink-dim',
+  // asking for theory, and the wake answering, are the norm, so they
+  // earn no accent — the page mark beside the verb identifies the row.
+  // A landed document is a LANDING and takes the same ink as the other
+  // landings; a refusal is residue.
+  asked_theory: 'text-ink-dim',
+  theorizing: 'text-ink-dim',
+  theorized: 'text-ink-dim',
+  theory: 'text-star',
+  theory_refused: 'text-ink-faint',
 }
 
+/** The theory layer's event kinds — the five rows serve writes for one
+ * request (`object_kind: 'theory'`). */
+const THEORY_EVENTS = new Set([
+  'asked_theory', 'theorizing', 'theorized', 'theory', 'theory_refused',
+])
+
 /** Does this wear the PAGE mark — the theory layer's one glyph? Two
- * names for one thing: the decision the strategist writes (`Theorize`,
- * on a Timeline row) and the worker it seats (`Theorist`, on an engine
- * lane). The mark is identity, so the rule that decides it lives in one
- * place rather than as a string literal at each render site. */
+ * dialects for one thing: the rows the layer's life writes on the
+ * Timeline, and the worker it seats (`Theorist`, on an engine lane).
+ * NOT the decision kind `Theorize`: a decision is not a row, and serve
+ * mints `asked_theory` for the row it does write. The mark is identity,
+ * so the rule that decides it lives in one place rather than as a
+ * string literal at each render site. */
 export function isTheory(kind: string): boolean {
-  return kind === 'Theorize' || kind === 'Theorist'
+  return THEORY_EVENTS.has(kind) || kind === 'Theorist'
+}
+
+/** The count beside the verb, in the unit that row counts in.
+ *
+ * It is an attempt number nearly everywhere and reads as one bare. A
+ * theory row counts what the REVIEW cost instead, and a bare `2` beside
+ * "theory landed" reads as the second document. */
+export function countWord(kind: string, n: number): string {
+  if (kind !== 'theory' && kind !== 'theory_refused') return String(n)
+  return n === 1 ? '1 round' : `${n} rounds`
 }
 
 /** dead_attempts.failure_reason — the engine's forensic enum. The words

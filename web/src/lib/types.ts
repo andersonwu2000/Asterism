@@ -223,7 +223,10 @@ export interface TimelineEvent {
   at: string
   /** closed vocabulary — see vocab.ts eventLabel */
   kind: string
-  object_kind: 'goal' | 'programme' | 'group' | 'paper' | 'problem' | 'unbuilt'
+  /** `theory` is the layer's own object: not a goal and not a group,
+   * but one REQUEST — named by its objective, which is the string every
+   * row of that request shares (serve `602c6614`) */
+  object_kind: 'goal' | 'programme' | 'group' | 'paper' | 'problem' | 'unbuilt' | 'theory'
   label: string
   /** set when the object is a goal that exists — the row links to it */
   goal_id: number | null
@@ -233,6 +236,10 @@ export interface TimelineEvent {
   note: string | null
   /** the agent-facing brief — expansion only, never the headline */
   body: string | null
+  /** the artifact this event LANDED, workspace-relative. Filled only by
+   * an accepted theory document, whose whole point is a file the reader
+   * can open; a refusal landed nothing and carries null. */
+  path: string | null
   /** the engine stores goal STATUS, not goal HISTORY: a reconstructed
    * timestamp says so rather than pretending to be exact */
   approx: boolean
