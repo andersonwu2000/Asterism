@@ -232,11 +232,12 @@ def test_locate_fences_the_place_as_well_as_the_bytes(ws: Path) -> None:
 
 # --------------------------------------------- the notes reach the agents
 
-def _owner_notes(ws: Path, problem: str = "Erdos.p1") -> "list[str]":
+def _owner_notes(ws: Path, problem: str = "Erdos.p1",
+                 conn=None) -> "list[str]":
     from Tooling.agent import context as _ctx
     from Tooling.state import intent as _intent
     return _ctx._section_owner_notes(
-        _intent.ProblemIntent(problem=problem), ws)
+        _intent.ProblemIntent(problem=problem), ws, conn)
 
 
 def test_owner_notes_section_names_path_size_date_and_title(
@@ -250,10 +251,11 @@ def test_owner_notes_section_names_path_size_date_and_title(
     pd.write(ws, "Erdos", "user/split_note.md",
              "# SPLIT: abundance across a cut\n\nbody\n")
     lines = _owner_notes(ws)
-    assert lines[0] == "## Owner's notes"
-    assert ("The owner left these notes for this Project; read the ones "
-            "whose title bears on your work (`inspect` / Read)."
-            in lines)
+    # 2026-09-04 (theory_wake_design.md §3.2): the section covers BOTH
+    # halves of the shelf now, so its heading names the subject rather
+    # than one of the two writers.
+    assert lines[0] == "## Notes on this problem"
+    assert "### The owner wrote these" in lines
     entry = next(ln for ln in lines if "split_note.md" in ln)
     assert "Problems/Erdos/_docs/user/split_note.md" in entry
     assert "KB" in entry
@@ -265,15 +267,58 @@ def test_owner_notes_section_names_path_size_date_and_title(
     assert "body" not in "\n".join(lines)
 
 
-def test_owner_notes_section_is_absent_when_the_owner_wrote_none(
+def test_owner_notes_section_is_absent_when_nobody_wrote_anything(
         ws: Path) -> None:
     """No heading for an empty body: a Project with no notes must not
-    spend a section telling every wake so."""
+    spend a section telling every wake so. A binary is not a note."""
     assert _owner_notes(ws) == []
-    pd.write(ws, "Erdos", "agent/summary.md", "# agent wrote this\n",
-             area=pd.AREA_AGENT)
     pd.write(ws, "Erdos", "user/diagram.png", b"\x89PNG")
     assert _owner_notes(ws) == []
+
+
+def test_the_roster_lists_what_the_programme_wrote_too(ws: Path) -> None:
+    """2026-09-04 (theory_wake_design.md §3.2): `_docs/agent/` is the
+    theory layer's shelf, and an accepted theory document is prior work
+    of this programme's own. The failure it prevents is not "unread" but
+    "re-derived" — both prompts tell their seat to build on it and never
+    to present it as new, which is unactionable if nothing says it
+    exists."""
+    pd.write(ws, "Erdos", "agent/g7_20260904-1200_split.md",
+             "# The unit-imbalance erasure\n\nbody\n",
+             area=pd.AREA_AGENT)
+    lines = _owner_notes(ws)
+    assert "### The programme wrote these" in lines
+    entry = next(ln for ln in lines if "g7_20260904-1200_split.md" in ln)
+    assert "The unit-imbalance erasure" in entry
+    assert "body" not in "\n".join(lines)
+
+
+def test_an_agent_document_carries_its_group_date_and_verdict(
+        ws: Path) -> None:
+    """The three facts an agent document's own prose does not have.
+    Read off `theory_documents`, not off the file: the row is where the
+    review's ruling lives."""
+    from Tooling.state import db as _db
+    from Tooling.state import groups as _groups
+    conn = _db.connect(ws / "t.db")
+    _db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+                 " VALUES ('Erdos.p1', ?, 1)", (_db.now(),))
+    conn.commit()
+    gid = _groups.ensure_top_group(conn, "Erdos.p1")
+    name = f"g{gid}_20260904-1200_split.md"
+    rel = f"Problems/Erdos/_docs/agent/{name}"
+    pd.write(ws, "Erdos", f"agent/{name}",
+             "# The unit-imbalance erasure\n", area=pd.AREA_AGENT)
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, created_at)"
+        " VALUES ('Erdos.p1', ?, 'o', 's', ?, 'accepted', 2,"
+        " '2026-09-04T12:00:00+00:00')", (gid, rel))
+    conn.commit()
+    entry = next(ln for ln in _owner_notes(ws, conn=conn) if name in ln)
+    assert f"group {gid}" in entry and "2026-09-04" in entry
+    assert "review accepted" in entry
 
 
 def test_owner_notes_section_excludes_the_papers_shelf(ws: Path) -> None:

@@ -139,12 +139,12 @@ def test_hide_owner_notes_empties_the_context_section(tmp_path):
              "# SPLIT: abundance across a cut\n\nbody\n")
     who = _intent.ProblemIntent(problem="Combinatorics.union_closed")
     control = _ctx._section_owner_notes(who, tmp_path)
-    assert control and control[0] == "## Owner's notes"
+    assert control and control[0] == "## Notes on this problem"
 
     original = theory_wake.hide_owner_notes()
     try:
         assert _ctx._section_owner_notes(who, tmp_path) == []
-        assert "## Owner's notes" not in "\n".join(
+        assert "## Notes on this problem" not in "\n".join(
             _ctx._section_owner_notes(who, tmp_path))
     finally:
         _ctx._section_owner_notes = original

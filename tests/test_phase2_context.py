@@ -2141,7 +2141,7 @@ def test_owner_notes_reach_every_strategist_wake(
             attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         )
         text = out.read_text(encoding="utf-8")
-        assert "## Owner's notes" in text, trigger
+        assert "## Notes on this problem" in text, trigger
         assert "Problems/p/_docs/user/split_note.md" in text, trigger
         assert "SPLIT: abundance across a cut" in text, trigger
         assert "\nbody\n" not in text, trigger

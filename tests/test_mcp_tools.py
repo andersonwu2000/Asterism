@@ -311,6 +311,10 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
         "adversary": ["Tooling/pipeline/adversary.py"],
         "librarian": ["Tooling/pipeline/librarian/run.py"],
         "formalizer": ["Tooling/pipeline/_retry.py"],
+        # The theory layer: the author spawns from the package entry,
+        # the reviewer from its review round (2026-09-04).
+        "theorist": ["Tooling/pipeline/theorist/__init__.py",
+                     "Tooling/pipeline/theorist/review.py"],
         # (scholar retired 2026-08-22 — paper_search/paper_fetch are the
         # Strategist's own surface now; its spawn already carries the
         # tools config checked above.)

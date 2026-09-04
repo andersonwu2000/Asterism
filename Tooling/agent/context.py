@@ -1676,65 +1676,112 @@ def _owner_note_title(path: Path) -> str:
     return ""
 
 
+def _theory_doc_marks(conn, workspace: Path) -> "dict[str, str]":
+    """`workspace-relative path -> "group N, YYYY-MM-DD, accepted"`, for
+    every landed theory document.
+
+    An agent-written document is not self-describing the way a person's
+    note is: the reader needs to know WHOSE wall it was written for and
+    that a reviewer passed it, and neither fact is in the prose. The
+    row is where both live (`theory_documents`), so the roster reads
+    them off it rather than parsing the file's own header comment."""
+    if conn is None:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT path, group_id, status, created_at"
+            " FROM theory_documents WHERE path IS NOT NULL").fetchall()
+    except Exception:  # noqa: BLE001 — never break Context
+        return {}
+    out: "dict[str, str]" = {}
+    for r in rows:
+        gid = r["group_id"]
+        out[str(r["path"]).replace("\\", "/")] = ", ".join(
+            [f"group {int(gid)}" if gid is not None else "no group",
+             str(r["created_at"] or "")[:10],
+             f"review {str(r['status'])}"])
+    return out
+
+
 def _section_owner_notes(intent: intent_mod.ProblemIntent,
                          workspace: Path, conn=None) -> list[str]:
-    """The documents a PERSON wrote for this Project (HID §1.2/§3.6).
+    """The documents written FOR this Project — the person's and the
+    machine's (HID §1.2/§3.6, theory_wake_design.md §3.2).
 
     `_docs/user/` has been readable by every seat since the envelope's
     `project_docs_dir` grant, and no surface ever said the notes were
     there — the Sandbox section names `_docs/` only as "where its papers
-    are". A note nobody is told about is a note nobody opens.
+    are". A note nobody is told about is a note nobody opens, and that
+    is the whole reason this section exists.
+
+    `_docs/agent/` joined it when the theory layer started writing
+    there. Same argument, one turn sharper: an accepted theory document
+    is prior work of this programme's own, and the failure it prevents
+    is not "unread" but "re-derived" — both the next Theorist and the
+    Strategist are told, in their prompts, to build on it and never to
+    present it as new. So it is listed for EVERY kind of wake, not only
+    the theory read, and each agent file carries the three facts its
+    prose does not: which group's wall it answered, when, and that a
+    reviewer passed it.
 
     A roster, never the bodies: path, size, date, title, one line each —
     the same lazy layer CATALOG.md and PAST_*.md are, and absent
-    entirely when the owner has written nothing. Papers are skipped;
-    §3.9 parks them under `_docs/<area>/papers/<id>/` and `## Paper` is
-    their surface. The Project resolves exactly as the paper section
-    resolves it, so the two can never point into different roots."""
+    entirely when neither half has anything. Papers are skipped; §3.9
+    parks them under `_docs/<area>/papers/<id>/` and `## Paper` is their
+    surface. The Project resolves exactly as the paper section resolves
+    it, so the two can never point into different roots."""
     project = _paper_project(intent, conn)
     if not project:
         return []
     from ..state import project_docs as _project_docs
-    try:
-        base = (_project_docs.root(Path(workspace), project)
-                / _project_docs.AREA_USER)
-    except ValueError:
-        return []
-    if not base.is_dir():
-        return []
-    rows: list[str] = []
-    for p in sorted(base.rglob("*")):
-        if "papers" in p.relative_to(base).parts:
-            continue
-        if p.suffix.lower() not in OWNER_NOTE_EXTENSIONS or not p.is_file():
-            continue
+    marks = _theory_doc_marks(conn, workspace)
+    groups: "list[tuple[str, str, list[str]]]" = []
+    for area, heading, blurb in (
+            (_project_docs.AREA_USER, "The owner wrote these",
+             "read the ones whose title bears on your work "
+             "(`inspect` / Read)"),
+            (_project_docs.AREA_AGENT, "The programme wrote these",
+             "accepted theory documents — prior work to cite and build "
+             "on, never to re-derive or present as new")):
         try:
-            st = p.stat()
-        except OSError:  # raced deletion — the roster is not the record
-            continue
-        when = datetime.fromtimestamp(
-            st.st_mtime, tz=timezone.utc).date().isoformat()
-        # Workspace-relative: the spelling `inspect` and Read are handed
-        # everywhere else, and an absolute path would be this machine's
-        # rather than this workspace's.
-        try:
-            shown = p.relative_to(Path(workspace)).as_posix()
+            base = (_project_docs.root(Path(workspace), project) / area)
         except ValueError:
-            shown = p.as_posix()
-        title = _owner_note_title(p)
-        rows.append(f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
-                    + (f" — {title}" if title else ""))
-    if not rows:
+            continue
+        if not base.is_dir():
+            continue
+        rows: list[str] = []
+        for p in sorted(base.rglob("*")):
+            if "papers" in p.relative_to(base).parts:
+                continue
+            if (p.suffix.lower() not in OWNER_NOTE_EXTENSIONS
+                    or not p.is_file()):
+                continue
+            try:
+                st = p.stat()
+            except OSError:  # raced deletion — the roster is not the record
+                continue
+            when = datetime.fromtimestamp(
+                st.st_mtime, tz=timezone.utc).date().isoformat()
+            # Workspace-relative: the spelling `inspect` and Read are
+            # handed everywhere else, and an absolute path would be this
+            # machine's rather than this workspace's.
+            try:
+                shown = p.relative_to(Path(workspace)).as_posix()
+            except ValueError:
+                shown = p.as_posix()
+            title = _owner_note_title(p)
+            mark = marks.get(shown)
+            rows.append(f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
+                        + (f" — {title}" if title else "")
+                        + (f" [{mark}]" if mark else ""))
+        if rows:
+            groups.append((heading, blurb, rows))
+    if not groups:
         return []
-    return [
-        "## Owner's notes",
-        "",
-        "The owner left these notes for this Project; read the ones "
-        "whose title bears on your work (`inspect` / Read).",
-        "",
-        *rows,
-        "",
-    ]
+    out = ["## Notes on this problem", ""]
+    for heading, blurb, rows in groups:
+        out += [f"### {heading}", "", f"{blurb}.", "", *rows, ""]
+    return out
 
 
 def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:

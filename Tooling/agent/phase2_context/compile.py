@@ -36,15 +36,62 @@ from .outcomes import (
 _CATALOG_RECENT_N = 25
 
 
+#: Every trigger this Context can be compiled FOR — a SUPERSET of
+#: `strategist.TRIGGER_KINDS`, and the gap is the point.
+#:
+#: `theory` is not a Strategist wake at all: it is the Theorist reading
+#: the same group's Context under a different request. It therefore has
+#: no `prompts/strategist/<trigger>.md` and writes no decision row, and
+#: the wake vocabulary is keyed on exactly those two things — so it must
+#: stay out of `TRIGGER_KINDS` while still being a legal argument here.
+#:
+#: The check itself exists because this function BRANCHES on the string:
+#: an unrecognised trigger silently produced the routine-shaped Context
+#: with no routine sections, which is a wake reading someone else's
+#: dossier and never saying so.
+
+
+#: The theory layer's read of a group (theory_wake_design.md §3.2).
+THEORY_TRIGGER = "theory"
+
+
+def context_triggers() -> "frozenset[str]":
+    from ...pipeline.strategist.model import TRIGGER_KINDS
+    return frozenset(TRIGGER_KINDS) | {THEORY_TRIGGER}
+
+
 def _section_trigger(trigger_kind: str, pending_review_id: int | None,
                      conn: sqlite3.Connection,
-                     workspace: Path) -> list[str]:
+                     workspace: Path,
+                     theory_request: "dict | None" = None) -> list[str]:
     lines = [
         "## Trigger",
         "",
         f"`trigger_kind`: {trigger_kind}",
         "",
     ]
+    if trigger_kind == THEORY_TRIGGER:
+        req = theory_request or {}
+        # The request rides the Trigger rather than a section of its
+        # own: this IS why the wake exists, and the author's first
+        # instruction is to read it here.
+        lines += [
+            "The programme has asked the theory layer for a piece of "
+            "mathematics it does not have. This is the request.",
+            "",
+            "### Objective",
+            "",
+            str(req.get("objective") or "(none given)").strip(),
+            "",
+            "### Situation",
+            "",
+            str(req.get("situation") or "(none given)").strip(),
+            "",
+            "A better objective than the one posed is a legitimate "
+            "answer — say so, and argue it.",
+            "",
+        ]
+        return lines
     if trigger_kind == "pending_review" and pending_review_id is not None:
         g = db.get_goal(conn, pending_review_id)
         if g is not None:
@@ -779,6 +826,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                                intent: intent_mod.ProblemIntent,
                                pending_review_id: int | None = None,
                                group_id: "int | None" = None,
+                               theory_request: "dict | None" = None,
                                ) -> Path:
     """Write Context.md for the Strategist agent into attempts_dir.
 
@@ -789,10 +837,20 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
       - TREE
       - Charter (own group, inline) + user word
     """
+    if trigger_kind not in context_triggers():
+        # Loud, because this function BRANCHES on the string: an
+        # unrecognised trigger produced the routine-shaped Context
+        # without any of the routine sections, and a wake reading
+        # someone else's dossier says nothing about it.
+        raise ValueError(
+            f"compile_strategist_context: unknown trigger_kind "
+            f"{trigger_kind!r} — one of "
+            f"{', '.join(sorted(context_triggers()))}")
+    theory = trigger_kind == THEORY_TRIGGER
     section_names = ["trigger", "user_word"]
     sections: list[list[str]] = [
         _section_trigger(trigger_kind, pending_review_id, conn,
-                 workspace),
+                         workspace, theory_request),
         _section_user_word_strategist(intent),
     ]
     from ...pipeline.strategist import audit as _audit
@@ -858,7 +916,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
                       "adjudications", "charter", "paper_index",
-                      "owner_notes"]
+                      "project_notes"]
     sections += [
         _section_stall_warning(conn, problem, group_id),
         _section_ingest_gate(conn, problem, group_id, intent=intent),
@@ -866,7 +924,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_your_group(conn, problem, group_id),
         _section_groups_in_flight(conn, problem, group_id),
         _section_programme_strategist(conn, problem, group_id,
-                                      attempts_dir=attempts_dir),
+                                      attempts_dir=attempts_dir,
+                                      pointer=theory),
         _section_current_directive(conn, problem),
         _section_plan_note(conn, workspace, problem, group_id,
                            attempts_dir=attempts_dir),
@@ -1066,6 +1125,7 @@ def _section_programme_strategist(conn: sqlite3.Connection,
                                   problem: str,
                                   group_id: "int | None" = None,
                                   attempts_dir: "Path | None" = None,
+                                  pointer: bool = False,
                                   ) -> list[str]:
     """Research mode (research_mode_design.md §2): the current
     Programme rev inline — it is the commitment object your proposal
@@ -1085,6 +1145,31 @@ def _section_programme_strategist(conn: sqlite3.Connection,
         notice = _programme.rejection_notice(conn, problem, group_id)
     except sqlite3.OperationalError:
         return []
+    if pointer:
+        # The theory read only (design §3.2). The Strategist's own wake
+        # keeps the revision INLINE: it is about to propose the next one
+        # and every sentence it writes is judged against this text. The
+        # Theorist is not writing a revision — it reads the Programme
+        # where the Programme bears on the wall — so the whole rev
+        # inline is a 20-26KB tax on a document that will quote two
+        # sections of it. Written beside Context.md and read the way
+        # every other companion is.
+        body = (str(row["body"]).strip() if row is not None
+                else "(no Programme yet)")
+        if attempts_dir is not None:
+            try:
+                (attempts_dir / "PROGRAMME.md").write_text(
+                    body + "\n", encoding="utf-8")
+            except OSError:  # pragma: no cover — never fail a compile
+                pass
+        head = ("(none yet)" if row is None else
+                f"rev {row['rev']}, passed {str(row['created_at'])[:10]}")
+        return ["## Programme", "",
+                f"`PROGRAMME.md` beside this file — the current revision "
+                f"({head}). Read it by section: "
+                f"`inspect([{{\"read\": \"PROGRAMME.md\", "
+                f"\"outline\": true}}])` maps it, then read the "
+                f"sections that bear on the request.", ""]
     out: list[str] = []
     # Judge dialogue is rendered in its OWN top-level section, after the
     # rev text and never inside it (2026-08-02 judge feedback): appended
