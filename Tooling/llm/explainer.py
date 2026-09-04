@@ -113,11 +113,14 @@ READ_SCOPE_PROCESS = "process"
 _SCOPE_NOTE = {
     READ_SCOPE_WORKSPACE: (
         "answers are about this page; it reads this workspace only — "
-        "read-only, it explains, it never acts"),
+        "it may write a note into the Project's agent/ documents, and a "
+        "command it prepares is queued only when you confirm it"),
     READ_SCOPE_PROCESS: (
         "answers are about this page; this backend cannot be scoped — "
         "it can read any file your computer account can read, not just "
-        "this workspace. it still never writes, runs or fetches"),
+        "this workspace. it still only writes the Project's agent/ "
+        "documents, and a command it prepares is queued only when you "
+        "confirm it"),
 }
 
 
