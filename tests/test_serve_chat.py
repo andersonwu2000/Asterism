@@ -16,6 +16,7 @@ import json
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from fastapi.testclient import TestClient
 from Tooling.llm import capabilities as caps
 from Tooling.llm import explainer
 from Tooling.serve import chat as _chat
+from Tooling.serve import chat_sessions as _sessions
 from Tooling.serve.app import create_app
 from Tooling.state import db
 
@@ -44,6 +46,14 @@ def _client(workspace: Path) -> TestClient:
     return TestClient(create_app(workspace))
 
 
+def _session(client: TestClient, project: "str | None" = None) -> str:
+    """A conversation to file questions on — what the panel does on
+    mount when it holds no id for this Project."""
+    r = client.post("/api/chat/sessions", json={"project": project})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
 # -- endpoint contracts (no spawn) -----------------------------------------
 
 
@@ -52,25 +62,50 @@ def test_chat_state_shape(workspace: Path) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["busy"] is False
-    assert body["has_session"] is False
-    assert body["models"] == ["haiku", "sonnet", "opus"]
     # the seat, and the two ways a seat can be honestly worse
     assert body["provider"] == "claude"
     assert body["conversation_memory"] is True
     assert body["read_scope"] == explainer.READ_SCOPE_WORKSPACE
+    # RETIRED by the redesign: `has_session`/`session_key` described a
+    # single live conversation per Project (there are many now, and the
+    # browser holds which one is current), and `models` was a hand-kept
+    # tuple on the backend (the picker's source is the catalog, §4).
+    for gone in ("has_session", "session_key", "models"):
+        assert gone not in body, gone
+
+
+def test_the_picker_offers_every_explainer_backed_provider(
+    workspace: Path,
+) -> None:
+    """§4: ONE picker, grouped by the backend that runs each name, from
+    the same catalog the settings page reads. Filtered to providers that
+    have an explainer backend — offering `codex` here would offer a
+    choice the endpoint refuses by name a moment later."""
+    from Tooling.serve import model_catalog
+
+    body = _client(workspace).get("/api/chat/state").json()
+    providers = {g["provider"] for g in body["groups"]}
+    assert providers == set(explainer.BACKENDS)
+    assert "codex" not in providers
+    catalog = {g["provider"]: g["models"]
+               for g in model_catalog.model_groups(workspace)}
+    for g in body["groups"]:
+        assert g["models"] == catalog[g["provider"]]
+    # the default must be pickable, or the control cannot show the truth
+    assert body["model_default"] in {m for g in body["groups"]
+                                     for m in g["models"]}
 
 
 def test_chat_state_publishes_the_seated_providers_own_answers(
     workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Seat the explainer on agy and the page must change what it
-    promises: agy's models, no workspace read fence (its `read_file`
-    permission is honoured in no direction), and a memory that comes
-    from the CLI's own conversation id."""
+    promises: no workspace read fence (its `read_file` permission is
+    honoured in no direction), a memory that comes from the CLI's own
+    conversation id, and agy's own default model."""
     monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "agy")
     body = _client(workspace).get("/api/chat/state").json()
     assert body["provider"] == "antigravity"
-    assert body["models"] == list(explainer.ANTIGRAVITY.models)
     assert body["model_default"] == explainer.ANTIGRAVITY.default_model
     assert body["read_scope"] == explainer.READ_SCOPE_PROCESS
     assert "cannot be scoped" in body["read_note"]
@@ -79,15 +114,30 @@ def test_chat_state_publishes_the_seated_providers_own_answers(
 
 def test_chat_rejects_empty_and_oversize(workspace: Path) -> None:
     c = _client(workspace)
-    assert c.post("/api/chat", json={"message": "  "}).status_code == 400
+    sid = _session(c)
+    assert c.post("/api/chat", json={"message": "  ", "session_id": sid}
+                  ).status_code == 400
     big = "x" * (_chat._MAX_MESSAGE + 1)
-    assert c.post("/api/chat", json={"message": big}).status_code == 413
+    assert c.post("/api/chat", json={"message": big, "session_id": sid}
+                  ).status_code == 413
 
 
-def test_chat_clear_resets_session(workspace: Path) -> None:
+def test_a_question_needs_a_session_that_exists(workspace: Path) -> None:
+    """§2: `session_id` is required and an unknown one is a 404. The
+    panel holding an id from a session deleted in another tab must be
+    told so, not quietly filed on a new transcript."""
     c = _client(workspace)
-    r = c.post("/api/chat/clear")
-    assert r.status_code == 200 and r.json() == {"cleared": True}
+    assert c.post("/api/chat", json={"message": "hi"}).status_code == 422
+    r = c.post("/api/chat", json={"message": "hi", "session_id": "0" * 32})
+    assert r.status_code == 404
+
+
+def test_the_clear_endpoint_is_retired(workspace: Path) -> None:
+    """Deleting the session is the act now (§1, the sessions fold's row
+    strip). `clear` dropped both ends of ONE live conversation and had
+    nothing to say about the other four."""
+    assert _client(workspace).post(
+        "/api/chat/clear").status_code in (404, 405)
 
 
 # -- page context ----------------------------------------------------------
@@ -215,6 +265,143 @@ def test_reader_thinking_and_error_result() -> None:
     assert events[-1]["type"] == "done" and events[-1]["ok"] is False
 
 
+# -- tool events, from a stream that actually happened ---------------------
+#
+# Captured 2026-09-06 from the real CLI, trimmed (signatures, usage
+# detail and the tool result's tail cut; nothing renamed):
+#
+#   claude -p "Use the Glob tool to list web/src/lib/*.test.ts and reply
+#   with the count only" --model claude-haiku-4-5 --output-format
+#   stream-json --verbose --include-partial-messages --tools Glob
+#   --allowed-tools "Glob(D:/Asterism/**)" --setting-sources ""
+#   --disable-slash-commands
+#
+# A hand-written fixture here would freeze a GUESSED contract
+# (frontend_state.md, 2026-07-29) — and the guess would have been wrong
+# twice: `content_block_start` carries `input: {}` with the arguments
+# arriving later as `input_json_delta` fragments, and the tool RESULT is
+# not a stream_event at all but a top-level `user` message whose
+# `content` was a plain string, with no `is_error` key on success.
+
+_REAL_STREAM = [
+    "{\"type\": \"system\", \"subtype\": \"init\", \"session_id\": \"455eaf84-f81c-467a-9c0d-edac0b9670ee\"}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"thinking\", \"thinking\": \"\", \"signature\": \"\"}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_stop\", \"index\": 0}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_start\", \"index\": 1, \"content_block\": {\"type\": \"tool_use\", \"id\": \"toolu_01SBiojN8vWRodJ4FB3gXzhZ\", \"name\": \"Glob\", \"input\": {}, \"caller\": {\"type\": \"direct\"}}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_delta\", \"index\": 1, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"\"}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_delta\", \"index\": 1, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"{\\\"pattern\\\": \\\"web/src/lib/*.test.ts\"}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_delta\", \"index\": 1, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"\\\"}\"}}}",
+    "{\"type\": \"assistant\", \"message\": {\"role\": \"assistant\", \"content\": [{\"type\": \"tool_use\", \"id\": \"toolu_01SBiojN8vWRodJ4FB3gXzhZ\", \"name\": \"Glob\", \"input\": {\"pattern\": \"web/src/lib/*.test.ts\"}, \"caller\": {\"type\": \"direct\"}}]}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_stop\", \"index\": 1}}",
+    "{\"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": [{\"tool_use_id\": \"toolu_01SBiojN8vWRodJ4FB3gXzhZ\", \"type\": \"tool_result\", \"content\": \"web\\\\src\\\\lib\\\\groupTree.test.ts\\nweb\\\\src\\\\lib\\\\models.test.ts\\nweb \u2026\"}]}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_start\", \"index\": 1, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_delta\", \"index\": 1, \"delta\": {\"type\": \"text_delta\", \"text\": \"21\"}}}",
+    "{\"type\": \"stream_event\", \"event\": {\"type\": \"content_block_stop\", \"index\": 1}}",
+    "{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"num_turns\": 2, \"usage\": {\"output_tokens\": 331}}",
+]
+
+
+def test_reader_reports_the_tool_call_and_its_result() -> None:
+    """§3: one row per tool call. `tool_start` when the arguments are
+    complete (the block's stop, not its start — at the start `input` is
+    `{}` and the panel would draw a row with no argument), `tool_end`
+    when the result comes back, paired by the id the CLI minted."""
+    q: "queue.Queue" = queue.Queue()
+    explainer.CLAUDE.reader(_FakeProc(_REAL_STREAM), q)
+    events = _drain(q)
+    kinds = [e["type"] for e in events]
+    assert "tool_start" in kinds and "tool_end" in kinds
+    start = next(e for e in events if e["type"] == "tool_start")
+    end = next(e for e in events if e["type"] == "tool_end")
+    assert start == {"type": "tool_start",
+                     "id": "toolu_01SBiojN8vWRodJ4FB3gXzhZ",
+                     "name": "Glob",
+                     "input": {"pattern": "web/src/lib/*.test.ts"}}
+    assert end["id"] == start["id"] and end["ok"] is True
+    assert isinstance(end["ms"], int) and end["ms"] >= 0
+    assert "groupTree.test.ts" in end["result"]
+    assert kinds.index("tool_start") < kinds.index("tool_end")
+    # the events that already existed are untouched
+    assert kinds[0] == "status"
+    assert "".join(e["text"] for e in events if e["type"] == "delta") == "21"
+    assert events[-1] == {"type": "done", "ok": True, "subtype": "success",
+                          "turns": 2, "output_tokens": 331}
+
+
+def test_reader_clips_tool_arguments_and_results() -> None:
+    """A `Read` of a 40k file would otherwise put 40k of prose in an
+    SSE frame and in the transcript on disk. 200 chars is what the row
+    can show."""
+    long = "x" * 900
+    lines = [
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "t1",
+                              "name": "Read", "input": {}}}}),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta",
+                      "partial_json": json.dumps(
+                          {"file_path": long,
+                           "nested": {"query": long},
+                           "n": 7})}}}),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}}),
+        json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": [{"type": "text", "text": long}],
+             "is_error": True}]}}),
+    ]
+    q: "queue.Queue" = queue.Queue()
+    explainer.CLAUDE.reader(_FakeProc(lines), q)
+    events = _drain(q)
+    start = next(e for e in events if e["type"] == "tool_start")
+    assert len(start["input"]["file_path"]) <= 200
+    assert len(start["input"]["nested"]["query"]) <= 200
+    assert start["input"]["n"] == 7, "only strings are clipped"
+    end = next(e for e in events if e["type"] == "tool_end")
+    assert len(end["result"]) <= 200
+    assert end["ok"] is False, "is_error must reach the row"
+
+
+def test_reader_emits_an_end_whose_start_it_never_saw() -> None:
+    """Never drop what the engine said (§3's reduction rule, on the
+    backend side): a resumed turn can carry a result whose call was
+    made before this process attached."""
+    lines = [json.dumps({"type": "user", "message": {"role": "user",
+             "content": [{"type": "tool_result", "tool_use_id": "ghost",
+                          "content": "done"}]}})]
+    q: "queue.Queue" = queue.Queue()
+    explainer.CLAUDE.reader(_FakeProc(lines), q)
+    events = _drain(q)
+    assert events[0] == {"type": "tool_end", "id": "ghost", "ok": True,
+                         "ms": None, "result": "done"}
+
+
+def test_reader_survives_arguments_that_never_parse() -> None:
+    """A truncated stream (killed spawn) leaves half a JSON fragment.
+    The row is still worth drawing — the tool name is the information."""
+    lines = [
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "t1",
+                              "name": "loogle", "input": {}}}}),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta",
+                      "partial_json": "{\"query\": \"Nat.Pri"}}}),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}}),
+    ]
+    q: "queue.Queue" = queue.Queue()
+    explainer.CLAUDE.reader(_FakeProc(lines), q)
+    events = _drain(q)
+    assert events[0] == {"type": "status", "stage": "reading",
+                         "tool": "loogle"}
+    assert events[1] == {"type": "tool_start", "id": "t1", "name": "loogle",
+                         "input": {}}
+
+
 # -- busy slot -------------------------------------------------------------
 
 
@@ -231,13 +418,19 @@ _STREAM = [
 ]
 
 
+#: Which stdout the next fake spawn serves. `_STREAM` is the minimal
+#: answer; a test that needs tool rows swaps in the captured one.
+_ACTIVE_STREAM: "dict[str, list[str]]" = {"lines": _STREAM}
+
+
 class _FakePopen:
     """Enough of Popen for the SSE generator; records the argv."""
 
     def __init__(self, argv, **_kw) -> None:
         self.argv = list(argv)
-        self.stdout = io.StringIO("\n".join(_STREAM) + "\n")
+        self.stdout = io.StringIO("\n".join(_ACTIVE_STREAM["lines"]) + "\n")
         self.stderr = io.StringIO("")
+        self.killed = False
 
     def wait(self, timeout=None) -> int:  # noqa: ARG002
         return 0
@@ -246,7 +439,7 @@ class _FakePopen:
         return 0
 
     def kill(self) -> None:
-        pass
+        self.killed = True
 
 
 @pytest.fixture
@@ -265,14 +458,26 @@ def spawned(monkeypatch: pytest.MonkeyPatch) -> "list[_FakePopen]":
                         lambda: "C:/claude.exe")
     monkeypatch.setattr(explainer.ANTIGRAVITY, "executable",
                         lambda: "C:/agy.exe")
+    monkeypatch.setitem(_ACTIVE_STREAM, "lines", _STREAM)
     return seen
 
 
-def _ask(client: TestClient, text: str = "hi") -> None:
-    with client.stream("POST", "/api/chat", json={"message": text}) as r:
-        assert r.status_code == 200
-        for _ in r.iter_lines():
-            pass
+def _ask(client: TestClient, text: str = "hi", *, session: str,
+         **body) -> "list[dict]":
+    """One question on one session; returns the frames it streamed."""
+    frames: "list[dict]" = []
+    with client.stream("POST", "/api/chat",
+                       json={"message": text, "session_id": session,
+                             **body}) as r:
+        assert r.status_code == 200, r.read()
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                frames.append(json.loads(line[6:]))
+    return frames
+
+
+def _prompt(p: "_FakePopen") -> str:
+    return p.argv[p.argv.index("-p") + 1]
 
 
 def test_second_question_resumes_when_the_declaration_says_it_can(
@@ -280,15 +485,17 @@ def test_second_question_resumes_when_the_declaration_says_it_can(
 ) -> None:
     """Baseline for the flip below: claude declares
     RESUME_CALLER_SESSION_ID, so question 1 pins an id and question 2
-    replays it."""
+    replays it. The handle now lives ON the session record, so it
+    survives a serve restart with the transcript."""
     app = create_app(workspace)
     c = TestClient(app)
-    _ask(c)
-    assert app.state.chat.session_id is not None
+    sid = _session(c)
+    _ask(c, session=sid)
     assert "--session-id" in spawned[0].argv
-    _ask(c, "and why?")
+    assert _sessions.get(workspace, sid)["handle"] == \
+        spawned[0].argv[spawned[0].argv.index("--session-id") + 1]
+    _ask(c, "and why?", session=sid)
     assert "--resume" in spawned[1].argv
-    assert c.get("/api/chat/state").json()["has_session"] is True
 
 
 def test_no_resume_flag_and_no_session_when_the_declaration_says_none(
@@ -297,10 +504,10 @@ def test_no_resume_flag_and_no_session_when_the_declaration_says_none(
 ) -> None:
     """SAME provider name, SAME backend, one field flipped: with
     `session_resume = none` the explainer must stop pretending to have a
-    conversation. No resume flag ever reaches the CLI, the endpoint
-    never claims a session, and the drawer is told
-    `conversation_memory: false` — otherwise the user asks "and why is
-    that?" into a blank context and reads the answer as continuous."""
+    conversation. No resume flag ever reaches the CLI, the record keeps
+    no handle, and the drawer is told `conversation_memory: false` —
+    otherwise the user asks "and why is that?" into a blank context and
+    reads the answer as continuous."""
     monkeypatch.setitem(
         caps.CAPABILITIES, "claude",
         caps.ProviderCapabilities(
@@ -311,13 +518,13 @@ def test_no_resume_flag_and_no_session_when_the_declaration_says_none(
     app = create_app(workspace)
     c = TestClient(app)
     assert c.get("/api/chat/state").json()["conversation_memory"] is False
-    _ask(c)
-    _ask(c, "and why?")
+    sid = _session(c)
+    _ask(c, session=sid)
+    _ask(c, "and why?", session=sid)
     for p in spawned:
         assert "--resume" not in p.argv
         assert "--session-id" not in p.argv
-    assert app.state.chat.session_id is None
-    assert c.get("/api/chat/state").json()["has_session"] is False
+    assert _sessions.get(workspace, sid)["handle"] is None
 
 
 def test_page_context_is_resent_when_there_is_no_memory(
@@ -327,13 +534,11 @@ def test_page_context_is_resent_when_there_is_no_memory(
     """The degradation has to be WIRED, not only announced: with no
     session to carry it, the page context must ride every prompt.
     (With memory it is sent once and the session keeps it.)"""
-    def _prompt(p: "_FakePopen") -> str:
-        return p.argv[p.argv.index("-p") + 1]
-
     app = create_app(workspace)
     c = TestClient(app)
-    _ask(c)
-    _ask(c, "again")
+    sid = _session(c)
+    _ask(c, session=sid)
+    _ask(c, "again", session=sid)
     assert _chat._CONTEXT_HEADER not in _prompt(spawned[1])
 
     monkeypatch.setitem(
@@ -345,8 +550,9 @@ def test_page_context_is_resent_when_there_is_no_memory(
             session_resume=caps.RESUME_NONE))
     spawned.clear()
     c2 = TestClient(create_app(workspace))
-    _ask(c2)
-    _ask(c2, "again")
+    sid2 = _session(c2)
+    _ask(c2, session=sid2)
+    _ask(c2, "again", session=sid2)
     assert _chat._CONTEXT_HEADER in _prompt(spawned[1])
 
 
@@ -362,7 +568,9 @@ def test_availability_gate_is_not_hardwired_to_claude(
     only as one of the backends that could be chosen instead."""
     monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "antigravity")
     monkeypatch.setattr(explainer.ANTIGRAVITY, "executable", lambda: None)
-    r = _client(workspace).post("/api/chat", json={"message": "hi"})
+    c = _client(workspace)
+    r = c.post("/api/chat", json={"message": "hi",
+                                  "session_id": _session(c)})
     assert r.status_code == 503
     detail = r.json()["detail"]
     assert "antigravity" in detail
@@ -378,35 +586,38 @@ def test_the_gate_passes_on_agy_with_no_claude_installed(
     present, the button works — and the spawn is agy's."""
     monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "agy")
     monkeypatch.setattr(explainer.CLAUDE, "executable", lambda: None)
-    _ask(TestClient(create_app(workspace)))
+    c = TestClient(create_app(workspace))
+    _ask(c, session=_session(c))
     assert spawned and spawned[0].argv[0] == "C:/agy.exe"
 
 
 def test_chat_busy_returns_409(workspace: Path, monkeypatch) -> None:
+    """One question at a time, and while it is in flight the transcript
+    it is being written into may not be renamed, truncated or deleted
+    out from under it."""
     monkeypatch.setattr(explainer.CLAUDE, "executable",
                         lambda: "C:/claude.exe")
     app = create_app(workspace)
     c = TestClient(app)
+    sid = _session(c)
     state = app.state.chat
     assert state.lock.acquire(blocking=False)
     try:
-        r = c.post("/api/chat", json={"message": "hi"})
-        assert r.status_code == 409
-        r = c.post("/api/chat/clear")
-        assert r.status_code == 409
+        assert c.post("/api/chat", json={"message": "hi",
+                                         "session_id": sid}
+                      ).status_code == 409
+        assert c.delete(f"/api/chat/sessions/{sid}").status_code == 409
+        assert c.patch(f"/api/chat/sessions/{sid}",
+                       json={"title": "x"}).status_code == 409
+        # …but reading is always allowed: the fold polls
+        assert c.get("/api/chat/sessions").status_code == 200
+        assert c.get(f"/api/chat/sessions/{sid}").status_code == 200
+        assert c.get("/api/chat/state").json()["busy"] is True
     finally:
         state.lock.release()
 
 
 # -- the session is bound to a Project (HID §1.1-2, §3.5) ------------------
-
-
-def _ask_in(client: TestClient, text: str = "hi", **body) -> None:
-    with client.stream("POST", "/api/chat",
-                       json={"message": text, **body}) as r:
-        assert r.status_code == 200, r.read()
-        for _ in r.iter_lines():
-            pass
 
 
 def _flag(p: "_FakePopen", flag: str) -> "str | None":
@@ -420,17 +631,37 @@ def _prompt_of(p: "_FakePopen") -> str:
 def test_each_project_keeps_its_own_conversation(
     workspace: Path, spawned: "list[_FakePopen]",
 ) -> None:
-    """§1.1-2: switching Project switches session. One transcript per
-    Project — the alternative (today's single site-wide session) answers
-    a question about Erdos out of the context of a Topology page."""
+    """§1.1-2: every Project gets its own transcripts. Two sessions on
+    two shelves are two provider conversations — the alternative (one
+    site-wide session) answers a question about Erdos out of the context
+    of a Topology page."""
     c = TestClient(create_app(workspace))
-    _ask_in(c, project="Erdos")
-    _ask_in(c, project="Topology")
-    _ask_in(c, "and why?", project="Erdos")
+    erdos_sid = _session(c, "Erdos")
+    topo_sid = _session(c, "Topology")
+    _ask(c, session=erdos_sid, project="Erdos")
+    _ask(c, session=topo_sid, project="Topology")
+    _ask(c, "and why?", session=erdos_sid, project="Erdos")
     erdos = _flag(spawned[0], "--session-id")
     topo = _flag(spawned[1], "--session-id")
     assert erdos and topo and erdos != topo
     assert _flag(spawned[2], "--resume") == erdos
+    assert [s["id"] for s in c.get(
+        "/api/chat/sessions", params={"project": "Erdos"}
+    ).json()["sessions"]] == [erdos_sid]
+
+
+def test_a_question_cannot_be_filed_on_another_shelfs_transcript(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """§2: `project` must match the session's Project. The panel that
+    switched shelves without switching session id would otherwise write
+    an Erdos answer into the Topology conversation."""
+    c = TestClient(create_app(workspace))
+    sid = _session(c, "Erdos")
+    r = c.post("/api/chat", json={"message": "hi", "session_id": sid,
+                                  "project": "Topology"})
+    assert r.status_code == 422, r.text
+    assert "Erdos" in r.json()["detail"]
 
 
 def test_the_project_picker_session_is_its_own_key(
@@ -440,37 +671,27 @@ def test_the_project_picker_session_is_its_own_key(
     become the first Project's — the person asked it with no problem in
     view."""
     c = TestClient(create_app(workspace))
-    _ask_in(c)
-    _ask_in(c, project="Erdos")
+    picker = _session(c)
+    erdos = _session(c, "Erdos")
+    assert picker != erdos
+    _ask(c, session=picker)
+    _ask(c, session=erdos, project="Erdos")
     assert _flag(spawned[1], "--resume") is None
     assert _flag(spawned[1], "--session-id") != \
         _flag(spawned[0], "--session-id")
-    st = c.get("/api/chat/state", params={"project": "Erdos"}).json()
-    assert st["has_session"] is True
-    assert c.get("/api/chat/state").json()["has_session"] is True
-
-
-def test_clear_forgets_only_the_named_project(
-    workspace: Path, spawned: "list[_FakePopen]",
-) -> None:
-    c = TestClient(create_app(workspace))
-    _ask_in(c, project="Erdos")
-    _ask_in(c, project="Topology")
-    assert c.post("/api/chat/clear",
-                  json={"project": "Erdos"}).json() == {"cleared": True}
-    assert c.get("/api/chat/state",
-                 params={"project": "Erdos"}).json()["has_session"] is False
-    assert c.get("/api/chat/state",
-                 params={"project": "Topology"}
-                 ).json()["has_session"] is True
+    assert [s["id"] for s in
+            c.get("/api/chat/sessions").json()["sessions"]] == [picker]
 
 
 def test_a_project_name_that_is_not_a_name_is_refused(
     workspace: Path, spawned: "list[_FakePopen]",
 ) -> None:
-    r = TestClient(create_app(workspace)).post(
-        "/api/chat", json={"message": "hi", "project": "../etc"})
+    c = TestClient(create_app(workspace))
+    r = c.post("/api/chat", json={"message": "hi", "project": "../etc",
+                                  "session_id": _session(c)})
     assert r.status_code == 422, r.text
+    assert c.post("/api/chat/sessions",
+                  json={"project": "../etc"}).status_code == 422
 
 
 # -- what the panel hands over (HID §1.4, §3.5) ---------------------------
@@ -572,8 +793,10 @@ def test_changing_the_focus_re_sends_the_context(
     the second question is answered about the first star."""
     gid, _grid = _seed(workspace)
     c = TestClient(create_app(workspace))
-    _ask_in(c, project="Erdos", focus={"goal_id": gid})
-    _ask_in(c, "and this one?", project="Erdos", focus={"group_id": 1})
+    sid = _session(c, "Erdos")
+    _ask(c, session=sid, project="Erdos", focus={"goal_id": gid})
+    _ask(c, "and this one?", session=sid, project="Erdos",
+         focus={"group_id": 1})
     assert _chat._CONTEXT_HEADER in _prompt_of(spawned[1])
 
 
@@ -614,3 +837,338 @@ def test_the_board_context_inside_a_project_names_only_its_own(
                                     project="Erdos")
     assert "Erdos.p1" in ctx
     assert "Other.p9" not in ctx, "another Project's blocked task is not context"
+
+
+# -- the sessions endpoints (redesign §2) ---------------------------------
+
+
+def test_sessions_crud(workspace: Path) -> None:
+    c = _client(workspace)
+    sid = _session(c, "Erdos")
+    assert c.get("/api/chat/sessions",
+                 params={"project": "Erdos"}).json()["sessions"][0]["id"] \
+        == sid
+    # the picker page's conversation is not the Project's
+    assert c.get("/api/chat/sessions").json()["sessions"] == []
+    full = c.get(f"/api/chat/sessions/{sid}").json()
+    assert full["project"] == "Erdos" and full["turns"] == []
+    named = c.patch(f"/api/chat/sessions/{sid}",
+                    json={"title": "the p1 question"}).json()
+    assert named["title"] == "the p1 question"
+    assert c.delete(f"/api/chat/sessions/{sid}").json() == {"deleted": True}
+    assert c.get(f"/api/chat/sessions/{sid}").status_code == 404
+    assert c.delete(f"/api/chat/sessions/{sid}").status_code == 404
+    assert c.patch(f"/api/chat/sessions/{sid}",
+                   json={"title": "x"}).status_code == 404
+
+
+def test_a_new_conversation_on_an_untouched_one_is_the_same_one(
+    workspace: Path,
+) -> None:
+    """§2: `+ new conversation` clicked twice must not leave two blank
+    rows in the fold."""
+    c = _client(workspace)
+    assert _session(c, "Erdos") == _session(c, "Erdos")
+
+
+def test_the_first_frame_names_the_session(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """§3: the panel files the streaming turn on a transcript, and it
+    must know which one before any text arrives."""
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    frames = _ask(c, session=sid)
+    assert frames[0] == {"type": "session", "id": sid}
+
+
+# -- edit & re-ask: truncation and the replay block ------------------------
+
+
+def test_edit_and_re_ask_drops_the_later_turns_and_replays_the_rest(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """§2: no CLI can rewind, so a truncated conversation is planned
+    COLD and the kept turns ride the prompt. Without the replay the
+    engine answers the edited question with no idea what was asked
+    before it."""
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    _ask(c, "why is p1 stalled?", session=sid)
+    _ask(c, "and why is that?", session=sid)
+    assert _chat._REPLAY_HEADER not in _prompt(spawned[1]), \
+        "a resumed turn replays nothing — the engine has the session"
+
+    _ask(c, "actually, what IS p1?", session=sid, truncate_to=2)
+    last = spawned[-1]
+    prompt = _prompt(last)
+    assert "--resume" not in last.argv, "a truncated session is planned cold"
+    assert _chat._REPLAY_HEADER in prompt
+    assert "why is p1 stalled?" in prompt
+    assert "and why is that?" not in prompt, "a dropped turn is gone"
+    assert prompt.rstrip().endswith("actually, what IS p1?")
+    rec = _sessions.get(workspace, sid)
+    assert [t["text"] for t in rec["turns"]][:3] == [
+        "why is p1 stalled?", "hi", "actually, what IS p1?"]
+
+
+def test_truncate_to_must_name_a_question(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    _ask(c, "why is p1 stalled?", session=sid)
+    r = c.post("/api/chat", json={"message": "x", "session_id": sid,
+                                  "truncate_to": 1})
+    assert r.status_code == 422, r.text
+    assert len(_sessions.get(workspace, sid)["turns"]) == 2
+
+
+def test_the_replay_block_is_bounded(workspace: Path) -> None:
+    """Most recent turns first to fit; each turn clipped. A transcript
+    is unbounded and the prompt is not."""
+    turns = [{"role": "user" if i % 2 == 0 else "assistant",
+              "text": f"turn{i} " + "x" * 3_000}
+             for i in range(40)]
+    block = _chat._replay_block(turns)
+    assert _chat._REPLAY_HEADER in block
+    assert len(block) <= _chat._MAX_REPLAY + len(_chat._REPLAY_HEADER) + 200
+    assert "turn39" in block, "the most recent turn is the one that must fit"
+    assert "turn0" not in block
+    # …and in reading order, oldest of the kept first
+    assert block.index("turn38") < block.index("turn39")
+    assert _chat._replay_block([]) == ""
+
+
+# -- the idle deadline (redesign §3) --------------------------------------
+
+
+class _SlowPopen(_FakePopen):
+    """Alive until killed — so the generator's clock, not the fake's
+    exhausted stdout, decides when the turn ends."""
+
+    def poll(self):
+        return 0 if self.killed else None
+
+
+@pytest.fixture
+def slow_spawn(monkeypatch: pytest.MonkeyPatch) -> "list[_SlowPopen]":
+    seen: "list[_SlowPopen]" = []
+
+    def _popen(argv, **kw):
+        p = _SlowPopen(argv, **kw)
+        seen.append(p)
+        return p
+
+    monkeypatch.setattr(_chat.subprocess, "Popen", _popen)
+    monkeypatch.setattr(explainer.CLAUDE, "executable",
+                        lambda: "C:/claude.exe")
+    monkeypatch.setenv("ASTERISM_EXPLAINER_IDLE_SEC", "1")
+    return seen
+
+
+def test_a_working_turn_is_never_timed_out(
+    workspace: Path, slow_spawn: "list[_SlowPopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The complaint this replaces: a wall clock over the whole answer
+    killed turns that were visibly working. The clock is now IDLE — any
+    event resets it — so a turn that keeps calling tools runs as long as
+    it keeps talking."""
+    def _reader(proc, out) -> None:
+        for i in range(12):          # 3s of work at a 1s idle deadline
+            time.sleep(0.25)
+            out.put({"type": "tool_start", "id": f"t{i}", "name": "Glob",
+                     "input": {}})
+        out.put({"type": "delta", "text": "done thinking"})
+        out.put({"type": "done", "ok": True, "subtype": "success",
+                 "turns": 1, "output_tokens": 3})
+        out.put(None)
+
+    monkeypatch.setattr(explainer.CLAUDE, "reader", _reader)
+    c = TestClient(create_app(workspace))
+    frames = _ask(c, session=_session(c))
+    kinds = [f["type"] for f in frames]
+    assert "error" not in kinds, [f for f in frames if f["type"] == "error"]
+    assert kinds.count("tool_start") == 12 and kinds[-1] == "done"
+
+
+def test_a_silent_explainer_is_killed_and_named(
+    workspace: Path, slow_spawn: "list[_SlowPopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """…and silence is still fatal, with an error that says what was
+    silent for how long rather than "answer timed out"."""
+    def _reader(proc, out) -> None:
+        time.sleep(3)
+        out.put(None)
+
+    monkeypatch.setattr(explainer.CLAUDE, "reader", _reader)
+    c = TestClient(create_app(workspace))
+    frames = _ask(c, session=_session(c))
+    err = [f for f in frames if f["type"] == "error"]
+    assert err and err[0]["detail"] == "no word from the explainer for 1 s"
+    assert slow_spawn[0].killed is True
+
+
+def test_a_silent_wait_still_writes_to_the_socket(
+    workspace: Path, slow_spawn: "list[_SlowPopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§3: an SSE COMMENT every 15s of silence, so a proxy (or the
+    browser) never sees a socket with nothing on it. A comment, not a
+    frame — the reducer must not have to know about it."""
+    monkeypatch.setattr(_chat, "_KEEPALIVE_SEC", 0.3)
+    monkeypatch.setenv("ASTERISM_EXPLAINER_IDLE_SEC", "10")
+
+    def _reader(proc, out) -> None:
+        time.sleep(1.2)
+        out.put({"type": "delta", "text": "at last"})
+        out.put({"type": "done", "ok": True, "subtype": "success",
+                 "turns": 1, "output_tokens": 2})
+        out.put(None)
+
+    monkeypatch.setattr(explainer.CLAUDE, "reader", _reader)
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    with c.stream("POST", "/api/chat",
+                  json={"message": "hi", "session_id": sid}) as r:
+        body = "".join(chunk for chunk in r.iter_text())
+    assert ": keepalive\n\n" in body
+    assert "\"keepalive\"" not in body, "a comment line, not a data frame"
+    assert "at last" in body
+
+
+def test_the_idle_knob_also_caps_the_backend_that_has_no_stream(
+    workspace: Path, spawned: "list[_FakePopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agy has no stream, so its whole-answer clock IS its idle clock —
+    one knob, or the two disagree and the death arrives as a kill with
+    no envelope to classify."""
+    monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "agy")
+    monkeypatch.setenv("ASTERISM_EXPLAINER_IDLE_SEC", "400")
+    c = TestClient(create_app(workspace))
+    _ask(c, session=_session(c))
+    assert _flag(spawned[0], "--print-timeout") == "385s"
+
+
+# -- the transcript is written as the answer happens ----------------------
+
+
+def test_the_turns_and_their_tool_rows_land_on_disk(
+    workspace: Path, spawned: "list[_FakePopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§2's record, end to end: the question, the answer that streamed,
+    and one row per tool call with the duration the panel shows."""
+    monkeypatch.setitem(_ACTIVE_STREAM, "lines", _REAL_STREAM)
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    _ask(c, "how many lib tests?", session=sid)
+    rec = _sessions.get(workspace, sid)
+    assert [t["role"] for t in rec["turns"]] == ["user", "assistant"]
+    assert rec["turns"][0]["text"] == "how many lib tests?"
+    answer = rec["turns"][1]
+    assert answer["text"] == "21" and answer["ok"] is True
+    assert len(answer["tools"]) == 1
+    row = answer["tools"][0]
+    assert row["name"] == "Glob" and row["ok"] is True
+    assert row["input"] == {"pattern": "web/src/lib/*.test.ts"}
+    assert isinstance(row["ms"], int)
+    assert "groupTree.test.ts" in row["result"]
+    assert rec["title"] == "how many lib tests?"
+    assert rec["model"] and rec["provider"] == "claude"
+
+
+def test_a_question_whose_spawn_failed_leaves_no_trace(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§2: the panel rolls the text back into the composer, so a
+    transcript showing the question with no answer would contradict the
+    screen."""
+    monkeypatch.setattr(explainer.CLAUDE, "executable",
+                        lambda: "C:/claude.exe")
+
+    def _boom(*_a, **_kw):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(_chat.subprocess, "Popen", _boom)
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    frames = _ask(c, "doomed", session=sid)
+    assert frames[-1]["type"] == "error"
+    assert _sessions.get(workspace, sid)["turns"] == []
+
+
+def test_a_partial_answer_survives_the_reader_walking_away(
+    workspace: Path, slow_spawn: "list[_SlowPopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§2: partial answers are first-class. Closing the tab mid-answer
+    must keep what streamed — the person read it."""
+    def _reader(proc, out) -> None:
+        out.put({"type": "delta", "text": "the task is waiting on"})
+        time.sleep(3)
+        out.put(None)
+
+    monkeypatch.setattr(explainer.CLAUDE, "reader", _reader)
+    app = create_app(workspace)
+    c = TestClient(app)
+    sid = _session(c)
+    with c.stream("POST", "/api/chat",
+                  json={"message": "why?", "session_id": sid}) as r:
+        for line in r.iter_lines():
+            if "\"delta\"" in line:
+                break                      # closed tab / stop button
+    for _ in range(500):                   # the lock is released last
+        if not app.state.chat.lock.locked():
+            break
+        time.sleep(0.01)
+    rec = _sessions.get(workspace, sid)
+    assert [t["role"] for t in rec["turns"]] == ["user", "assistant"]
+    assert rec["turns"][1]["text"] == "the task is waiting on"
+    assert rec["turns"][1]["ok"] is False
+
+
+# -- the model decides the backend for the turn (redesign §4) -------------
+
+
+def test_an_off_list_model_is_refused_and_the_offer_is_named(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    c = TestClient(create_app(workspace))
+    r = c.post("/api/chat", json={"message": "hi", "session_id": _session(c),
+                                  "model": "gpt-9-ultra"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "gpt-9-ultra" in detail and "claude-sonnet-5" in detail
+
+
+def test_the_model_choice_seats_the_backend_for_the_turn(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """§4: one picker decides both. A machine seated on claude that
+    picks a gemini name gets agy's spawn — the backend is implied by
+    the model, so the two cannot disagree."""
+    c = TestClient(create_app(workspace))
+    _ask(c, session=_session(c), model="gemini-3.6-flash-high")
+    assert spawned[0].argv[0] == "C:/agy.exe"
+
+
+def test_a_conversation_cannot_change_backends_midway(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """The resume handle belongs to ONE CLI: switching provider inside a
+    session would replay a claude session id at agy."""
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    _ask(c, session=sid)
+    assert _sessions.get(workspace, sid)["provider"] == "claude"
+    r = c.post("/api/chat", json={"message": "and why?", "session_id": sid,
+                                  "model": "gemini-3.6-flash-high"})
+    assert r.status_code == 422, r.text
+    assert "new conversation" in r.json()["detail"]
+    # …but a fresh session may be seated anywhere
+    _ask(c, session=_session(c), model="gemini-3.6-flash-high")
+    assert spawned[-1].argv[0] == "C:/agy.exe"

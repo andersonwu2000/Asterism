@@ -174,6 +174,22 @@ def test_a_workspace_read_scope_requires_an_honoured_allow() -> None:
             assert caps.honours_allow(name, caps.ACTION_READ_FILE), name
 
 
+def test_the_default_model_is_a_name_the_picker_offers() -> None:
+    """Assistant redesign §4: `_Backend.models` is DELETED. The picker's
+    source is `serve/model_catalog` (the declared lists, or agy's live
+    probe), and a second hand-kept tuple beside it is the copy that rots
+    — claude's still offered the retired `haiku`/`sonnet`/`opus` CLI
+    aliases. What stays is `default_model`, and it has to be a member of
+    the list the picker shows, or the control cannot display the value
+    it is sitting on."""
+    from Tooling.core import config
+
+    for name, backend in explainer.BACKENDS.items():
+        assert not hasattr(backend, "models"), f"{name} kept its own list"
+        assert backend.default_model in \
+            config.MODEL_CHOICES_BY_PROVIDER[name], name
+
+
 def test_scope_note_changes_with_the_backend() -> None:
     assert "this workspace only" in explainer.scope_note("claude")
     assert "cannot be scoped" in explainer.scope_note("agy")
