@@ -374,6 +374,66 @@ def test_an_author_that_writes_nothing_is_a_dead_wake_not_a_rejection(
     assert str(d["outcome"]) == "failed:theory_no_report"
 
 
+_NET_STDERR = ("rc=1\nReconnecting... 5/5\nstream disconnected before "
+               "completion: idle timeout waiting for websocket\n")
+
+
+def _dies_with_stderr(seat: str, stderr: str):
+    """`seat` exits 1 having left `stderr` where the provider writes it."""
+    def fake_spawn(**kw):
+        kind = kw.get("kind")
+        if kind != seat:
+            if kind == "theory_reviewer":
+                (kw["attempts_dir"] / "verdict.json").write_text(
+                    json.dumps(_clear()), encoding="utf-8")
+            else:
+                (kw["attempts_dir"] / "report.md").write_text(
+                    _REPORT, encoding="utf-8")
+            return 0
+        (kw["attempts_dir"] / "_spawn.stderr").write_text(
+            stderr, encoding="utf-8")
+        return 1
+
+    return fake_spawn
+
+
+def test_a_theory_seats_transport_death_is_named_from_its_stderr(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rc is not the evidence — the stderr is. Every other pipeline
+    reads it (`pipeline._spawn_failure`: transport prose outranks the rc
+    and the duration heuristics), and the theory layer had its own rc-
+    only classifier. The cost is not cosmetic: `provider_network` makes
+    the dispatcher probe connectivity and PARK, while
+    `unclassified_spawn_failure` feeds the consecutive breaker that
+    exits the daemon rc=2 needing an operator on site — the exact
+    2026-08-18 lesson, and union_closed g691 landed two of these on
+    2026-09-05."""
+    did = _theorize(conn, workspace)
+    monkeypatch.setattr(agent, "spawn_llm",
+                        _dies_with_stderr("theorist", _NET_STDERR))
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+    assert r.failure_reason == "provider_network"
+
+
+def test_the_reviewers_transport_death_is_read_in_its_own_projection(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each review round runs in its own projection dir, so the
+    reviewer's stderr is not where the author's is. Reading the author's
+    dir for the reviewer's death would charge one seat's failure to the
+    other's evidence."""
+    did = _theorize(conn, workspace)
+    monkeypatch.setattr(agent, "spawn_llm",
+                        _dies_with_stderr("theory_reviewer", _NET_STDERR))
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+    assert r.failure_reason == "provider_network"
+
+
 def test_a_spawn_that_died_after_writing_is_reviewed_not_thrown_away(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,

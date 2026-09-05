@@ -678,7 +678,7 @@ _WATERMARKS = {
     # a CONTRACT and grows only when the rubric moves, the review
     # round is a projection plus a spawn, the landing is a path and a
     # row, and the entry is the loop that joins them.
-    "Tooling/pipeline/theorist/__init__.py": 300,  # +50 2026-09-05 the three failure roads are told apart at the source (`_fail` takes its headline per road) and a spawn that died after writing is reviewed, not thrown away
+    "Tooling/pipeline/theorist/__init__.py": 330,  # +80 2026-09-05 the three failure roads are told apart at the source (`_fail` takes its headline per road), a spawn that died after writing is reviewed rather than thrown away, and a dead seat is named from its stderr like every other pipeline's
     "Tooling/pipeline/theorist/verdict.py": 300,
     "Tooling/pipeline/theorist/review.py": 230,
     "Tooling/pipeline/theorist/landing.py": 150,

@@ -26,6 +26,14 @@ PROJECTION_DIRNAME = "review"
 REQUEST_BASENAME = "request.md"
 
 
+def projection_dir(attempts_dir: Path, round_no: int) -> Path:
+    """Where round `round_no`'s reviewer runs — its dossier, its verdict
+    and its `_spawn.stderr`. One home for the path, because the caller
+    that reads a dead reviewer's stderr must not spell it differently
+    from the builder that made it."""
+    return attempts_dir / PROJECTION_DIRNAME / f"r{round_no}"
+
+
 def request_body(objective: str, situation: str) -> str:
     """The request, as the reviewer reads it. Its own file rather than a
     section of the report: criterion 1 asks whether the document
@@ -49,7 +57,7 @@ def build_review_projection(*, round_no: int, attempts_dir: Path,
     from ...state import groups as _groups
     from ...state import programme as _programme
 
-    proj = attempts_dir / PROJECTION_DIRNAME / f"r{round_no}"
+    proj = projection_dir(attempts_dir, round_no)
     if proj.exists():
         shutil.rmtree(proj, ignore_errors=True)
     proj.mkdir(parents=True, exist_ok=True)

@@ -35,7 +35,7 @@ import uuid
 from pathlib import Path
 
 from . import landing as _landing
-from .review import review as review_round
+from .review import projection_dir, review as review_round
 from .verdict import (REPORT_BASENAME, clear_lines, parse_theory_verdict)
 
 #: What the failure outcome says to the Strategist that asked. Fixed
@@ -64,15 +64,45 @@ NO_REQUEST_DETAIL = "The Theorize decision carried no usable request"
 DEFAULT_ROUNDS = 3
 
 
-def _rc_reason(rc: int, seat: str) -> str:
-    """A spawn rc read against the SEAT that produced it. The two theory
-    seats can sit on different providers, and a provider's rc contract
-    is a property of the provider — reading the reviewer's rc against
-    the author's declaration is how an unclassified failure gets charged
-    to the wrong thing."""
+def _rc_reason(rc: int, seat: str, spawn_dir: "Path | None" = None) -> str:
+    """A dead spawn named from the SEAT that produced it and the STDERR
+    it left — in that order, stderr first.
+
+    The seat half: the two theory seats can sit on different providers,
+    and a provider's rc contract is a property of the provider, so
+    reading the reviewer's rc against the author's declaration is how an
+    unclassified failure gets charged to the wrong thing.
+
+    THE STDERR HALF IS NOT COSMETIC. `pipeline._spawn_failure` has read
+    transport prose ahead of the rc since 2026-08-18 and every other
+    pipeline goes through it; this one grew its own rc-only classifier
+    and so could never say `provider_network`. The difference is what
+    the dispatcher does next: a named network failure makes it probe
+    connectivity and PARK, while `unclassified_spawn_failure` feeds the
+    consecutive breaker that exits the daemon rc=2 needing an operator
+    on site (the 08-17 outage, twelve rows). union_closed g691 filed two
+    `idle timeout waiting for websocket` deaths on 2026-09-05 with the
+    cause spelled out in a file nobody read.
+
+    `spawn_dir` is where THAT seat ran: the attempts dir for the author,
+    the round's projection for the reviewer. Duration is not available
+    here, so `_spawn_failure`'s fast-fail heuristic has no counterpart —
+    the rc residue stays the fallback."""
     from ...llm import capabilities as _caps
-    from ...state.failures import rc_to_reason
-    return rc_to_reason(rc, rc_contract=_caps.for_kind(seat).rc_contract)
+    from ...state import failures as _failures
+    tail = ""
+    if spawn_dir is not None:
+        f = spawn_dir / "_spawn.stderr"
+        try:
+            tail = f.read_text(encoding="utf-8")[:600] if f.is_file() else ""
+        except OSError:
+            tail = ""
+    if _failures.is_network_failure(tail):
+        return "provider_network"
+    if _failures.is_local_overload_failure(tail):
+        return "local_overload"
+    return _failures.rc_to_reason(
+        rc, rc_contract=_caps.for_kind(seat).rc_contract)
 
 
 def _settle(conn: sqlite3.Connection, decision_id: "int | None", *,
@@ -214,7 +244,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             # never happened.
             if not body.strip() or body == reviewed:
                 return _fail_spawn(
-                    _rc_reason(rc, "theorist"),
+                    _rc_reason(rc, "theorist", attempts_dir),
                     f"the author's spawn returned rc={rc} on round "
                     f"{turn}" + (" without rewriting the document"
                                  if body.strip() else ""))
@@ -235,7 +265,8 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             dialogue=dialogue, pipeline_id=pipeline_id)
         if rrc != 0:
             return _fail_spawn(
-                _rc_reason(rrc, "theory_reviewer"),
+                _rc_reason(rrc, "theory_reviewer",
+                           projection_dir(attempts_dir, turn)),
                 f"the reviewer's spawn returned rc={rrc} on round {turn}")
         if verdict is None:
             return _fail_spawn(
