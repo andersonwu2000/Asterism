@@ -712,6 +712,23 @@ def test_advance_chain_failure_counts_no_enqueue(tmp_path: Path):
         assert _queue(conn) == []   # advance never enqueues (refill does)
 
 
+def test_advance_chain_does_not_charge_an_infra_death(tmp_path: Path):
+    """Same law as `librarian_file_busy`, one class wider (owner ruling
+    2026-09-06): a quota window or a dead transport says nothing about
+    the unit, and the cap is a budget for the unit's own failures. Three
+    rc=126 deaths used to STALL a unit permanently — a persisted strike
+    each, and the operator line to go with it."""
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc: dict = {}
+    for reason in ("quota_exhausted", "provider_network", "spawn_fast_fail"):
+        dispatcher._advance_librarian_chain(
+            conn, tmp_path, tid, outcome="failed", reason=reason,
+            fail_counts=fc)
+    assert tid not in fc
+    assert db.librarian_fail_counts_all(conn) == {}
+
+
 def test_advance_chain_fail_count_persists_across_restart(tmp_path: Path):
     # #92 B#3 — the cap must survive a daemon restart: _advance write-throughs to
     # the DB, and the dict the daemon rebuilds at startup sees the stuck count.
