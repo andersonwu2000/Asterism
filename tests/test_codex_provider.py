@@ -908,3 +908,98 @@ def test_project_docs_are_not_read_into_the_spawn(tmp_path: Path) -> None:
     cfg = codex_cli._render_config(_req(tmp_path), "m", "xhigh")
     assert "project_doc_max_bytes = 0" in cfg
     assert cfg.index("project_doc_max_bytes = 0") < cfg.index("[features]")
+
+
+# ------------------------------------------- the NL seats' idle clock
+
+def _nl_cfg(tmp_path: Path, *, kind: str = "theorist",
+            timeout_sec: int = 10800) -> str:
+    return codex_cli._render_config(
+        _req(tmp_path, kind=kind, timeout_sec=timeout_sec),
+        "gpt-6-astra", "xhigh")
+
+
+def test_an_nl_seat_gets_its_own_wall_as_the_streams_idle_clock(
+    tmp_path: Path,
+) -> None:
+    """MEASURED 2026-09-05 on 0.153.0. codex kills a turn whose stream
+    has been idle for `stream_idle_timeout_ms` and reconnects
+    `stream_max_retries` times; the framework set neither, so the
+    defaults ran. union_closed g691: two gpt-6-astra/xhigh Theorist
+    wakes died as `Reconnecting... 5/5 (stream disconnected before
+    completion: idle timeout waiting for websocket)` — the 5/5 IS the
+    default retry count — and one had already written its document.
+
+    An NL seat's work is the silence (`capabilities.STREAM_IDLE_KINDS`
+    is the framework's own name for the kinds whose thinking cannot be
+    read as cadence), so the idle clock must never be the binding one:
+    it is the SEAT'S OWN WALL, derived from the request rather than
+    written here, so raising a seat's budget raises this with it and no
+    second constant can drift from the first (owner ruling
+    2026-09-05)."""
+    cfg = _nl_cfg(tmp_path, timeout_sec=10800)
+    assert "stream_idle_timeout_ms = 10800000" in cfg
+    assert "stream_max_retries = 10" in cfg
+    assert "request_max_retries = 10" in cfg
+    # derived, not a constant: a different wall renders a different clock
+    assert "stream_idle_timeout_ms = 7200000" in _nl_cfg(
+        tmp_path, kind="theory_reviewer", timeout_sec=7200)
+
+
+def test_the_nl_provider_is_renamed_because_openai_is_reserved(
+    tmp_path: Path,
+) -> None:
+    """MEASURED 2026-09-05: `[model_providers.openai]` is refused
+    OUTRIGHT — `Error loading config.toml: model_providers contains
+    reserved built-in provider IDs: 'openai'. Built-in providers cannot
+    be overridden.` — so the three keys can only ride a renamed
+    provider, and the renamed one has to carry the built-in's own
+    fields itself. Each of these was measured, not guessed:
+
+      requires_openai_auth  ChatGPT auth (auth.json carries `tokens`
+                            and a NULL OPENAI_API_KEY; no env key was
+                            set) authenticated and answered.
+      supports_websockets   without it the transport silently drops to
+                            SSE — the probe's error said "idle timeout
+                            waiting for SSE" where production said
+                            "waiting for websocket".
+      base_url / wire_api   the ChatGPT backend's own, since a custom
+                            provider derives neither.
+    """
+    cfg = _nl_cfg(tmp_path)
+    assert "[model_providers.openai]" not in cfg
+    assert "[model_providers.openai-nl]" in cfg
+    assert 'model_provider = "openai-nl"' in cfg
+    assert "requires_openai_auth = true" in cfg
+    assert "supports_websockets = true" in cfg
+    assert "https://chatgpt.com/backend-api/codex" in cfg
+    assert 'wire_api = "responses"' in cfg
+    # TOML: a top-level key after a [table] header belongs to that table
+    assert cfg.index('model_provider = "openai-nl"') < cfg.index("[features]")
+
+
+def test_a_tool_seat_stays_on_the_built_in_provider(
+    tmp_path: Path,
+) -> None:
+    """The renaming is a cost — our config then owns a copy of the
+    vendor's endpoint — and it buys nothing for a seat whose liveness
+    the tool clock already measures. Only `STREAM_IDLE_KINDS` pays it."""
+    from Tooling.llm import capabilities as _caps
+
+    cfg = codex_cli._render_config(_req(tmp_path, kind="formalizer"),
+                                   "m", "xhigh")
+    assert "model_provider" not in cfg
+    assert "[model_providers." not in cfg
+    assert "formalizer" not in _caps.STREAM_IDLE_KINDS
+
+
+def test_the_zen_flavor_keeps_its_own_provider(tmp_path: Path) -> None:
+    """Zen routes through the shim and states its own provider; an NL
+    seat on zen must not end up declaring two."""
+    att = tmp_path / ".attempts" / "pid-z2"
+    att.mkdir(parents=True)
+    cfg = codex_cli._render_config(
+        _req(tmp_path, kind="theorist", attempts_dir=att),
+        "x-preview-f-free", "high", flavor="zen")
+    assert 'model_provider = "zen"' in cfg
+    assert "openai-nl" not in cfg

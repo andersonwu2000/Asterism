@@ -769,7 +769,7 @@ _WATERMARKS = {
     # split promise below still stands and is now overdue.
     "Tooling/knowledge/workspace_query.py": 1569,  # +29 2026-09-05 decl scope comes from the spawn that declared it, not from cwd  # +38 2026-09-05 a glob spec resolves its own prefix, so the workspace-root fallback and the .lake wall reach both spellings  # +12 2026-09-05 a grep hit is the file's own line (edit anchors) + a non-greedy resume-anchor parse  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
-    "Tooling/llm/codex_cli.py": 1250,
+    "Tooling/llm/codex_cli.py": 1350,  # +100 2026-09-05 DELTA 11 — the NL seats' stream-idle clock, and the renamed provider it can only be set on (measured against 0.153.0; the measurements ARE the docstring)
     "Tooling/pipeline/forward.py": 1200,
     "Tooling/lsp/lifecycle.py": 1200,  # +28 2026-09-03 gateway_live_marker/_pid — the gateway's presence as a file, so no reader proves absence with a connect that hangs; 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
     "Tooling/llm/antigravity_cli.py": 1150,

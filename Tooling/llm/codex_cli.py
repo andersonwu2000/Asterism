@@ -3,7 +3,7 @@
 Behaviour is aligned to `claude_cli` wherever codex allows it, because
 claude is the backend with the most production hours and every deviation
 is a place where a failure looks different from the one the framework
-already knows how to read. Ten deviations were forced by the CLI, and
+already knows how to read. Eleven deviations were forced by the CLI, and
 each is marked DELTA below and in the code:
 
   DELTA 1  NO READ TOOL AT ALL. With `shell_tool` and `apps` off (see
@@ -68,6 +68,14 @@ each is marked DELTA below and in the code:
            spawn is billed only for its own turns. Measured 2026-08-15
            on Test.provider_probe: 2.0x over-count per pipeline, and a
            cache-hit rate of 49% where the truth was 97%.
+  DELTA 11 THE STREAM HAS ITS OWN IDLE CLOCK, AND IT IS ONLY SETTABLE
+           ON A PROVIDER YOU NAME. `stream_idle_timeout_ms` and its two
+           retry siblings are `ModelProviderInfo` fields, and 0.153.0
+           refuses `[model_providers.openai]` outright — built-in ids
+           are reserved. So an NL seat routes through `openai-nl`, a
+           renamed copy of the built-in carrying its ChatGPT auth,
+           endpoint and websocket transport. claude has no such clock
+           to disarm. See `_nl_provider_toml`.
 
 What is NOT a delta, and is load-bearing because of it: the prompt is
 built by `claude_cli`'s own two helpers. They compose the template plus
@@ -243,6 +251,92 @@ def _mcp_servers_toml(mcp_config_path: "Path | None",
     return "\n".join(out) + "\n"
 
 
+#: The renamed copy of the built-in `openai` provider that NL seats
+#: route through. See `_nl_provider_toml` (DELTA 11) for why it cannot
+#: simply be `openai`.
+_NL_PROVIDER_ID = "openai-nl"
+
+#: The ChatGPT backend the built-in provider talks to. Ours because a
+#: custom provider derives no default; it is a copy of the vendor's own
+#: value and the one thing here that can go stale — it fails LOUDLY (a
+#: connection error on every NL spawn), not silently.
+_CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex"
+
+#: Reconnect budget for an NL stream. Ten, against the default five —
+#: the incident's `Reconnecting... 5/5` was that default running out.
+_NL_STREAM_RETRIES = 10
+
+
+def _stream_idle_kinds() -> "frozenset[str]":
+    """The seats whose silence IS the work — the framework's own list,
+    read rather than copied (`capabilities.STREAM_IDLE_KINDS`)."""
+    from .capabilities import STREAM_IDLE_KINDS
+    return STREAM_IDLE_KINDS
+
+
+def _nl_provider_toml(req: LLMRequest) -> "list[str]":
+    """DELTA 11 — THE STREAM'S IDLE CLOCK MUST NOT BE THE BINDING ONE.
+
+    codex ends a turn whose stream has been quiet for
+    `stream_idle_timeout_ms` and reconnects `stream_max_retries` times.
+    An NL seat's work is exactly that quiet: `capabilities`
+    .STREAM_IDLE_KINDS is the framework's own name for the kinds whose
+    thinking cannot be read as tool cadence, and on codex they run
+    TIMEOUT_ONLY for the same reason. union_closed g691, 2026-09-05:
+    two gpt-6-astra/xhigh Theorist wakes died as `Reconnecting... 5/5
+    (stream disconnected before completion: idle timeout waiting for
+    websocket)` — 5/5 being the untouched default — and one of them had
+    already written its document.
+
+    THE VALUE IS THE SEAT'S OWN WALL, not a number chosen here (owner
+    ruling 2026-09-05): the framework's timeout stays the only clock
+    that can end a turn, raising a seat's budget raises this with it,
+    and there is no second constant to drift from the first.
+
+    WHY A RENAMED PROVIDER. All three keys are fields of
+    `ModelProviderInfo`, i.e. they exist only under
+    `model_providers.<id>`, and MEASURED on 0.153.0 the built-in id is
+    closed: `Error loading config.toml: model_providers contains
+    reserved built-in provider IDs: 'openai'. Built-in providers cannot
+    be overridden.` A top-level spelling is not a fallback — codex
+    accepts unknown top-level keys silently (measured with a nonsense
+    key), so writing them there would look like it worked and do
+    nothing. So the provider is renamed and carries the built-in's own
+    fields, each of which was measured rather than assumed:
+
+      requires_openai_auth  ChatGPT auth survives the rename: with
+                            auth.json carrying `tokens` and a NULL
+                            OPENAI_API_KEY, and no env key set, the
+                            probe authenticated and answered.
+      supports_websockets   WITHOUT IT THE TRANSPORT SILENTLY CHANGES:
+                            the probe's failure said "idle timeout
+                            waiting for SSE" where production says
+                            "waiting for websocket". With it, the
+                            message matches production again (websocket
+                            first, SSE fallback).
+      base_url / wire_api   a custom provider derives neither.
+
+    And the keys are honoured, which is the point of the exercise:
+    `stream_idle_timeout_ms = 1` + `stream_max_retries = 2` on this
+    provider reproduced the incident verbatim — `Reconnecting... 2/2`,
+    `stream disconnected before completion: idle timeout waiting for
+    websocket`. Nothing else moved: the tool list the model reports is
+    identical on both providers, and `rate_limits` still lands in the
+    rollout (DELTA 5's quota signal survives).
+    """
+    return [
+        "", f"[model_providers.{_NL_PROVIDER_ID}]",
+        'name = "OpenAI"',
+        f"base_url = {_toml_str(_CHATGPT_CODEX_URL)}",
+        'wire_api = "responses"',
+        "requires_openai_auth = true",
+        "supports_websockets = true",
+        f"stream_idle_timeout_ms = {max(1, int(req.timeout_sec)) * 1000}",
+        f"stream_max_retries = {_NL_STREAM_RETRIES}",
+        f"request_max_retries = {_NL_STREAM_RETRIES}",
+    ]
+
+
 def _render_config(req: LLMRequest, model: str, effort: str,
                    flavor: str = "openai") -> str:
     """codex's dialect of the capability envelope.
@@ -301,6 +395,12 @@ def _render_config(req: LLMRequest, model: str, effort: str,
             'web_search = "disabled"',
             'model_provider = "zen"',
         ] if flavor == "zen" else []),
+        # DELTA 11 — an NL seat routes through a RENAMED copy of the
+        # built-in provider, because that is the only place codex will
+        # accept a stream-idle setting. See `_nl_provider_toml`.
+        *([f'model_provider = "{_NL_PROVIDER_ID}"']
+          if flavor != "zen" and (req.kind or "") in _stream_idle_kinds()
+          else []),
         "",
         "[features]",
         "shell_tool = false",
@@ -340,6 +440,8 @@ def _render_config(req: LLMRequest, model: str, effort: str,
         "[windows]",
         'sandbox = "unelevated"',
     ]
+    if flavor != "zen" and (req.kind or "") in _stream_idle_kinds():
+        lines += _nl_provider_toml(req)
     if flavor == "zen":
         # OpenCode Zen (free ox-alpha window, 2026-08-21): route through
         # the local translation shim — Zen's /responses stream is
