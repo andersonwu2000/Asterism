@@ -48,8 +48,11 @@ from . import LabError, docs_dir
 #: set. A kind that is not here cannot be spelled in a lab.yaml, which
 #: is what stops an arm from silently running the default driver.
 DRIVER_KINDS: "dict[str, tuple[str, ...]]" = {
-    # One Adversary round on a historical proposal (`replay_judge`).
-    "judge_round": ("group", "rows", "trigger", "decisions"),
+    # One Adversary round on a proposal — a historical one named by
+    # `rows:` (`replay_judge`), or one authored as a FILE (`proposal:`,
+    # with its `decisions:`), which is what a standard trap is: a scene
+    # the record never held, judged against the workspace's own.
+    "judge_round": ("group", "rows", "trigger", "decisions", "proposal"),
     # One full Strategist wake: agent -> verify -> judge loop -> commit
     # into this workspace's DB (`replay_strategist`).
     "strategist_wake": ("group", "trigger", "since"),
@@ -59,6 +62,9 @@ DRIVER_KINDS: "dict[str, tuple[str, ...]]" = {
     "push_wake": ("group", "trigger", "prompt", "prompt2"),
     # The framework's own daemon, in this workspace, on its own port.
     "daemon": ("scope", "stop", "once"),
+    # Bare force: N independent Lean bricks, proofs stripped, one shot
+    # each on the workspace's formalizer seat, `lake env lean` verdict.
+    "gauntlet": ("items_dir",),
 }
 
 #: Arm keys every kind takes.
@@ -184,15 +190,7 @@ def _check_options(name: str, kind: str, opts: dict, base: Path) -> None:
 
     if kind == "judge_round":
         _need("group")
-        _need("rows")
-        rows = opts.get("rows")
-        if not isinstance(rows, list) or not all(
-                isinstance(r, int) for r in rows):
-            raise LabError(
-                f"arm {name!r}: `rows:` is a list of programme_revisions "
-                f"ids (integers), one Adversary round each")
-        if "decisions" in opts:
-            opts["decisions"] = str((base / str(opts["decisions"])).resolve())
+        check_judge_source(name, opts, base)
     elif kind == "strategist_wake":
         _need("group")
     elif kind == "theory_wake":
@@ -220,6 +218,62 @@ def _check_options(name: str, kind: str, opts: dict, base: Path) -> None:
             if not isinstance(stop, dict):
                 raise LabError(f"arm {name!r}: `stop:` is a mapping")
             _refuse_unknown(f"arm {name!r} stop", stop, STOP_KEYS)
+    elif kind == "gauntlet":
+        _need("items_dir")
+        opts["items_dir"] = str((base / str(opts["items_dir"])).resolve())
+
+
+def check_judge_source(name: str, opts: dict, base: Path) -> None:
+    """A judge round is fed by EXACTLY ONE of `rows:` or `proposal:`.
+
+    `rows:` re-judges what the record holds; `proposal:` judges a file,
+    which is the only way to put a scene the record never held in front
+    of the judge (a trap: the defect it hides is the measurement, so it
+    must not have been written by the seat under test). Both would be
+    two proposals under one item's name and the score could not say
+    which one the verdict belongs to; neither is no proposal at all.
+
+    Shared by `lab.yaml` and `standard.yaml` — a check spelled twice is
+    one that drifts, and the standard sets are the heavier user."""
+    rows, proposal = opts.get("rows"), opts.get("proposal")
+    if bool(rows) == bool(proposal):
+        raise LabError(
+            f"{name}: name exactly one proposal — `rows:` (programme_"
+            f"revisions ids, one Adversary round each) to re-judge what "
+            f"the record holds, or `proposal:` (a file, with its "
+            f"`decisions:`) to judge one the record never held")
+    if rows is not None and (not isinstance(rows, list)
+                             or not all(isinstance(r, int) for r in rows)):
+        raise LabError(
+            f"{name}: `rows:` is a list of programme_revisions ids "
+            f"(integers), one Adversary round each")
+    for key in ("proposal", "decisions"):
+        if opts.get(key):
+            path = (base / str(opts[key])).resolve()
+            if not path.is_file():
+                raise LabError(
+                    f"{name}: no {key} file at {path} — a judge round's "
+                    f"inputs are resolved beside the file that names them")
+            opts[key] = str(path)
+
+
+def with_seats(exp: Experiment, seats: "dict[str, str]") -> Experiment:
+    """`exp` with `seats` merged over every arm's.
+
+    Over, not under: `--seats` is the operator saying "this whole run,
+    on this model", and an arm that pinned the same seat pinned it for
+    the experiment's own question, not for this one. MERGED rather than
+    replacing, so an arm that moves a DIFFERENT seat keeps it — the
+    same rule `_apply_seats` follows against the archived config."""
+    if not seats:
+        return exp
+    over = {str(k): _seat_spec(str(k), v) for k, v in seats.items()}
+    arms = {name: Arm(name=a.name, kind=a.kind, prompts=a.prompts,
+                      seats={**a.seats, **over}, options=a.options)
+            for name, a in exp.arms.items()}
+    return Experiment(name=exp.name, path=exp.path, snapshot=exp.snapshot,
+                      rewind=exp.rewind, code_commit=exp.code_commit,
+                      reps=exp.reps, arms=arms)
 
 
 def load(root: Path, exp: str) -> Experiment:

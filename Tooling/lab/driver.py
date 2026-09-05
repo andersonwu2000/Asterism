@@ -11,13 +11,16 @@ be a control. `lab run` therefore spawns this module with `cwd` set to
 the workspace, where `-m` puts the workspace first on `sys.path`, and
 `assert_workspace_code` checks that it worked rather than trusting it.
 
-Five kinds, ported from the retired `Tooling/experiments/` runners with
-their logic intact and their hardcoded paths gone:
+Six kinds, ported from the retired `Tooling/experiments/` runners (and,
+for the last, from `.asterism/gauntlet/harness.py`) with their logic
+intact and their hardcoded paths gone:
 
-  judge_round       one Adversary round on a historical proposal
-                    (`replay_judge`): the scene from this workspace's
-                    DB, the proposal and its filed decisions from the
-                    slice's pre-rewind `source.db`.
+  judge_round       one Adversary round on a proposal — a historical
+                    one (`replay_judge`: the scene from this
+                    workspace's DB, the proposal and its filed
+                    decisions from the slice's pre-rewind `source.db`),
+                    or one authored as a FILE, which is what a standard
+                    trap is: a scene the record never held.
   strategist_wake   one full Strategist wake — agent, verify, judge
                     loop, commit into THIS DB (`replay_strategist`).
   theory_wake       one Theorist wake through the productised pipeline
@@ -29,6 +32,10 @@ their logic intact and their hardcoded paths gone:
   daemon            the framework's own daemon in this workspace, on its
                     own gateway port, until `--once` drains or a
                     declared stop condition fires.
+  gauntlet          bare force: N independent Lean bricks, proofs
+                    stripped, one shot each with no tools at all
+                    (`gauntlet.py` — the only kind that never opens the
+                    DB).
 
 Every kind writes `driver_result.json` and copies its attempts tree into
 `_out/` whole. Whole, not by whitelist: the artefact that mattered on
@@ -267,49 +274,110 @@ def load_proposal(source_db: Path, rev_row: int) -> dict:
         conn.close()
 
 
-def run_judge_round(spec: dict, ws: Path, out: Path) -> dict:
+def resolve_group(conn, problem: str, group) -> int:
+    """An arm's `group:` as an id. `root` is the problem's TOP group.
+
+    Spelled as a word rather than as the integer it happens to be
+    today: a standard set names one charter, and the top group's id is
+    minted by whichever `init` built the base — a number in the table
+    would go stale the first time the base is rebuilt from a clean
+    root, and it would go stale SILENTLY, judging the trap against
+    whatever group inherited the id."""
+    from Tooling.state import groups as _groups
+    text = str(group).strip().lower()
+    if text in ("root", "top"):
+        row = _groups.top_group(conn, problem)
+        if row is None:
+            raise SystemExit(
+                f"{problem} has no top group in this workspace — "
+                f"`group: root` names the one `init` creates, so this "
+                f"workspace's problem was never initialised")
+        return int(row["id"])
+    return int(group)
+
+
+def load_file_proposal(opts: dict) -> dict:
+    """A proposal authored as a FILE, with its decisions beside it.
+
+    This is what a standard trap is: a scene the record never held.
+    The defect the trap hides is the measurement, so it cannot be
+    something the framework once produced — and there is therefore no
+    `programme_revisions` row to replay. The projection is the same one
+    either way; only where the two author-written files come from
+    differs."""
+    body = Path(opts["proposal"]).read_text(encoding="utf-8")
+    objs: "list[dict]" = []
+    if opts.get("decisions"):
+        objs = json.loads(Path(opts["decisions"]).read_text(encoding="utf-8"))
+    return {"body": body, "decisions": objs, "batch_id": None,
+            "note": (f"proposal from {opts['proposal']}"
+                     + (f", decisions from {opts['decisions']}"
+                        if opts.get("decisions")
+                        else " with an EMPTY decisions.md")),
+            "source": {"proposal": str(opts["proposal"]),
+                       "decisions": str(opts.get("decisions") or "")}}
+
+
+def _judge_sources(spec: dict, opts: dict, problem: str) -> "list[dict]":
+    """Every proposal this arm puts in front of the judge, in order —
+    one per `rows:` entry, or the single one `proposal:` names."""
+    if opts.get("proposal"):
+        return [load_file_proposal(opts)]
+    source_db = Path(spec["source_db"])
+    override = None
+    if opts.get("decisions"):
+        override = json.loads(
+            Path(opts["decisions"]).read_text(encoding="utf-8"))
+    out: "list[dict]" = []
+    for rev_row in list(opts["rows"]):
+        prop = load_proposal(source_db, int(rev_row))
+        if prop["problem"] != problem:
+            raise SystemExit(
+                f"rev row {rev_row} belongs to {prop['problem']!r}, "
+                f"not {problem!r}")
+        if override is not None:
+            prop["decisions"] = override
+            prop["note"] = (
+                f"decisions supplied from {opts['decisions']}"
+                + (" — the DB has none for this revision"
+                   if prop["batch_id"] is None else " (override)"))
+        prop["source"] = {"rev_row": int(rev_row)}
+        out.append(prop)
+    return out
+
+
+def run_judge_round(spec: dict, ws: Path, out: Path, *, review=None) -> dict:
     from Tooling.agent import runtime as _rt
     from Tooling.agent.phase2_context import compile_strategist_context
     from Tooling.pipeline import adversary
     from Tooling.pipeline.strategist.model import parse_decisions
     from Tooling.state import db
 
+    review = review or adversary.review
     opts = spec["options"]
-    problem, group = spec["problem"], int(opts["group"])
+    problem = spec["problem"]
     trigger = str(opts.get("trigger") or "inject_batch_done")
-    source_db = Path(spec["source_db"])
-    override = None
-    if opts.get("decisions"):
-        override = json.loads(
-            Path(opts["decisions"]).read_text(encoding="utf-8"))
 
     conn = db.connect(ws / "asterism.db")
     who = _intent(conn, problem)
+    group = resolve_group(conn, problem, opts["group"])
     rounds, pipeline_ids = [], []
     try:
-        for rev_row in list(opts["rows"]):
-            prop = load_proposal(source_db, int(rev_row))
-            if prop["problem"] != problem:
-                raise SystemExit(
-                    f"rev row {rev_row} belongs to {prop['problem']!r}, "
-                    f"not {problem!r}")
+        for prop in _judge_sources(spec, opts, problem):
             objs, note = prop["decisions"], prop["note"]
-            if override is not None:
-                objs = override
-                note = (f"decisions supplied from {opts['decisions']}"
-                        + (" — the DB has none for this revision"
-                           if prop["batch_id"] is None else " (override)"))
             if note:
                 print(f"[judge_round] NOTE: {note}", flush=True)
             decisions, err = parse_decisions(json.dumps(objs))
             if err or decisions is None:
-                raise SystemExit(
-                    f"reconstructed decisions do not parse: {err}")
+                raise SystemExit(f"decisions do not parse: {err}")
 
             pid = str(uuid.uuid4())
             pipeline_ids.append(pid)
             attempts = _rt.attempts_dir_for(ws, pid)
             attempts.mkdir(parents=True, exist_ok=True)
+            # The author's own snapshot, compiled the way a batch wake
+            # compiles it — the judge's projection copies it verbatim,
+            # and a proposal may quote it.
             compile_strategist_context(
                 conn, problem=problem, trigger_kind=trigger,
                 attempts_dir=attempts, workspace=ws, intent=who,
@@ -319,20 +387,21 @@ def run_judge_round(spec: dict, ws: Path, out: Path) -> dict:
             (attempts / "decision.json").write_text(
                 json.dumps(objs, ensure_ascii=False, indent=2),
                 encoding="utf-8")
-            print(f"[judge_round] rev {rev_row}: scene in {attempts} — "
+            print(f"[judge_round] {prop['source']}: scene in {attempts} — "
                   f"{len(decisions)} decision(s), proposal "
                   f"{len(prop['body'])} chars; pipeline={pid}", flush=True)
-            verdict, jerr, rc = adversary.review(
+            verdict, jerr, rc = review(
                 round_no=1, attempts_dir=attempts,
                 problem_dir=db.problem_dir(ws, problem), conn=conn,
                 problem=problem, proposal_body=prop["body"],
                 decisions=decisions, dialogue=[], proof_warn=None,
                 group_id=group)
-            row = {"rev_row": int(rev_row), "pipeline_id": pid, "rc": rc,
+            row = {"source": prop["source"], "pipeline_id": pid, "rc": rc,
                    "err": jerr, "verdict": verdict,
-                   "batch_id": prop["batch_id"], "decisions_note": note}
+                   "batch_id": prop["batch_id"], "decisions_note": note,
+                   "rev_row": prop["source"].get("rev_row")}
             (attempts / "replay_verdict.json").write_text(
-                json.dumps(row, ensure_ascii=False, indent=2),
+                json.dumps(row, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8")
             rounds.append(row)
         usage = usage_for(conn, pipeline_ids)
@@ -341,7 +410,7 @@ def run_judge_round(spec: dict, ws: Path, out: Path) -> dict:
     ok = bool(rounds) and all(r["rc"] == 0 and r["verdict"] is not None
                               for r in rounds)
     return {"outcome": "success" if ok else "failed", "rounds": rounds,
-            "pipeline_ids": pipeline_ids, "usage": usage,
+            "group_id": group, "pipeline_ids": pipeline_ids, "usage": usage,
             "artefacts": keep_attempts(ws, out, pipeline_ids)}
 
 
@@ -357,7 +426,7 @@ def run_strategist_wake(spec: dict, ws: Path, out: Path) -> dict:
     from Tooling.state import db
 
     opts = spec["options"]
-    problem, group = spec["problem"], int(opts["group"])
+    problem = spec["problem"]
     # The trigger derivation's "daemon start": the rewind cutoff when
     # the slice has one, otherwise now. Reading it off the slice rather
     # than off the clock is what makes a rewound arm derive the trigger
@@ -368,6 +437,7 @@ def run_strategist_wake(spec: dict, ws: Path, out: Path) -> dict:
     conn = db.connect(ws / "asterism.db")
     try:
         who = _intent(conn, problem)
+        group = resolve_group(conn, problem, opts["group"])
         derived, pending_id = _triggers._derive_strategist_trigger(
             conn, problem, group_id=group, routine_interval_min=120.0,
             since_iso=since)
@@ -449,11 +519,12 @@ def run_theory_wake(spec: dict, ws: Path, out: Path) -> dict:
 
     opts = spec["options"]
     problem = spec["problem"]
-    group = int(opts["group"]) if opts.get("group") is not None else None
     req = dict(opts.get("request") or {})
     conn = db.connect(ws / "asterism.db")
     try:
         who = _intent(conn, problem)
+        group = (resolve_group(conn, problem, opts["group"])
+                 if opts.get("group") is not None else None)
         decision_id = file_theorize_decision(
             conn, problem=problem, group_id=group,
             objective=str(req.get("objective") or ""),
@@ -474,11 +545,19 @@ def run_theory_wake(spec: dict, ws: Path, out: Path) -> dict:
         docs = [dict(x) for x in conn.execute(
             "SELECT id, path, status, rounds FROM theory_documents"
             " WHERE problem = ? ORDER BY id DESC LIMIT 5", (problem,))]
+        # THIS wake's document, keyed by the pipeline that wrote it —
+        # the list above is context (the problem's last few), and a
+        # score read off its head would grade whichever document the
+        # slice happened to arrive with when the wake produced none.
+        mine = [dict(x) for x in conn.execute(
+            "SELECT id, path, status, rounds FROM theory_documents"
+            " WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1", (pid,))]
         result = {"outcome": r.outcome,
                   "failure_reason": r.failure_reason,
                   "failure_detail": (r.failure_detail or "")[:1200],
                   "decision_id": decision_id, "pipeline_ids": [pid],
                   "theory_documents": docs,
+                  "theory_document": (mine[0] if mine else None),
                   "usage": usage_for(conn, [pid])}
     finally:
         conn.close()
@@ -542,7 +621,7 @@ def run_push_wake(spec: dict, ws: Path, out: Path) -> dict:
     from Tooling.state import db
 
     opts = spec["options"]
-    problem, group = spec["problem"], int(opts["group"])
+    problem = spec["problem"]
     trigger = str(opts.get("trigger") or "inject_batch_done")
     prompts = [Path(opts["prompt"])]
     if opts.get("prompt2"):
@@ -551,6 +630,7 @@ def run_push_wake(spec: dict, ws: Path, out: Path) -> dict:
     conn = db.connect(ws / "asterism.db")
     try:
         who = _intent(conn, problem)
+        group = resolve_group(conn, problem, opts["group"])
         pid = _new_pipeline(conn, kind="Strategist", target_id=str(group),
                             target_kind="Group")
         attempts = _rt.attempts_dir_for(ws, pid)
@@ -780,12 +860,23 @@ def stop_and_wait(ws: Path, proc, *, grace_sec: float = STOP_GRACE_SEC,
 # entry point
 # ---------------------------------------------------------------------
 
+def run_gauntlet(spec: dict, ws: Path, out: Path) -> dict:
+    """Bare force: the bricks under `items_dir`, one shot each. The
+    harness itself is `Tooling/lab/gauntlet.py` — it is the only kind
+    that never touches the DB, so it does not belong beside the four
+    that do."""
+    from Tooling.lab import gauntlet
+    return gauntlet.run(Path(spec["options"]["items_dir"]), ws, out,
+                        problem=spec["problem"])
+
+
 KINDS = {
     "judge_round": run_judge_round,
     "strategist_wake": run_strategist_wake,
     "theory_wake": run_theory_wake,
     "push_wake": run_push_wake,
     "daemon": run_daemon,
+    "gauntlet": run_gauntlet,
 }
 
 RESULT_BASENAME = "driver_result.json"

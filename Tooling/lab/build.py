@@ -89,6 +89,11 @@ LINKED_TREES = (".lake/packages",)
 BASE_STAMP = "base.json"
 WORKSPACE_STAMP = "workspace.json"
 
+#: `<root>/sets/` — the standard test sets' own tree (the owner's, in
+#: the private repo). Named here because the base reads its seed
+#: problems out of it.
+SETS_DIRNAME = "sets"
+
 
 # ---------------------------------------------------------------------
 # the base
@@ -157,10 +162,80 @@ def ensure_base(root: Path, commit: str) -> Path:
         (base / rel).mkdir(parents=True, exist_ok=True)
     (base / "Problems" / "README.md").write_text(PROBLEMS_README,
                                                  encoding="utf-8")
+    seeded = seed_base_problems(root, base)
     stamp.write_text(json.dumps(
         {"commit": commit, "built_utc": datetime.now(timezone.utc).isoformat(),
-         "archive": list(ARCHIVE_PATHS)}, indent=2) + "\n", encoding="utf-8")
+         "archive": list(ARCHIVE_PATHS), "seeded_problems": seeded},
+        indent=2) + "\n", encoding="utf-8")
     return base
+
+
+# ---------------------------------------------------------------------
+# the base's own problems
+# ---------------------------------------------------------------------
+
+def seed_base_problems(root: Path, base: Path) -> "list[str]":
+    """Copy `<root>/sets/`'s seed problems into the base and INITIALISE
+    them, the way `asterism init` does. Returns the slugs.
+
+    A standard test set is self-contained: its problems ship with the
+    set (`sets/base/Problems/…`) instead of arriving in a slice, because
+    a trap judged against a slice of union_closed would be measuring the
+    slice. So the base — the skeleton every workspace is copied from —
+    carries them already registered: root minted `frozen`, top group
+    created from the charter, TREE/BRIEF rendered. Through
+    `problems.init_problem`, the same chokepoint the CLI and the serve
+    layer use; a second registration path is a second definition of what
+    a registered problem is.
+
+    IN-PROCESS AND AGAINST THE BASE'S OWN DB, never the live one:
+    `init_problem` takes its workspace as an argument, so nothing here
+    depends on the cwd.
+
+    `force=True` — the type-check gate is SKIPPED here, and that is not
+    a shortcut. The gate runs `lake build` on Root.lean/Defs.lean, and
+    the base has no `.lake` at all: the dependency tree is junctioned
+    per RUN workspace (`LINKED_TREES`), so a build at base time would
+    have no Mathlib to check against and would refuse every seed. The
+    seeds are the owner's, versioned with the set, and the first real
+    build of them happens in the run workspace like any other problem's.
+
+    Idempotent: `init_problem` re-inits a registered problem without
+    minting a second root, so this runs on every `ensure_base`.
+    """
+    from ..core.cli.problems import init_problem
+    from ..state import db as _db
+
+    root, base = Path(root), Path(base)
+    seeds = _seed_dirs(root)
+    if not seeds:
+        return []
+    (base / "Problems").mkdir(parents=True, exist_ok=True)
+    done: "list[str]" = []
+    for src in seeds:
+        rel = src.relative_to(root / SETS_DIRNAME / "base" / "Problems")
+        dst = base / "Problems" / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        problem = _db.slug_from_problem_dir(base, dst)
+        rc, msg = init_problem(base, problem, force=True)
+        if rc != 0:
+            raise LabError(
+                f"the base could not initialise the seed problem "
+                f"{problem!r} from {src}: {msg}")
+        print(f"[lab] base problem {problem} — {msg.splitlines()[-1]}",
+              flush=True)
+        done.append(problem)
+    return done
+
+
+def _seed_dirs(root: Path) -> "list[Path]":
+    """`sets/standard.yaml`'s `base.problems`, absolute. Empty when the
+    root holds no standard sets — `lab build` predates them and every
+    experiment that does not use one still builds a bare skeleton."""
+    from .standard import base_problem_dirs
+    return base_problem_dirs(root)
 
 
 # ---------------------------------------------------------------------
@@ -317,10 +392,15 @@ def _apply_seats(ws: Path, arm) -> None:
         encoding="utf-8")
 
 
-def build(root: Path, exp, arm_name: str, *, slice_: Slice,
+def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
           base: "Path | None" = None, commit: "str | None" = None,
           rep: "int | None" = None) -> Path:
-    """Build one workspace and return its path."""
+    """Build one workspace and return its path.
+
+    `slice_=None` is a workspace that starts from the BASE alone —
+    which is what a standard set's own problems are: seeded into the
+    base and initialised there, so there is no live scene to import and
+    `carry import` would have nothing to land."""
     arm = exp.arm(arm_name)
     commit = commit or resolve_commit(exp.code_commit)
     base = base if base is not None else ensure_base(root, commit)
@@ -345,7 +425,8 @@ def build(root: Path, exp, arm_name: str, *, slice_: Slice,
     (ws / ".attempts").mkdir(exist_ok=True)
     (ws / ".asterism").mkdir(exist_ok=True)
 
-    _import_slice(ws, slice_)
+    if slice_ is not None:
+        _import_slice(ws, slice_)
     prompts = _apply_prompts(ws, arm)
     _apply_seats(ws, arm)
 
@@ -364,16 +445,26 @@ def build(root: Path, exp, arm_name: str, *, slice_: Slice,
         "arm": arm_name,
         "rep": rep,
         "kind": arm.kind,
-        "slice": slice_.id,
-        "slice_manifest": {
-            k: slice_.manifest.get(k)
-            for k in ("problem", "taken_utc", "programme_rev", "goal_count",
-                      "code_commit", "schema_user_version", "rewind")},
+        "slice": slice_.id if slice_ is not None else None,
+        "slice_manifest": slice_manifest(slice_),
         "commit": commit,
         "built_utc": datetime.now(timezone.utc).isoformat(),
         "overlay": {"prompts": prompts, "seats": arm.seats},
         "links": links,
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"[lab] built {ws} — slice {slice_.id}, commit {commit[:12]}, "
-          f"overlay {prompts or 'none'}", flush=True)
+    print(f"[lab] built {ws} — slice "
+          f"{slice_.id if slice_ is not None else 'none (base only)'}, "
+          f"commit {commit[:12]}, overlay {prompts or 'none'}", flush=True)
     return ws
+
+
+#: What a record keeps of the slice's manifest: where and when the
+#: scene came from, and how big it was.
+SLICE_MANIFEST_KEYS = ("problem", "taken_utc", "programme_rev", "goal_count",
+                       "code_commit", "schema_user_version", "rewind")
+
+
+def slice_manifest(slice_: "Slice | None") -> dict:
+    if slice_ is None:
+        return {}
+    return {k: slice_.manifest.get(k) for k in SLICE_MANIFEST_KEYS}

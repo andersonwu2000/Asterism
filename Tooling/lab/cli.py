@@ -15,6 +15,7 @@ from . import build as _build
 from . import run as _run
 from . import snapshot as _snapshot
 from . import spec as _spec
+from . import standard as _standard
 
 RC_OK, RC_FAIL = 0, 1
 
@@ -95,9 +96,32 @@ def _cmd_build(args: argparse.Namespace, root) -> int:
     return RC_OK
 
 
+def seat_overrides(raw) -> "dict[str, str]":
+    """`--seats seat=provider/model[:effort]` -> `{seat: spec}`.
+
+    Split HERE and validated against the one seat parser, so a
+    malformed one is refused while the operator is still looking at the
+    command line — not minutes later, in a workspace already built."""
+    out: "dict[str, str]" = {}
+    for entry in list(raw or []):
+        seat, sep, value = str(entry).partition("=")
+        if not sep or not seat.strip() or not value.strip():
+            raise LabError(
+                f"--seats {entry!r} is not `seat=provider/model[:effort]` "
+                f"(e.g. `--seats adversary=codex/gpt-5:xhigh`)")
+        _spec._seat_spec(seat.strip(), value.strip())   # refuse it here
+        out[seat.strip()] = value.strip()
+    return out
+
+
 def _cmd_run(args: argparse.Namespace, root) -> int:
     exp_name, arm = _need(args)
+    seats = seat_overrides(getattr(args, "seats", None))
+    if exp_name == _standard.EXPERIMENT_NAME:
+        return _cmd_run_standard(args, root, arm, seats)
     exp = _spec.load(root, exp_name)
+    if seats:
+        exp = _spec.with_seats(exp, seats)
     dirs = _run.run_arm(root, exp, arm, workspace=_workspace(),
                         reps=getattr(args, "reps", None),
                         keep=bool(getattr(args, "keep", False)))
@@ -105,3 +129,19 @@ def _cmd_run(args: argparse.Namespace, root) -> int:
     for d in dirs:
         print(f"  {d / _run.OUT_DIRNAME}")
     return RC_OK
+
+
+def _cmd_run_standard(args: argparse.Namespace, root, target: str,
+                      seats: "dict[str, str]") -> int:
+    """`lab run standard <set|item|all>` — run the sets and SCORE them.
+
+    Non-zero when an item missed its expectation: a standard set is run
+    to be told whether the framework still does what it did, and a
+    runner that always returns 0 makes that answer something a human
+    has to read the scrollback for."""
+    rows = _standard.run(root, target, workspace=_workspace(), seats=seats,
+                         keep=bool(getattr(args, "keep", False)))
+    n_ok = sum(1 for r in rows if r["score"]["ok"])
+    print(f"OK: lab run standard {target} — {n_ok}/{len(rows)} met their "
+          f"expectation; scorecard {_standard.scorecard_path(root)}")
+    return RC_OK if rows and n_ok == len(rows) else RC_FAIL
