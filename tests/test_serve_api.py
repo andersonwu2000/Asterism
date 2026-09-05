@@ -1841,6 +1841,28 @@ def test_config_get_and_set(workspace: Path) -> None:
         "key": "gateway.port", "value": 1}).status_code == 422
 
 
+def test_the_model_catalog_is_a_module_of_its_own(workspace: Path) -> None:
+    """The seat source moved out of the app factory (Assistant redesign
+    §4): the Assistant's picker needs the same grouped answer the
+    settings page shows, and importing `serve.app` to get it would make
+    the chat endpoint depend on the whole application.
+
+    Both halves of the move are pinned — the new home answers, and the
+    old private name is GONE. A left-behind `app._model_groups` would be
+    a second copy of "which providers does this machine have", and the
+    copy is what drifts (`llm/explainer.executable` says the same about
+    `shutil.which`)."""
+    from Tooling.serve import app as _app
+    from Tooling.serve import model_catalog
+
+    groups = model_catalog.model_groups(workspace)
+    assert {g["provider"] for g in groups} >= {"claude", "antigravity"}
+    assert not hasattr(_app, "_model_groups"), "the old copy is still there"
+    rows = {r["key"]: r for r
+            in _client(workspace).get("/api/config").json()["settings"]}
+    assert rows["strategist.model"]["groups"] == groups
+
+
 # ---------------------------------------------------------------------
 # POST /api/lean/eval — the reader's Lean scratch pipeline
 # ---------------------------------------------------------------------
