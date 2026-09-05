@@ -86,6 +86,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "library.require_signoff": "Ingest pauses for approve-ingest (True)",
     "paper_index.timeout_sec": "paper-map one-shot spawn budget (1200)",
     "explainer.model": "serve chat-explainer spawn model (teammate serve/chat.py; registered here to keep the drift gate green)",
+    "explainer.idle_sec": "Assistant turn IDLE deadline — seconds of SILENCE from the explainer before the turn is killed, not a budget for the whole answer; also agy's --print-timeout, which has no stream and whose whole-answer clock IS its idle clock (ASTERISM_EXPLAINER_IDLE_SEC; 600)",
     "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
     "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
     "<kind>.reasoning_effort": "per-pipeline reasoning depth, codex only (ASTERISM_<KIND>_REASONING_EFFORT; 'xhigh'). claude carries no such knob — its thinking budget is set per spawn from the wall-clock budget.",

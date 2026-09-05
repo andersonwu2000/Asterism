@@ -93,15 +93,70 @@ from . import capabilities, drift_guard
 # --------------------------------------------------------------- events
 #
 # The UI event vocabulary every backend must produce. `serve/chat.py`
-# forwards these verbatim over SSE and the drawer renders them:
+# forwards these verbatim over SSE and the panel renders them:
 #
 #   {"type": "status", "stage": "thinking"|"reading"|…, "tool"?: str}
+#   {"type": "tool_start", "id": str, "name": str, "input": dict}
+#   {"type": "tool_end",   "id": str, "ok": bool, "ms": int|None,
+#                          "result": str}
 #   {"type": "delta",  "text": str}
 #   {"type": "done",   "ok": bool, "subtype": str, "turns": int|None,
 #                      "output_tokens": int|None, "handle"?: str}
 #
 # `handle` appears only for a provider that MINTS the conversation id
-# itself (agy); see `Turn`.
+# itself (agy); see `Turn`. The tool pair is what the panel's activity
+# rows are made of (redesign §3) and a backend WITHOUT a stream emits
+# neither — agy's answer arrives whole, so inventing rows for it would
+# manufacture the appearance of progress out of nothing.
+
+#: What a tool argument or result may contribute to a row. The panel
+#: shows one line; a `Read` of a 40k file must not put 40k in an SSE
+#: frame and in the transcript on disk.
+_CLIP = 200
+
+
+def _clip_text(value: object, limit: int = _CLIP) -> str:
+    s = str(value)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _clip_input(value: object, depth: int = 2) -> object:
+    """Clip the strings inside a tool's arguments.
+
+    Strings are clipped wherever they are found; `depth` bounds only how
+    far the walk descends into containers, which is what stops a tool
+    that took a deep structure from costing an unbounded walk.
+    """
+    if isinstance(value, str):
+        return _clip_text(value)
+    if depth <= 0:
+        return value
+    if isinstance(value, dict):
+        return {k: _clip_input(v, depth - 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip_input(v, depth - 1) for v in value]
+    return value
+
+
+def _flatten_result(content: object) -> str:
+    """A tool result as one clipped line.
+
+    Measured shape (2026-09-06 capture): `content` was a plain STRING
+    for a successful Glob. The list-of-blocks form is the API's other
+    legal shape, so both are read rather than the one that happened to
+    be on the wire that afternoon.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text") or ""))
+            else:
+                parts.append(str(block))
+        return _clip_text(" ".join(p for p in parts if p))
+    return _clip_text(content)
 
 #: Reads are fenced to the workspace by rules the CLI enforces.
 READ_SCOPE_WORKSPACE = "workspace"
@@ -208,8 +263,12 @@ class _Backend:
 
     #: canonical provider name in `llm/capabilities.py`
     name: str = ""
-    #: what the drawer offers, cheapest first; index 1 is the default
-    models: "tuple[str, ...]" = ()
+    #: What this seat runs when nothing is picked. There is deliberately
+    #: NO list beside it: the picker's source is `serve/model_catalog`
+    #: (the declared lists in `core/config`, or agy's live probe), and a
+    #: second hand-kept tuple here is the copy that rots — this one
+    #: still offered claude's retired `haiku`/`sonnet`/`opus` aliases.
+    #: The default must be a member of that declared list.
     default_model: str = ""
     read_scope: str = READ_SCOPE_PROCESS
 
@@ -257,8 +316,7 @@ class ClaudeExplainer(_Backend):
     """
 
     name = "claude"
-    models = ("haiku", "sonnet", "opus")   # CLI aliases, cheapest first
-    default_model = "sonnet"
+    default_model = "claude-sonnet-5"
     read_scope = READ_SCOPE_WORKSPACE
 
     #: The public notes site doubles as the mechanism knowledge base for
@@ -334,7 +392,32 @@ class ClaudeExplainer(_Backend):
     def reader(self, proc: "subprocess.Popen",
                out: "queue.Queue[dict | None]") -> None:
         """stdout JSONL → UI events. Runs on its own thread; the SSE
-        generator drains the queue. None = stream ended."""
+        generator drains the queue. None = stream ended.
+
+        The tool pair is assembled from three places, because that is
+        where the CLI puts it (measured against a real stream,
+        2026-09-06; see tests/test_serve_chat.py for the capture):
+
+          * `content_block_start` announces the call with `input: {}` —
+            the arguments are not there yet, so a row emitted here would
+            have nothing to say;
+          * `content_block_delta` / `input_json_delta` carries them as
+            JSON FRAGMENTS which have to be concatenated;
+          * `content_block_stop` is therefore where the call is
+            complete, and where `tool_start` is emitted;
+          * the result is not a stream event at all — it arrives as a
+            top-level `user` message holding `tool_result` blocks, which
+            is what pairs by `tool_use_id`.
+
+        A fragment stream that never parses still emits its row: the
+        tool's NAME is most of the information, and dropping the row
+        would leave the panel with a call that never ended.
+        """
+        import time
+        #: block index → the call being assembled on it
+        pending: "dict[object, dict]" = {}
+        #: tool id → when its row started, for `ms`
+        started: "dict[str, float]" = {}
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -351,9 +434,14 @@ class ClaudeExplainer(_Backend):
                 elif t == "stream_event":
                     ev = obj.get("event") or {}
                     et = ev.get("type")
+                    index = ev.get("index")
                     if et == "content_block_start":
                         cb = ev.get("content_block") or {}
                         if cb.get("type") == "tool_use":
+                            pending[index] = {
+                                "id": str(cb.get("id") or ""),
+                                "name": str(cb.get("name") or ""),
+                                "json": ""}
                             out.put({"type": "status", "stage": "reading",
                                      "tool": str(cb.get("name") or "")})
                         elif cb.get("type") == "thinking":
@@ -364,6 +452,39 @@ class ClaudeExplainer(_Backend):
                             txt = d.get("text")
                             if isinstance(txt, str) and txt:
                                 out.put({"type": "delta", "text": txt})
+                        elif d.get("type") == "input_json_delta" \
+                                and index in pending:
+                            frag = d.get("partial_json")
+                            if isinstance(frag, str):
+                                pending[index]["json"] += frag
+                    elif et == "content_block_stop" and index in pending:
+                        call = pending.pop(index)
+                        try:
+                            args = json.loads(call["json"] or "{}")
+                        except ValueError:
+                            args = {}
+                        if not isinstance(args, dict):
+                            args = {}
+                        started[call["id"]] = time.monotonic()
+                        out.put({"type": "tool_start", "id": call["id"],
+                                 "name": call["name"],
+                                 "input": _clip_input(args)})
+                elif t == "user":
+                    for block in ((obj.get("message") or {}
+                                   ).get("content") or []):
+                        if not isinstance(block, dict) or \
+                                block.get("type") != "tool_result":
+                            continue
+                        tid = str(block.get("tool_use_id") or "")
+                        at = started.pop(tid, None)
+                        out.put({
+                            "type": "tool_end", "id": tid,
+                            # no `is_error` key at all on success
+                            "ok": not bool(block.get("is_error")),
+                            "ms": (None if at is None
+                                   else int((time.monotonic() - at) * 1000)),
+                            "result": _flatten_result(block.get("content")),
+                        })
                 elif t == "result":
                     usage = obj.get("usage") or {}
                     out.put({
@@ -404,12 +525,8 @@ class AntigravityExplainer(_Backend):
     """
 
     name = "antigravity"
-    # From `agy models` on 1.1.11 (2026-08-10 — the entitlement list of
-    # this account, not a guess). Cheapest first, same shape as claude's
-    # haiku/sonnet/opus ladder, and the middle rung is the default for
-    # the same reason.
-    models = ("gemini-3.6-flash-low", "gemini-3.6-flash-high",
-              "gemini-3.1-pro-high")
+    # The middle rung of what `agy models` lists (1.1.11, 2026-08-10) —
+    # the picker offers the rest.
     default_model = "gemini-3.6-flash-high"
     read_scope = READ_SCOPE_PROCESS
 

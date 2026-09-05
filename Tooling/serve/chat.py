@@ -1,11 +1,12 @@
-"""serve.chat — the explainer drawer's backend.
+"""serve.chat — the Assistant panel's backend.
 
-One endpoint pair: POST /api/chat streams an answer over SSE; POST
-/api/chat/clear forgets the conversation. The answerer is a headless
-spawn with a READ-ONLY tool surface — it explains progress, code and
-framework mechanics; it can never act. That is a soundness boundary,
-same tier as "sign-off cannot be machine-signed" (design SoT:
-docs/internal/chat_explainer_design.md).
+POST /api/chat streams one answer over SSE; `/api/chat/sessions` is the
+CRUD around the transcripts it is filed on (`serve/chat_sessions.py`
+owns the disk). The answerer is a headless spawn with a READ-ONLY tool
+surface — it explains progress, code and framework mechanics; it can
+never act. That is a soundness boundary, same tier as "sign-off cannot
+be machine-signed" (design SoT: docs/internal/chat_explainer_design.md;
+the 2026-09-06 redesign is web/docs/assistant_redesign_2026-09-06.md).
 
 WHICH backend answers is a seat like any other: `explainer.provider` →
 `ASTERISM_EXPLAINER_PROVIDER` → `ASTERISM_LLM_PROVIDER` → claude, the
@@ -22,9 +23,15 @@ Conversation continuity rides whatever the seated provider declares
 id, agy replays the conversation id it minted itself, and a provider
 that resumes nothing gets no resume flag and reports
 `conversation_memory: false`. One question at a time (single slot,
-non-blocking lock → 409 busy). The browser owns display history; the
-provider's session owns model context; /api/chat/clear drops both ends
-together.
+non-blocking lock → 409 busy).
+
+The TRANSCRIPT is ours and the provider's session is theirs, and the
+two can now come apart: `truncate_to` (edit & re-ask) deletes turns no
+CLI can un-say, and a swept provider session dies while the record
+lives. Both land in the same place — the turn is planned cold and the
+kept turns are replayed into the prompt (`_replay_block`), which is why
+the panel's old "the engine reads your next question fresh" caveat is
+retired. It does read the conversation; it just re-reads it from us.
 
 Page awareness: the client freezes {page kind, name} at send time and
 the context block is built from that frozen value — the QPaper lesson
@@ -32,11 +39,12 @@ the context block is built from that frozen value — the QPaper lesson
 navigated to mid-stream. Context is re-sent only when the page key
 changes between messages; the session carries the rest.
 
-The session is bound to a PROJECT (HID §1.1-2, §3.5): one conversation
-per Project, keyed here, so switching Project switches session instead
-of carrying an Erdos answer into a Topology page. The Project-picker
-page has no Project and gets its own key (`_global`, which is not a
-legal Project name, so it cannot collide with one). And the panel
+Sessions are bound to a PROJECT (HID §1.1-2, §3.5): every Project has
+its own transcripts, keyed here, so a question can never be filed on
+another shelf's conversation (422) and switching Project cannot carry
+an Erdos answer into a Topology page. The Project-picker page has no
+Project and gets its own key (`_global`, which is not a legal Project
+name, so it cannot collide with one). And the panel
 follows the cursor: `focus` names the object on screen — a goal, a
 group, a document, a problem — and its section joins the context block.
 That is §1.4's "the panel receives the current screen's context", the
@@ -50,7 +58,6 @@ at a real object badly, not invent a route (QPaper's paper_id lesson).
 from __future__ import annotations
 
 import json
-import os
 import queue
 import sqlite3
 import subprocess
@@ -63,6 +70,8 @@ from pydantic import BaseModel
 
 from ..llm import explainer
 from ..state import db
+from . import chat_sessions
+from . import model_catalog
 
 _MAX_MESSAGE = 8_000        # chars — a question, not an upload
 _MAX_CONTEXT = 6_000        # chars — prebuilt page context budget
@@ -70,7 +79,27 @@ _MAX_CONTEXT = 6_000        # chars — prebuilt page context budget
 #: the question was asked on. The page block keeps whatever is left.
 _MAX_PROJECT = 1_200
 _MAX_FOCUS = 1_800
-_TIMEOUT_SEC = int(os.environ.get("ASTERISM_EXPLAINER_TIMEOUT", "300"))
+
+#: The replayed conversation's budget, and one turn's share of it (§2).
+#: A transcript is unbounded and a prompt is not.
+_MAX_REPLAY = 12_000
+_MAX_REPLAY_TURN = 2_000
+
+#: An SSE COMMENT on the wire this often while the CLI is silent, so a
+#: proxy (or the browser) never sees a socket with nothing on it. A
+#: comment, not a frame: the browser's reducer must not have to know
+#: this exists.
+_KEEPALIVE_SEC = 15.0
+
+#: Fallback for `explainer.idle_sec` — the clock that decides a turn is
+#: dead. It is an IDLE clock: a turn that keeps calling tools is
+#: working, however long it takes, and the wall clock this replaced
+#: killed answers that were visibly making progress.
+_IDLE_SEC_DEFAULT = 600
+
+_REPLAY_HEADER = (
+    "[Earlier in this conversation — replayed because the engine's session\n"
+    "was reset; answer as a continuation.]\n")
 
 #: The session key for a conversation with no Project — the picker page
 #: (§1.4). `_global` starts with an underscore, which `projects.NAME_RE`
@@ -437,29 +466,22 @@ def _page_context(workspace: Path, page: "dict | None", *,
 
 
 class _ChatState:
-    """One conversation per Project (§1.1-2), plus the one slot.
+    """The one slot.
 
-    The maps are keyed by `_session_key(project)`, so the Project the
-    person is in decides which conversation a question continues. The
-    lock stays SINGLE: the constraint is one question at a time on this
-    machine, not one per Project — a second spawn would double the cost
-    of the same subscription while the first is still thinking.
+    Nothing else lives here any more: the resume handle and the page key
+    a conversation was last primed for are FIELDS ON THE RECORD now
+    (§2), so they survive a serve restart with the transcript instead of
+    dying with the process that happened to hold them.
+
+    The lock stays SINGLE: the constraint is one question at a time on
+    this machine, not one per Project — a second spawn would double the
+    cost of the same subscription while the first is still thinking. It
+    also guards the transcript a live answer is being written into: a
+    rename, a truncation or a delete while the stream runs is a 409.
     """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()      # ONE question at a time
-        #: session key → the seated provider's resume handle for that
-        #: conversation: a caller-minted uuid, a provider-minted
-        #: conversation id, or absent on a backend that resumes nothing
-        self.sessions: "dict[str, str]" = {}
-        #: session key → the page key its context was last built for
-        self.page_keys: "dict[str, str]" = {}
-
-    @property
-    def session_id(self) -> "str | None":
-        """The Project-less conversation — the drawer's whole world
-        before Projects, and still the picker page's own session."""
-        return self.sessions.get(GLOBAL_SESSION_KEY)
 
 
 def _session_key(project: "str | None") -> str:
@@ -502,16 +524,60 @@ class ChatBody(BaseModel):
     """
 
     message: str
+    session_id: str              # the transcript this turn is filed on
     page: "dict | None" = None   # {kind: board|problem|library|engine, name?}
-    model: "str | None" = None   # one of /api/chat/state's `models`
+    model: "str | None" = None   # one of /api/chat/state's `groups`
     project: "str | None" = None
     focus: "dict | None" = None
+    #: `edit & re-ask`: drop `turns[n:]` before this question, where
+    #: turn n is the question being edited. The engine's handle goes
+    #: with them and the kept turns are replayed instead.
+    truncate_to: "int | None" = None
 
 
-class ClearBody(BaseModel):
-    """Which conversation to forget. Absent = the Project-less one."""
+class SessionBody(BaseModel):
+    """Which shelf a new conversation belongs to. Absent = the
+    Project-picker page's own (`_global`)."""
 
     project: "str | None" = None
+
+
+class RenameBody(BaseModel):
+    """A conversation's name. Empty hands it back to the machine."""
+
+    title: str = ""
+
+
+def _clip_turn(text: str) -> str:
+    return (text if len(text) <= _MAX_REPLAY_TURN
+            else text[:_MAX_REPLAY_TURN - 1] + "…")
+
+
+def _replay_block(turns: "list[dict]") -> str:
+    """The conversation so far, for a turn the engine cannot resume.
+
+    Most recent FIRST while filling the budget — an answer continues the
+    last exchange, so if anything has to be dropped it is the oldest —
+    then written back in reading order, because that is the order a
+    reader (and a model) understands a dialogue in. Tool rows are not
+    replayed: they were the engine's own working, and it can do it
+    again if it needs to.
+    """
+    if not turns:
+        return ""
+    kept: "list[str]" = []
+    budget = _MAX_REPLAY
+    for turn in reversed(turns):
+        line = (f"{turn.get('role') or 'user'}: "
+                f"{_clip_turn(str(turn.get('text') or ''))}")
+        if len(line) + 1 > budget:
+            break
+        budget -= len(line) + 1
+        kept.append(line)
+    if not kept:
+        return ""
+    kept.reverse()
+    return _REPLAY_HEADER + "\n".join(kept) + "\n"
 
 
 def register(app: FastAPI, workspace: Path) -> None:
@@ -528,9 +594,24 @@ def register(app: FastAPI, workspace: Path) -> None:
                               default=backend.default_model,
                               workspace=workspace))
 
+    def _groups() -> "list[dict]":
+        """The picker's offer: the machine's catalog, filtered to
+        providers that HAVE an explainer backend. Offering `codex` here
+        would offer a choice `availability()` refuses by name a moment
+        later — a picker must not be able to name a dead end."""
+        return [g for g in model_catalog.model_groups(workspace)
+                if g["provider"] in explainer.BACKENDS]
+
+    def _idle_sec() -> int:
+        from ..core import config
+        return int(config.get("explainer.idle_sec",
+                              env_var="ASTERISM_EXPLAINER_IDLE_SEC",
+                              default=_IDLE_SEC_DEFAULT, cast=int,
+                              workspace=workspace))
+
     @app.get("/api/chat/state")
-    def chat_state(project: "str | None" = None) -> dict:
-        """What the drawer must know BEFORE the user types.
+    def chat_state() -> dict:
+        """What the panel must know BEFORE the user types.
 
         `conversation_memory` and `read_scope` are the two ways a
         backend can be honestly worse than claude here (llm/explainer.py
@@ -539,18 +620,15 @@ def register(app: FastAPI, workspace: Path) -> None:
         that arrives after the question has been asked is a caveat that
         arrived too late.
 
-        `has_session` is per Project (§1.1-2): the panel asks about the
-        Project it is open in, and a site-wide answer would tell it the
-        conversation continues when the person just switched shelves.
+        `groups` + `model_default` are the picker (§4). One control
+        decides the model AND the backend, because the backend is
+        implied by the model and two controls would let them disagree.
         """
-        key = _session_key(project)
         name = explainer.provider(workspace)
         backend = explainer.backend_for(name)
         ok, detail = explainer.availability(name)
         return {
             "busy": state.lock.locked(),
-            "has_session": key in state.sessions,
-            "session_key": key,
             "provider": name,
             "available": ok,
             "unavailable_detail": detail,
@@ -558,25 +636,57 @@ def register(app: FastAPI, workspace: Path) -> None:
             "read_scope": explainer.read_scope(name),
             "read_note": explainer.scope_note(name),
             "model_default": _default_model(backend) if backend else "",
-            "models": list(backend.models) if backend else [],
+            "groups": _groups(),
         }
 
-    @app.post("/api/chat/clear")
-    def chat_clear(body: "ClearBody | None" = None) -> dict:
-        """Forget ONE Project's conversation — both ends. The provider's
-        session is simply abandoned (claude keeps sessions as files under
-        the user's state and ages unreferenced ones out; agy's
-        conversation id is dropped and never replayed).
+    # -- the transcripts (§2) ------------------------------------------
 
-        One Project, not all of them: "clear" is pressed inside a
-        Project, and the person clearing their Erdos thread has said
-        nothing about the Topology one."""
+    @app.get("/api/chat/sessions")
+    def list_sessions(project: "str | None" = None) -> dict:
+        return {"sessions": chat_sessions.list_for(
+            workspace, _session_key(project))}
+
+    @app.post("/api/chat/sessions")
+    def new_session(body: "SessionBody | None" = None) -> dict:
+        """A conversation to file questions on — or the empty one this
+        Project already has (§2: `+ new conversation` twice must not
+        leave two blank rows in the fold)."""
+        key = _session_key(body.project if body else None)
+        name = explainer.provider(workspace)
+        backend = explainer.backend_for(name)
+        return chat_sessions.summary(chat_sessions.create(
+            workspace, key,
+            model=_default_model(backend) if backend else "",
+            provider=name))
+
+    @app.get("/api/chat/sessions/{session_id}")
+    def read_session(session_id: str) -> dict:
+        record = chat_sessions.get(workspace, session_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        return record
+
+    @app.patch("/api/chat/sessions/{session_id}")
+    def rename_session(session_id: str, body: RenameBody) -> dict:
         if state.lock.locked():
             raise HTTPException(status_code=409, detail="busy")
-        key = _session_key(body.project if body else None)
-        state.sessions.pop(key, None)
-        state.page_keys.pop(key, None)
-        return {"cleared": True}
+        try:
+            return chat_sessions.summary(
+                chat_sessions.rename(workspace, session_id, body.title))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown session")
+
+    @app.delete("/api/chat/sessions/{session_id}")
+    def delete_session(session_id: str) -> dict:
+        """Deleting the session is the act (`clear` is retired): it
+        drops the transcript and abandons the provider's session with
+        it — claude ages unreferenced session files out, agy's
+        conversation id is simply never replayed."""
+        if state.lock.locked():
+            raise HTTPException(status_code=409, detail="busy")
+        if not chat_sessions.delete(workspace, session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        return {"deleted": True}
 
     @app.post("/api/chat")
     async def chat(body: ChatBody) -> StreamingResponse:
@@ -585,25 +695,79 @@ def register(app: FastAPI, workspace: Path) -> None:
             raise HTTPException(status_code=400, detail="empty message")
         if len(message) > _MAX_MESSAGE:
             raise HTTPException(status_code=413, detail="message too long")
-        # Before the slot is taken: a malformed Project name is a bad
-        # request, and a 422 that arrives after the lock is held is a
-        # 422 that has already cost the next question its turn.
+        # Everything that can refuse the question refuses it BEFORE the
+        # slot is taken: a 4xx that arrives after the lock is held is a
+        # 4xx that has already cost the next question its turn.
         session_key = _session_key(body.project)
-        provider = explainer.provider(workspace)
+        session_id = body.session_id
+        record = chat_sessions.get(workspace, session_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if str(record.get("project") or "") != session_key:
+            raise HTTPException(
+                status_code=422,
+                detail=f"this conversation belongs to Project "
+                       f"{record.get('project')!r}, not {session_key!r} — "
+                       f"a question is filed on its own shelf's transcript")
+        seated = explainer.provider(workspace)
+        seated_backend = explainer.backend_for(seated)
+        if seated_backend is None:
+            # no backend at all for the seat: the message names the seat
+            # and the backends that could be chosen instead
+            raise HTTPException(status_code=503,
+                                detail=explainer.availability(seated)[1])
+        default_model = _default_model(seated_backend)
+        model = (body.model or "").strip() or default_model
+        groups = _groups()
+        provider = next((g["provider"] for g in groups
+                         if model in g["models"]), None)
+        if provider is None:
+            # The default is always legal even off-list (a seat may be
+            # pinned to a name the catalog has not heard of); anything
+            # else the person could only have picked from the offer, so
+            # the refusal names the offer.
+            if model != default_model:
+                offer = ", ".join(sorted({m for g in groups
+                                          for m in g["models"]}))
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{model!r} is not a model this machine offers "
+                           f"— pick one of: {offer}")
+            provider = seated
+        if record.get("turns") and record.get("provider") \
+                and str(record["provider"]) != provider:
+            # §4: the resume handle belongs to ONE CLI. Replaying a
+            # claude session id at agy is not a degraded answer, it is
+            # a different conversation wearing this one's transcript.
+            raise HTTPException(
+                status_code=422,
+                detail=f"this conversation is held with "
+                       f"{record['provider']!r} — start a new conversation "
+                       f"to switch backends")
         ok, detail = explainer.availability(provider)
         if not ok:
             raise HTTPException(status_code=503, detail=detail)
         backend = explainer.backend_for(provider)
         assert backend is not None  # availability() just proved it
-        model = (body.model or "").strip() or _default_model(backend)
+        idle_sec = _idle_sec()
         if not state.lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="busy")
 
         # From here the lock is ours; the generator's finally releases
         # it (starlette always iterates the body, even on disconnect).
         # Until the generator exists, release on ANY exception — a
-        # failed context build must not wedge the drawer shut.
+        # failed context build must not wedge the panel shut.
         try:
+            if body.truncate_to is not None:
+                try:
+                    record = chat_sessions.truncate(
+                        workspace, session_id, body.truncate_to)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc))
+                except KeyError:
+                    raise HTTPException(status_code=404,
+                                        detail="unknown session")
+            prior = list(record.get("turns") or [])
             page_key, context = _page_context(
                 workspace, body.page, project=body.project,
                 focus=body.focus)
@@ -612,23 +776,38 @@ def register(app: FastAPI, workspace: Path) -> None:
             # `turn.resume` is False for every question, so the page
             # context below is re-sent every time instead of being left
             # to a session memory that does not exist.
-            turn = explainer.plan_turn(provider,
-                                       state.sessions.get(session_key))
-            parts: "list[str]" = []
-            if not turn.resume or page_key != state.page_keys.get(
-                    session_key):
-                parts.append(_CONTEXT_HEADER + context + "\n")
-            parts.append(message)
-            prompt = "\n".join(parts)
+            turn = explainer.plan_turn(provider, record.get("handle"))
+            context_block = _CONTEXT_HEADER + context + "\n"
+            # What a COLD turn says: the conversation so far, the page,
+            # the question. Built even for a warm turn, because the
+            # cold retry below needs it — a swept provider session must
+            # not lose the transcript we still hold.
+            cold_prompt = "\n".join(
+                p for p in (_replay_block(prior), context_block, message)
+                if p)
+            if turn.resume:
+                warm: "list[str]" = []
+                if page_key != record.get("page_key"):
+                    warm.append(context_block)
+                prompt = "\n".join([*warm, message])
+            else:
+                prompt = cold_prompt
+            record = chat_sessions.append_user(workspace, session_id, message)
+            if len(record.get("turns") or []) == 1:
+                # the seat is decided by the FIRST turn, not by creation:
+                # the person may move the picker before typing
+                record = chat_sessions.set_seat(workspace, session_id,
+                                                model=model,
+                                                provider=provider)
         except BaseException:
             state.lock.release()
             raise
 
-        def _spawn(t: explainer.Turn) -> subprocess.Popen:
+        def _spawn(t: explainer.Turn, text: str) -> subprocess.Popen:
             from ..core.process_group import no_window_creationflags
             argv, env = backend.launch(
-                workspace=workspace, system=_SYSTEM_PROMPT, prompt=prompt,
-                model=model, turn=t, timeout_sec=_TIMEOUT_SEC)
+                workspace=workspace, system=_SYSTEM_PROMPT, prompt=text,
+                model=model, turn=t, timeout_sec=idle_sec)
             return subprocess.Popen(
                 argv, env=env, cwd=str(workspace),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -636,20 +815,33 @@ def register(app: FastAPI, workspace: Path) -> None:
                 creationflags=no_window_creationflags(),
             )
 
+        #: The answer being assembled, so the `finally` below can write
+        #: it down whatever ends the stream (§2: partial answers are
+        #: first-class — the person read what streamed).
+        answer: "list[str]" = []
+        rows: "list[dict]" = []
+        outcome: "dict[str, object]" = {"ok": False, "note": None}
+
         async def gen():
             nonlocal turn
             import asyncio
             proc: "subprocess.Popen | None" = None
+            persist = True
             try:
+                yield _sse({"type": "session", "id": session_id})
                 yield _sse({"type": "status", "stage": "context"})
                 try:
-                    proc = _spawn(turn)
+                    proc = _spawn(turn, prompt)
                 except OSError as exc:
                     # Launching is more than exec on some backends: agy's
                     # capability envelope is a directory this call writes.
                     # A failure there must name itself, not surface as a
-                    # truncated stream (the drawer would roll the question
-                    # back with "the stream ended before an answer").
+                    # truncated stream (the panel would roll the question
+                    # back with "the stream ended before an answer") —
+                    # and the question goes with it, because the panel
+                    # has just put the text back in the composer.
+                    persist = False
+                    chat_sessions.pop_last_user(workspace, session_id)
                     yield _sse({"type": "error",
                                 "detail": f"could not start the {provider} "
                                           f"explainer: {exc}"})
@@ -658,32 +850,47 @@ def register(app: FastAPI, workspace: Path) -> None:
                 threading.Thread(target=backend.reader, args=(proc, q),
                                  daemon=True, name="chat-reader").start()
                 got_any = False
-                deadline = asyncio.get_running_loop().time() + _TIMEOUT_SEC
+                loop = asyncio.get_running_loop()
+                last_event = loop.time()
+                last_ping = last_event
                 while True:
                     try:
                         item = await asyncio.to_thread(q.get, True, 1.0)
                     except queue.Empty:
-                        if asyncio.get_running_loop().time() > deadline:
+                        # IDLE, not a wall: every event resets the clock,
+                        # so a turn that keeps calling tools is a turn
+                        # that is working, however long it takes.
+                        idle_now = loop.time()
+                        if idle_now - last_event > idle_sec:
+                            outcome["note"] = (f"no word from the explainer "
+                                               f"for {idle_sec} s")
                             yield _sse({"type": "error",
-                                        "detail": "answer timed out"})
+                                        "detail": outcome["note"]})
                             break
+                        if idle_now - last_ping >= _KEEPALIVE_SEC:
+                            last_ping = idle_now
+                            yield ": keepalive\n\n"
                         continue
+                    last_event = loop.time()
+                    last_ping = last_event
                     if item is None:
                         rc = proc.wait()
                         if rc != 0 and not got_any:
                             # a dead resume handle (aborted turn, swept
                             # session, a conversation id the CLI no
                             # longer knows) gets ONE clean cold retry
-                            # before surfacing the error
+                            # before surfacing the error — and the cold
+                            # prompt carries the transcript we still hold
                             err = ""
                             if proc.stderr is not None:
                                 err = (proc.stderr.read() or "")[-400:]
                             if turn.resume:
                                 turn = explainer.plan_turn(provider, None)
-                                state.sessions.pop(session_key, None)
+                                chat_sessions.set_handle(
+                                    workspace, session_id, None, None)
                                 yield _sse({"type": "status",
                                             "stage": "retry"})
-                                proc = _spawn(turn)
+                                proc = _spawn(turn, cold_prompt)
                                 q2: "queue.Queue[dict | None]" = \
                                     queue.Queue()
                                 threading.Thread(
@@ -692,12 +899,24 @@ def register(app: FastAPI, workspace: Path) -> None:
                                     name="chat-reader-2").start()
                                 q = q2
                                 continue
+                            outcome["note"] = (f"{provider} exited rc={rc} "
+                                               f"{err}").strip()
                             yield _sse({"type": "error",
-                                        "detail": f"{provider} exited "
-                                                  f"rc={rc} {err}".strip()})
+                                        "detail": outcome["note"]})
                         break
-                    got_any = got_any or item.get("type") == "delta"
-                    if item.get("type") == "done":
+                    kind = item.get("type")
+                    got_any = got_any or kind == "delta"
+                    if kind == "delta":
+                        answer.append(str(item.get("text") or ""))
+                    elif kind == "tool_start":
+                        rows.append({"id": item.get("id"),
+                                     "name": item.get("name"),
+                                     "input": item.get("input"),
+                                     "ok": None, "ms": None, "result": ""})
+                    elif kind == "tool_end":
+                        _settle_row(rows, item)
+                    elif kind == "done":
+                        outcome["ok"] = bool(item.get("ok"))
                         # The handle to replay next time: the one we
                         # minted (claude), the one the provider minted
                         # and reported (agy), or None — a backend that
@@ -705,26 +924,50 @@ def register(app: FastAPI, workspace: Path) -> None:
                         handle = ((item.get("handle") or turn.handle)
                                   if explainer.remembers(provider)
                                   else None)
-                        if handle:
-                            state.sessions[session_key] = handle
-                        else:
-                            state.sessions.pop(session_key, None)
-                        state.page_keys[session_key] = page_key
+                        chat_sessions.set_handle(workspace, session_id,
+                                                 handle, page_key)
                     yield _sse(item)
-                    if item.get("type") == "done":
+                    if kind == "done":
                         break
-            except asyncio.CancelledError:
-                # client went away (stop button / closed tab) — the
-                # answer dies with it, but the session survives for
-                # the next question
-                raise
             finally:
+                # Runs on every ending, the client walking away included
+                # (the stop button and a closed tab both throw in here).
+                # Order matters: the spawn dies first, the transcript is
+                # written second, and the slot is freed last — a caller
+                # that sees the lock released must be able to read the
+                # turn it was waiting for.
                 if proc is not None and proc.poll() is None:
                     proc.kill()
+                if persist:
+                    try:
+                        chat_sessions.append_assistant(
+                            workspace, session_id, "".join(answer),
+                            ok=bool(outcome["ok"]), note=outcome["note"],
+                            tools=rows)
+                    except (KeyError, OSError):
+                        pass  # the session was deleted while it answered
                 state.lock.release()
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
+
+
+def _settle_row(rows: "list[dict]", item: dict) -> None:
+    """Close the row this result belongs to — or open a settled one.
+
+    An end whose start was never seen still gets a row (§3): a resumed
+    turn can carry a result whose call was made before this process
+    attached, and dropping it would be the panel deciding the engine
+    did not say something it said.
+    """
+    for row in rows:
+        if row["id"] == item.get("id") and row["ok"] is None:
+            row.update(ok=bool(item.get("ok")), ms=item.get("ms"),
+                       result=item.get("result") or "")
+            return
+    rows.append({"id": item.get("id"), "name": "", "input": {},
+                 "ok": bool(item.get("ok")), "ms": item.get("ms"),
+                 "result": item.get("result") or ""})
 
 
 def _sse(obj: dict) -> str:
