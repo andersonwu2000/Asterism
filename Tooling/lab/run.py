@@ -44,7 +44,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import LabError, runs_dir
+from . import LabError
 from . import build as _build
 from . import snapshot as _snapshot
 from .driver import RESULT_BASENAME
