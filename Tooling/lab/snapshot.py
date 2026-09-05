@@ -282,10 +282,12 @@ def take(workspace: Path, root: Path, *, problem: str,
 
     total = _write_tar(dest / FILES_TAR, members)
     rewound: "dict | None" = None
+    drift = _drift_counts(dest / CARRY_DB, workspace, problem)
     if cutoff:
         rewound = _rewind_in_place(dest, workspace=workspace,
                                    problem=problem, cutoff=cutoff)
         total = rewound.pop("_bytes")
+        drift = rewound.pop("_drift")
     programme_rev, goal_count = _scene(dest / CARRY_DB, problem, goal_count)
 
     manifest = {
@@ -304,6 +306,12 @@ def take(workspace: Path, root: Path, *, problem: str,
         "programme_rev": programme_rev,
         "files": {"entries": len(members), "bytes": total,
                   "excluded": skipped},
+        # `carry import`'s post-check blames the MOVE only for findings
+        # the bundle did not already have. Without this key every
+        # pre-existing finding reads as introduced, and `lab build`
+        # refuses a slice of any problem that has one — which is most of
+        # them, and none of it this import's business.
+        "drift_at_export": drift,
     }
     if rewound is not None:
         manifest["rewind"] = rewound
@@ -344,6 +352,33 @@ def _scene(bundle_db: Path, problem: str,
     return (int(rev) if rev is not None else None), int(goals)
 
 
+def _drift_counts(bundle_db: Path, tree: Path, problem: str) -> dict:
+    """The two layers `asterism drift-check` reports, asked of THIS
+    bundle: its rows against the file tree the tarball was built from.
+
+    Recorded so `carry import`'s post-check can tell a finding the
+    problem already had from one the move introduced. Asked of the
+    bundle rather than of the live DB because the bundle is what lands —
+    and because the live DB is never opened for anything but the
+    read-only copy above."""
+    from ..state import consistency, db as _db, proof_store
+    conn = _db.connect(bundle_db)
+    try:
+        rep = proof_store.inventory(conn, Path(tree), scope=problem)
+        sweep = consistency.consistency_sweep(conn, scope=problem)
+        return {"orphan_files": len(rep.orphan_files),
+                "missing_files": len(rep.missing_files),
+                "proved_with_sorry": len(rep.proved_with_sorry),
+                "tree_findings": sum(len(v) for v in sweep.values())}
+    except Exception as exc:            # noqa: BLE001 — a baseline that
+        # cannot be measured must not stop the snapshot; it degrades the
+        # import's blame delta, not the slice.
+        print(f"[lab] drift baseline unavailable ({exc!r})", flush=True)
+        return {}
+    finally:
+        conn.close()
+
+
 def _rewind_in_place(dest: Path, *, workspace: Path, problem: str,
                      cutoff: str) -> dict:
     """Move the slice — both planes — back to `cutoff`.
@@ -376,10 +411,13 @@ def _rewind_in_place(dest: Path, *, workspace: Path, problem: str,
         led_path = stage / _rewind.LEDGER_BASENAME
         if led_path.is_file():
             shutil.move(str(led_path), str(dest / _rewind.LEDGER_BASENAME))
+        # Measured on the REWOUND pair — rows and tree as they will
+        # actually land — not on the pre-rewind one two paragraphs up.
+        drift = _drift_counts(dest / CARRY_DB, stage, problem)
         total = _write_tar(dest / FILES_TAR, _stage_members(stage))
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    return {"cutoff": cutoff, "source_db": SOURCE_DB,
+    return {"cutoff": cutoff, "source_db": SOURCE_DB, "_drift": drift,
             "ledger": _rewind.LEDGER_BASENAME, "rows": rep,
             "directories": {k: {"kept": v["kept"], "dropped": v["dropped"],
                                 "provenance": v["provenance"]}
