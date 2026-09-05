@@ -129,10 +129,10 @@ def run(workspace: Path, *, once: bool = False,
         print(f"[dispatcher] {_clamp_msg}", flush=True)
         pool_size = _clamped
     # Adaptive RAM ledger (owner design 2026-08-25): with
-    # `dispatch.ram_budget` set, the static pool number yields — Lean
-    # admission follows the gateway's ledger-driven open-slot count and
-    # NL admission follows measured available RAM (NL priority: a wake
-    # surge may shrink the Lean field; claimed slots finish first).
+    # `dispatch.ram_budget` set, the ledger paces both worlds BENEATH
+    # `pool_size` (a hard ceiling): Lean admission follows the gateway's
+    # ledger-driven open-slot count, NL admission follows measured
+    # available RAM (NL priority; claimed slots finish first).
     ledger = None
     from .. import ram_ledger
     _budget_spec = ram_ledger.env_budget_spec(workspace)
@@ -155,7 +155,8 @@ def run(workspace: Path, *, once: bool = False,
                     cast=float, workspace=workspace))
             print(f"[dispatcher] RAM ledger active — budget "
                   f"{_budget_gb:.1f} GB of {_machine_gb:.1f} GB; "
-                  f"dispatch.pool yields to the ledger's target_slots",
+                  f"Lean width follows the ledger's target_slots"
+                  f"; in-flight ceiling = dispatch.pool ({pool_size})",
                   flush=True)
         else:
             print(f"[dispatcher] dispatch.ram_budget={_budget_spec!r} "
@@ -1064,6 +1065,12 @@ def run(workspace: Path, *, once: bool = False,
                     # RAM): NOTHING dispatches into a squeeze — in-
                     # flight work keeps its seats, releases shed
                     # (owner-spotted hole 2026-08-26).
+                    break
+                if len(futures) >= pool_size:
+                    # `dispatch.pool` is a HARD CEILING over both worlds
+                    # (owner 2026-09-06): on a subscription board the
+                    # binding resource is the five-hour quota window, not
+                    # RAM — full ledger width burned one out in 3.5h.
                     break
                 _lean_ok = (gateway_warm["ready"]
                             and _lean_fly < ledger.open_slots)

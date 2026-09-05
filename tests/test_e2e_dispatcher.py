@@ -24,6 +24,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -309,3 +310,120 @@ def test_dispatcher_tick_applies_queued_human_commands(
     assert conn2.execute(
         "SELECT actor FROM strategist_decisions WHERE id = ?",
         (row["decision_id"],)).fetchone()["actor"] == "human"
+
+
+def test_dispatch_pool_caps_in_flight_even_in_ledger_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dispatch.pool` is a HARD CEILING on in-flight pipelines of every
+    kind — the RAM ledger may admit fewer, never more (owner 2026-09-06).
+
+    The ledger paces RAM, but on a subscription board the binding
+    resource is the five-hour quota window: a ledger admitting freely
+    ran 2 Strategists + 2 Theorists + 17 Formalizer spawns and burned
+    the window out in 3.5h (2026-09-05 20:30Z). This drives the real
+    loop with a ledger that never refuses, so only the ceiling can hold.
+    """
+    import threading
+
+    monkeypatch.chdir(tmp_path)
+    _seed_workspace(tmp_path)
+    # ram_budget flips the loop into ledger mode; pool=2 is the ceiling.
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: 2\n  budget_sec: 60\n  ram_budget: 28G\n",
+        encoding="utf-8")
+
+    from Tooling.pipeline import _lake as _lake_mod
+    monkeypatch.setattr(_lake_mod, "lake_build", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(_lake_mod, "lake_build_modules",
+                        lambda *a, **k: (True, ""))
+    assert cli.cmd_init(argparse.Namespace(problem="p", force=False)) == 0
+
+    # Three live goals — one more than the pool. Their queue rows are laid
+    # down by the refill stub below, because `_recover_at_startup` clears
+    # the queue before the first tick.
+    conn = db.connect()
+    root = conn.execute("SELECT id FROM goals WHERE problem='p'").fetchone()
+    db.update_goal_status(conn, int(root["id"]), "open")
+    goal_ids = [int(root["id"])]
+    for i in (1, 2):
+        goal_ids.append(db.insert_goal(
+            conn, problem="p", slug=f"sub{i}",
+            lean_path=f"Problems/p/Sub{i}.lean", statement="True",
+            origin="forward", depth=1))
+    conn.commit()
+
+    # A ledger that refuses nothing: admission is then the ceiling's alone.
+    from Tooling.core import ram_ledger
+
+    class _FreeLedger:
+        budget_gb = 28.0
+        dispatch_paused = False
+        open_slots = 99
+        free_slots = 99
+        nl_blocked_by_budget = False
+        PRESSURE_HEADROOM_GB = ram_ledger.DispatcherLedger.PRESSURE_HEADROOM_GB
+        PRESSURE_RELEASE_SLACK_GB = (
+            ram_ledger.DispatcherLedger.PRESSURE_RELEASE_SLACK_GB)
+
+        def __init__(self, budget_gb, machine_gb, **kw): pass
+        def nl_hard_cap(self): return 8
+        def tick(self, **kw): pass
+        def nl_admissible(self, nl_in_flight): return True
+        def note_nl_admit(self): pass
+
+    monkeypatch.setattr(ram_ledger, "DispatcherLedger", _FreeLedger)
+
+    # Everything downstream of the door is stubbed — this exercises
+    # admission WIDTH, not what a pipeline does. The RAM clamp is pinned
+    # to identity so the ceiling is 2 on any machine's memory.
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+    monkeypatch.setattr(gateway_lifecycle, "ram_clamped_pool",
+                        lambda pool, slots: (pool, ""))
+    from Tooling.core import warmup as _warmup
+    monkeypatch.setattr(_warmup, "start_background",
+                        lambda ws: {"ready": True, "failed": None})
+    from Tooling.core.dispatcher import loop as _loop
+    monkeypatch.setattr(_loop, "_verify_problem", lambda *a, **k: True)
+
+    def seed_queue_once(conn_, *a, **k):
+        if conn_.execute("SELECT COUNT(*) FROM queue").fetchone()[0]:
+            return
+        if seeded:
+            return
+        seeded.append(True)
+        for gid in goal_ids:
+            db.enqueue(conn_, kind="Formalizer", target_id=str(gid),
+                       problem="p")
+    seeded: list = []
+    monkeypatch.setattr(_loop, "bfs_refill", seed_queue_once)
+    monkeypatch.setattr(_loop, "strategist_triggers", lambda *a, **k: None)
+    monkeypatch.setattr(_loop, "_librarian_refill", lambda *a, **k: False)
+    monkeypatch.setattr(_loop, "cascade_one", lambda *a, **k: None)
+
+    seen = threading.Lock()
+    live = {"now": 0, "peak": 0}
+
+    def fake_pipeline(workspace, intents, kind, target_id, target_kind,
+                      pipeline_id, decision_id):
+        with seen:
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+        # Long enough that a second admission pass overlaps this one.
+        time.sleep(0.1)
+        with seen:
+            live["now"] -= 1
+        return _loop.WorkerDone(pipeline_id, kind, target_id, target_kind,
+                                "failed", "test_stub")
+    monkeypatch.setattr(_loop, "_run_pipeline", fake_pipeline)
+
+    dispatcher.run(tmp_path, once=True)
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
+
+    assert live["peak"] <= 2, (
+        f"dispatch.pool=2 must cap in-flight pipelines of every kind; "
+        f"peaked at {live['peak']}")
+    assert live["peak"] == 2, (
+        "the three rows should still have filled the pool — a peak of "
+        f"{live['peak']} means the harness never exercised the ceiling")

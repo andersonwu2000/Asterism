@@ -27,7 +27,16 @@ dispatch:
                               # subscription, so the budget paces quota,
                               # not just RAM. (Was 26G for the free-
                               # channel Erdős five.)
-  pool: 12                    # 2026-08-23 (user): union_closed back on
+  pool: 2                     # 2026-09-06 (owner): the claude board
+                              # rides the subscription's five-hour
+                              # window, and a 3.5 h burst at full width
+                              # (2 Strategists + 2 Theorists + 17
+                              # Formalizer spawns) exhausted it at
+                              # 20:30Z. In ledger mode this number is
+                              # now a HARD CEILING on in-flight
+                              # pipelines of every kind (the ledger
+                              # may admit fewer, never more).
+                              # 2026-08-23 (user): union_closed back on
                               # codex, pool=8 this round. Erdős/zen
                               # resume: 12.
                               # 2026-08-25: with ram_budget set this
