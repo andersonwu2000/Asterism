@@ -446,3 +446,24 @@ def test_a_seat_override_lands_in_the_workspaces_own_config(tmp_path, base,
     assert cfg["adversary"]["reasoning_effort"] == "xhigh"
     rec = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))
     assert rec["overlay"]["seats"]["adversary"]["model"] == "gpt-5"
+
+
+def test_a_command_line_seat_wins_over_the_arms_and_leaves_the_others(
+        tmp_path):
+    """`--seats` is the operator saying "this whole run, on this model",
+    so it goes OVER what the arm pinned — the arm pinned it for the
+    experiment's own question, not for this one. Merged rather than
+    replacing: an arm that moves a DIFFERENT seat keeps it, the same
+    rule `_apply_seats` follows against the archived config."""
+    root = tmp_path / "lab"
+    exp = _exp(root, "Erdos.p1_20260101-000000Z", arm_body=(
+        "    seats: {adversary: codex/gpt-5:xhigh,"
+        " strategist: claude/opus}\n"))
+    moved = spec_mod.with_seats(exp, {"adversary": "claude/sonnet"})
+    seats = moved.arm("a").seats
+    assert seats["adversary"] == {"provider": "claude", "model": "sonnet"}, \
+        "the command line wins, effort included"
+    assert seats["strategist"]["model"] == "opus", "the other seat stays"
+    assert exp.arm("a").seats["adversary"]["model"] == "gpt-5", \
+        "the parsed experiment is not mutated"
+    assert spec_mod.with_seats(exp, {}) is exp
