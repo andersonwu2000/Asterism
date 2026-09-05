@@ -13,7 +13,8 @@ Verdict contract (`verdict.json` written by the judge into its cwd —
 per-criterion adjudication, 2026-07-25; five instances across three
 b6_1 legs of the judge naming a defect and passing anyway, so the
 pass/rebut decision is no longer the model's to write):
-    {"criteria": {"1": ["fired: <objection>", ...] | ["clear"], ...},
+    {"criteria": {"1": ["fired: <objection>", ...]
+                       | ["clear: <reason>", ...], ...},
      "reservations": ["...", ...]}   # advisory notes; legal only for
                                      # concerns that fire no criterion
 The framework DERIVES the verdict: any `fired` → rebut (the fired
@@ -572,8 +573,10 @@ def split_criterion(val: Any) -> "tuple[str, list[str]]":
 def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     """Validate the per-criterion verdict.json and DERIVE the ruling.
 
-    Each criterion line is `"clear"` or `"fired: <objection>"`; any
-    fired line makes the verdict a rebut. Returns a dict carrying the
+    A criterion takes a list of bullets (a bare string is the legacy
+    one-bullet form); each bullet is `"clear: <reason>"` or `"fired:
+    <objection>"`, and a criterion is clear iff EVERY bullet is. Any
+    fired bullet makes the verdict a rebut. Returns a dict carrying the
     synthesized legacy keys (`verdict` / `criticisms` / `reservations`)
     plus the raw `criteria`, or (None, err) on a malformed file."""
     try:
@@ -611,6 +614,12 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
             return None, (f"criterion {k} must be a list of strings "
                           f"(one bullet per objection) or a single "
                           f"string")
+        # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
+        # the same wake-killing parse: opus-tier judges annotate their
+        # verdicts — `"clear — I checked the chain end to end…"` — and
+        # the literal match threw away two full adversary rounds per
+        # hit. The DISCRIMINATOR is the leading word (word-boundary, so
+        # "clearly…" stays malformed); suffix prose is tolerated.
         heads = [("clear" if re.match(r"clear\b", x.strip(), re.IGNORECASE)
                   else "fired" if re.match(r"fired\b", x.strip(),
                                            re.IGNORECASE)
@@ -621,54 +630,57 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         if "clear" in heads and "fired" in heads:
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
                           f"bullets — a criterion is one or the other")
-        if heads[0] == "clear" and len(vals) > 1:
-            return None, (f"criterion {k}: \"clear\" takes exactly one "
-                          f"entry")
-        s = vals[0].strip()
-        # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
-        # the same wake-killing parse: opus-tier judges annotate their
-        # verdicts — `"clear — I checked the chain end to end…"` — and
-        # the literal match threw away two full adversary rounds per
-        # hit. The DISCRIMINATOR is the leading word (word-boundary, so
-        # "clearly…" stays malformed); suffix prose is tolerated.
-        if re.match(r"clear\b", s, re.IGNORECASE):
-            # #159 (2026-08-04): the naming criterion's judgment IS the
-            # naming. Ten SLC revs cleared it with the bare word,
-            # leaving the attention device without an auditable trace,
-            # on the one criterion built to catch a main claim orbiting
-            # untouched. Mechanical, not honor-system.
-            #
-            # `NAMING_CRITERIA` is the ENFORCEMENT half of a prompt
-            # rule — the prompt says whose reason IS the naming — and
-            # the two must move together or a judge that obeys the
-            # prompt has its verdict refused (the 2026-08-13 renumber
-            # nearly shipped exactly that), or names nothing on a
-            # criterion the prompt tells it to name (v6, d5916446,
-            # added a second naming criterion).
-            # `test_adversary_criteria_contract.py` holds them level.
-            #
-            # WHAT that naming must say is not spelled out here: it is
-            # quoted from the rubric's own output template FOR THIS
-            # criterion, so a reworded criterion rewords its own way
-            # out and no refusal points at the other one's job.
-            rest = s[len("clear"):].strip(" -—–:")
-            if k in NAMING_CRITERIA and not rest:
-                return None, (
-                    f"criterion {k} never takes a bare "
-                    f"\"clear\" — its judgment IS the naming: "
-                    f"`\"{naming_clear_shape(k)}\"`")
-            if not rest:
-                # Calibration survey 2026-08-29: 70-94% of clears on
-                # criteria 3/4/5 were the bare word, and the survey's
-                # rule-position experiment showed reasons appear only
-                # where the parser demands them (the requirement moved
-                # from c1 to c2 on 08-13 and the reasons moved with
-                # it). A bare clear leaves no calibration transcript —
-                # every criterion now carries its one sentence of why.
-                return None, (
-                    f"criterion {k} never takes a bare \"clear\" — say "
-                    f"why it holds for THIS proposal: `\"clear: <one "
-                    f"concrete reason>\"`")
+        if heads[0] == "clear":
+            # 2026-09-05 (union_closed): a criterion is clear iff EVERY
+            # bullet is clear — several clears are the shape the rubric
+            # ASKS for, since criterion 1 wants one line per NOW Inject.
+            # "clear takes exactly one entry" refused exactly that, twice
+            # per round, and killed six Strategist wakes in one day as
+            # `agent_no_output`. The bare-clear ban below is therefore
+            # per BULLET: a reasoned neighbour must not carry an
+            # unreasoned clear through.
+            for x in vals:
+                # #159 (2026-08-04): the naming criterion's judgment IS
+                # the naming. Ten SLC revs cleared it with the bare
+                # word, leaving the attention device without an
+                # auditable trace, on the one criterion built to catch
+                # a main claim orbiting untouched. Mechanical, not
+                # honor-system.
+                #
+                # `NAMING_CRITERIA` is the ENFORCEMENT half of a prompt
+                # rule — the prompt says whose reason IS the naming —
+                # and the two must move together or a judge that obeys
+                # the prompt has its verdict refused (the 2026-08-13
+                # renumber nearly shipped exactly that), or names
+                # nothing on a criterion the prompt tells it to name
+                # (v6, d5916446, added a second naming criterion).
+                # `test_adversary_criteria_contract.py` holds them
+                # level.
+                #
+                # WHAT that naming must say is not spelled out here: it
+                # is quoted from the rubric's own output template FOR
+                # THIS criterion, so a reworded criterion rewords its
+                # own way out and no refusal points at the other one's
+                # job.
+                rest = x.strip()[len("clear"):].strip(" -—–:")
+                if k in NAMING_CRITERIA and not rest:
+                    return None, (
+                        f"criterion {k} never takes a bare "
+                        f"\"clear\" — its judgment IS the naming: "
+                        f"`\"{naming_clear_shape(k)}\"`")
+                if not rest:
+                    # Calibration survey 2026-08-29: 70-94% of clears on
+                    # criteria 3/4/5 were the bare word, and the survey's
+                    # rule-position experiment showed reasons appear only
+                    # where the parser demands them (the requirement
+                    # moved from c1 to c2 on 08-13 and the reasons moved
+                    # with it). A bare clear leaves no calibration
+                    # transcript — every clear carries its one sentence
+                    # of why.
+                    return None, (
+                        f"criterion {k} never takes a bare \"clear\" — "
+                        f"say why it holds for THIS proposal: `\"clear: "
+                        f"<one concrete reason>\"`")
             continue
         for x in vals:
             xs = x.strip()
@@ -792,6 +804,13 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # hiccup on the judge must cost a re-spawn, not the author's work.
     last_err = ""
     verdict_tries = infra_tries = 0
+    # A refused verdict is put back to the SAME judge, with the parser's
+    # message (2026-09-05): the old retry deleted the file, spawned a
+    # blind fresh judge, and collected the same refused shape — six
+    # union_closed wakes died that way in one day. `retry_ctx` non-empty
+    # IS the resume: the sid is only re-minted for a cold spawn.
+    sid = ""
+    retry_ctx = ""
     # Loogle over MCP, not a shell — the judge checks "Mathlib has X"
     # claims, and that was its only shell use. The config lands INSIDE
     # the projection, so the isolation is unchanged.
@@ -799,11 +818,13 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     _tools_cfg = _write_tools_cfg(proj, attempts_dir.parent.parent,
                                   seat="adversary", problem=problem)
     while True:
-        sid = str(uuid.uuid4())
+        if not retry_ctx:
+            sid = str(uuid.uuid4())
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
-            session_id=sid, timeout_sec=timeout_sec,
+            session_id=sid, is_retry=bool(retry_ctx),
+            retry_context=retry_ctx or None, timeout_sec=timeout_sec,
             # Loogle over MCP, not a shell — the judge checks "Mathlib
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.
@@ -820,6 +841,10 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             usage_pipeline_id=attempts_dir.name,
         )
         if rc != 0:
+            # The resume itself died on the provider side, so the
+            # session is not a thing to go back to: fall back to a cold
+            # judge (the refused file stays on disk either way).
+            retry_ctx = ""
             # A confirmed quota window costs a sleep, not the author's
             # work (2026-08-08). The judge is fresh-per-round with no
             # session at stake, so parking here is pure win — and the
@@ -844,6 +869,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         # path must count against it or the wake spins forever).
         vpath = proj / VERDICT_BASENAME
         verdict = None
+        kept_name = ""
         if not vpath.exists():
             last_err = "adversary produced no verdict.json"
         else:
@@ -855,11 +881,32 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
                 verdict, perr = parse_verdict(text)
                 if verdict is None:
                     last_err = perr
-                    vpath.unlink(missing_ok=True)
+                    # The refused file is the judge's own written
+                    # evidence: the 09-05 post-mortem had to read six
+                    # transcripts because the retry unlinked it. Moving
+                    # it aside also clears the path, so a judge that
+                    # writes nothing next try is not re-judged on this.
+                    kept = proj / f"verdict_refused_{verdict_tries + 1}.json"
+                    try:
+                        vpath.replace(kept)
+                    except OSError:
+                        vpath.unlink(missing_ok=True)
+                    else:
+                        kept_name = kept.name
         if verdict is None:
             verdict_tries += 1
+            # The wake-level failure prints one line downstream; this is
+            # the only place that knows WHICH try failed and on what.
+            print(f"[adversary] r{round_no} try {verdict_tries}: "
+                  f"{last_err}", flush=True)
             if verdict_tries >= VERDICT_TRIES:
                 return None, last_err, 0
+            retry_ctx = (
+                f"The framework refused your {VERDICT_BASENAME}: "
+                f"{last_err}\n\nRewrite {VERDICT_BASENAME} in the shape "
+                f"that message requires"
+                + (f"; your previous file was kept as {kept_name}."
+                   if kept_name else "."))
             continue
         # Judge provenance (calibration survey P1/P2, 2026-08-29):
         # every seat comparison used to need yaml archaeology plus

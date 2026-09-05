@@ -540,6 +540,37 @@ def test_claude_spawn_retry_thinking_trap_not_framed_as_lake_build(
     assert "directly" in payload
 
 
+def test_claude_spawn_adversary_retry_is_not_framed_as_a_lake_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The judge's retry (2026-09-05) carries a verdict.json the
+    framework's parser refused — it never ran a build, and "Previous
+    attempt failed lake build" sends it hunting a phantom error, the
+    same class as the thinking-trap wording above. Name what was
+    refused and what to write."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="adversary",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context='criterion 1 mixes "clear" and "fired" bullets',
+    ))
+    payload = captured[0][captured[0].index("-p") + 1]
+    assert "failed lake build" not in payload
+    assert "patch.lean" not in payload
+    assert 'criterion 1 mixes "clear" and "fired" bullets' in payload
+    assert "verdict.json" in payload
+
+
 def test_claude_spawn_retry_handles_missing_retry_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

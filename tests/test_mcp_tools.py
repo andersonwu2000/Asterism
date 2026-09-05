@@ -237,13 +237,54 @@ def test_no_declaration_leaves_the_batch_judge_check_exactly_as_it_was(
     batch = {"criteria": {str(k): ["clear: a concrete reason"]
                           for k in range(1, 6)}, "reservations": []}
     out = _seat(monkeypatch, tmp_path, batch)
-    assert out.endswith("criteria 1-5 all present"), out
+    # The batch branch previews with the judge's own parser (2026-09-05)
+    # — an undeclared seat still gets the 1-5 rubric, now for real.
+    assert "the judge parser accepts it" in out, out
     four = {"criteria": {str(k): ["clear: a concrete reason"]
                          for k in range(1, 5)}, "reservations": []}
     assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
     (tmp_path / "_verdict_rubric.json").write_text("{ not json",
                                                    encoding="utf-8")
     assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
+
+
+def test_validate_json_runs_the_real_judge_parser() -> None:
+    """2026-09-05 (union_closed): the batch-judge branch checked only
+    that keys 1-5 were present, so it answered "OK: verdict-shaped,
+    criteria 1-5 all present" for verdicts the judge parser then
+    refused. Six Strategist wakes died on that false green light — the
+    judge validated, finished, and the wake discarded the proposal as
+    `agent_no_output`. The preview runs the parser itself and reports
+    what it says, including the ruling the framework will derive."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import adversary
+
+    def _verdict(**over: object) -> str:
+        crit: dict = {k: "clear: holds for this batch"
+                      for k in adversary.CRITERIA_KEYS}
+        for k in adversary.NAMING_CRITERIA:
+            crit[k] = "clear: " + adversary.naming_clear_shape(k)
+        crit.update(over)
+        return json.dumps({"criteria": crit})
+
+    other = next(k for k in adversary.CRITERIA_KEYS
+                 if k not in adversary.NAMING_CRITERIA)
+    bare = mcp_tools.validate_json(_verdict(**{other: "clear"}))
+    assert bare.startswith("OK as JSON, but the judge parser will "
+                           "reject it: "), bare
+    assert f"criterion {other}" in bare and "bare" in bare
+
+    mixed = mcp_tools.validate_json(_verdict(**{other: [
+        "clear: the first item holds", "fired: the second does not"]}))
+    assert "the judge parser will reject it" in mixed and "mixes" in mixed
+
+    ok = mcp_tools.validate_json(_verdict())
+    assert ok.startswith("OK") and "reject" not in ok
+    assert '"pass"' in ok, ok
+    rebut = mcp_tools.validate_json(
+        _verdict(**{other: "fired: the step is not forced"}))
+    assert rebut.startswith("OK") and "reject" not in rebut
+    assert '"rebut"' in rebut, rebut
 
 
 def test_loogle_tool_reports_failure_instead_of_raising(

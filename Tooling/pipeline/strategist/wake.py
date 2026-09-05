@@ -504,11 +504,13 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                         failure_reason=_adversary_rc_reason(arc),
                         failure_detail=f"adversary rc={arc}")
                 if verdict is None:
+                    # WHY there is no ruling (2026-09-05): six wakes
+                    # recorded the bare sentence, the parse error lost.
                     _discard_proposal(
                         conn, problem, proposal_body, dialogue,
                         rounds_used,
-                        "adversary produced no ruling", attempts_dir,
-                        group_id=group_id, channel="agent_no_output")
+                        f"adversary produced no ruling: {aerr}",
+                        attempts_dir, group_id=group_id, channel="agent_no_output")
                     return PipelineResult(
                         outcome="failed",
                         failure_reason="agent_no_output",

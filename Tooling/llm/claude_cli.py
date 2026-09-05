@@ -1384,6 +1384,14 @@ class ClaudeCliProvider:
                     f"unchanged. Write to "
                     f"{req.attempts_dir}/decision.json."
                 )
+            elif req.kind == "adversary":
+                # A REFUSED verdict.json, not a lake build — "produce a
+                # fresh patch.lean" would send the judge after a phantom.
+                err = (req.retry_context or "(refusal not captured)").strip()
+                prompt = (f"The framework refused your previous verdict.json:"
+                          f"\n\n```\n{err}\n```\n\nWrite the corrected file to "
+                          f"{req.attempts_dir}/verdict.json — your reading of "
+                          f"the proposal is unchanged; this is its shape.")
             elif req.retry_reason == "agent_stuck_thinking":
                 # Prior attempt died mid-thinking (watchdog / subprocess-
                 # timeout trap), NOT a lake error — rc=0, no build ran.

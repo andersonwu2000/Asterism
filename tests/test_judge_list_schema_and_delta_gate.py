@@ -38,10 +38,19 @@ def test_mixed_clear_and_fired_in_one_criterion_is_refused() -> None:
     assert v is None and "one or the other" in err
 
 
-def test_clear_takes_exactly_one_entry() -> None:
+def test_clear_takes_as_many_bullets_as_the_criterion_has_items() -> None:
+    """Requirement change 2026-09-05: criterion 1 rules one line per NOW
+    Inject, so a clear criterion carries one bullet per item and the
+    old "clear takes exactly one entry" refused the shape the rubric
+    asks for — six union_closed wakes died on it. Every bullet still
+    carries its own reason."""
     v, err = adversary.parse_verdict(_verdict({
         "4": ["clear: checked", "clear — checked twice"]}))
-    assert v is None and "exactly one" in err
+    assert v is not None, err
+    assert v["verdict"] == "pass"
+    v, err = adversary.parse_verdict(_verdict({
+        "4": ["clear: checked", "clear"]}))
+    assert v is None and "criterion 4" in err
 
 
 def test_the_legacy_single_string_form_still_parses() -> None:

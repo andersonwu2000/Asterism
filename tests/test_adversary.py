@@ -244,6 +244,49 @@ def test_parse_verdict_contract():
         assert v is None and err
 
 
+def test_a_criterion_takes_several_reasoned_clear_bullets() -> None:
+    """2026-09-05 (union_closed): six Strategist wakes died as
+    `agent_no_output` because the rubric asks criterion 1 for one line
+    PER Inject — so judges (sol and claude-opus alike) wrote one
+    `clear:` bullet per Inject and the parser refused the lot with
+    `"clear" takes exactly one entry`. The list is one bullet per
+    OBJECTION for fired and one per ITEM for clear; a criterion is
+    clear iff EVERY bullet is clear. Mixing the two stays refused —
+    a criterion is one or the other."""
+    c = _criteria()
+    c["1"] = ["clear: the first brick is consumed by the closure step",
+              "clear: the second brick is consumed by the deficit bound"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert err == "" and v is not None
+    assert v["verdict"] == "pass" and v["criticisms"] == []
+    assert v["criteria"]["1"] == c["1"]
+
+    c["1"] = ["clear: the first brick is consumed by the closure step",
+              "fired: the second brick feeds nothing in the Roadmap"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert v is None and "criterion 1" in err and "mixes" in err
+
+
+def test_a_bare_clear_bullet_is_refused_beside_reasoned_ones() -> None:
+    """The bare-clear ban is PER BULLET: with several bullets allowed,
+    a reasoned neighbour would otherwise carry an unreasoned clear
+    through, which is exactly the calibration trace the 08-29 survey
+    made mandatory. The naming criterion keeps its own message."""
+    other = next(k for k in adversary.CRITERIA_KEYS
+                 if k not in adversary.NAMING_CRITERIA)
+    c = _criteria()
+    c[other] = ["clear: the first item holds for this batch", "clear"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert v is None and f"criterion {other}" in err
+    assert "bare" in err
+
+    for n in adversary.NAMING_CRITERIA:
+        c = _criteria()
+        c[n] = ["clear: " + adversary.naming_clear_shape(n), "clear"]
+        v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+        assert v is None and f"criterion {n}" in err and "naming" in err
+
+
 # ------------------------------------- full cycle via run_strategist
 
 def _spawn_script(rebuttals_before_pass: int):
@@ -464,6 +507,46 @@ def test_native_decide_mention_bounces_once_before_the_judge(
     # revision rounds even though two strategist spawns happened.
     row = programme.current_rev(conn, "p")
     assert row is not None and row["rounds"] == 0
+
+
+def test_no_ruling_discard_names_what_the_parser_refused(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-05: six union_closed wakes recorded the bare "adversary
+    produced no ruling". The parse error existed — it just lived in
+    `PipelineResult.failure_detail`, which reaches neither the DB nor
+    the daemon log, so the cause took six transcripts to find. The
+    discard reason carries it."""
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps({"criteria": {**_criteria(), "1": "maybe"}}),
+                encoding="utf-8")
+            return 0
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Inject", "pipeline": "Forward",
+                        "proof": _INJECT_PROOF}),
+            encoding="utf-8")
+        (kw["attempts_dir"] / "proposal.md").write_text(
+            _PROPOSAL, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
+        workspace=workspace, intent=pintent, pipeline_id="adv-noruling",
+    )
+    assert r.outcome == "failed" and r.failure_reason == "agent_no_output"
+    row = conn.execute(
+        "SELECT * FROM programme_revisions WHERE problem='p'"
+        " AND status='rejected'").fetchone()
+    assert row is not None
+    assert row["discard_reason"].startswith(
+        "adversary produced no ruling: "), row["discard_reason"]
+    assert "criterion 1" in row["discard_reason"]
 
 
 def test_exempt_batch_skips_adversary(
@@ -1323,6 +1406,49 @@ def test_review_verdict_budget_is_bounded(
         proof_warn=None)
     assert verdict is None and rc == 0 and "no verdict" in err
     assert calls["n"] == adversary.VERDICT_TRIES
+
+
+def test_a_refused_verdict_is_kept_and_its_error_reaches_the_judge(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """2026-09-05 (union_closed): the retry deleted the refused
+    verdict.json, told the fresh judge nothing, and got the same shape
+    back — twice per round, six wakes. A judge cannot fix a refusal it
+    was never shown, and its written evidence is what the post-mortem
+    reads. So: keep the file aside, and resume the SAME session with the
+    parser's message and the one action it asks for."""
+    from Tooling.pipeline import adversary
+    attempts = workspace / ".attempts" / "pid"
+    attempts.mkdir(parents=True, exist_ok=True)
+    pdir = workspace / "Problems" / "p"
+    calls: list = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        body = (json.dumps({"criteria": {**_criteria(), "1": "maybe"}})
+                if len(calls) == 1 else _clear_criteria_json())
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            body, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    verdict, err, rc = adversary.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert rc == 0 and err == "" and verdict is not None
+    assert len(calls) == 2
+    assert calls[1]["session_id"] == calls[0]["session_id"], (
+        "the retry must resume the judge that wrote the refused file")
+    assert calls[1]["is_retry"] is True
+    ctx = calls[1]["retry_context"] or ""
+    assert "criterion 1" in ctx and "verdict.json" in ctx, ctx
+    proj = Path(calls[0]["attempts_dir"])
+    kept = sorted(p.name for p in proj.glob("verdict_refused_*.json"))
+    assert kept, "the judge's own written evidence must not vanish"
+    assert kept[0] in ctx, "the retry must say where the old file went"
+    assert json.loads((proj / kept[0]).read_text(
+        encoding="utf-8"))["criteria"]["1"] == "maybe"
 
 
 def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
