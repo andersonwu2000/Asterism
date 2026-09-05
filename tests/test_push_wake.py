@@ -388,6 +388,52 @@ def test_an_unregistered_judge_prompt_is_a_hard_error():
 # run_matrix — what the first live matrix (2026-09-04) exposed
 # ---------------------------------------------------------------------
 
+def test_no_runner_resolves_a_path_into_the_operators_private_tree():
+    """`docs/internal/` is the operator's development area and lives
+    OUTSIDE the workspace (owner ruling 2026-09-06); the framework never
+    reads it. `run_matrix` resolved its design directory there, so the
+    matrix ran on files no checkout carries: the day the tree moved, two
+    arms started failing at `apply_overlay` and the rest would have
+    built workspaces with no prompts in them.
+
+    The constant is what is checked, not the habit — a runner that
+    reaches out of the repo for the files it needs is not re-runnable by
+    anyone but the machine that happened to hold them."""
+    import importlib
+    import pkgutil
+
+    from Tooling import experiments
+
+    offenders = []
+    for mod in pkgutil.iter_modules(experiments.__path__):
+        m = importlib.import_module(f"Tooling.experiments.{mod.name}")
+        for name, value in vars(m).items():
+            if isinstance(value, Path) and \
+                    "docs/internal" in value.as_posix().lower():
+                offenders.append(f"{m.__name__}.{name} = {value.as_posix()}")
+    assert not offenders, (
+        "runner constant(s) resolve into the operator's private tree, "
+        "which no checkout has:\n  " + "\n  ".join(offenders))
+
+
+def test_the_matrixs_design_files_ship_with_the_repo():
+    """Every file `--build` copies into a workspace — each theory arm's
+    two prompts, each pipeline arm's overlay — is in the repo, and the
+    runs it writes are NOT: an experiment's output is lab material and
+    does not belong in the framework's own tree."""
+    from Tooling.experiments import run_matrix
+
+    assert run_matrix.DESIGN_DIR.is_relative_to(run_matrix.REPO / "Tooling")
+    for name, arm in run_matrix.ARMS.items():
+        if arm.theory:
+            continue
+        overlay = run_matrix.OVERLAY_ROOT / arm.overlay
+        assert overlay.is_dir(), f"{name}: no overlay at {overlay}"
+        assert [p for p in overlay.rglob("*") if p.is_file()], \
+            f"{name}: overlay {overlay} is empty"
+    assert not run_matrix.RUNS_ROOT.is_relative_to(run_matrix.REPO)
+
+
 def test_each_theory_arm_binds_its_own_author_and_judge_prompt():
     """Arms 5F and 5X differ ONLY in the author's prompt (fixed section
     shape vs. free), and both take the four-criterion judge. The arm is

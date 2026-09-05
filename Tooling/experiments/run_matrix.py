@@ -53,9 +53,21 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parents[2]
-DESIGN_DIR = REPO / "docs" / "internal" / "experiments" / "theory_wake"
+
+#: The matrix's own design files — each theory arm's author and judge
+#: prompt, each pipeline arm's prompt overlay — beside the runner that
+#: copies them into a workspace. They lived in the operator's private
+#: tree until it moved out of the workspace (owner ruling 2026-09-06);
+#: a runner whose inputs are not in the repo is re-runnable only on the
+#: machine that happens to hold them, and on 2026-09-06 the move alone
+#: made `--build` fail for every arm.
+DESIGN_DIR = Path(__file__).resolve().parent / "_design" / "theory_wake"
 OVERLAY_ROOT = DESIGN_DIR / "prompts"
-RUNS_ROOT = DESIGN_DIR / "runs"
+
+#: Where the runs land — OUTSIDE the repo. A run's artefacts are lab
+#: material (transcripts, verdicts, a copy of the scratch DB's rows),
+#: not framework source, and `--runs-dir` overrides this anyway.
+RUNS_ROOT = Path("D:/Asterism_lab/runs")
 
 PROBLEM = "Combinatorics.union_closed"
 GROUP = 691
@@ -250,7 +262,8 @@ def apply_overlay(ws: Path, arm: str) -> "list[str]":
         return applied
     src = OVERLAY_ROOT / spec.overlay
     if not src.is_dir():
-        raise SystemExit(f"no overlay at {src} — run make_arms.py first")
+        raise SystemExit(f"{arm}: no overlay at {src} — the arm's prompt "
+                         f"edits ship with the repo; restore them there")
     for p in sorted(src.rglob("*")):
         if not p.is_file():
             continue
