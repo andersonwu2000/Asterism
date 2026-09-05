@@ -92,6 +92,45 @@ def test_validate_json_file_mode_reads_the_disk(
     assert "only your attempts directory" in outside
 
 
+def test_validate_json_runs_the_real_judge_parser() -> None:
+    """2026-09-05 (union_closed): the batch-judge branch checked only
+    that keys 1-5 were present, so it answered "OK: verdict-shaped,
+    criteria 1-5 all present" for verdicts the judge parser then
+    refused. Six Strategist wakes died on that false green light — the
+    judge validated, finished, and the wake discarded the proposal as
+    `agent_no_output`. The preview runs the parser itself and reports
+    what it says, including the ruling the framework will derive."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import adversary
+
+    def _verdict(**over: object) -> str:
+        crit: dict = {k: "clear: holds for this batch"
+                      for k in adversary.CRITERIA_KEYS}
+        crit[adversary.NAMING_CRITERION] = (
+            "clear: the closer entry — one prerequisite stands")
+        crit.update(over)
+        return json.dumps({"criteria": crit})
+
+    other = next(k for k in adversary.CRITERIA_KEYS
+                 if k != adversary.NAMING_CRITERION)
+    bare = mcp_tools.validate_json(_verdict(**{other: "clear"}))
+    assert bare.startswith("OK as JSON, but the judge parser will "
+                           "reject it: "), bare
+    assert f"criterion {other}" in bare and "bare" in bare
+
+    mixed = mcp_tools.validate_json(_verdict(**{other: [
+        "clear: the first item holds", "fired: the second does not"]}))
+    assert "the judge parser will reject it" in mixed and "mixes" in mixed
+
+    ok = mcp_tools.validate_json(_verdict())
+    assert ok.startswith("OK") and "reject" not in ok
+    assert '"pass"' in ok, ok
+    rebut = mcp_tools.validate_json(
+        _verdict(**{other: "fired: the step is not forced"}))
+    assert rebut.startswith("OK") and "reject" not in rebut
+    assert '"rebut"' in rebut, rebut
+
+
 def test_loogle_tool_reports_failure_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

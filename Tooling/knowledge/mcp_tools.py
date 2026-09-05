@@ -260,26 +260,22 @@ def validate_json(text: str = "", file: str = "") -> str:
             return (f"OK: audit-shaped, criteria 1-4 present, every line "
                     f"in flight ruled on ({len(snap)} line(s))")
         if "criteria" in obj:
-            crit = obj.get("criteria")
-            if not isinstance(crit, dict):
-                return ("OK as JSON, but verdict-shaped and `criteria` "
-                        "is not an object — the judge parser will "
-                        "reject this")
-            missing = [str(k) for k in range(1, 6)
-                       if str(k) not in {str(c) for c in crit}]
-            notes = []
-            if missing:
-                notes.append(f"`criteria` missing criterion "
-                             f"{', '.join(missing)} — every criterion "
-                             f"gets a line")
-            if "reservations" in obj and not isinstance(
-                    obj.get("reservations"), list):
-                notes.append("`reservations` must be a list of strings")
-            if notes:
+            # The judge's own parser, not a second implementation of its
+            # rules: key-presence answered "OK: verdict-shaped, criteria
+            # 1-5 all present" for verdicts `parse_verdict` refused on
+            # their BULLET shape, and six union_closed Strategist wakes
+            # died on that green light (2026-09-05) — the judge
+            # validated, finished, and the wake discarded the proposal.
+            # A preview that can disagree with the parser is worse than
+            # none, so it IS the parser.
+            from ..pipeline.adversary import parse_verdict as _parse
+            verdict, perr = _parse(src)
+            if verdict is None:
                 return ("OK as JSON, but the judge parser will reject "
-                        "it: " + "; ".join(notes))
+                        "it: " + perr)
             return (f"OK: {len(obj)} top-level key(s); verdict-shaped, "
-                    f"criteria 1-5 all present")
+                    f"the judge parser accepts it and derives "
+                    f"\"{verdict['verdict']}\"")
         return f"OK: {len(obj)} top-level key(s)"
     if isinstance(obj, list):
         return f"OK: array of {len(obj)}"
