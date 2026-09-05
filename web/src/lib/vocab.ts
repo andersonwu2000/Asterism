@@ -233,8 +233,9 @@ const EVENT_TITLE: Record<string, string> = {
     + ' the review rounds counted beside the verb. Open it from this row',
   theory_refused:
     'engine term: theory_documents — the reviewer refused the document after the rounds'
-    + ' counted beside the verb, so nothing landed. Not a failure of the question: the'
-    + ' request can be filed again',
+    + ' counted beside the verb. It lands under documents › agent all the same, as the'
+    + ' record of what was tried; open it from this row. Not a failure of the question:'
+    + ' the request can be filed again',
   theory_died:
     'engine term: Theorist — the wake died before anything was reviewed: no document,'
     + ' no ruling, nothing landed. Not a refusal — nobody read it. The note is the'

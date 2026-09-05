@@ -198,8 +198,9 @@ def _theorize_result_lines(row) -> list[str]:
     roads say different things and both are actionable: an accepted
     document names its PATH (read it; it is under the Project's shelf
     and the next wake's `## Notes on this problem` lists it), a refused
-    one names the refusal and the verdict, which is the evidence the
-    next request on the same wall is written against."""
+    one names the refusal, the criteria that fired and — since the
+    2026-09-06 landing rule — the path of the record it left, which is
+    the evidence the next request on the same wall is written against."""
     try:
         payload = json.loads(str(row["payload"]) or "{}")
     except (TypeError, ValueError):

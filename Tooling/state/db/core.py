@@ -668,12 +668,15 @@ CREATE TABLE IF NOT EXISTS library_decls (
 -- log had no table for: a goal has `goals`, a group has `groups`, and a
 -- theory document had only a path in a payload nobody could query.
 --
--- A REJECTED run keeps its row. The document itself stays in the
--- attempts dir (it did not earn a place in the Project's shelf), but
--- the request, the round count and the last verdict are the evidence
--- for why the answer was refused — and the next `Theorize` on the same
--- wall is written by a Strategist reading exactly that. `path` is NULL
--- for those; `status` is the review's verdict, never a workflow state.
+-- A REJECTED run keeps its row AND lands its document (owner ruling
+-- 2026-09-06): what was tried on that wall and why it failed is the
+-- post-mortem material the next `Theorize` there is written against,
+-- and a record reachable only through a `dead_attempts` blob is a
+-- record nobody reads. `status` is the review's verdict, never a
+-- workflow state, and it does NOT decide citability — the reviewer's
+-- criterion 2 (Rigour) does, which is why `verdict_json` is kept.
+-- `path` is NULL only where no document was ever reviewed (a wake that
+-- died mid-flight) or on a refusal filed before that rule.
 CREATE TABLE IF NOT EXISTS theory_documents (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     problem      TEXT NOT NULL REFERENCES problems(name),
@@ -687,8 +690,9 @@ CREATE TABLE IF NOT EXISTS theory_documents (
                      REFERENCES strategist_decisions(id),
     objective    TEXT NOT NULL,
     situation    TEXT NOT NULL,
-    -- Workspace-relative, under `Problems/<project>/_docs/agent/`.
-    -- NULL exactly when `status = 'rejected'`.
+    -- Workspace-relative, under `Problems/<project>/_docs/agent/`. Set
+    -- on both roads; a refused document's NAME carries `_rejected` and
+    -- its header opens `status: rejected`.
     path         TEXT NULL DEFAULT NULL,
     status       TEXT NOT NULL CHECK(status IN ('accepted','rejected')),
     -- Author turns spent: 1 = accepted on the cold wake, N = N-1
