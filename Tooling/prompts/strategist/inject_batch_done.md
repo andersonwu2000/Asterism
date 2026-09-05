@@ -40,7 +40,8 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
                     Nothing to argue → the single line "No new mathematics this batch."
     ## Roadmap      the research roadmap. First line `Relation:` — the statement the
                     route ends at and how it stands to the charter (implies / equivalent /
-                    reduces / refuted on failure), with its argument. Then three sections,
+                    reduces / refuted on failure; equivalent or stronger is fine),
+                    with its argument. Then three sections,
                     one bullet per item.
     ### PAST        closed lines, each collapsed to its conclusion with citations
                     (declaration name / goal id / attempt id / verbatim framework message);
