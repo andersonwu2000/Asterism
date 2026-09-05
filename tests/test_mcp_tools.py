@@ -108,8 +108,9 @@ def test_validate_json_reads_a_theory_verdict_as_a_theory_verdict(
     theory-wake verdict (criteria "1".."3" or "1".."4", string
     bullets). So the tool told the arm3h_r2 judge, twice, to turn its
     criterion 3 into `{goal_id, verdict, reason}` objects and add a
-    criterion 4 it does not have (record:
-    `docs/internal/experiments/theory_wake/runs/arm3h_r2_failed/RECOVERED.md`).
+    criterion 4 it does not have (record: the arm3h_r2 failure note of
+    the 2026-09-04 theory-wake experiment, kept in the operator's
+    archive history — the run artefacts left the tree 2026-09-06).
     The audit parser's own input — `_audit_roots.json`, written into
     the attempts dir by the routine wake and by nothing else — is the
     signal that this spawn IS the auditor. No snapshot, not an audit.

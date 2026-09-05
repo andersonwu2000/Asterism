@@ -145,7 +145,8 @@ ENFORCEMENT_UNDECLARED = "undeclared"
 #:   read_url    allow IGNORED    (fetches with no rule, every scoping
 #:                                 form) — deny is the ONLY control
 #:   read_file   allow ENFORCED and SCOPING (re-measured 2026-08-10, five
-#:               probes in `_spike/p162/`): no matching allow → denied,
+#:               probes in `_spike/p162/` — removed from the workspace
+#:               2026-09-06, archived): no matching allow → denied,
 #:               a deny inside an allowed tree wins for that subtree.
 #:               It was declared unenforceable here that morning on the
 #:               strength of an earlier series that read the silent

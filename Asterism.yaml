@@ -359,7 +359,8 @@ adversary:
                                # layer, so it must not sit below the author.
                                # The 2026-08-02 seeded-defect probe showed
                                # criterion 3 hard at a MODERATE difficulty
-                               # band (3/3, `_spike/judge_lean_probe.py`) on
+                               # band (3/3, `_spike/judge_lean_probe.py`,
+                               # removed 2026-09-06 and archived) on
                                # exactly this model; re-run 2026-08-06 after
                                # the strategist moved to Gemini reproduced it
                                # (D1/D2 fired, D3 detected to the monomial).

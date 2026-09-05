@@ -392,7 +392,8 @@ def _spawn_permissions(env_spec, workspace: "Path | None") -> dict:
     # `read_file` IS governed by this file, in every direction — RE-
     # MEASURED 2026-08-10 (five probes, agy 1.1.11, each under its own
     # fake HOME; raw envelopes and agy's own permission_manager lines in
-    # `_spike/p162/`):
+    # `_spike/p162/`, a tree removed from the workspace 2026-09-06 and
+    # kept in the operator's archive):
     #   deny read_file(*)                          → denied, and agy says
     #       "Matches user-configured deny rule"
     #   allow read_file(<ws>) + deny read_file(<d>) → <d> denied, a file

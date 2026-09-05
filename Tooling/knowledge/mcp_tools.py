@@ -380,9 +380,11 @@ def validate_json(text: str = "", file: str = "") -> str:
         # rubric is criteria "1".."3" or "1".."4" with string bullets:
         # the tool told the arm3h_r2 judge twice to convert criterion 3
         # into `{goal_id, verdict, reason}` objects and add a criterion
-        # 4 its rubric does not have, and both tries died on it
-        # (`docs/internal/experiments/theory_wake/runs/arm3h_r2_failed/
-        # RECOVERED.md`). An empty snapshot still dispatches to the
+        # 4 its rubric does not have, and both tries died on it (the
+        # arm3h_r2 failure record of the 2026-09-04 theory-wake
+        # experiment, kept in the operator's archive history — the run
+        # artefacts left the tree 2026-09-06). An empty snapshot still
+        # dispatches to the
         # audit parser: a group with no line in flight is an audit with
         # nothing to rule on per line, not a different document.
         snap = _audit_snapshot_here() if "criteria" in obj else None
