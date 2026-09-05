@@ -13,7 +13,8 @@ Verdict contract (`verdict.json` written by the judge into its cwd —
 per-criterion adjudication, 2026-07-25; five instances across three
 b6_1 legs of the judge naming a defect and passing anyway, so the
 pass/rebut decision is no longer the model's to write):
-    {"criteria": {"1": ["fired: <objection>", ...] | ["clear"], ...},
+    {"criteria": {"1": ["fired: <objection>", ...]
+                       | ["clear: <reason>", ...], ...},
      "reservations": ["...", ...]}   # advisory notes; legal only for
                                      # concerns that fire no criterion
 The framework DERIVES the verdict: any `fired` → rebut (the fired
@@ -495,51 +496,59 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         if "clear" in heads and "fired" in heads:
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
                           f"bullets — a criterion is one or the other")
-        if heads[0] == "clear" and len(vals) > 1:
-            return None, (f"criterion {k}: \"clear\" takes exactly one "
-                          f"entry")
-        s = vals[0].strip()
         # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
         # the same wake-killing parse: opus-tier judges annotate their
         # verdicts — `"clear — I checked the chain end to end…"` — and
         # the literal match threw away two full adversary rounds per
         # hit. The DISCRIMINATOR is the leading word (word-boundary, so
         # "clearly…" stays malformed); suffix prose is tolerated.
-        if re.match(r"clear\b", s, re.IGNORECASE):
-            # #159 (2026-08-04): the naming criterion's judgment IS the
-            # naming — the entry that closes the MAIN claim and the
-            # remaining distance. Ten SLC revs cleared it with the bare
-            # word, leaving the attention device without an auditable
-            # trace, on the one criterion built to catch a main claim
-            # orbiting untouched. Mechanical, not honor-system.
-            #
-            # It is criterion 2 as of 2026-08-13, when Value and
-            # Reachability swapped places: the naming belongs to
-            # Reachability (does this route reach the MAIN claim), and
-            # Reachability moved to 2. This constant is the ENFORCEMENT
-            # half of a prompt rule — the prompt says "Criterion 2 never
-            # takes a bare clear" — and the two must move together or a
-            # judge that obeys the prompt has its verdict refused.
-            # `test_adversary_criteria_contract.py` holds them level.
-            rest = s[len("clear"):].strip(" -—–:")
-            if k == NAMING_CRITERION and not rest:
-                return None, (
-                    f"criterion {NAMING_CRITERION} never takes a bare "
-                    f"\"clear\" — its judgment IS the naming: `\"clear: "
-                    f"<entry that closes the MAIN claim> — <what still "
-                    f"stands>\"`")
-            if not rest:
-                # Calibration survey 2026-08-29: 70-94% of clears on
-                # criteria 3/4/5 were the bare word, and the survey's
-                # rule-position experiment showed reasons appear only
-                # where the parser demands them (the requirement moved
-                # from c1 to c2 on 08-13 and the reasons moved with
-                # it). A bare clear leaves no calibration transcript —
-                # every criterion now carries its one sentence of why.
-                return None, (
-                    f"criterion {k} never takes a bare \"clear\" — say "
-                    f"why it holds for THIS proposal: `\"clear: <one "
-                    f"concrete reason>\"`")
+        if heads[0] == "clear":
+            # 2026-09-05 (union_closed): a criterion is clear iff EVERY
+            # bullet is clear — several clears are the shape the rubric
+            # ASKS for, since criterion 1 wants one line per NOW Inject.
+            # "clear takes exactly one entry" refused exactly that, twice
+            # per round, and killed six Strategist wakes in one day as
+            # `agent_no_output`. The bare-clear ban below is therefore
+            # per BULLET: a reasoned neighbour must not carry an
+            # unreasoned clear through.
+            for x in vals:
+                # #159 (2026-08-04): the naming criterion's judgment IS
+                # the naming — the entry that closes the MAIN claim and
+                # the remaining distance. Ten SLC revs cleared it with
+                # the bare word, leaving the attention device without an
+                # auditable trace, on the one criterion built to catch a
+                # main claim orbiting untouched. Mechanical, not
+                # honor-system.
+                #
+                # It is criterion 2 as of 2026-08-13, when Value and
+                # Reachability swapped places: the naming belongs to
+                # Reachability (does this route reach the MAIN claim),
+                # and Reachability moved to 2. This constant is the
+                # ENFORCEMENT half of a prompt rule — the prompt says
+                # "Criterion 2 never takes a bare clear" — and the two
+                # must move together or a judge that obeys the prompt
+                # has its verdict refused.
+                # `test_adversary_criteria_contract.py` holds them level.
+                rest = x.strip()[len("clear"):].strip(" -—–:")
+                if k == NAMING_CRITERION and not rest:
+                    return None, (
+                        f"criterion {NAMING_CRITERION} never takes a "
+                        f"bare \"clear\" — its judgment IS the naming: "
+                        f"`\"clear: <entry that closes the MAIN claim> "
+                        f"— <what still stands>\"`")
+                if not rest:
+                    # Calibration survey 2026-08-29: 70-94% of clears on
+                    # criteria 3/4/5 were the bare word, and the survey's
+                    # rule-position experiment showed reasons appear only
+                    # where the parser demands them (the requirement
+                    # moved from c1 to c2 on 08-13 and the reasons moved
+                    # with it). A bare clear leaves no calibration
+                    # transcript — every clear carries its one sentence
+                    # of why.
+                    return None, (
+                        f"criterion {k} never takes a bare \"clear\" — "
+                        f"say why it holds for THIS proposal: `\"clear: "
+                        f"<one concrete reason>\"`")
             continue
         for x in vals:
             xs = x.strip()

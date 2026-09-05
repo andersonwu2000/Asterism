@@ -237,6 +237,48 @@ def test_parse_verdict_contract():
         assert v is None and err
 
 
+def test_a_criterion_takes_several_reasoned_clear_bullets() -> None:
+    """2026-09-05 (union_closed): six Strategist wakes died as
+    `agent_no_output` because the rubric asks criterion 1 for one line
+    PER Inject — so judges (sol and claude-opus alike) wrote one
+    `clear:` bullet per Inject and the parser refused the lot with
+    `"clear" takes exactly one entry`. The list is one bullet per
+    OBJECTION for fired and one per ITEM for clear; a criterion is
+    clear iff EVERY bullet is clear. Mixing the two stays refused —
+    a criterion is one or the other."""
+    c = _criteria()
+    c["1"] = ["clear: the first brick is consumed by the closure step",
+              "clear: the second brick is consumed by the deficit bound"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert err == "" and v is not None
+    assert v["verdict"] == "pass" and v["criticisms"] == []
+    assert v["criteria"]["1"] == c["1"]
+
+    c["1"] = ["clear: the first brick is consumed by the closure step",
+              "fired: the second brick feeds nothing in the Roadmap"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert v is None and "criterion 1" in err and "mixes" in err
+
+
+def test_a_bare_clear_bullet_is_refused_beside_reasoned_ones() -> None:
+    """The bare-clear ban is PER BULLET: with several bullets allowed,
+    a reasoned neighbour would otherwise carry an unreasoned clear
+    through, which is exactly the calibration trace the 08-29 survey
+    made mandatory. The naming criterion keeps its own message."""
+    n = adversary.NAMING_CRITERION
+    other = next(k for k in adversary.CRITERIA_KEYS if k != n)
+    c = _criteria()
+    c[other] = ["clear: the first item holds for this batch", "clear"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert v is None and f"criterion {other}" in err
+    assert "bare" in err
+
+    c = _criteria()
+    c[n] = ["clear: the closer entry — one prerequisite stands", "clear"]
+    v, err = adversary.parse_verdict(json.dumps({"criteria": c}))
+    assert v is None and f"criterion {n}" in err and "naming" in err
+
+
 # ------------------------------------- full cycle via run_strategist
 
 def _spawn_script(rebuttals_before_pass: int):
