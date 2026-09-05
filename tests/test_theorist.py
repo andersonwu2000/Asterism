@@ -899,6 +899,34 @@ def test_a_bullet_rendered_as_an_object_is_still_a_bullet() -> None:
     assert v["criticisms"] == ["[criterion 1] already in the notes"]
 
 
+def test_a_nested_bullet_list_is_flattened() -> None:
+    """The other reasonable reading of "a list per criterion, one bullet
+    per objection": the bullets arrive one level deeper. Same contract,
+    same ruling — `_bullets` flattens one level and this pins that it
+    still does. (Ported from the retired `Tooling/experiments/` suite,
+    which was the only place it was checked.)"""
+    v, err = _verdict.parse_theory_verdict(json.dumps(_clear(
+        **{"3": [["fired: the n=6 census could not be reproduced"]]})))
+    assert err == "" and v is not None
+    assert v["criticisms"] == [
+        "[criterion 3] the n=6 census could not be reproduced"]
+
+
+def test_a_refused_verdicts_log_line_names_the_offending_shape() -> None:
+    """A rejection has to be diagnosable from the run log without
+    opening the rollout: the line says the type and the shape the
+    reviewer actually wrote, per criterion. Unparseable bytes describe
+    themselves rather than throwing."""
+    line = _verdict.describe_verdict_shape(json.dumps({"criteria": {
+        "1": ["clear: on no record"],
+        "3": [{"goal_id": 10670, "verdict": "fired", "reason": "x"}]},
+        "reservations": []}))
+    assert '"1"' in line and "list[str]" in line
+    assert '"3"' in line and "list[dict" in line
+    assert "goal_id" in line and "verdict" in line and "reason" in line
+    assert "not JSON" in _verdict.describe_verdict_shape("{oops")
+
+
 # ---------------------------------------------------------------------
 # the surfaces that read a decision, a pipeline or a table
 # ---------------------------------------------------------------------

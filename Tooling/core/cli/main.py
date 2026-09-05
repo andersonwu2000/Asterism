@@ -122,6 +122,44 @@ def main(argv: list[str] | None = None) -> int:
              "workspace's schema first (the bundle is never written)")
     p_carry.set_defaults(func=cmd_carry)
 
+    p_lab = sub.add_parser(
+        "lab",
+        help="run an experiment ON the framework and record it: take a "
+             "slice of one problem (optionally rewound to a historical "
+             "instant), build a throwaway workspace from it, wake one "
+             "driver in it, keep the record")
+    p_lab.add_argument("lab_action",
+                       choices=("snapshot", "build", "run", "gc"))
+    p_lab.add_argument("exp", nargs="?", default=None,
+                       help="build/run: the experiment, i.e. the "
+                            "directory holding lab.yaml under <root>/docs/")
+    p_lab.add_argument("arm", nargs="?", default=None,
+                       help="build/run: which arm of it")
+    p_lab.add_argument(
+        "--root", default=None,
+        help="the lab's root (snapshots/, runs/, docs/). Falls back to "
+             "ASTERISM_LAB_ROOT; there is deliberately no default — the "
+             "lab's state lives in the operator's development area, and "
+             "the framework must not know where that is")
+    p_lab.add_argument("--scope", default=None,
+                       help="snapshot: the problem to slice (required)")
+    p_lab.add_argument(
+        "--rewind", default=None, metavar="ISO",
+        help="snapshot: rewind the slice — rows AND files — to this "
+             "ISO-8601 instant")
+    p_lab.add_argument("--reps", type=int, default=None,
+                       help="run: repetitions (default: the lab.yaml's)")
+    p_lab.add_argument(
+        "--keep", action="store_true",
+        help="run: leave the workspace standing. By default it is "
+             "cleared once _out/ and run_record.json are written — a lab "
+             "workspace runs and is discarded, there is no restore")
+    p_lab.add_argument("--keep-latest", type=int, default=3,
+                       dest="keep_latest",
+                       help="gc: unreferenced slices to keep (default 3)")
+    from ...lab.cli import cmd_lab
+    p_lab.set_defaults(func=cmd_lab)
+
     p_status = sub.add_parser(
         "status",
         help="show goals / strategies / dead_attempts / pipelines for a Problem",

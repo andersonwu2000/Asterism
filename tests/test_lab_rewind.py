@@ -1,4 +1,4 @@
-"""`Tooling.experiments.timetravel` — rewind a problem's DB state to a
+"""`Tooling.lab.rewind` — rewind a problem's DB state to a
 cutoff instant so a historical wake can be replayed with today's
 prompts (experiments 2/3, 2026-08-30: "would the NL layer mint the
 fin10 table brick again?").
@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from pathlib import Path
 
-from Tooling.experiments import timetravel as tt
+from Tooling.lab import rewind as tt
 from Tooling.state import db
 
 CUT = "2026-08-26T04:11:05+00:00"
@@ -188,7 +189,14 @@ def test_rewind_maps_a_retired_status_out_of_the_event_journal(conn):
     reads its statuses back out of that journal, so on any post-v51 DB
     with pre-v51 history it wrote `dead` into a column that no longer
     accepts it and died on the CHECK. The mapping belongs at the read,
-    not in a migration that would erase the forensics v51 preserved."""
+    not in a migration that would erase the forensics v51 preserved.
+
+    The goal starts `open` — REVIVED after the cutoff — so the rewind
+    has to actually WRITE the mapped status. Seeded already-`shelved`
+    (as this test was until the lab port) the rewind finds want ==
+    status and returns without touching the column, so the CHECK the
+    mapping exists to survive is never reached and the test passes
+    with the mapping deleted."""
     _seed(conn)
     gid = db.insert_goal(conn, problem="p", slug="retired",
                          lean_path="Problems/p/proofs/L_retired.lean",
@@ -198,11 +206,31 @@ def test_rewind_maps_a_retired_status_out_of_the_event_journal(conn):
         "INSERT INTO goal_events (goal_id, problem, from_status, to_status,"
         " event, reason, at) VALUES (?,?,?,?,?,?,?)",
         (gid, "p", "attempting", "dead", "wrong_context", "", BEFORE))
-    db.update_goal_status(conn, gid, "shelved")
+    db.update_goal_status(conn, gid, "open")
     conn.commit()
     tt.rewind(conn, problem="p", cutoff=CUT)
     assert db.get_goal(conn, gid)["status"] == "shelved", \
         "the v51 dead→shelved mapping, applied where the journal is read"
+
+
+def test_rewind_stops_loudly_on_a_retired_status_nobody_mapped(conn,
+                                                              monkeypatch):
+    """The other half of the mapping's contract: a journal status the
+    schema dropped and this table does not name must stop the rewind
+    with the migration to look at, not become whatever is nearest."""
+    import pytest
+    _seed(conn)
+    gid = db.insert_goal(conn, problem="p", slug="unmapped",
+                         lean_path="Problems/p/proofs/L_unmapped.lean",
+                         statement="T", origin="backward", depth=1)
+    conn.execute("UPDATE goals SET created_at=? WHERE id=?", (BEFORE, gid))
+    conn.execute(
+        "INSERT INTO goal_events (goal_id, problem, from_status, to_status,"
+        " event, reason, at) VALUES (?,?,?,?,?,?,?)",
+        (gid, "p", "attempting", "vaporized", "x", "", BEFORE))
+    conn.commit()
+    with pytest.raises(RuntimeError, match="vaporized"):
+        tt.rewind(conn, problem="p", cutoff=CUT)
 
 
 # ─── the surfaces the rewind did not reach (2026-09-04 replay §五.1) ───
@@ -306,6 +334,41 @@ def test_prune_project_docs_dates_owner_notes_by_mtime_and_says_which(
     assert user["provenance"] == "mtime", \
         "the ledger names the signal actually used"
     assert user["kept"] == 1 and user["dropped"] == 1
+
+
+def test_prune_project_docs_reads_git_history_from_the_source_workspace(
+        tmp_path, conn, monkeypatch):
+    """The lab rewinds a STAGED slice: the bytes sit in a staging tree
+    that is not a checkout and never will be, while the git history of
+    the same workspace-relative path is in the live workspace the slice
+    came from. `_docs/user/` is the owner's own writing and has no DB
+    row at all, so git is its only authoritative signal — asking the
+    staging tree for it silently demotes the whole directory to mtime,
+    which a tar round-trip is free to rewrite. `git_root` splits the two
+    questions so the dating stays where the commits are."""
+    _seed(conn)
+    ws = _docs_ws(tmp_path)
+    live = tmp_path / "live"
+    live.mkdir()
+    note = ws / "Problems/p/_docs/user/anchor_note.md"
+    note.write_text("note\n", encoding="utf-8")
+    _stamp_mtime(note, AFTER)          # the mtime says "drop it"
+
+    asked: "list[str]" = []
+
+    def _fake_git_iso(root, rel):
+        asked.append(str(root))
+        return BEFORE if Path(root) == live else None
+
+    monkeypatch.setattr(tt, "_git_iso", _fake_git_iso)
+    snap = _snapshot(conn, tmp_path)
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    led = tt.prune_project_docs(conn, snapshot_db=snap, workspace=ws,
+                                problem="p", cutoff=CUT, git_root=live)
+    assert note.exists(), \
+        "the commit predates the cutoff — the tar's mtime is not the fact"
+    assert led["Problems/p/_docs/user"]["provenance"] == "git"
+    assert str(live) in asked, "git was asked of the source workspace"
 
 
 def test_prune_project_docs_drops_every_owner_note_it_cannot_date(

@@ -1,5 +1,5 @@
-"""Rewind a problem's DB state to a cutoff instant (on a COPY) and build
-a scratch workspace to replay a historical wake in.
+"""Rewind a problem's state to a cutoff instant — the DB and the file
+plane, in one action, on a COPY.
 
 Why (2026-08-30): the wake that minted `fin10_nine_trace_depth_two_
 source_bound` (group 504, rev 20, pipeline 74f9e665, 04:11Z 08-26) is
@@ -7,6 +7,12 @@ the reference case for "would the NL layer do this again under today's
 prompts?". Its codex transcript survives, but the tools an agent uses
 (inspect / TREE / CATALOG) read the DB and proofs/ — which have moved
 on by 700 goals. A replay therefore needs the DB as it stood then.
+
+`lab snapshot --rewind <instant>` is the only caller: the slice is
+exported, then rewound here, and the workspace `lab build` opens from it
+never learns it was ever anywhere else. Building the workspace is
+`lab/build.py`'s job, not this module's — the rewind moves state, it
+does not lay out a place to run.
 
 The rewind is an APPROXIMATION and says so:
   - rows created after the cutoff are deleted (goals, strategies,
@@ -21,12 +27,11 @@ The rewind is an APPROXIMATION and says so:
   - `goal_events` statuses the schema has since retired are mapped
     forward at the read (`RETIRED_GOAL_STATUSES`), never by rewriting
     the journal;
-  - proof files are pruned from the scratch tree on two DB-derived
-    rules: the file of a row the rewind deleted, and the file of a
-    surviving goal whose proof landed after the cutoff
-    (`prune_proof_files` — the scratch's `Problems/` is copied from the
-    LIVE tree, so without this a rewound judge reads proofs that did
-    not exist yet);
+  - proof files are pruned on two DB-derived rules: the file of a row
+    the rewind deleted, and the file of a surviving goal whose proof
+    landed after the cutoff (`prune_proof_files` — the slice's
+    `Problems/` was taken from the LIVE tree at the snapshot instant, so
+    without this a rewound judge reads proofs that did not exist yet);
   - every OTHER file surface an agent reads is pruned the same way
     (`rewind_files`): the Project's documents (`_docs/{user,agent}` —
     the judge's `{papers_dir}`), the run-scoped scratch (`.drafts`,
@@ -44,20 +49,17 @@ cannot tell how much to trust the scene.
 """
 from __future__ import annotations
 
-import argparse
 import functools
 import json
-import os
 import re
 import shutil
 import sqlite3
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from Tooling.state import db, groups
-from Tooling.state import transitions as _transitions
+from ..state import db, groups
+from ..state import transitions as _transitions
 
 TERMINAL = _transitions.GOAL_TERMINALS
 
@@ -91,7 +93,7 @@ def _live_status(to_status: str) -> str:
         raise RuntimeError(
             f"goal_events carries the status {to_status!r}, which"
             f" `goals.status` no longer accepts and"
-            f" `timetravel.RETIRED_GOAL_STATUSES` does not map — add it"
+            f" `lab.rewind.RETIRED_GOAL_STATUSES` does not map — add it"
             f" there (with the migration that retired it) rather than"
             f" guessing")
     return mapped
@@ -194,7 +196,7 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
             # The checked mutator appends a goal_events row stamped now();
             # the journal trim two lines down removes it with the rest of
             # the post-cutoff history.
-            db.update_goal_status(conn, int(g["id"]), want, event="timetravel_rewind",
+            db.update_goal_status(conn, int(g["id"]), want, event="lab_rewind",
                                   reason=f"rewound to {cutoff}")
             rewound += 1
     rep["goals_rewound"] = rewound
@@ -314,7 +316,7 @@ def prune_proof_files(conn: sqlite3.Connection, *, snapshot_db: Path,
         if p.exists():
             p.unlink()
             removed.append(p.name)
-    print(f"[timetravel] pruned {len(removed)} file(s) — "
+    print(f"[rewind] pruned {len(removed)} file(s) — "
           f"{len(gone)} from deleted rows, {len(late)} proved after "
           f"{cutoff}", flush=True)
     return removed
@@ -415,9 +417,21 @@ def _mtime_iso(path: Path) -> "str | None":
     return datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
 
 
-def _file_provenance(workspace: Path, rel: str) -> "tuple[datetime | None, str]":
-    """(when the file was written, which signal said so)."""
-    iso = _git_iso(workspace, rel)
+def _file_provenance(workspace: Path, rel: str,
+                     git_root: "Path | None" = None
+                     ) -> "tuple[datetime | None, str]":
+    """(when the file was written, which signal said so).
+
+    `git_root` splits the two questions the signals ask, because the
+    lab asks them of two different trees: the BYTES are in the staged
+    slice (which is not a checkout and never will be), while the git
+    HISTORY of the same workspace-relative path is in the live workspace
+    the slice was taken from. Passing it keeps `_docs/user/` — the
+    owner's own writing, the surface with no DB row at all — dated off
+    commits rather than falling back to an mtime a tar round-trip could
+    have rewritten. Defaults to `workspace`, which is the in-place
+    rewind every caller before the lab did."""
+    iso = _git_iso(Path(git_root) if git_root is not None else workspace, rel)
     if iso is not None:
         dt = _parse_iso(iso)
         if dt is not None:
@@ -505,8 +519,8 @@ def _header_pipeline(path: Path) -> "str | None":
 
 
 def prune_project_docs(conn: sqlite3.Connection, *, snapshot_db: Path,
-                       workspace: Path, problem: str,
-                       cutoff: str) -> dict:
+                       workspace: Path, problem: str, cutoff: str,
+                       git_root: "Path | None" = None) -> dict:
     """Make `Problems/<project>/_docs/` match the cutoff. Returns one
     ledger row per area.
 
@@ -533,8 +547,8 @@ def prune_project_docs(conn: sqlite3.Connection, *, snapshot_db: Path,
     """
     cut = _cutoff_dt(cutoff)
     ws = Path(workspace)
-    from Tooling.state import project_docs as _project_docs
-    from Tooling.state import projects as _projects
+    from ..state import project_docs as _project_docs
+    from ..state import projects as _projects
     project = (_projects.project_of(conn, problem)
                or problem.split(".", 1)[0])
     root = _project_docs.root(ws, project)
@@ -592,7 +606,7 @@ def prune_project_docs(conn: sqlite3.Connection, *, snapshot_db: Path,
                 elif pipe and pipe in snap_pipes:
                     verdict, source = False, "header"
             if verdict is None:
-                when, source = _file_provenance(ws, rel)
+                when, source = _file_provenance(ws, rel, git_root)
                 verdict = when is not None and when <= cut
             if verdict:
                 led.keep(source)
@@ -642,7 +656,8 @@ def _alive_ids(conn: sqlite3.Connection, table: str, problem: str,
 
 
 def prune_run_scratch(conn: sqlite3.Connection, *, workspace: Path,
-                      problem: str, cutoff: str) -> dict:
+                      problem: str, cutoff: str,
+                      git_root: "Path | None" = None) -> dict:
     """Make `.drafts/`, `.presearch/` and `.groups/` match the cutoff.
 
     An entry is kept only when BOTH hold: the id in its name still
@@ -700,7 +715,7 @@ def prune_run_scratch(conn: sqlite3.Connection, *, workspace: Path,
                 led.drop(rel, space)
                 _remove(path)
                 continue
-            when, source = _file_provenance(ws, rel)
+            when, source = _file_provenance(ws, rel, git_root)
             source = f"{space}+{source}" if space else source
             if when is not None and when <= cut:
                 led.keep(source)
@@ -721,7 +736,7 @@ def prune_run_scratch(conn: sqlite3.Connection, *, workspace: Path,
                     led.drop(rel, "group_id")
                     _remove(entry)
                 continue
-            when, source = _file_provenance(ws, rel)
+            when, source = _file_provenance(ws, rel, git_root)
             if when is not None and when <= cut:
                 led.keep(source)
             else:
@@ -730,37 +745,24 @@ def prune_run_scratch(conn: sqlite3.Connection, *, workspace: Path,
     return {k: v.as_row() for k, v in rows.items()}
 
 
-# ─── scratch workspace ───
-
-COPY_DIRS = ("Tooling", "Library", "Asterism", "Benchmarks")
-COPY_FILES = ("lakefile.lean", "lake-manifest.json", "lean-toolchain", "VERSION",
-              "Asterism.yaml", ".env")
-#: Junctioned into the scratch workspace instead of copied. `Papers`
-#: left this list when the shelf retired into `Problems/<project>/_docs/`
-#: (§3.9): the documents travel with the problem directories the
-#: rewind already copies, so a junction would have pointed the scratch
-#: run's papers back at the live tree.
-LINK_DIRS = (".lake", ".git")
-
-
-def _link_dir(src: Path, dst: Path) -> None:
-    if os.name == "nt":
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(dst), str(src)],
-                       check=True, capture_output=True)
-    else:
-        os.symlink(src, dst, target_is_directory=True)
+# ─── the rendered files ───
 
 
 def refresh_derived_files(conn: sqlite3.Connection, *, workspace: Path,
                           problem: str,
                           removed: "list[Path] | None" = None) -> "list[Path]":
     """Re-derive the rendered files the DB owns — `TREE.md` and every
-    group's `PROGRAMME.md` — so the scratch workspace shows the rewound
-    scene, not the snapshot's. Both sides' round companions are re-rendered
-    from this DB every round and the agents grep them in place: the
-    first experiment-3
-    run (2026-08-30) was judged against a TREE that still listed the
-    goal the proposal was about to mint.
+    group's `PROGRAMME.md` — so the workspace shows the rewound scene,
+    not the snapshot's. The first experiment-3 run (2026-08-30) was
+    judged against a TREE that still listed the goal the proposal was
+    about to mint.
+
+    THESE TWO ARE THE WHOLE DURABLE SET. `CATALOG.md`, `BATCHES.md` and
+    `ADJUDICATIONS.md` are re-rendered from this DB into the wake's own
+    attempts dir on every spawn (`agent/context.py`), so they carry the
+    rewound scene by construction and there is nothing on disk here for
+    them to be stale in. Rendering them anywhere else would be a second
+    copy that can disagree with the one the agents actually read.
 
     A render that has nothing to say DELETES its file. `programme.render`
     returns None when the group has no passed revision left — and before
@@ -769,7 +771,7 @@ def refresh_derived_files(conn: sqlite3.Connection, *, workspace: Path,
     not exist yet. Absent is a state the renderer must be able to express.
     `removed` is an optional sink for the ledger; the removal happens
     either way."""
-    from Tooling.state import groups as _groups, programme, tree
+    from ..state import groups as _groups, programme, tree
     written: list[Path] = []
     t = tree.write(conn, workspace, problem)
     if t is not None:
@@ -811,7 +813,8 @@ LEDGER_BASENAME = "_rewind_ledger.json"
 
 
 def rewind_files(conn: sqlite3.Connection, *, snapshot_db: Path,
-                 workspace: Path, problem: str, cutoff: str) -> dict:
+                 workspace: Path, problem: str, cutoff: str,
+                 git_root: "Path | None" = None) -> dict:
     """The whole file half of the rewind, in the one order that works,
     with a ledger row per directory.
 
@@ -844,9 +847,10 @@ def rewind_files(conn: sqlite3.Connection, *, snapshot_db: Path,
 
     ledger["directories"].update(prune_project_docs(
         conn, snapshot_db=snapshot_db, workspace=ws, problem=problem,
-        cutoff=cutoff))
+        cutoff=cutoff, git_root=git_root))
     ledger["directories"].update(prune_run_scratch(
-        conn, workspace=ws, problem=problem, cutoff=cutoff))
+        conn, workspace=ws, problem=problem, cutoff=cutoff,
+        git_root=git_root))
 
     removed_renders: "list[Path]" = []
     written = refresh_derived_files(conn, workspace=ws, problem=problem,
@@ -859,77 +863,14 @@ def rewind_files(conn: sqlite3.Connection, *, snapshot_db: Path,
 
     for key in sorted(ledger["directories"]):
         row = ledger["directories"][key]
-        print(f"[timetravel] {key}: kept {row['kept']} / dropped "
+        print(f"[rewind] {key}: kept {row['kept']} / dropped "
               f"{row['dropped']} ({row['provenance']})", flush=True)
-    print(f"[timetravel] re-derived {len(written)} rendered file(s), "
+    print(f"[rewind] re-derived {len(written)} rendered file(s), "
           f"removed {len(removed_renders)} stale one(s)", flush=True)
     if ledger["undated"]:
-        print(f"[timetravel] {len(ledger['undated'])} file(s) had NO "
+        print(f"[rewind] {len(ledger['undated'])} file(s) had NO "
               f"provenance signal and were dropped — see "
               f"{LEDGER_BASENAME}", flush=True)
     (ws / LEDGER_BASENAME).write_text(
         json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return ledger
-
-
-def build_scratch(*, src: Path, dst: Path, snapshot_db: Path,
-                  snapshot_problem_dir: Path, problem: str) -> None:
-    """A workspace beside the real one: code and config COPIED, the
-    heavy read-only trees LINKED, the problem and DB taken from the
-    snapshot. Never touches `src`."""
-    dst.mkdir(parents=True, exist_ok=False)
-    for d in COPY_DIRS:
-        if (src / d).exists():
-            shutil.copytree(src / d, dst / d, ignore=shutil.ignore_patterns("__pycache__"))
-    for f in COPY_FILES:
-        if (src / f).exists():
-            shutil.copy2(src / f, dst / f)
-    for d in LINK_DIRS:
-        if (src / d).exists():
-            _link_dir(src / d, dst / d)
-    (dst / ".asterism").mkdir()
-    (dst / ".attempts").mkdir()
-    pdir = dst / "Problems" / Path(*problem.split("."))
-    shutil.copytree(snapshot_problem_dir, pdir)
-    # The Project's documents — its papers among them (§3.9) — come
-    # from the LIVE tree: a rewound wake read them, and a snapshot of a
-    # problem directory never held them. Copied, not junctioned: a
-    # scratch run that wrote into the real shelf would edit the live
-    # workspace, which `build_scratch` promises it never does.
-    seg = problem.split(".")[0]
-    live_docs = src / "Problems" / seg / "_docs"
-    if "." in problem and live_docs.is_dir():
-        shutil.copytree(live_docs, dst / "Problems" / seg / "_docs",
-                        dirs_exist_ok=True)
-    shutil.copy2(snapshot_db, dst / "asterism.db")
-
-
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--src", default=".", help="the real workspace (read-only)")
-    ap.add_argument("--dst", required=True, help="scratch workspace to create")
-    ap.add_argument("--snapshot", required=True,
-                    help="dir holding asterism.db and <problem leaf dir> from a backup")
-    ap.add_argument("--problem", required=True)
-    ap.add_argument("--cutoff", required=True, help="ISO-8601 UTC instant")
-    a = ap.parse_args(argv)
-    src, dst, snap = Path(a.src).resolve(), Path(a.dst).resolve(), Path(a.snapshot).resolve()
-    leaf = a.problem.split(".")[-1]
-    build_scratch(src=src, dst=dst, snapshot_db=snap / "asterism.db",
-                  snapshot_problem_dir=snap / leaf, problem=a.problem)
-    conn = open_copy_for_rewind(dst / "asterism.db")
-    rep = rewind(conn, problem=a.problem, cutoff=a.cutoff)
-    print("[timetravel] rewind:", rep)
-    rewind_files(conn, snapshot_db=snap / "asterism.db", workspace=dst,
-                 problem=a.problem, cutoff=a.cutoff)
-    for k, v in (("goals", conn.execute("SELECT COUNT(*) FROM goals WHERE problem=?", (a.problem,)).fetchone()[0]),
-                 ("max decision", conn.execute("SELECT MAX(id) FROM strategist_decisions WHERE problem=?", (a.problem,)).fetchone()[0]),
-                 ("max rev row", conn.execute("SELECT MAX(id) FROM programme_revisions WHERE problem=?", (a.problem,)).fetchone()[0])):
-        print(f"[timetravel] {k}: {v}")
-    conn.close()
-    print(f"[timetravel] scratch workspace ready: {dst}", file=sys.stderr)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

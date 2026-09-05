@@ -395,8 +395,8 @@ def open_group(conn: sqlite3.Connection, *, problem: str,
 
 
 def rewind_status(conn: sqlite3.Connection, group_id: int, status: str) -> None:
-    """Restore a HISTORICAL status — `Tooling.experiments.timetravel` only,
-    on a copy of the DB. No edge check (closed → active is not a transition,
+    """Restore a HISTORICAL status — `Tooling.lab.rewind` only, on a
+    copy of the DB. No edge check (closed → active is not a transition,
     it is history being put back) and no parent wake: nothing happened.
     Lives here so the one-door lint stays true — `groups.status` is
     written from this module and nowhere else."""
