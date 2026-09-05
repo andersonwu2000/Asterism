@@ -120,6 +120,9 @@ dispatch:
 # EVERY worker spawn. sonnet-5 (user ruling 2026-07-29): the opus tier
 # stays on strategist/adversary where one decision shapes the tree.
 formalizer:
+  # 2026-09-06 (owner, one day): the whole board moves to the claude
+  # series while gpt-6-astra keeps dying mid-run on provider capacity
+  # (two Theorist deaths 09-05). Throughput seat: sonnet-5.
   # 2026-08-15: union_closed goes back on codex (user), now on a 20x
   # subscription of its own. luna at `xhigh` does the throughput work;
   # the NL layer takes `sol`. Baseline: provider: claude / model:
@@ -130,9 +133,8 @@ formalizer:
   # 2026-08-25: Erdős five on OpenCode Zen ran here; the full-Erdős
   # boarding moved to the 128GB flagship, and this machine goes back
   # to union_closed on codex (user) — luna keeps the throughput seat.
-  provider: codex
-  model: gpt-5.6-luna
-  reasoning_effort: xhigh
+  provider: claude
+  model: claude-sonnet-5
   # 2026-08-13: back off codex after the smoke run. The seat is proven
   # on codex (Test.provider_probe: brick proved, seven-tool roll-call
   # recorded, intake sentinel written) — restore with
@@ -186,9 +188,9 @@ strategist:
   # resubmission pattern vanished under the opus author (consecutive-
   # proposal sim 0.03-0.82 across four r10 debates), so the disease
   # followed the seat, not the role. Both sides back to gpt (user).
-  provider: codex
-  model: gpt-5.6-sol
-  reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
+  provider: claude
+  model: claude-opus-5         # 2026-09-06 claude day (owner)
+  # reasoning_effort: high # codex-only knob; user 2026-08-15: sol does not need xhigh to
                            # hold the NL layer; luna keeps xhigh below.
   # Back on the opus tier 2026-08-06 after the
   # Gemini author hit its ceiling on the open
@@ -242,9 +244,9 @@ presearch:
   # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
   # provider: zen / model: x-preview-f-free (no effort key)
   # 2026-08-25: back to union_closed on codex/luna (user).
-  provider: codex
-  model: gpt-5.6-luna
-  reasoning_effort: medium     # search task; the codex default (xhigh)
+  provider: claude
+  model: claude-sonnet-5       # 2026-09-06 claude day (owner)
+  # reasoning_effort: medium   # codex-only knob; search task; the codex default (xhigh)
                                # would think the budget away
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
   # dropped the brief's secondary written requirements, and on a
@@ -316,9 +318,8 @@ adversary:
   # same day (user) — claude's 5h rolling window is friction on a seat
   # that fires every strategist wake. Back to codex/sol, the 08-25
   # judge-matches-author shape.
-  provider: codex
-  model: gpt-5.6-sol
-  reasoning_effort: high
+  provider: claude
+  model: claude-opus-5         # 2026-09-06 claude day (owner)
   # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
   # only because fable's weekly window was spent and the ledger BINDs
   # {strategist, adversary} — a blocked judge stops the pair.
@@ -369,14 +370,12 @@ adversary:
 # layer moves to gpt-6-astra (owner call; smoke-tested through the CLI). The two move together
 # (`quota.BOUND`): a document with no reviewer never lands.
 theorist:
-  provider: codex
-  model: gpt-6-astra
-  reasoning_effort: xhigh
+  provider: claude
+  model: claude-fable-5-1      # 2026-09-06 claude day (owner); astra kept dying on capacity
 
 theory_reviewer:
   # The judge matches its author, the 08-23 shape one layer up: the
   # reviewer re-derives the proofs and reproduces the computations, so
   # it must not sit below the seat it is checking.
-  provider: codex
-  model: gpt-6-astra
-  reasoning_effort: xhigh
+  provider: claude
+  model: claude-fable-5-1      # 2026-09-06 claude day (owner)
