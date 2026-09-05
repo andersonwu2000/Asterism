@@ -704,8 +704,7 @@ def run_daemon(spec: dict, ws: Path, out: Path) -> dict:
                     print(f"[daemon] stop condition {fired} — asking the "
                           f"daemon to finish in-flight work and exit",
                           flush=True)
-                    _stop_daemon(ws, proc)
-                    rc = proc.wait()
+                    rc = stop_and_wait(ws, proc)
                     break
         finally:
             if proc.poll() is None:
@@ -737,18 +736,44 @@ def _usage_since(conn, *, t0_iso: str) -> dict:
     return {k: (row[k] if row[k] is not None else 0) for k in row.keys()}
 
 
-def _stop_daemon(ws: Path, proc) -> None:
-    """The graceful stop first — the daemon finishes in-flight work and
-    exits, which is what leaves the DB describing a run that ended
-    rather than one that was cut. `daemon stop` writes the marker; the
-    kill in the caller's `finally` is the backstop."""
+#: How long a stop condition waits for the daemon to drain. The tick
+#: loop stops spawning at once and then waits out whatever is in flight,
+#: and an in-flight Strategist wake is legitimately tens of minutes.
+STOP_GRACE_SEC = 1800.0
+#: And how long `terminate` gets before the kill.
+STOP_HARD_SEC = 30.0
+
+
+def _request_graceful_stop(ws: Path) -> None:
+    """`daemon stop` — the marker the tick loop reads. It stops spawning,
+    drains what is in flight and exits, which is what leaves the DB
+    describing a run that ENDED rather than one that was cut."""
     from Tooling.core.cli.run import daemon_stop
+    daemon_stop(Path(ws), force=False)
+
+
+def stop_and_wait(ws: Path, proc, *, grace_sec: float = STOP_GRACE_SEC,
+                  hard_sec: float = STOP_HARD_SEC,
+                  request_stop=None) -> int:
+    """Ask the daemon to stop, then make sure it did.
+
+    Graceful FIRST, always. But the wait is bounded and escalates: a
+    daemon that does not take the marker — wedged mid-spawn, or holding
+    a lock the stop path did not recognise — would otherwise hang the
+    lab run forever on a `proc.wait()` with no timeout, which is a
+    stalled experiment that looks exactly like a long one."""
     try:
-        daemon_stop(ws, force=False)
-    except Exception as exc:            # noqa: BLE001
-        print(f"[daemon] graceful stop unavailable ({exc!r}) — "
-              f"terminating", flush=True)
-        proc.terminate()
+        (request_stop or _request_graceful_stop)(ws)
+    except Exception as exc:            # noqa: BLE001 — the escalation
+        print(f"[daemon] graceful stop unavailable ({exc!r})", flush=True)
+    for step, budget in (("terminate", grace_sec), ("kill", hard_sec)):
+        try:
+            return proc.wait(timeout=budget)
+        except subprocess.TimeoutExpired:
+            print(f"[daemon] still running after {budget:.0f}s — {step}",
+                  flush=True)
+            getattr(proc, step)()
+    return proc.wait()
 
 
 # ---------------------------------------------------------------------

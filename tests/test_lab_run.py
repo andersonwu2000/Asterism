@@ -226,6 +226,51 @@ def test_a_daemon_arm_stops_on_wall_clock_too(tmp_path):
         conn.close()
 
 
+class _StubProc:
+    """A child that ignores the graceful stop until it is made to."""
+
+    def __init__(self, *, obeys_at: "int | None") -> None:
+        self.obeys_at = obeys_at
+        self.waits = 0
+        self.log: "list[str]" = []
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.obeys_at is not None and self.waits >= self.obeys_at:
+            return 0
+        raise subprocess.TimeoutExpired("daemon", timeout)
+
+    def terminate(self):
+        self.log.append("terminate")
+
+    def kill(self):
+        self.log.append("kill")
+        self.obeys_at = self.waits + 1
+
+
+def test_a_stop_condition_escalates_instead_of_waiting_forever(tmp_path):
+    """The stop is asked for FIRST — the daemon finishes in-flight work
+    and exits, which is what leaves the DB describing a run that ended
+    rather than one that was cut. But a daemon that does not take it
+    (mid-spawn, or a stop the lock did not recognise) must not hang the
+    lab: the wait is bounded and escalates."""
+    asked: "list[str]" = []
+    proc = _StubProc(obeys_at=None)
+    rc = driver_mod.stop_and_wait(tmp_path, proc, grace_sec=0.01,
+                                  hard_sec=0.01,
+                                  request_stop=lambda ws: asked.append("stop"))
+    assert asked == ["stop"], "graceful first, always"
+    assert proc.log == ["terminate", "kill"], "then escalating"
+    assert rc == 0
+
+
+def test_a_daemon_that_takes_the_graceful_stop_is_never_killed(tmp_path):
+    proc = _StubProc(obeys_at=1)
+    rc = driver_mod.stop_and_wait(tmp_path, proc, grace_sec=0.01,
+                                  hard_sec=0.01, request_stop=lambda ws: None)
+    assert proc.log == [] and rc == 0
+
+
 def test_a_lab_daemon_never_binds_the_live_workspaces_gateway_port():
     """Two gateways on one port is one gateway serving two boards' Lean,
     and the loser dies at boot. The lab picks a free one per run."""
