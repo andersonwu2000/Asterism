@@ -8,10 +8,20 @@ owns the three-check write fence — a caller that joins the strings
 itself is a caller that writes `../../` into the tree.
 
 A REJECTED run writes no document and a row all the same. The document
-stays in the attempts dir, which is deleted at pipeline end, and that
-is the point: it did not earn a place in the Project's shelf. What
-survives is the request, the round count and the last verdict — the
-evidence the next request on that same wall is written against.
+does not reach the shelf, and that is the point: it did not earn a
+place there. What this table keeps is the request, the round count and
+the last verdict — the evidence the next request on that same wall is
+written against.
+
+THE DOCUMENT ITSELF IS NOT LOST WITH THE ATTEMPTS DIR. `.attempts/<pid>/`
+is ephemeral by design — "deleted at pipeline end (success or failure);
+DB is single source of truth" (`state/db/core.py`, the `dead_attempts`
+note) — and a dead Formalizer's evidence survives it because the worker
+snapshots the dir into `dead_attempts.artifacts` BEFORE `WorkArea`
+tears it down (`core/dispatcher/worker.py`). The Theorist's branch does
+the same, so a failed wake's `report.md` is in that column; MEASURED
+2026-09-05 through `_run_pipeline`, artifacts = `['report.md']` with
+the directory already gone.
 """
 from __future__ import annotations
 

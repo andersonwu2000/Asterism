@@ -374,6 +374,64 @@ def test_an_author_that_writes_nothing_is_a_dead_wake_not_a_rejection(
     assert str(d["outcome"]) == "failed:theory_no_report"
 
 
+def test_a_spawn_that_died_after_writing_is_reviewed_not_thrown_away(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """union_closed g691, 2026-09-05: the rollout shows `write_file`
+    landing report.md and the codex stream dying immediately after. The
+    document existed; the pipeline threw it away on the rc. An rc says
+    the TRANSPORT failed — only the reviewer can say whether the
+    document is any good, so the document goes to the reviewer."""
+    did = _theorize(conn, workspace)
+    fake, state = _dead_spawn("theorist", report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    assert state["review"] == 1
+    row = conn.execute(
+        "SELECT path, status FROM theory_documents").fetchone()
+    assert row["status"] == "accepted"
+    assert (workspace / row["path"]).is_file()
+
+
+def test_a_revision_that_died_without_rewriting_is_still_a_dead_wake(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Salvage is for work that EXISTS. A revision turn that died before
+    touching report.md leaves the PREVIOUS round's document on disk, and
+    re-reviewing that spends a reviewer on a turn that never happened —
+    and would hand the same document back to the same rubric until the
+    rounds ran out."""
+    did = _theorize(conn, workspace)
+    state = {"author": 0, "review": 0}
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "theory_reviewer":
+            state["review"] += 1
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps(_fired("1")), encoding="utf-8")
+            return 0
+        state["author"] += 1
+        if state["author"] == 1:
+            (kw["attempts_dir"] / "report.md").write_text(
+                _REPORT, encoding="utf-8")
+            return 0
+        return 1                      # died, and wrote nothing new
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+    assert state["author"] == 2 and state["review"] == 1
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert theorist.REJECTED_DETAIL not in d["outcome_detail"]
+    assert "did not complete" in d["outcome_detail"]
+
+
 # ---------------------------------------------------------------------
 # the roads that are not a verdict
 # ---------------------------------------------------------------------

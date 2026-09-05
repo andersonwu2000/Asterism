@@ -182,6 +182,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     dialogue: "list[dict]" = []
     verdict: "dict | None" = None
     body = ""
+    reviewed = ""   # the document the reviewer has already been handed
     turn = 0
     for revision in range(0, rounds + 1):
         turn = revision + 1
@@ -198,17 +199,35 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             session_id=sid, is_retry=bool(revision),
             retry_context=rebuttal, timeout_sec=author_timeout,
             mcp_config_path=tools_cfg)
-        if rc != 0:
-            return _fail_spawn(
-                _rc_reason(rc, "theorist"),
-                f"the author's spawn returned rc={rc} on round {turn}")
         body = (report_path.read_text(encoding="utf-8")
                 if report_path.is_file() else "")
+        if rc != 0:
+            # THE DOCUMENT OUTRANKS THE RC. codex's stream died on its
+            # idle timeout AFTER `write_file` had landed report.md
+            # (union_closed g691, 2026-09-05, twice): an rc says the
+            # TRANSPORT failed, and only the reviewer can say whether
+            # what is on disk is any good. So a dead spawn with a
+            # document goes to review exactly as if it had exited 0.
+            # Salvage only what is NEW: a revision turn that died before
+            # touching the file leaves the PREVIOUS round's document,
+            # and re-reviewing that spends a reviewer on a turn that
+            # never happened.
+            if not body.strip() or body == reviewed:
+                return _fail_spawn(
+                    _rc_reason(rc, "theorist"),
+                    f"the author's spawn returned rc={rc} on round "
+                    f"{turn}" + (" without rewriting the document"
+                                 if body.strip() else ""))
+            print(f"[theorist] {problem} g{group_id}: the author's spawn "
+                  f"died (rc={rc}) on round {turn} AFTER writing "
+                  f"{REPORT_BASENAME} — reviewing what it wrote",
+                  flush=True)
         if not body.strip():
             return _fail_spawn(
                 "theory_no_report",
                 f"the author wrote no {REPORT_BASENAME} on round {turn}")
 
+        reviewed = body
         verdict, err, rrc = review_round(
             round_no=turn, attempts_dir=attempts_dir, conn=conn,
             workspace=workspace, problem=problem, group_id=group_id,
