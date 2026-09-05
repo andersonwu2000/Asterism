@@ -447,8 +447,10 @@ def split_criterion(val: Any) -> "tuple[str, list[str]]":
 def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     """Validate the per-criterion verdict.json and DERIVE the ruling.
 
-    Each criterion line is `"clear"` or `"fired: <objection>"`; any
-    fired line makes the verdict a rebut. Returns a dict carrying the
+    A criterion takes a list of bullets (a bare string is the legacy
+    one-bullet form); each bullet is `"clear: <reason>"` or `"fired:
+    <objection>"`, and a criterion is clear iff EVERY bullet is. Any
+    fired bullet makes the verdict a rebut. Returns a dict carrying the
     synthesized legacy keys (`verdict` / `criticisms` / `reservations`)
     plus the raw `criteria`, or (None, err) on a malformed file."""
     try:
@@ -486,6 +488,12 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
             return None, (f"criterion {k} must be a list of strings "
                           f"(one bullet per objection) or a single "
                           f"string")
+        # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
+        # the same wake-killing parse: opus-tier judges annotate their
+        # verdicts — `"clear — I checked the chain end to end…"` — and
+        # the literal match threw away two full adversary rounds per
+        # hit. The DISCRIMINATOR is the leading word (word-boundary, so
+        # "clearly…" stays malformed); suffix prose is tolerated.
         heads = [("clear" if re.match(r"clear\b", x.strip(), re.IGNORECASE)
                   else "fired" if re.match(r"fired\b", x.strip(),
                                            re.IGNORECASE)
@@ -496,12 +504,6 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         if "clear" in heads and "fired" in heads:
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
                           f"bullets — a criterion is one or the other")
-        # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
-        # the same wake-killing parse: opus-tier judges annotate their
-        # verdicts — `"clear — I checked the chain end to end…"` — and
-        # the literal match threw away two full adversary rounds per
-        # hit. The DISCRIMINATOR is the leading word (word-boundary, so
-        # "clearly…" stays malformed); suffix prose is tolerated.
         if heads[0] == "clear":
             # 2026-09-05 (union_closed): a criterion is clear iff EVERY
             # bullet is clear — several clears are the shape the rubric
