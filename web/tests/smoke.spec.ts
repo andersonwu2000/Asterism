@@ -208,7 +208,10 @@ test('the Assistant answers Ctrl+/', async ({ page, request }) => {
   await expect(panel).toBeHidden()
   await page.keyboard.press('Control+/')
   await expect(panel).toBeVisible()
-  // its conversations open in place, under the header
+  // its conversations open in place, under the header — on demand,
+  // through the fold toggle (a closed fold renders nothing, which is
+  // what let the old label collision pass as a false green)
+  await panel.getByRole('button', { name: 'conversations' }).click()
   await expect(panel.getByLabel('conversation list')).toBeVisible()
 })
 
