@@ -148,12 +148,7 @@ def _call_shapes() -> "list[tuple[str, int, str, str]]":
     """(where, line, kind, field) for every call shape that names a
     prose field, across BOTH homes."""
     out = []
-    files = list(PROMPTS.rglob("*.md")) + [
-        p for p in CODE.rglob("*.py")
-        # The operator's local zh-TW prompt drafts are not shipped and
-        # are deliberately not committed; they are not a surface an
-        # agent ever reads.
-        if "prompts_zhtw_ref" not in p.parts]
+    files = list(PROMPTS.rglob("*.md")) + list(CODE.rglob("*.py"))
     for f in sorted(files):
         s = f.read_text(encoding="utf-8", errors="replace")
         for m in _CALL.finditer(s):

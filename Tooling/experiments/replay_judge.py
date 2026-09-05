@@ -18,7 +18,7 @@ empty `decisions.md`, with the note saying so in stdout and in
 `replay_verdict.json` — see `load_proposal`. `--decisions <file.json>`
 supplies them when they have been recovered from a transcript.
 
-    cd D:/Asterism_tt && python -m Tooling.experiments.replay_judge \
+    cd <scratch_ws> && python -m Tooling.experiments.replay_judge \
         --source-db D:/Asterism/asterism.db --problem Combinatorics.union_closed \
         --group 504 --rev-row 1119 --trigger inject_batch_done
 """

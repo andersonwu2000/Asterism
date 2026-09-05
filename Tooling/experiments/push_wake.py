@@ -22,9 +22,9 @@ the chdir, which is the only moment "is this somebody's live workspace?"
 is still an answerable question.
 
     python -m Tooling.experiments.push_wake \
-        --workspace D:/Asterism_tt --problem Combinatorics.union_closed \
+        --workspace <scratch_ws> --problem Combinatorics.union_closed \
         --group 691 --prompt prompt_b1.md --prompt2 prompt_b2.md \
-        --out docs/internal/experiments/push/B_1
+        --out <lab_root>/runs/push_B_1
 """
 from __future__ import annotations
 

@@ -31,12 +31,12 @@ Nothing here writes into `_docs/`: the report is an experiment
 artefact, not a Project document, and the seat's write fence keeps it
 in the attempts dir regardless.
 
-    cd D:/Asterism_exp/arm3_r1 && python -m Tooling.experiments.theory_wake \
+    cd <exp_root>/arm3_r1 && python -m Tooling.experiments.theory_wake \
         --problem Combinatorics.union_closed --group 691 \
         --trigger inject_batch_done \
         --author-prompt theory_prompts/theory.md \
         --judge-prompt theory_prompts/theory_judge.md \
-        --rounds 3 --out D:/Asterism/docs/internal/experiments/theory_wake/runs/arm3_r1
+        --rounds 3 --out <lab_root>/runs/arm3_r1
 """
 from __future__ import annotations
 

@@ -7,7 +7,7 @@ original rev-20 wake ran under — propose the fin10 table brick again?
 Everything the wake commits (decisions, goals, the programme revision)
 lands in the SCRATCH DB; the real DB is never opened.
 
-    cd D:/Asterism_tt && python -m Tooling.experiments.replay_strategist \
+    cd <scratch_ws> && python -m Tooling.experiments.replay_strategist \
         --problem Combinatorics.union_closed --group 504 \
         --since 2026-08-26T04:11:05+00:00
 """
