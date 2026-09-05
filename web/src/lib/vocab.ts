@@ -156,15 +156,17 @@ const EVENT_LABEL: Record<string, string> = {
   held: 'held',
   paper: 'paper',
   disproof: 'disproof',
-  // the theory layer's whole life, five rows of it (serve `602c6614`):
-  // the request, the wake at both ends, and the answer. The verb says
-  // what was asked for and what came back; the PAGE mark beside it says
-  // a DOCUMENT is the product, which is neither a star nor a brick.
+  // the theory layer's whole life, six rows of it (serve `602c6614`):
+  // the request, the wake at both ends, and the answer in its three
+  // shapes. The verb says what was asked for and what came back; the
+  // PAGE mark beside it says a DOCUMENT is the product, which is
+  // neither a star nor a brick.
   asked_theory: 'asked for theory',
   theorizing: 'theorist at work',
   theorized: 'theorist came back',
   theory: 'theory landed',
   theory_refused: 'theory refused',
+  theory_died: 'theorist died',
 }
 
 export function eventLabel(kind: string): string {
@@ -233,6 +235,10 @@ const EVENT_TITLE: Record<string, string> = {
     'engine term: theory_documents — the reviewer refused the document after the rounds'
     + ' counted beside the verb, so nothing landed. Not a failure of the question: the'
     + ' request can be filed again',
+  theory_died:
+    'engine term: Theorist — the wake died before anything was reviewed: no document,'
+    + ' no ruling, nothing landed. Not a refusal — nobody read it. The note is the'
+    + ' outcome the engine filed, and the request stands as asked',
 }
 
 export function eventTitle(kind: string): string {
@@ -272,12 +278,14 @@ export const EVENT_CLS: Record<string, string> = {
   theorized: 'text-ink-dim',
   theory: 'text-star',
   theory_refused: 'text-ink-faint',
+  theory_died: 'text-ink-faint',
 }
 
-/** The theory layer's event kinds — the five rows serve writes for one
+/** The theory layer's event kinds — the six rows serve writes for one
  * request (`object_kind: 'theory'`). */
 const THEORY_EVENTS = new Set([
   'asked_theory', 'theorizing', 'theorized', 'theory', 'theory_refused',
+  'theory_died',
 ])
 
 /** Does this wear the PAGE mark — the theory layer's one glyph? Two

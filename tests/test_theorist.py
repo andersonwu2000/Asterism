@@ -259,7 +259,9 @@ def test_three_fired_rounds_reject_and_the_document_does_not_land(
     d = conn.execute(
         "SELECT outcome, outcome_detail FROM strategist_decisions"
         " WHERE id = ?", (did,)).fetchone()
-    assert str(d["outcome"]).startswith("failed")
+    # The one road REJECTED_DETAIL is for: a ruling was made and it
+    # fired. Named on the enum too, so no consumer has to read prose.
+    assert str(d["outcome"]) == "failed:theory_rejected"
     assert theorist.REJECTED_DETAIL in d["outcome_detail"]
     assert "the relation is not argued" in d["outcome_detail"]
 
@@ -278,6 +280,98 @@ def test_a_settled_request_wakes_the_group(
     monkeypatch.setattr(agent, "spawn_llm", fake)
     _run(conn, workspace, pintent, did)
     assert db.is_in_queue(conn, target_id=str(gid), kind="Strategist")
+
+
+# ---------------------------------------------------------------------
+# a spawn that died is not a review that refused
+# ---------------------------------------------------------------------
+
+def _dead_spawn(seat: str, *, rc: int = 1, report: "str | None" = None):
+    """A scripted `spawn_llm` where `seat` exits `rc`. The author writes
+    `report` first when one is given; every other seat behaves."""
+    state = {"author": 0, "review": 0}
+
+    def fake_spawn(**kw):
+        kind = kw.get("kind")
+        if kind == "theory_reviewer":
+            state["review"] += 1
+            if seat == kind:
+                return rc
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps(_clear()), encoding="utf-8")
+            return 0
+        state["author"] += 1
+        if report is not None:
+            (kw["attempts_dir"] / "report.md").write_text(
+                report, encoding="utf-8")
+        return rc if seat == kind else 0
+
+    return fake_spawn, state
+
+
+def test_a_dead_author_spawn_is_not_reported_as_a_rejection(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-05, union_closed g691 twice: the codex stream died on the
+    author's idle timeout and the Strategist was told its request "did
+    not pass review — reconsider your request". Nothing was reviewed.
+    A transport death must name the reachable action instead, and the
+    decision's own `outcome` must say which road it was, so a reader
+    does not have to parse prose to tell them apart."""
+    did = _theorize(conn, workspace)
+    fake, state = _dead_spawn("theorist")
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+    assert state["review"] == 0       # nothing was reviewed
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert theorist.REJECTED_DETAIL not in d["outcome_detail"]
+    assert "did not complete" in d["outcome_detail"]
+    assert "re-issue" in d["outcome_detail"]
+    # structural, not textual: `failed:<reason>`, the vocabulary
+    # `failed:dead` / `failed:stalled` / `failed:group_retired` use.
+    assert str(d["outcome"]) == f"failed:{r.failure_reason}"
+
+
+def test_a_dead_reviewer_spawn_is_not_reported_as_a_rejection(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer's transport can die on the same wall as the
+    author's, and its rc says nothing about the document either."""
+    did = _theorize(conn, workspace)
+    fake, _ = _dead_spawn("theory_reviewer", report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert theorist.REJECTED_DETAIL not in d["outcome_detail"]
+    assert "did not complete" in d["outcome_detail"]
+    assert str(d["outcome"]) == f"failed:{r.failure_reason}"
+
+
+def test_an_author_that_writes_nothing_is_a_dead_wake_not_a_rejection(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No document was ever put to the reviewer, so no reviewer refused
+    it — the same road, reached without an rc."""
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear()], report=lambda _n: None)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert theorist.REJECTED_DETAIL not in d["outcome_detail"]
+    assert str(d["outcome"]) == "failed:theory_no_report"
 
 
 # ---------------------------------------------------------------------

@@ -41,8 +41,22 @@ from .verdict import (REPORT_BASENAME, clear_lines, parse_theory_verdict)
 #: What the failure outcome says to the Strategist that asked. Fixed
 #: wording (theory_wake_design.md §3.7): a rejection is not a bug
 #: report, it is an instruction — the request itself is what the next
-#: wake has to change.
+#: wake has to change. RESERVED for a real ruling that fired.
 REJECTED_DETAIL = "The Theorist's document did not pass review — reconsider your request"
+
+#: The OTHER road, and it is not that one. A wake that never came back
+#: reviewed nothing, so the request is untouched — telling the
+#: Strategist to reconsider it sends it to rewrite a question nobody
+#: answered. union_closed g691, 2026-09-05: two Theorist runs died when
+#: the codex stream hit its idle timeout on a long silent reasoning
+#: turn, and both were reported as "did not pass review". The headline
+#: has to name the move that is actually available.
+SPAWN_DIED_DETAIL = ("The Theorist's spawn did not complete ({reason}); "
+                     "the request stands — re-issue it")
+
+#: The third road: the request itself is unusable. Nothing ran, and
+#: there is nothing to re-issue either — the decision has to change.
+NO_REQUEST_DETAIL = "The Theorize decision carried no usable request"
 
 #: Revision rounds a fired verdict may buy, on the SAME author session.
 #: Three, from the experiment: the author that has not answered the
@@ -62,19 +76,25 @@ def _rc_reason(rc: int, seat: str) -> str:
 
 
 def _settle(conn: sqlite3.Connection, decision_id: "int | None", *,
-            outcome: str, detail: str) -> None:
+            outcome: str, detail: str, failure_reason: str = "") -> None:
     """Fill the `Theorize` row's outcome and let the batch cycle run.
 
     Both roads settle it, and that is load-bearing: a NULL outcome is
     what "the theory layer is still working" means everywhere else in
     the framework, so a pipeline that returned without writing one
     would suppress its group's stall rescue forever and never wake it
-    with the answer."""
+    with the answer.
+
+    `failure_reason` rides the enum as `failed:<reason>` — the same
+    vocabulary `failed:dead` / `failed:stalled` / `failed:group_retired`
+    already use for an Inject and for a spent theory request. A bare
+    `failed` was what let a transport death and a fired ruling render
+    identically on every surface that reads the column."""
     if decision_id is None:
         return
     from ...state import transitions as _transitions
     _transitions._record_inject_decision_outcome(
-        conn, int(decision_id), outcome, "", detail=detail)
+        conn, int(decision_id), outcome, failure_reason, detail=detail)
     _transitions._maybe_enqueue_inject_batch_done(conn, int(decision_id))
 
 
@@ -117,18 +137,28 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     problem_dir = db.problem_dir(workspace, problem)
     objective, situation = _request_of(conn, decision_id)
 
-    def _fail(reason: str, detail: str):
-        _settle(conn, decision_id, outcome="failed",
-                detail=f"{REJECTED_DETAIL}\n\n{detail}")
+    def _fail(reason: str, detail: str, *, headline: str):
+        # `headline` is required, per road: the caller that adds a
+        # seventh failure must say WHICH of the three answers the
+        # Strategist gets, rather than inheriting whichever one happened
+        # to be the default.
+        _settle(conn, decision_id, outcome="failed", failure_reason=reason,
+                detail=f"{headline}\n\n{detail}")
         return PipelineResult(outcome="failed", failure_reason=reason,
                               failure_detail=detail)
+
+    def _fail_spawn(reason: str, detail: str):
+        """A wake that did not come back: nothing was reviewed."""
+        return _fail(reason, detail,
+                     headline=SPAWN_DIED_DETAIL.format(reason=reason))
 
     if not objective.strip():
         # Unreachable through `verify_decision`, and that is exactly why
         # it is checked: a row hand-written into the DB would otherwise
         # spend an xhigh author turn on an empty question.
         return _fail("theory_no_request",
-                     "the Theorize decision carries no objective")
+                     "the Theorize decision carries no objective",
+                     headline=NO_REQUEST_DETAIL)
 
     # Stage 1 — the group's own Context, under the theory request.
     compile_strategist_context(
@@ -169,15 +199,15 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             retry_context=rebuttal, timeout_sec=author_timeout,
             mcp_config_path=tools_cfg)
         if rc != 0:
-            return _fail(_rc_reason(rc, "theorist"),
-                         f"the author's spawn returned rc={rc} on round "
-                         f"{turn}")
+            return _fail_spawn(
+                _rc_reason(rc, "theorist"),
+                f"the author's spawn returned rc={rc} on round {turn}")
         body = (report_path.read_text(encoding="utf-8")
                 if report_path.is_file() else "")
         if not body.strip():
-            return _fail("theory_no_report",
-                         f"the author wrote no {REPORT_BASENAME} on "
-                         f"round {turn}")
+            return _fail_spawn(
+                "theory_no_report",
+                f"the author wrote no {REPORT_BASENAME} on round {turn}")
 
         verdict, err, rrc = review_round(
             round_no=turn, attempts_dir=attempts_dir, conn=conn,
@@ -185,13 +215,14 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             objective=objective, situation=situation, report_body=body,
             dialogue=dialogue, pipeline_id=pipeline_id)
         if rrc != 0:
-            return _fail(_rc_reason(rrc, "theory_reviewer"),
-                         f"the reviewer's spawn returned rc={rrc} on "
-                         f"round {turn}")
+            return _fail_spawn(
+                _rc_reason(rrc, "theory_reviewer"),
+                f"the reviewer's spawn returned rc={rrc} on round {turn}")
         if verdict is None:
-            return _fail("theory_no_verdict",
-                         f"the reviewer produced no usable verdict on "
-                         f"round {turn}: {err}")
+            return _fail_spawn(
+                "theory_no_verdict",
+                f"the reviewer produced no usable verdict on round "
+                f"{turn}: {err}")
         if verdict["verdict"] == "pass":
             break
         dialogue.append({"round": turn,
@@ -210,7 +241,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         return _fail(
             "theory_rejected",
             f"{turn} round(s), the reviewer's last ruling still fired:\n"
-            f"{summary}")
+            f"{summary}", headline=REJECTED_DETAIL)
 
     path = _landing.land(
         workspace, conn, problem=problem, group_id=group_id,
@@ -227,5 +258,5 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     return PipelineResult(outcome="success")
 
 
-__all__ = ["run_theorist", "REJECTED_DETAIL", "DEFAULT_ROUNDS",
-           "parse_theory_verdict"]
+__all__ = ["run_theorist", "REJECTED_DETAIL", "SPAWN_DIED_DETAIL",
+           "NO_REQUEST_DETAIL", "DEFAULT_ROUNDS", "parse_theory_verdict"]

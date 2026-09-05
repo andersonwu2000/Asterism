@@ -12,13 +12,16 @@ import {
 
 /* The theory layer's words. REQUIREMENT CHANGED (serve `602c6614`): the
  * layer's whole life is on the log now — the request, the wake at both
- * ends, and the answer — as five lowercase verbs under
+ * ends, and the answer — as six lowercase verbs under
  * `object_kind: 'theory'`. The raw decision kind `Theorize` no longer
  * reaches an event row (serve mints `asked_theory` for it), so the row
  * words moved onto the minted verbs; the DECISION-side words stay,
  * because a decision is still a decision. */
 describe('the theory layer', () => {
-  const KINDS = ['asked_theory', 'theorizing', 'theorized', 'theory', 'theory_refused']
+  const KINDS = [
+    'asked_theory', 'theorizing', 'theorized', 'theory', 'theory_refused',
+    'theory_died',
+  ]
 
   it('names the request row in the reader words', () => {
     expect(eventLabel('asked_theory')).toBe('asked for theory')
@@ -40,9 +43,18 @@ describe('the theory layer', () => {
     expect(eventLabel('theorized')).toBe('theorist came back')
   })
 
-  it('names the two ways an answer arrives', () => {
+  it('names the three ways an answer arrives', () => {
+    // REQUIREMENT CHANGED 2026-09-05: a wake can also die before
+    // anything is reviewed, and that is an answer of its own — reading
+    // it as a refusal is what union_closed g691 did twice.
     expect(eventLabel('theory')).toBe('theory landed')
     expect(eventLabel('theory_refused')).toBe('theory refused')
+    expect(eventLabel('theory_died')).toBe('theorist died')
+  })
+
+  it('says a death was never read, so nobody refused it', () => {
+    expect(eventTitle('theory_died')).toContain('Not a refusal')
+    expect(eventTitle('theory_died')).not.toContain('reviewer refused')
   })
 
   it('keeps every one of its verbs inside three words', () => {
@@ -73,10 +85,12 @@ describe('the theory layer', () => {
   it('lights a landed document like the other landings, and a refusal like residue', () => {
     expect(EVENT_CLS.theory).toBe('text-star')
     expect(EVENT_CLS.theory_refused).toBe('text-ink-faint')
+    // a death is residue too — an infra hiccup takes the same ink
+    expect(EVENT_CLS.theory_died).toBe('text-ink-faint')
   })
 
   it('wears the page mark on every row of its life, and on its worker', () => {
-    // the five rows (Timeline) and the worker it seats (Engine room)
+    // the six rows (Timeline) and the worker it seats (Engine room)
     // are one thing wearing one glyph
     for (const kind of KINDS) expect(isTheory(kind)).toBe(true)
     expect(isTheory('Theorist')).toBe(true)

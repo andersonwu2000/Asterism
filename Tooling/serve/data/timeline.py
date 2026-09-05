@@ -167,14 +167,15 @@ _DECISION_VERB: "dict[str, str]" = {
     "Theorize": "asked_theory",
 }
 
-# The theory layer's other four verbs are NOT decision verbs and so are
+# The theory layer's other five verbs are NOT decision verbs and so are
 # not in that table: `theorizing`/`theorized` are the WAKE (a `pipelines`
 # row — when the author started, when it came back and with what) and
-# `theory`/`theory_refused` are the ANSWER (a `theory_documents` row —
-# the document that landed, or the refusal that landed nothing). All
-# five are `object_kind='theory'` and all five name the OBJECTIVE, which
-# is the only string a reader can follow one request by. `_theory_events`
-# below writes the four.
+# `theory`/`theory_refused`/`theory_died` are the ANSWER — the document
+# that landed, the refusal that landed nothing (both a `theory_documents`
+# row), or NO row at all, which is its own answer: the wake died before
+# anything was ruled on. All six are `object_kind='theory'` and all six
+# name the OBJECTIVE, which is the only string a reader can follow one
+# request by. `_theory_events` below writes the five.
 
 #: How much of an objective a row carries as its NAME. The objective is
 #: a REQUEST, not a title — the strategist prompt asks for a statement
@@ -230,7 +231,7 @@ _LIFE_RANK: "dict[str, int]" = {
     # written INSIDE the pipeline, and only then does `finish_pipeline`
     # stamp the wake's end.
     "asked_theory": 1, "theorizing": 2, "theory": 6,
-    "theory_refused": 6, "theorized": 7,
+    "theory_refused": 6, "theory_died": 6, "theorized": 7,
 }
 
 #: What a dispatch ASKED FOR, when its goal does not exist yet (a
@@ -604,6 +605,11 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
       `theory_documents`  → the ANSWER: `theory` with the path it landed
                             and what the review cost, or `theory_refused`
                             with the rounds and no path.
+                            NO row, on a wake that finished failed, is
+                            the third answer and gets `theory_died`: the
+                            spawn never came back, so no reviewer ever
+                            ruled. Reading that as a refusal is what
+                            union_closed g691 did twice on 2026-09-05.
 
     Every row carries the request's `batch_id`: a `Theorize` is an open
     batch step whose settlement is what wakes the group
@@ -658,6 +664,7 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
             gid = int(r["target_id"])
         except (TypeError, ValueError):
             gid = None
+        answered = pid in by_pipeline
         batch, label = by_pipeline.get(pid, (None, None))
         if label is None:
             # still in flight, or dead before review: the request it
@@ -670,6 +677,15 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
         out.append(_ev(str(r["started_at"]), "theorizing",
                        object_kind="theory", label=label,
                        eid=f"ts{pid}", batch_id=batch, group_id=gid))
+        if r["finished_at"] and not answered and str(
+                r["outcome"] or r["status"]) != "success":
+            # The answer this road has. `answered` is the whole test:
+            # a run that reached a ruling wrote its `theory_documents`
+            # row above, so this fires exactly when none exists.
+            out.append(_ev(
+                str(r["finished_at"]), "theory_died", object_kind="theory",
+                label=label, note=str(r["outcome"] or r["status"]),
+                eid=f"tx{pid}", batch_id=batch, group_id=gid))
         if r["finished_at"]:
             out.append(_ev(
                 str(r["finished_at"]), "theorized", object_kind="theory",

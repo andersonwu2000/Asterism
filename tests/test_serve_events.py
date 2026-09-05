@@ -628,6 +628,43 @@ def test_a_refused_document_is_still_an_event_and_lands_nothing(
     assert not [e for e in ev if e["kind"] == "theory"]
 
 
+def test_a_wake_that_died_before_any_ruling_is_not_a_refusal(
+        workspace: Path) -> None:
+    """`theory_refused` says a reviewer read the document and refused
+    it. A wake whose spawn died leaves no `theory_documents` row at all,
+    and the log must say THAT — 2026-09-05, union_closed g691: two runs
+    died in the codex stream and every surface called them refusals."""
+    conn = _open_db(workspace)
+    gid = _top(conn)
+    _theorize(conn, workspace, objective="the question nobody ruled on")
+    _theory_pipeline(conn, gid, outcome="failed")
+    conn.close()
+    ev = _events(workspace)["events"]
+    died = [e for e in ev if e["kind"] == "theory_died"]
+    assert len(died) == 1
+    assert died[0]["object_kind"] == "theory"
+    assert died[0]["label"] == "the question nobody ruled on"
+    assert died[0]["group_id"] == gid
+    assert not [e for e in ev if e["kind"] in ("theory", "theory_refused")]
+
+
+def test_a_refused_wake_is_not_also_reported_as_dead(
+        workspace: Path) -> None:
+    """The sibling must not double-file: a run that reached a ruling has
+    its answer row already."""
+    conn = _open_db(workspace)
+    gid = _top(conn)
+    did = _theorize(conn, workspace, objective="the refused question")
+    _theory_pipeline(conn, gid, outcome="failed")
+    _theory_doc(conn, group_id=gid, decision_id=did,
+                objective="the refused question", path=None,
+                status="rejected", rounds=3)
+    conn.close()
+    ev = _events(workspace)["events"]
+    assert len([e for e in ev if e["kind"] == "theory_refused"]) == 1
+    assert not [e for e in ev if e["kind"] == "theory_died"]
+
+
 def test_the_theory_rows_carry_the_batch_they_settle(
         workspace: Path) -> None:
     """A `Theorize` is an open batch step: the pipeline fills its
