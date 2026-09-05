@@ -1656,6 +1656,62 @@ def test_reconcile_settles_theorize_of_a_retired_group(
         "failed")
 
 
+def test_a_theorists_infra_death_is_re_queued_not_settled(
+    conn: sqlite3.Connection,
+) -> None:
+    """union_closed d5922 / d5933, 2026-09-05: two `Theorize` rows were
+    settled `failed:quota_exhausted` and told the Strategist to re-issue
+    the request itself. The machine never hands work back for an infra
+    reason (owner ruling 2026-09-06) — the row stays open and the
+    reconciler that already exists for an unanswered `Theorize` puts the
+    worker back once the kind's backoff lifts."""
+    from Tooling.state import transitions as _t
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    d = _insert_theorize(conn, problem="alpha", group_id=gid)
+
+    _t.cascade_one(conn, pipeline_id="pid-q", kind="Theorist",
+                   target_id=str(gid), target_kind="Group",
+                   outcome="failed", failure_reason="quota_exhausted",
+                   decision_id=d)
+
+    row = conn.execute(
+        "SELECT outcome, infra_deaths FROM strategist_decisions"
+        " WHERE id = ?", (d,)).fetchone()
+    assert row["outcome"] is None
+    assert int(row["infra_deaths"]) == 1
+
+    reconcile_stuck_states(conn, running=set())
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Theorist'"
+        "   AND decision_id = ?", (d,)).fetchone()["c"] == 1
+
+
+def test_a_theorists_re_issues_are_bounded(
+    conn: sqlite3.Connection,
+) -> None:
+    """A provider that is broken for good must still surface. After
+    `INFRA_REDISPATCHES` re-issues the next infra death settles the row
+    with the message the Strategist can act on."""
+    from Tooling.pipeline import theorist as _theorist
+    from Tooling.state import transitions as _t
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = int(groups.top_group(conn, "alpha")["id"])
+    d = _insert_theorize(conn, problem="alpha", group_id=gid)
+
+    for _ in range(_theorist.INFRA_REDISPATCHES + 1):
+        _t.cascade_one(conn, pipeline_id="pid-q", kind="Theorist",
+                       target_id=str(gid), target_kind="Group",
+                       outcome="failed", failure_reason="quota_exhausted",
+                       decision_id=d)
+
+    row = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (d,)).fetchone()
+    assert str(row["outcome"]) == "failed:quota_exhausted"
+    assert "re-issue" in str(row["outcome_detail"])
+
+
 # ---------------------------------------------------------------------
 # _dispatch_is_duplicate — pop-loop dedup (Builder capped one-per-goal)
 # ---------------------------------------------------------------------
