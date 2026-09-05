@@ -69,7 +69,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
   - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Theorize` — `objective`, `situation`. Hands one load-bearing unknown to the theory layer (the Theorist); it answers with a document — theorems, attempts on the wall, leads — that comes back to you as this batch's outcome.
-    `objective` — a statement whose proof or refutation would move the claim, or the wall to be crossed.
+    `objective` — a statement whose proof or refutation would move the claim, or the wall to be crossed, with why the charter needs this wall.
     `situation` — what has landed, what died and why, what is parked — with pointers (goal ids, dead attempts, PAST lines).
   One `Theorize` per group at a time. A small unknown you can derive yourself is yours; the Theorist is for a wall that needs new theory.
 - `Delegate` — `charter`, `reason`, optional `brief`, optional `target_goal_id`. Dispatches sub-groups:

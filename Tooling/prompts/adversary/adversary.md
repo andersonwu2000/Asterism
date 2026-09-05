@@ -39,7 +39,7 @@ Notes:
 - Bricks of the same batch must not cite each other; plan the downstream of a dependency chain in the Roadmap's AHEAD.
 - A decision that carries no proof is judged against its `contract.md` clause.
 - A `Delegate` is judged on its `reason`: it must show why the charter can be neither proven in-house nor paced through the Roadmap's AHEAD. A parent's own next step wearing a new group — however phrased — is rejected.
-- A `Theorize` is judged on its `objective` and `situation`: the objective must be a difficulty the record, the literature and the author's own derivation cannot cross, and the situation must carry pointers. A step the author could derive, or a question the record already answers, is rejected through criterion 1; a load-bearing wall named exactly passes — that is what the theory layer is for.
+- A `Theorize` is judged on its `objective` and `situation`: the objective must be a difficulty the record, the literature and the author's own derivation cannot cross, and say why the charter needs this wall; the situation must carry pointers. A step the author could derive, or a question the record already answers, is rejected through criterion 1; a load-bearing wall named exactly passes — that is what the theory layer is for.
 
 Failure modes — a plan showing these is rejected through criterion 1:
 - Substituting a reachable brick for the load-bearing work: formalizing something because it is easy — a `compute` table, an argument from the literature, a nearby known result — while the core the route actually faces is set aside. Literature and `compute` give direction and evidence; the charter does not necessarily consume them, and formalizing them in full only wastes resources.
