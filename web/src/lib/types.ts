@@ -858,3 +858,54 @@ export interface ShutdownPreview {
   gateway: { phase: string | null }
   console: { pid: number }
 }
+
+/* -- the Assistant's conversations (assistant_redesign_2026-09-06.md §2)
+ * A Project holds many of them, on disk beside the workspace, and one
+ * of them is current. The list and the record are different shapes on
+ * purpose: `turns` is a COUNT in the list and the transcript itself in
+ * the record — the rail must not pay for a megabyte to draw a row. */
+
+/** One tool call, as the record kept it. */
+export interface ChatToolRow {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  ok: boolean
+  ms: number | null
+  /** clipped by the backend to 200 chars */
+  result: string | null
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  text: string
+  at: string
+  /** assistant turns only */
+  ok?: boolean
+  note?: string | null
+  tools?: ChatToolRow[]
+}
+
+/** GET /api/chat/sessions — one row per conversation. */
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  updated_at: string
+  created_at: string
+  turns: number
+  model: string
+  provider: string
+}
+
+/** GET /api/chat/sessions/{id} — the whole transcript. */
+export interface ChatSession {
+  id: string
+  project: string
+  title: string
+  title_custom?: boolean
+  created_at: string
+  updated_at: string
+  model: string
+  provider: string
+  turns: ChatTurn[]
+}
