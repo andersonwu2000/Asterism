@@ -663,6 +663,13 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # hiccup on the judge must cost a re-spawn, not the author's work.
     last_err = ""
     verdict_tries = infra_tries = 0
+    # A refused verdict is put back to the SAME judge, with the parser's
+    # message (2026-09-05): the old retry deleted the file, spawned a
+    # blind fresh judge, and collected the same refused shape — six
+    # union_closed wakes died that way in one day. `retry_ctx` non-empty
+    # IS the resume: the sid is only re-minted for a cold spawn.
+    sid = ""
+    retry_ctx = ""
     # Loogle over MCP, not a shell — the judge checks "Mathlib has X"
     # claims, and that was its only shell use. The config lands INSIDE
     # the projection, so the isolation is unchanged.
@@ -670,11 +677,13 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     _tools_cfg = _write_tools_cfg(proj, attempts_dir.parent.parent,
                                   seat="adversary")
     while True:
-        sid = str(uuid.uuid4())
+        if not retry_ctx:
+            sid = str(uuid.uuid4())
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
-            session_id=sid, timeout_sec=timeout_sec,
+            session_id=sid, is_retry=bool(retry_ctx),
+            retry_context=retry_ctx or None, timeout_sec=timeout_sec,
             # Loogle over MCP, not a shell — the judge checks "Mathlib
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.
@@ -691,6 +700,10 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             usage_pipeline_id=attempts_dir.name,
         )
         if rc != 0:
+            # The resume itself died on the provider side, so the
+            # session is not a thing to go back to: fall back to a cold
+            # judge (the refused file stays on disk either way).
+            retry_ctx = ""
             # A confirmed quota window costs a sleep, not the author's
             # work (2026-08-08). The judge is fresh-per-round with no
             # session at stake, so parking here is pure win — and the
@@ -715,6 +728,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         # path must count against it or the wake spins forever).
         vpath = proj / VERDICT_BASENAME
         verdict = None
+        kept_name = ""
         if not vpath.exists():
             last_err = "adversary produced no verdict.json"
         else:
@@ -726,11 +740,32 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
                 verdict, perr = parse_verdict(text)
                 if verdict is None:
                     last_err = perr
-                    vpath.unlink(missing_ok=True)
+                    # The refused file is the judge's own written
+                    # evidence: the 09-05 post-mortem had to read six
+                    # transcripts because the retry unlinked it. Moving
+                    # it aside also clears the path, so a judge that
+                    # writes nothing next try is not re-judged on this.
+                    kept = proj / f"verdict_refused_{verdict_tries + 1}.json"
+                    try:
+                        vpath.replace(kept)
+                    except OSError:
+                        vpath.unlink(missing_ok=True)
+                    else:
+                        kept_name = kept.name
         if verdict is None:
             verdict_tries += 1
+            # The wake-level failure prints one line downstream; this is
+            # the only place that knows WHICH try failed and on what.
+            print(f"[adversary] r{round_no} try {verdict_tries}: "
+                  f"{last_err}", flush=True)
             if verdict_tries >= VERDICT_TRIES:
                 return None, last_err, 0
+            retry_ctx = (
+                f"The framework refused your {VERDICT_BASENAME}: "
+                f"{last_err}\n\nRewrite {VERDICT_BASENAME} in the shape "
+                f"that message requires"
+                + (f"; your previous file was kept as {kept_name}."
+                   if kept_name else "."))
             continue
         # Judge provenance (calibration survey P1/P2, 2026-08-29):
         # every seat comparison used to need yaml archaeology plus

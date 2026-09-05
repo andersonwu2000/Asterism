@@ -1159,6 +1159,49 @@ def test_review_verdict_budget_is_bounded(
     assert calls["n"] == adversary.VERDICT_TRIES
 
 
+def test_a_refused_verdict_is_kept_and_its_error_reaches_the_judge(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """2026-09-05 (union_closed): the retry deleted the refused
+    verdict.json, told the fresh judge nothing, and got the same shape
+    back — twice per round, six wakes. A judge cannot fix a refusal it
+    was never shown, and its written evidence is what the post-mortem
+    reads. So: keep the file aside, and resume the SAME session with the
+    parser's message and the one action it asks for."""
+    from Tooling.pipeline import adversary
+    attempts = workspace / ".attempts" / "pid"
+    attempts.mkdir(parents=True, exist_ok=True)
+    pdir = workspace / "Problems" / "p"
+    calls: list = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        body = (json.dumps({"criteria": {**_criteria(), "1": "maybe"}})
+                if len(calls) == 1 else _clear_criteria_json())
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            body, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    verdict, err, rc = adversary.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert rc == 0 and err == "" and verdict is not None
+    assert len(calls) == 2
+    assert calls[1]["session_id"] == calls[0]["session_id"], (
+        "the retry must resume the judge that wrote the refused file")
+    assert calls[1]["is_retry"] is True
+    ctx = calls[1]["retry_context"] or ""
+    assert "criterion 1" in ctx and "verdict.json" in ctx, ctx
+    proj = Path(calls[0]["attempts_dir"])
+    kept = sorted(p.name for p in proj.glob("verdict_refused_*.json"))
+    assert kept, "the judge's own written evidence must not vanish"
+    assert kept[0] in ctx, "the retry must say where the old file went"
+    assert json.loads((proj / kept[0]).read_text(
+        encoding="utf-8"))["criteria"]["1"] == "maybe"
+
+
 def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     """07-29 third occurrence (2× b6_1 07-27, 1× SG): opus-tier judges
     annotate their verdicts — `"clear — I checked…"` — and the literal
