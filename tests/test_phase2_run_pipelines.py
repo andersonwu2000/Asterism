@@ -236,6 +236,63 @@ def test_run_strategist_no_output_corrective_turn_recovers(
     assert len(calls) == 2
 
 
+def test_a_corrective_turn_that_dies_on_infra_names_the_provider(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The corrective turn's rc was never classified: whatever killed it,
+    the wake reported `agent_no_output`. That is an agent-origin reason,
+    so it charged the wake for a fault it did not commit AND reached no
+    re-queue arm — `cascade_one`'s Strategist retry reads
+    provider_infra only, so a quota window on the corrective turn cost
+    the whole wake with nothing putting it back (owner ruling
+    2026-09-06)."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        return 0 if len(calls) == 1 else 126
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=4,
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-inf",
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "quota_exhausted"
+    assert len(calls) == 2
+
+
+def test_a_corrective_turn_that_died_after_writing_is_still_read(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FILE outranks the rc, the same lesson the Theorist paid for:
+    the corrective turn's decision.json was only re-read when its rc was
+    0, so a transport that died the instant after `write_file` landed
+    threw away the very file the turn was spawned to get."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        if len(calls) == 2:
+            (kw["attempts_dir"] / "decision.json").write_text(
+                json.dumps({"kind": "Noop", "reason": "recovered"}),
+                encoding="utf-8")
+            return 126
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=4,
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-inf2",
+    )
+    assert r.failure_reason == "strategist_noop"  # the success path here
+    assert len(calls) == 2
+
+
 def test_parse_decisions_tolerates_raw_control_chars_in_strings() -> None:
     """Models emit literal newlines/tabs inside JSON string values;
     strict parsing killed a healthy 10-minute research wake over one

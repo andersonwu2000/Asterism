@@ -332,6 +332,33 @@ def test_routine_wake_gets_one_corrective_turn_for_a_missing_verdict(
     assert calls == [False, True] and r.outcome == "success"
 
 
+def test_a_routine_corrective_turn_that_dies_on_infra_names_the_provider(
+        wconn, workspace, mfst, monkeypatch):
+    """Same hole as the action wake's (owner ruling 2026-09-06): the
+    corrective turn's rc was never classified, so a quota window here
+    was reported as `agent_no_output` — an agent-origin reason that
+    reaches no re-queue arm. The audit's own clock is not consumed on
+    this road, so T1 re-seats the wake; the reason must still say whose
+    fault it was, or the dispatcher cools nothing and the next tick
+    fires straight back into the same wall."""
+    from Tooling import agent
+    from Tooling.pipeline import strategist
+    top = groups_store.ensure_top_group(wconn, "p")
+    _line_in_flight(wconn, top)
+    calls: list[bool] = []
+
+    def fake_spawn(**kw):
+        calls.append(bool(kw.get("is_retry")))
+        return 126 if kw.get("is_retry") else 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        wconn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, intent=mfst, pipeline_id="pipe-r-inf",
+        group_id=top)
+    assert calls == [False, True]
+    assert r.outcome == "failed" and r.failure_reason == "quota_exhausted"
+
+
 def test_routine_context_has_the_lines_section_and_the_roots_snapshot(
         wconn, workspace, mfst, tmp_path):
     from Tooling.agent.phase2_context import compile_strategist_context
