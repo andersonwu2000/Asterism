@@ -345,8 +345,16 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             mcp_config_path=tools_cfg,
         )
         _persist_plan(problem_dir, attempts_dir, group_id)
-        if rc_fix == 0:
-            decisions, parse_err, missing = _read_and_parse()
+        # Re-read whatever the rc: the FILE outranks it (2026-09-05, the
+        # Theorist). And a corrective turn the PROVIDER killed is NAMED,
+        # not `agent_no_output` — that charges the wake for a fault it
+        # did not commit and reaches no re-queue arm (2026-09-06).
+        decisions, parse_err, missing = _read_and_parse()
+        _fix_reason = _rc_to_reason(rc_fix) if rc_fix else ""
+        if (missing or decisions is None) and _failures.is_infra(_fix_reason):
+            return PipelineResult(
+                outcome="failed", failure_reason=_fix_reason,
+                failure_detail=f"corrective turn rc={rc_fix}; {_defect}")
     if missing:
         return PipelineResult(
             outcome="failed", failure_reason="agent_no_output",
