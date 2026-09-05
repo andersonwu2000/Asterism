@@ -437,6 +437,46 @@ def test_mechanical_discard_also_records_a_reason(
     assert notice and "package verify" in notice
 
 
+def test_no_ruling_discard_names_what_the_parser_refused(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-05: six union_closed wakes recorded the bare "adversary
+    produced no ruling". The parse error existed — it just lived in
+    `PipelineResult.failure_detail`, which reaches neither the DB nor
+    the daemon log, so the cause took six transcripts to find. The
+    discard reason carries it."""
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps({"criteria": {**_criteria(), "1": "maybe"}}),
+                encoding="utf-8")
+            return 0
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Inject", "pipeline": "Forward",
+                        "proof": "Roadmap: the brick\n## Need\nbrick"}),
+            encoding="utf-8")
+        (kw["attempts_dir"] / "proposal.md").write_text(
+            _PROPOSAL, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
+        workspace=workspace, intent=pintent, pipeline_id="adv-noruling",
+    )
+    assert r.outcome == "failed" and r.failure_reason == "agent_no_output"
+    row = conn.execute(
+        "SELECT * FROM programme_revisions WHERE problem='p'"
+        " AND status='rejected'").fetchone()
+    assert row is not None
+    assert row["discard_reason"].startswith(
+        "adversary produced no ruling: "), row["discard_reason"]
+    assert "criterion 1" in row["discard_reason"]
+
+
 def test_exempt_batch_skips_adversary(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
