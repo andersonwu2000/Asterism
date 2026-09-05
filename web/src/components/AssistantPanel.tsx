@@ -8,6 +8,7 @@ import { focusBody, useScreenFocus } from '../lib/focus'
 import type { ScreenFocus } from '../lib/focus'
 import { renderProse } from '../lib/prose'
 import { canSwitchModel, deriveTitle, sortSessions, truncateAt } from '../lib/chatSessions'
+import { explainerGroups } from '../lib/models'
 import { emptyTurn, parseSseFrames, reduceEvent, rowsFromRecord } from '../lib/chatStream'
 import type { StreamTurn } from '../lib/chatStream'
 import type {
@@ -264,7 +265,9 @@ export default function AssistantPanel({
   const sessionRef = useRef<string | null>(sessionId)
   sessionRef.current = sessionId
 
-  const groups = liveGroups ?? meta?.groups ?? []
+  // the probe answers for every backend installed on this machine;
+  // only the ones with an explainer can be seated on a question
+  const groups = explainerGroups(meta?.groups ?? [], liveGroups)
   const currentSession = sessions.find((s) => s.id === sessionId) ?? null
   const picked = model ?? meta?.model_default ?? ''
 
@@ -733,10 +736,11 @@ export default function AssistantPanel({
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Select
-            // fixed width: a base-select trigger hugs its current
-            // value, so an unsized one makes the header jiggle on
-            // every model switch
-            className="w-28 shrink-0"
+            // fixed width, and wide enough for the longest live name:
+            // a base-select trigger hugs its current value, so an
+            // unsized one makes the header jiggle on every switch, and
+            // a narrow one wrapped `claude-sonnet-5` onto two lines
+            className="w-40 shrink-0"
             value={picked}
             onChange={(e) => setModel(e.target.value)}
             title="stronger models cost more of the same subscription quota"

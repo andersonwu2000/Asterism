@@ -209,7 +209,7 @@ test('the Assistant answers Ctrl+/', async ({ page, request }) => {
   await page.keyboard.press('Control+/')
   await expect(panel).toBeVisible()
   // its conversations open in place, under the header
-  await expect(panel.getByLabel('conversations')).toBeVisible()
+  await expect(panel.getByLabel('conversation list')).toBeVisible()
 })
 
 test('run parameters live beside Run, not in settings', async ({ page, request }) => {

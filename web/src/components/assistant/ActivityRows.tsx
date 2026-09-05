@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { summarizeTools, toolLine } from '../../lib/chatStream'
+import { bareToolName, summarizeTools, toolLine } from '../../lib/chatStream'
 import type { ToolRow } from '../../lib/chatStream'
 
 /*
@@ -50,14 +50,17 @@ function Dot({ row }: { row: ToolRow }) {
 }
 
 function Row({ row, now }: { row: ToolRow; now: number }) {
-  const arg = toolLine(row.name, row.input)
+  // the record keeps `mcp__asterism_tools__inspect`; the row shows the
+  // verb, which is the only part that differs between two rows
+  const name = bareToolName(row.name)
+  const arg = toolLine(name, row.input)
   const ms = row.running ? Math.max(0, now - row.startedAt) : row.ms
   return (
     <div className="flex items-baseline gap-2 py-[3px] text-[11px]">
       <span className="flex w-2 shrink-0 justify-center self-center">
         <Dot row={row} />
       </span>
-      <span className="shrink-0 font-mono text-ink-dim">{row.name}</span>
+      <span className="shrink-0 font-mono text-ink-dim">{name}</span>
       <span className="min-w-0 flex-1 truncate text-ink-faint" title={arg}>
         {arg}
       </span>

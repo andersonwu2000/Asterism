@@ -176,23 +176,75 @@ function settle(rows: ToolRow[]): ToolRow[] {
 
 // -- what a row says ---------------------------------------------------------
 
+/** The name the engine calls a tool by, minus the plumbing.
+ *
+ * Every tool the Assistant is given arrives as `mcp__<server>__<verb>`
+ * — the transport's business, not the reader's. The prefix is the same
+ * on every row, so it says nothing while pushing the verb out of a
+ * narrow panel. The RECORD keeps the raw name; the screen and the verb
+ * families read this one. */
+export function bareToolName(name: string): string {
+  return name.replace(/^mcp__.+?__/, '')
+}
+
 /** The keys worth showing, in the order the design fixed. A tool's
- * arguments are a JSON object of unknown shape; this picks the one a
- * mathematician reads as "what it went to look at". */
-const ARG_KEYS = [
+ * arguments are a JSON object of unknown shape; this picks the ones a
+ * mathematician reads as "what it went to look at". `read` and `code`
+ * joined the list from the live tools: inspect asks in `queries`, and
+ * compute sends a `code` block. */
+const ARG_KEYS: string[] = [
   'path',
   'file',
+  'read',
   'query',
   'pattern',
   'expr',
+  'code',
   'command',
   'name',
   'problem',
   'goal',
   'text',
-] as const
+]
 
 const MAX_ARG = 80
+/** How deep an argument may hide. inspect's is two containers down
+ * (`{queries: [{read: ...}]}`); nothing useful has been further, and an
+ * unbounded walk over a tool's whole input is a different feature. */
+const MAX_DEPTH = 3
+const MAX_LEAVES = 12
+/** Three names is a line; the fourth is a paragraph. */
+const MAX_SHOWN = 3
+
+interface Leaf {
+  key: string
+  value: string
+}
+
+/** Every string an input names, depth-first, each already trimmed —
+ * the trim comes BEFORE the newline mark, or a code block that starts
+ * on line 2 reads as a leading return. */
+function walk(node: unknown, depth: number, key: string, out: Leaf[]): void {
+  if (out.length >= MAX_LEAVES) return
+  if (typeof node === 'string') {
+    const t = node.trim()
+    if (t !== '') out.push({ key, value: t })
+    return
+  }
+  if (typeof node === 'number') {
+    if (ARG_KEYS.includes(key)) out.push({ key, value: String(node) })
+    return
+  }
+  if (depth >= MAX_DEPTH) return
+  // an array inherits its key: `{read: ['a', 'b']}` is still two reads
+  if (Array.isArray(node)) {
+    for (const v of node) walk(v, depth + 1, key, out)
+    return
+  }
+  if (node !== null && typeof node === 'object')
+    for (const [k, v] of Object.entries(node as Record<string, unknown>))
+      walk(v, depth + 1, k, out)
+}
 
 /** One line of argument, in faint ink beside the tool's name.
  *
@@ -200,27 +252,17 @@ const MAX_ARG = 80
  * summary is per-tool by design, though the fixed key order answers
  * every tool the engine currently offers without branching on it. */
 export function toolLine(_name: string, input: Record<string, unknown> | null | undefined): string {
-  const obj = input ?? {}
-  let picked: string | null = null
-  for (const k of ARG_KEYS) {
-    const v = obj[k]
-    if (typeof v === 'string' && v !== '') {
-      picked = v
-      break
-    }
-    if (typeof v === 'number') {
-      picked = String(v)
-      break
-    }
-  }
-  if (picked === null)
-    for (const v of Object.values(obj))
-      if (typeof v === 'string' && v !== '') {
-        picked = v
-        break
-      }
-  if (picked === null) return ''
-  const one = picked.replace(/\r?\n/g, '⏎').replace(/["'`]/g, '').trim()
+  const found: Leaf[] = []
+  walk(input ?? {}, 0, '', found)
+  const ordered = [
+    ...ARG_KEYS.flatMap((k) => found.filter((l) => l.key === k).map((l) => l.value)),
+    ...found.filter((l) => !ARG_KEYS.includes(l.key)).map((l) => l.value),
+  ]
+  const shown = [...new Set(ordered)].slice(0, MAX_SHOWN)
+  if (shown.length === 0) return ''
+  const one = shown
+    .map((v) => v.replace(/\r?\n/g, '⏎').replace(/["'`]/g, ''))
+    .join(' · ')
   return one.length > MAX_ARG ? one.slice(0, MAX_ARG - 1) + '…' : one
 }
 
@@ -277,7 +319,9 @@ export function summarizeTools(rows: ToolRow[]): string {
   let first = Infinity
   let last = -Infinity
   for (const r of rows) {
-    const fam = FAMILY[r.name] ?? r.name
+    // the family is the VERB, not the transport's name for it
+    const bare = bareToolName(r.name)
+    const fam = FAMILY[bare] ?? bare
     if (!count.has(fam)) order.push(fam)
     count.set(fam, (count.get(fam) ?? 0) + 1)
     first = Math.min(first, r.startedAt)

@@ -104,7 +104,7 @@ export function Select({
     <span className={`relative inline-block ${className}`}>
       <select
         {...rest}
-        className="w-full cursor-pointer appearance-none rounded-lg border border-edge bg-surface py-1 pr-7 pl-2 font-mono text-xs text-ink transition-colors hover:border-edge-strong focus:border-ink-faint focus:outline-none"
+        className="w-full cursor-pointer appearance-none truncate rounded-lg border border-edge bg-surface py-1 pr-7 pl-2 font-mono text-xs whitespace-nowrap text-ink transition-colors hover:border-edge-strong focus:border-ink-faint focus:outline-none"
       />
       <span
         className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[8px] text-ink-faint"

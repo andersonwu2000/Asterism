@@ -96,7 +96,7 @@ export function SessionsFold({
     ) : null
 
   return (
-    <div ref={listRef} className="border-b border-edge py-1" aria-label="conversations">
+    <div ref={listRef} className="border-b border-edge py-1" aria-label="conversation list">
       <button
         data-at={0}
         tabIndex={sel === 0 ? 0 : -1}

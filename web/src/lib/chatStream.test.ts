@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   emptyTurn,
+  bareToolName,
   parseSseFrames,
   reduceEvent,
   rowsFromRecord,
@@ -114,15 +115,18 @@ describe('the argument summary', () => {
     expect(toolLine('inspect', { limit: 20, path: 'Problems/Erdos/p1/TREE.md' })).toBe(
       'Problems/Erdos/p1/TREE.md',
     )
-    // path outranks query where both are present
-    expect(toolLine('search', { query: 'Nat.Prime', path: 'a.lean' })).toBe('a.lean')
+    // path outranks query where both are present — both are shown now,
+    // in priority order, because one call can name several things
+    expect(toolLine('search', { query: 'Nat.Prime', path: 'a.lean' })).toBe(
+      'a.lean · Nat.Prime',
+    )
     expect(toolLine('loogle', { query: 'Nat.Prime ?p' })).toBe('Nat.Prime ?p')
   })
 
   it('falls back to the first string, and to nothing at all', () => {
     expect(toolLine('odd', { depth: 3, subject: 'the root' })).toBe('the root')
     expect(toolLine('daemon_status', {})).toBe('')
-    expect(toolLine('odd', { depth: 3, deep: { path: 'x' } })).toBe('')
+    expect(toolLine('odd', { depth: 3, deep: { note: 4 } })).toBe('')
   })
 
   it('is one line, unquoted, and 80 chars at most', () => {
@@ -182,5 +186,64 @@ describe('a turn read back from disk', () => {
 
   it('survives a record with no tools at all', () => {
     expect(rowsFromRecord(undefined)).toEqual([])
+  })
+})
+
+describe('the tool the engine actually names', () => {
+  it('drops the MCP server prefix, keeping the verb a reader knows', () => {
+    expect(bareToolName('mcp__asterism_tools__inspect')).toBe('inspect')
+    expect(bareToolName('mcp__x__y__z')).toBe('y__z')
+    expect(bareToolName('Read')).toBe('Read')
+    expect(bareToolName('')).toBe('')
+  })
+
+  it('is what the families are counted by', () => {
+    const row = (name: string, startedAt: number, ms: number): ToolRow => ({
+      id: `${name}${startedAt}`,
+      name,
+      input: {},
+      startedAt,
+      ms,
+      ok: true,
+      result: null,
+      running: false,
+    })
+    expect(
+      summarizeTools([
+        row('mcp__asterism_tools__inspect', 0, 500),
+        row('mcp__asterism_tools__loogle', 500, 500),
+        row('mcp__asterism_tools__compute', 1000, 500),
+        row('mcp__asterism_tools__compute', 1500, 500),
+      ]),
+    ).toBe('read 1 file · searched Mathlib once · computed 2× · 2.0s')
+  })
+})
+
+describe('an argument buried in the input', () => {
+  it('walks nested lists and dicts — inspect asks in queries', () => {
+    expect(
+      toolLine('inspect', {
+        queries: [
+          { read: 'Problems/Erdos/p1/TREE.md' },
+          { read: 'Problems/Erdos/p1/PROGRAMME.md' },
+        ],
+      }),
+    ).toBe('Problems/Erdos/p1/TREE.md · Problems/Erdos/p1/PROGRAMME.md')
+  })
+
+  it('shows at most three of them', () => {
+    expect(toolLine('inspect', { queries: [{ read: 'a' }, { read: 'b' }, { read: 'c' }, { read: 'd' }] })).toBe(
+      'a · b · c',
+    )
+  })
+
+  it('trims each leaf before the newline mark — a code block starts on line 2', () => {
+    expect(toolLine('compute', { code: '\nimport sympy\nprint(1)\n' })).toBe(
+      'import sympy⏎print(1)',
+    )
+  })
+
+  it('does not dive forever', () => {
+    expect(toolLine('odd', { a: { b: { c: { d: 'too deep' } } } })).toBe('')
   })
 })
