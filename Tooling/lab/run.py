@@ -212,6 +212,11 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
             for k in ("problem", "taken_utc", "programme_rev", "goal_count",
                       "code_commit", "schema_user_version", "rewind")},
         "code_commit": commit,
+        # What the arm ASKED the driver to do. The lab.yaml is edited
+        # between runs — that is what arms are — so a record that only
+        # named the experiment would be read against whichever version
+        # of the file is on disk when somebody opens it.
+        "options": arm.options,
         "overlay": {"prompts": sorted(arm.prompts), "seats": arm.seats},
         "prompt_sha256": hashes,
         "seats": result.get("seats") or {},

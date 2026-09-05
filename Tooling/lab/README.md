@@ -99,8 +99,9 @@ it.
 ## The record
 
 `run_record.json` (in `_out/` and beside it) carries the slice id, the
-code commit, the **sha256 of every file under the workspace's own
-`Tooling/prompts/`** (what the seat read, not what the arm declared),
+code commit, the arm's own options as they were when it ran, the
+**sha256 of every file under the workspace's own `Tooling/prompts/`**
+(what the seat read, not what the arm declared),
 the seats as the driver read them inside the workspace, the provider's
 own token/turn/wall accounting from `spawn_usage`, the outcome, and the
 artefact list.

@@ -367,6 +367,11 @@ def test_the_run_record_pins_the_slice_the_commit_and_the_prompts(
     assert rec["seats"]["adversary"]["model"] == "gpt-5"
     assert rec["artefacts"] == ["attempts/pid1"]
     assert rec["slice_manifest"]["problem"] == PROBLEM
+    # What the arm ASKED the driver to do. The lab.yaml is edited
+    # between runs — that is the point of arms — so a record that only
+    # named the experiment would be read against whichever version of
+    # the file happens to be on disk when somebody opens it.
+    assert rec["options"] == {"group": 1, "rows": [1]}
 
 
 def test_the_record_hashes_the_prompts_the_workspace_actually_held(
