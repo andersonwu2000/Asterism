@@ -22,8 +22,17 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from pathlib import Path
+
+# The batch judge's infra budget, re-exported so the two move together.
+# Best-effort here is about the ANSWER ("no candidates found"), never
+# about the machine: a quota window is not a reason to build a worse
+# brick, and this seat can sit on a different provider from the
+# prover's, so the search can be quota-dead while the work turn is
+# perfectly healthy (owner ruling 2026-09-06).
+from .adversary import INFRA_RETRY_BACKOFF_SEC, INFRA_SPAWN_RETRIES
 
 # Import the `agent` PACKAGE (not the `runtime` module) so `agent.spawn_llm`
 # is the same object the rest of the pipeline (backward/builder) references and
@@ -45,6 +54,12 @@ _DEFAULT_TIMEOUT_SEC = 420
 _MAX_PER_BLOCK = 10
 _PROMPT_FILENAME = "_presearch_prompt.md"
 _OUT_FILENAME = "_presearch.json"
+
+#: What a confirmed quota window may cost the ENCLOSING pipeline. Half
+#: the queue lease, not 80% of it as a wake takes: the search runs at
+#: the head of a brick that still has its whole work turn to pay for,
+#: and `release_expired_leases` un-claims on age alone.
+_PARK_BUDGET_FRACTION = 0.5
 
 _SOURCE_TAG = {"mathlib": "Mathlib", "library": "Library",
                "in_problem": "this problem"}
@@ -439,26 +454,62 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         prompt_file.write_text(rendered, encoding="utf-8")
 
         from . import write_tools_mcp_config as _write_tools_cfg
-        sid = str(uuid.uuid4())
-        rc = agent.spawn_llm(
-            kind="presearch", prompt_path=prompt_file,
-            problem_dir=problem_dir, attempts_dir=sandbox,
-            session_id=sid,
-            timeout_sec_override=timeout,
-            # Searching Mathlib IS this spawn's whole job, and loogle is
-            # an MCP tool now — without the config the prompt would name
-            # a tool the agent cannot call.
-            mcp_config_path=_write_tools_cfg(sandbox, workspace,
-                                             seat="presearch",
-                                             problem=problem),
-        )
+        from ..core import quota_wait as _qw
+        from ..core.dispatcher import LEASE_TTL_SEC
+        from ..llm import capabilities as _caps
+        from ..state import failures as _failures
+        _contract = _caps.for_kind("presearch").rc_contract
+        _t0 = time.monotonic()
+        infra_tries = 0
+        reason = ""
+        while True:
+            # Fresh sid per try: a spawn the provider refused has no
+            # session to resume, and the one that lands is the one whose
+            # questionnaire is filed below.
+            sid = str(uuid.uuid4())
+            rc = agent.spawn_llm(
+                kind="presearch", prompt_path=prompt_file,
+                problem_dir=problem_dir, attempts_dir=sandbox,
+                session_id=sid,
+                timeout_sec_override=timeout,
+                # Searching Mathlib IS this spawn's whole job, and loogle
+                # is an MCP tool now — without the config the prompt
+                # would name a tool the agent cannot call.
+                mcp_config_path=_write_tools_cfg(sandbox, workspace,
+                                                 seat="presearch",
+                                                 problem=problem),
+            )
+            if rc == 0 or out_path.is_file():
+                break
+            reason = _failures.rc_to_reason(rc, rc_contract=_contract)
+            if not _failures.is_infra(reason):
+                break
+            # A window whose end time the endpoint PUBLISHES is slept
+            # to; an unconfirmed one buys the blind budget. Either way
+            # the brick waits rather than being built without the
+            # candidates it was promised.
+            if _qw.park_in_pipeline(
+                    f"{problem} presearch {label}",
+                    budget_sec=(LEASE_TTL_SEC * _PARK_BUDGET_FRACTION)
+                    - (time.monotonic() - _t0)):
+                continue
+            if infra_tries >= INFRA_SPAWN_RETRIES:
+                break
+            infra_tries += 1
+            print(f"[presearch] {label}: spawn rc={rc} ({reason}) — retry "
+                  f"{infra_tries}/{INFRA_SPAWN_RETRIES} in "
+                  f"{INFRA_RETRY_BACKOFF_SEC:.0f}s", flush=True)
+            time.sleep(INFRA_RETRY_BACKOFF_SEC)
 
         if not out_path.is_file():
             # Death observability (owner call 2026-08-22): 52 silent
             # timeouts in one day — best-effort must not mean
             # invisible. One grep-able line per death; the patrol
-            # counts them.
-            print(f"[presearch-death] {label}: rc={rc} and no "
+            # counts them. The REASON rides along since 2026-09-06: a
+            # line that says only `rc=1` cannot tell a search that found
+            # nothing from a provider that was never asked.
+            print(f"[presearch-death] {label}: rc={rc}"
+                  f"{f' ({reason})' if reason else ''} and no "
                   f"{_OUT_FILENAME} — this node's brick proceeds "
                   f"without candidates", flush=True)
             return None
