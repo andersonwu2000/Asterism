@@ -3,6 +3,7 @@ import {
   emptyTurn,
   parseSseFrames,
   reduceEvent,
+  rowsFromRecord,
   summarizeTools,
   toolLine,
 } from './chatStream'
@@ -165,5 +166,21 @@ describe('the collapsed line', () => {
 
   it('says nothing about a turn that used no tools', () => {
     expect(summarizeTools([])).toBe('')
+  })
+})
+
+describe('a turn read back from disk', () => {
+  it('reconstructs the timeline sequentially — the record keeps durations, not clocks', () => {
+    const rows = rowsFromRecord([
+      { id: 'a', name: 'inspect', input: { path: 'TREE.md' }, ok: true, ms: 1200, result: 'x' },
+      { id: 'b', name: 'loogle', input: {}, ok: false, ms: 800, result: null },
+    ])
+    expect(rows.map((r) => r.startedAt)).toEqual([0, 1200])
+    expect(rows.every((r) => !r.running)).toBe(true)
+    expect(summarizeTools(rows)).toBe('read 1 file · searched Mathlib once · 2.0s')
+  })
+
+  it('survives a record with no tools at all', () => {
+    expect(rowsFromRecord(undefined)).toEqual([])
   })
 })

@@ -1,26 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseProjectRoute } from '../lib/projectRoute'
 import { useRoute } from '../lib/router'
-import { apiGet, apiPost } from '../lib/api'
+import { apiDelete, apiGet, apiPatch, apiPost } from '../lib/api'
 import { affectedSummary, commandTitle, splitPrepared } from '../lib/commands'
 import type { PreparedCommand } from '../lib/commands'
 import { focusBody, useScreenFocus } from '../lib/focus'
 import type { ScreenFocus } from '../lib/focus'
 import { renderProse } from '../lib/prose'
+import { canSwitchModel, deriveTitle, sortSessions, truncateAt } from '../lib/chatSessions'
+import { emptyTurn, parseSseFrames, reduceEvent, rowsFromRecord } from '../lib/chatStream'
+import type { StreamTurn } from '../lib/chatStream'
+import type {
+  ChatSession,
+  ChatSessionSummary,
+  ChatToolRow,
+  ChatTurn,
+  ModelGroup,
+} from '../lib/types'
 import CommandConfirm from './CommandConfirm'
 import { Button, Select } from './ui'
+import ActivityRows from './assistant/ActivityRows'
+import SessionsFold from './assistant/SessionsFold'
+import UserTurn from './assistant/UserTurn'
 
 /*
- * The Assistant (human_interface_design.md §1.1, §1.4, §3.5, §3.8): a
- * docked right panel, opened by the corner glyph or Ctrl+/. Docked and
- * not floating on the owner's own reasoning — "左讀右問的姿勢不能被蓋住":
- * reading on the left while asking on the right is the posture, and a
- * window over the page destroys it.
+ * The Assistant (human_interface_design.md §1.1, §1.4, §3.5, §3.8;
+ * assistant_redesign_2026-09-06.md): a docked right panel, opened by
+ * the corner glyph or Ctrl+/. Docked and not floating on the owner's
+ * own reasoning — "左讀右問的姿勢不能被蓋住": reading on the left while
+ * asking on the right is the posture, and a window over the page
+ * destroys it.
  *
- * It is handed the Project (which binds the conversation — one
- * transcript per shelf, §1.1-2) and the FOCUS: the star that was
- * clicked, the group being read, the document under the cursor. That
- * is what makes it better than a site-wide Ask.
+ * It is a CONVERSATION surface: a Project holds many transcripts and
+ * one current one, they live on disk beside the workspace, and the
+ * browser remembers only which one is open. What a turn DID is shown
+ * while it does it — a row per tool call, folding into one line when
+ * the answer lands.
  *
  * It PREPARES commands and never submits them (§3.8). When an answer
  * carries the `prepare_command` tool's JSON, the panel offers to review
@@ -36,18 +51,11 @@ import { Button, Select } from './ui'
  * turns into navigation.
  */
 
-interface ChatMsg {
-  role: 'user' | 'assistant'
-  text: string
-  /** assistant-only trailing note: 'stopped' | error detail */
-  note?: string
-}
-
 interface ChatState {
   busy: boolean
-  has_session: boolean
   model_default: string
-  models: string[]
+  /** every provider with an explainer backend, and what it offers */
+  groups?: ModelGroup[]
   /* which backend answers, and the two ways one can be honestly worse
    * than another (engine SoT: Tooling/llm/explainer.py). Optional so an
    * older serve still renders. */
@@ -93,46 +101,6 @@ function pageLabel(w: Where): string {
   if (w.page.kind === 'problem') return w.page.name ?? 'task'
   if (w.page.kind === 'board') return w.project ? `project · ${w.project}` : 'projects'
   return w.page.kind
-}
-
-// -- stream plumbing ---------------------------------------------------------
-// (citations + markdown-lite live in lib/prose.tsx — shared with the
-// Programme page)
-
-const STAGE_LABEL: Record<string, string> = {
-  context: 'gathering context…',
-  thinking: 'thinking…',
-  reading: 'reading the workspace…',
-  retry: 'reconnecting…',
-}
-
-async function readSse(
-  res: Response,
-  onEvent: (ev: Record<string, unknown>) => void,
-): Promise<void> {
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error('no stream')
-  const dec = new TextDecoder()
-  let buf = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    for (;;) {
-      const nl = buf.indexOf('\n\n')
-      if (nl < 0) break
-      const frame = buf.slice(0, nl)
-      buf = buf.slice(nl + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          onEvent(JSON.parse(line.slice(6)))
-        } catch {
-          /* partial or malformed frame — skip */
-        }
-      }
-    }
-  }
 }
 
 /** An answer, with whatever it PREPARED lifted out of the prose (§3.8).
@@ -188,42 +156,51 @@ const SUGGESTIONS = [
 
 // -- the drawer --------------------------------------------------------------
 
-// Transcript survives a refresh (QPaper lesson: they shipped storage
-// persistence + restore after refresh bugs bit real users). Session-
-// storage: per-tab, survives F5, dies with the tab — matching the
-// design's "browser session survival" scope. Capped like QPaper's 50.
-//
-// ONE PER PROJECT (§1.1-2): the conversation is bound to the shelf, so
-// switching Project switches transcript, exactly as it switches the
-// engine-side session. The picker page has no Project and keeps the
-// `_global` one, the same key serve uses for it.
-const STORE_PREFIX = 'asterism.chat.transcript'
+// The browser keeps three keys and no transcript (§2): which
+// conversation is open on each Project, the model, and the reading
+// width. The transcripts are the engine's, on disk, and survive the
+// tab that asked the questions.
 const GLOBAL_SESSION = '_global'
-const STORE_MAX = 50
+const SESSION_KEY = 'asterism.chat.session'
+const MODEL_KEY = 'asterism.chat.model'
+const WIDTH_KEY = 'asterism.chat.width'
+const DEFAULT_WIDTH = 460
 
-function storeKey(project: string | null): string {
-  return `${STORE_PREFIX}:${project ?? GLOBAL_SESSION}`
+function sessionKey(project: string | null): string {
+  return `${SESSION_KEY}:${project ?? GLOBAL_SESSION}`
 }
 
-function loadTranscript(project: string | null): ChatMsg[] {
+function local(key: string): string | null {
   try {
-    const raw = sessionStorage.getItem(storeKey(project))
-    if (!raw) return []
-    const v = JSON.parse(raw)
-    return Array.isArray(v)
-      ? v.filter((m) => m && typeof m.text === 'string' && (m.role === 'user' || m.role === 'assistant'))
-      : []
+    return localStorage.getItem(key)
   } catch {
-    return []
+    return null
   }
 }
 
-function saveTranscript(project: string | null, messages: ChatMsg[]): void {
+function keep(key: string, value: string | null): void {
   try {
-    sessionStorage.setItem(storeKey(project), JSON.stringify(messages.slice(-STORE_MAX)))
+    if (value === null) localStorage.removeItem(key)
+    else localStorage.setItem(key, value)
   } catch {
-    /* quota / private mode — the transcript just won't survive */
+    /* private mode — the posture just won't be remembered */
   }
+}
+
+const MIN_WIDTH = 360
+const maxWidth = () => Math.min(window.innerWidth * 0.7, 960)
+const readingWidth = () => Math.min(window.innerWidth * 0.55, 800)
+
+/** The turn as the record keeps it — what streamed, and what it did. */
+function recordTools(turn: StreamTurn): ChatToolRow[] {
+  return turn.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    input: r.input,
+    ok: r.ok !== false,
+    ms: r.ms,
+    result: r.result,
+  }))
 }
 
 export default function AssistantPanel({
@@ -241,55 +218,82 @@ export default function AssistantPanel({
 }) {
   const route = useRoute()
   const screen = useScreenFocus()
-  // the Project binds the conversation (§1.1-2) — it comes from the
+  // the Project binds the conversations (§1.1-2) — it comes from the
   // address, and everything session-shaped keys off it
   const project = parseProjectRoute(route.segments)?.project ?? null
-  const [messages, setMessages] = useState<ChatMsg[]>(() => loadTranscript(project))
+
+  const [meta, setMeta] = useState<ChatState | null>(null)
+  const [liveGroups, setLiveGroups] = useState<ModelGroup[] | null>(null)
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [turns, setTurns] = useState<ChatTurn[]>([])
+  const [live, setLive] = useState<StreamTurn | null>(null)
+  const [foldOpen, setFoldOpen] = useState(false)
+  const [foldNote, setFoldNote] = useState<{ id: string | null; text: string } | null>(null)
+  const [openTools, setOpenTools] = useState<Set<number>>(new Set())
+  const [selTurn, setSelTurn] = useState<number | null>(null)
+  const [editing, setEditing] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
-  const [stage, setStage] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   // the model choice persists (QA, 2026-07-20): it silently reverted
   // to the costlier default on every reload — a user who parked it on
-  // haiku kept paying sonnet
-  const [model, setModelState] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('asterism.chat.model')
-    } catch {
-      return null
-    }
-  })
+  // the cheap seat kept paying for the strong one
+  const [model, setModelState] = useState<string | null>(() => local(MODEL_KEY))
   const setModel = (m: string) => {
     setModelState(m)
-    try {
-      localStorage.setItem('asterism.chat.model', m)
-    } catch {
-      /* private mode */
-    }
+    keep(MODEL_KEY, m)
   }
-  const [meta, setMeta] = useState<ChatState | null>(null)
   /** the prepared command the reader asked to review — it opens THE
    * confirmation window, the same one a command from a star opens */
   const [review, setReview] = useState<PreparedCommand | null>(null)
-  const [width, setWidth] = useState(380)
-  const [confirmClear, setConfirmClear] = useState(false)
+  const [width, setWidthState] = useState(() => {
+    const w = Number(local(WIDTH_KEY))
+    return Number.isFinite(w) && w >= MIN_WIDTH ? w : DEFAULT_WIDTH
+  })
+  const [wide, setWide] = useState(false)
+  const narrowRef = useRef(width)
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const streamingRef = useRef(false)
+  const liveRef = useRef<StreamTurn>(emptyTurn())
+  const turnsRef = useRef<ChatTurn[]>(turns)
+  turnsRef.current = turns
+  const sessionRef = useRef<string | null>(sessionId)
+  sessionRef.current = sessionId
 
-  // restored transcript + a backend that forgot the session (serve
-  // restart) = the display remembers, the engine doesn't; say so once
-  const [engineForgot, setEngineForgot] = useState(false)
-  // ONE conversation per Project, on both sides: the transcript on this
-  // one and `has_session` on the engine's are asked about the same
-  // shelf, so the panel can never say the conversation continues when
-  // the reader has walked to another Project.
+  const groups = liveGroups ?? meta?.groups ?? []
+  const currentSession = sessions.find((s) => s.id === sessionId) ?? null
+  const picked = model ?? meta?.model_default ?? ''
+
+  const listSessions = useCallback(async (proj: string | null) => {
+    const q = proj ? `?project=${encodeURIComponent(proj)}` : ''
+    const r = await apiGet<{ sessions: ChatSessionSummary[] }>(`/api/chat/sessions${q}`)
+    return sortSessions(r.sessions ?? [])
+  }, [])
+
+  const loadRecord = useCallback(async (id: string) => {
+    const r = await apiGet<ChatSession>(`/api/chat/sessions/${encodeURIComponent(id)}`)
+    return r.turns ?? []
+  }, [])
+
+  // The seat facts, and this Project's conversations. Both are asked
+  // about the same shelf, so the panel can never show one Project's
+  // transcript under another's name.
   useEffect(() => {
     let gone = false
-    setMessages(loadTranscript(project))
-    setEngineForgot(false)
-    setConfirmClear(false)
+    setSessions([])
+    setSessionId(null)
+    setTurns([])
+    setLive(null)
+    setFoldOpen(false)
+    setFoldNote(null)
+    setOpenTools(new Set())
+    setSelTurn(null)
+    setEditing(null)
+    setNote(null)
     apiGet<ChatState>(
       `/api/chat/state${project ? `?project=${encodeURIComponent(project)}` : ''}`,
     )
@@ -297,22 +301,50 @@ export default function AssistantPanel({
         if (gone) return
         setMeta(s)
         // a model stored while another provider was seated is not a
-        // choice here — claude aliases and agy slugs share no
-        // vocabulary, and sending one to the other is a hard error
-        setModelState((m) => (m && !(s.models ?? []).includes(m) ? null : m))
-        // "the engine forgot" is only news where the engine remembers
-        if (
-          s.conversation_memory !== false &&
-          !s.has_session &&
-          loadTranscript(project).length > 0
-        )
-          setEngineForgot(true)
+        // choice here — a name no group offers dies at the spawn
+        const offer = s.groups ?? []
+        const offered = offer.some((g) => g.models.includes(model ?? ''))
+        // an empty offer is a serve that cannot say, not a refusal
+        if (model !== null && offer.length > 0 && !offered && model !== s.model_default)
+          setModelState(null)
       })
       .catch(() => undefined)
+    void (async () => {
+      try {
+        const rows = await listSessions(project)
+        if (gone) return
+        setSessions(rows)
+        const remembered = local(sessionKey(project))
+        const pick = rows.find((r) => r.id === remembered) ?? rows[0] ?? null
+        if (!pick) return
+        setSessionId(pick.id)
+        const record = await loadRecord(pick.id)
+        if (!gone) setTurns(record)
+      } catch {
+        /* an older serve, or none — the empty state says what to do */
+      }
+    })()
     return () => {
       gone = true
     }
-  }, [project])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, listSessions, loadRecord])
+
+  // Which models exist is a question only the machine can answer, and
+  // a kept list goes stale the day a vendor ships a tier. One probe per
+  // mount, exactly as RunParameters does it.
+  useEffect(() => {
+    let gone = false
+    apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
+      .then((r) => !gone && setLiveGroups(r.groups))
+      .catch(() => {
+        /* keep the declared lists — never blank the picker */
+      })
+    return () => {
+      gone = true
+    }
+  }, [])
+
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
@@ -321,21 +353,6 @@ export default function AssistantPanel({
   // mark once one has landed unseen
   const openRef = useRef(open)
   openRef.current = open
-
-  // persist: settled states normally, plus beforeunload so a refresh
-  // mid-stream keeps the partial answer (first-class, like stop)
-  const messagesRef = useRef(messages)
-  messagesRef.current = messages
-  const projectRef = useRef(project)
-  projectRef.current = project
-  useEffect(() => {
-    if (!streaming) saveTranscript(project, messages)
-  }, [project, messages, streaming])
-  useEffect(() => {
-    const flush = () => saveTranscript(projectRef.current, messagesRef.current)
-    window.addEventListener('beforeunload', flush)
-    return () => window.removeEventListener('beforeunload', flush)
-  }, [])
 
   const setStreamingBoth = useCallback(
     (v: boolean) => {
@@ -357,41 +374,175 @@ export default function AssistantPanel({
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight
   })
 
+  // -- the conversations -----------------------------------------------------
+
+  const openSession = useCallback(
+    async (id: string) => {
+      if (streamingRef.current) return
+      setFoldNote(null)
+      setSessionId(id)
+      keep(sessionKey(project), id)
+      setOpenTools(new Set())
+      setSelTurn(null)
+      setEditing(null)
+      setLive(null)
+      try {
+        setTurns(await loadRecord(id))
+      } catch (e) {
+        setTurns([])
+        setFoldNote({ id, text: String((e as Error).message) })
+      }
+    },
+    [project, loadRecord],
+  )
+
+  const newSession = useCallback(async () => {
+    if (streamingRef.current) return
+    setFoldNote(null)
+    try {
+      const s = await apiPost<ChatSessionSummary>('/api/chat/sessions', { project })
+      setSessions((prev) => sortSessions([s, ...prev.filter((p) => p.id !== s.id)]))
+      setSessionId(s.id)
+      keep(sessionKey(project), s.id)
+      setTurns([])
+      setLive(null)
+      setOpenTools(new Set())
+      setSelTurn(null)
+      setEditing(null)
+      setFoldOpen(false)
+      inputRef.current?.focus()
+    } catch (e) {
+      setFoldNote({ id: null, text: String((e as Error).message) })
+    }
+  }, [project])
+
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      setFoldNote(null)
+      try {
+        await apiPatch<ChatSessionSummary>(
+          `/api/chat/sessions/${encodeURIComponent(id)}`,
+          { title },
+        )
+        setSessions(await listSessions(project))
+      } catch (e) {
+        setFoldNote({ id, text: String((e as Error).message) })
+      }
+    },
+    [project, listSessions],
+  )
+
+  const deleteSession = useCallback(
+    async (id: string) => {
+      setFoldNote(null)
+      try {
+        await apiDelete(`/api/chat/sessions/${encodeURIComponent(id)}`)
+      } catch (e) {
+        setFoldNote({ id, text: String((e as Error).message) })
+        return
+      }
+      const rows = await listSessions(project).catch(() => [])
+      setSessions(rows)
+      if (id === sessionRef.current) {
+        const next = rows[0] ?? null
+        setTurns([])
+        setLive(null)
+        setSessionId(next?.id ?? null)
+        keep(sessionKey(project), next?.id ?? null)
+        if (next) void openSession(next.id)
+      }
+    },
+    [project, listSessions, openSession],
+  )
+
+  // -- asking ----------------------------------------------------------------
+
   const send = useCallback(
-    async (raw: string) => {
+    async (raw: string, truncateTo?: number) => {
       const text = raw.trim()
       if (text === '' || streamingRef.current) return
       // frozen at send: the answer is about the screen the question was
       // asked from, not the one it arrives on
       const { page, project: proj, focus } = whereFromRoute(route.segments, screen)
+      const reask = truncateTo !== undefined
       setNote(null)
-      setConfirmClear(false)
-      setInput('')
-      if (inputRef.current) inputRef.current.style.height = 'auto'
-      setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: '' }])
-      setStage('context')
+      setFoldOpen(false)
+      setSelTurn(null)
+      setEditing(null)
+
+      // the session a question is filed on is made when the first
+      // question is asked, not when the panel opens: an empty
+      // conversation per glance is a shelf of nothing
+      let sid = sessionRef.current
+      if (sid === null) {
+        try {
+          const s = await apiPost<ChatSessionSummary>('/api/chat/sessions', { project: proj })
+          sid = s.id
+          sessionRef.current = s.id
+          setSessionId(s.id)
+          keep(sessionKey(proj), s.id)
+          setSessions((prev) => sortSessions([s, ...prev.filter((p) => p.id !== s.id)]))
+        } catch (e) {
+          setNote(String((e as Error).message))
+          return
+        }
+      }
+
+      const before = turnsRef.current
+      const base = reask ? (truncateAt(before, truncateTo) ?? before) : before
+      if (!reask) {
+        setInput('')
+        if (inputRef.current) inputRef.current.style.height = 'auto'
+      }
+      setTurns([...base, { role: 'user', text, at: new Date().toISOString() }])
+      liveRef.current = { ...emptyTurn(), stage: 'context' }
+      setLive(liveRef.current)
       setStreamingBoth(true)
       const ac = new AbortController()
       abortRef.current = ac
-      const appendDelta = (t: string) =>
-        setMessages((m) => {
-          const out = m.slice()
-          const last = out[out.length - 1]
-          out[out.length - 1] = { ...last, text: last.text + t }
-          return out
-        })
+
       const rollback = (detail: string) => {
         // failed send → the question returns to the input box, no
-        // orphan bubble pair
-        setMessages((m) => m.slice(0, -2))
-        setInput(text)
+        // orphan turn left standing
+        setTurns(before)
+        if (!reask) setInput(text)
         setNote(detail)
       }
+      const commit = (extra?: string) => {
+        const l = liveRef.current
+        if (l.text === '' && l.rows.length === 0) {
+          setTurns(base)
+          if (extra !== undefined) setNote(extra)
+          return
+        }
+        setTurns([
+          ...base,
+          { role: 'user', text, at: new Date().toISOString() },
+          {
+            role: 'assistant',
+            text: l.text,
+            at: new Date().toISOString(),
+            ok: l.ok,
+            note: extra ?? l.note,
+            tools: recordTools(l),
+          },
+        ])
+      }
+
+      let landed = false
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, page, project: proj, focus, model }),
+          body: JSON.stringify({
+            message: text,
+            session_id: sid,
+            page,
+            project: proj,
+            focus,
+            model: picked,
+            ...(reask ? { truncate_to: truncateTo } : {}),
+          }),
           signal: ac.signal,
         })
         if (!res.ok) {
@@ -404,98 +555,80 @@ export default function AssistantPanel({
           rollback(res.status === 409 ? 'still answering the previous question' : detail)
           return
         }
-        let sawDelta = false
-        let finished = false
-        await readSse(res, (ev) => {
-          const t = ev.type
-          if (t === 'delta' && typeof ev.text === 'string') {
-            sawDelta = true
-            setStage(null)
-            appendDelta(ev.text)
-          } else if (t === 'status' && typeof ev.stage === 'string') {
-            setStage(ev.stage)
-          } else if (t === 'done') {
-            finished = true
-            if (!openRef.current) onReplyWaiting(true)
-            if (ev.ok !== false) setEngineForgot(false)
-            if (ev.ok === false)
-              setMessages((m) => {
-                const out = m.slice()
-                out[out.length - 1] = {
-                  ...out[out.length - 1],
-                  note: `the answer ended abnormally (${String(ev.subtype ?? '')})`,
-                }
-                return out
-              })
-          } else if (t === 'error') {
-            finished = true
-            const detail = String(ev.detail ?? 'unknown error')
-            if (sawDelta) {
-              setMessages((m) => {
-                const out = m.slice()
-                out[out.length - 1] = { ...out[out.length - 1], note: detail }
-                return out
-              })
-            } else {
-              rollback(detail)
+        const reader = res.body?.getReader()
+        if (!reader) throw new Error('no stream')
+        const dec = new TextDecoder()
+        let buf = ''
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += dec.decode(value, { stream: true })
+          const { events, rest } = parseSseFrames(buf)
+          buf = rest
+          for (const ev of events) {
+            if (ev.type === 'session') {
+              // the first frame names the session this turn was filed
+              // on — the server's answer wins over ours
+              const id = typeof ev.id === 'string' ? ev.id : null
+              if (id !== null && id !== sessionRef.current) {
+                sessionRef.current = id
+                setSessionId(id)
+                keep(sessionKey(proj), id)
+              }
+              continue
+            }
+            liveRef.current = reduceEvent(liveRef.current, ev)
+            setLive(liveRef.current)
+            if (ev.type === 'done' || ev.type === 'error') {
+              landed = true
+              if (ev.type === 'done' && !openRef.current) onReplyWaiting(true)
             }
           }
-        })
-        if (!finished && !sawDelta) rollback('the stream ended before an answer arrived')
+        }
+        if (!landed && liveRef.current.text === '' && liveRef.current.rows.length === 0) {
+          rollback('the stream ended before an answer arrived')
+          return
+        }
+        commit()
       } catch (e) {
         if ((e as Error).name === 'AbortError') {
           // partial answers are first-class: keep what streamed
-          setMessages((m) => {
-            const out = m.slice()
-            const last = out[out.length - 1]
-            if (last.text === '') return m.slice(0, -2)
-            out[out.length - 1] = { ...last, note: 'stopped' }
-            return out
-          })
-          setMessages((m) => (m.length > 0 && m[m.length - 1].text === '' ? m.slice(0, -1) : m))
+          commit('stopped')
         } else {
           rollback(`could not reach the engine (${(e as Error).message})`)
+          return
         }
       } finally {
-        setStage(null)
+        setLive(null)
+        liveRef.current = emptyTurn()
         setStreamingBoth(false)
         abortRef.current = null
+        // titles, turn counts and the order all moved
+        void listSessions(proj)
+          .then(setSessions)
+          .catch(() => undefined)
       }
     },
-    [model, route.segments, screen, onReplyWaiting, setStreamingBoth],
+    [picked, route.segments, screen, onReplyWaiting, setStreamingBoth, listSessions],
   )
 
   const stop = useCallback(() => abortRef.current?.abort(), [])
 
-  const clear = useCallback(async () => {
-    if (streamingRef.current) return
-    try {
-      // one Project's thread, not all of them (serve's own rule)
-      await apiPost('/api/chat/clear', { project })
-      setMessages([])
-      setNote(null)
-      setEngineForgot(false)
-      try {
-        sessionStorage.removeItem(storeKey(project))
-      } catch {
-        /* ignore */
-      }
-    } catch (e) {
-      setNote(String((e as Error).message))
-    }
-    setConfirmClear(false)
-  }, [project])
-
-  // width drag — clamped, not persisted
+  // width drag — clamped AND remembered: a reading posture is kept the
+  // way `railOpen` is (the July "clamp, don't persist" ruling predates
+  // the complaint that this panel is cramped)
   const dragRef = useRef<{ startX: number; startW: number } | null>(null)
   useEffect(() => {
     const move = (e: MouseEvent) => {
       const d = dragRef.current
       if (!d) return
-      const w = d.startW + (d.startX - e.clientX)
-      setWidth(Math.min(Math.max(w, 300), Math.min(window.innerWidth * 0.6, 640)))
+      const w = Math.min(Math.max(d.startW + (d.startX - e.clientX), MIN_WIDTH), maxWidth())
+      narrowRef.current = w
+      setWide(false)
+      setWidthState(w)
     }
     const up = () => {
+      if (dragRef.current) keep(WIDTH_KEY, String(narrowRef.current))
       dragRef.current = null
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
@@ -507,6 +640,17 @@ export default function AssistantPanel({
       window.removeEventListener('mouseup', up)
     }
   }, [])
+
+  const toggleWide = () => {
+    if (wide) {
+      setWidthState(narrowRef.current)
+      setWide(false)
+    } else {
+      narrowRef.current = width
+      setWidthState(readingWidth())
+      setWide(true)
+    }
+  }
 
   const where = useMemo(
     () => whereFromRoute(route.segments, screen),
@@ -523,9 +667,25 @@ export default function AssistantPanel({
     meta?.available === false
       ? meta.unavailable_detail || 'the explainer has no usable backend on this machine'
       : null
+  // a session's handle belongs to one CLI, so its backend cannot change
+  // mid-conversation — and the way out is named
+  const wrongBackend = !canSwitchModel(currentSession, groups, picked)
 
-  // closed = hidden, not unmounted — the transcript survives the
-  // close/open cycle (and a stream keeps writing into it)
+  const firstQuestion = turns.find((t) => t.role === 'user')?.text ?? ''
+  const title =
+    currentSession?.title || deriveTitle(firstQuestion) || 'new conversation'
+  const older = sessions.filter((s) => s.id !== sessionId && s.turns > 0).slice(0, 2)
+
+  const toggleTools = (i: number) =>
+    setOpenTools((s) => {
+      const next = new Set(s)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+
+  // closed = hidden, not unmounted — a stream keeps writing into the
+  // panel while it is shut, and the corner glyph says so
   return (
     <aside
       className={`relative shrink-0 flex-col border-l border-edge bg-surface ${open ? 'flex' : 'hidden'}`}
@@ -544,12 +704,24 @@ export default function AssistantPanel({
           e.preventDefault()
         }}
       />
-      {/* header: what this is + model + clear (QPaper shape: the model
-          picker is a first-class header control, not footer fine print) */}
-      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
-        <span className="text-[13px] font-medium text-ink">assistant</span>
+      {/* header: which conversation, what it is about, which model, and
+          the two shape controls. `clear` is gone — forgetting a
+          conversation is the act on its own row. */}
+      <div className="flex items-center gap-2 border-b border-edge px-3 py-2.5">
+        <button
+          className="cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+          onClick={() => setFoldOpen((o) => !o)}
+          title="the conversations on this project"
+          aria-expanded={foldOpen}
+          aria-label="conversations"
+        >
+          {foldOpen ? '▴' : '▾'}
+        </button>
+        <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={title}>
+          {title}
+        </span>
         <span
-          className="truncate text-[11px] text-ink-faint"
+          className="shrink-0 truncate text-[11px] text-ink-faint"
           // the backend states its own reach — a fixed sentence here
           // described claude's fence on every provider
           title={
@@ -559,41 +731,44 @@ export default function AssistantPanel({
         >
           about {pageLabel(where)}
         </span>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Select
             // fixed width: a base-select trigger hugs its current
             // value, so an unsized one makes the header jiggle on
             // every model switch
-            className="w-24 shrink-0"
-            value={model ?? meta?.model_default ?? 'sonnet'}
+            className="w-28 shrink-0"
+            value={picked}
             onChange={(e) => setModel(e.target.value)}
             title="stronger models cost more of the same subscription quota"
           >
-            {(meta?.models ?? ['haiku', 'sonnet', 'opus']).map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
+            {groups.length === 0 && picked !== '' && (
+              <option value={picked}>{picked}</option>
+            )}
+            {groups.map((g) => (
+              <optgroup
+                key={g.provider}
+                label={
+                  g.provider +
+                  (g.installed ? '' : ' (not installed)') +
+                  (g.source === 'declared' ? ' — list not live' : '')
+                }
+              >
+                {g.models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </Select>
-          {messages.length > 0 &&
-            (confirmClear ? (
-              <button
-                className="cursor-pointer rounded-lg border border-edge px-2 py-0.5 text-[11px] whitespace-nowrap text-warn transition-colors hover:bg-surface-2"
-                onClick={() => void clear()}
-                disabled={streaming}
-              >
-                confirm — forget this conversation
-              </button>
-            ) : (
-              <button
-                className="cursor-pointer rounded-lg px-2 py-0.5 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
-                onClick={() => setConfirmClear(true)}
-                disabled={streaming}
-                title="forget the conversation, both here and on the engine side"
-              >
-                clear
-              </button>
-            ))}
+          <button
+            className="cursor-pointer rounded-lg px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+            onClick={toggleWide}
+            title={wide ? 'back to the narrow panel' : 'widen for reading'}
+            aria-label="widen"
+          >
+            ⤢
+          </button>
           <button
             className="cursor-pointer rounded-lg px-1.5 py-0.5 text-[13px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
             onClick={onClose}
@@ -605,9 +780,31 @@ export default function AssistantPanel({
         </div>
       </div>
 
+      {wrongBackend && (
+        <div className="border-b border-edge px-4 py-1.5 text-[11px] text-warn">
+          start a new conversation to switch backends
+        </div>
+      )}
+
+      {/* the conversations, IN PLACE under the header — do not float
+          what the page can simply say (DESIGN.md) */}
+      {foldOpen && (
+        <SessionsFold
+          sessions={sessions}
+          currentId={sessionId}
+          streaming={streaming}
+          note={foldNote}
+          onOpen={(id) => void openSession(id)}
+          onNew={() => void newSession()}
+          onRename={(id, t) => void renameSession(id, t)}
+          onDelete={(id) => void deleteSession(id)}
+          onClose={() => setFoldOpen(false)}
+        />
+      )}
+
       {/* transcript */}
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 ? (
+        {turns.length === 0 && live === null ? (
           <div className="flex h-full flex-col justify-center gap-3 text-[12px] text-ink-faint">
             <p>
               ask about progress, a lemma, or how the machine works. it reads the workspace and
@@ -629,51 +826,87 @@ export default function AssistantPanel({
                 </button>
               ))}
             </div>
+            {older.length > 0 && (
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span>or continue:</span>
+                {older.map((s) => (
+                  <button
+                    key={s.id}
+                    className="max-w-full cursor-pointer truncate text-ink-dim underline decoration-edge underline-offset-2 transition-colors hover:text-ink"
+                    onClick={() => void openSession(s.id)}
+                  >
+                    {s.title || 'new conversation'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div>
             {/* QPaper shape: the question is a full-width quiet card, the
                 answer is bare prose under it — a document, not a chat app */}
-            {messages.map((m, i) =>
-              m.role === 'user' ? (
-                <div
+            {turns.map((t, i) =>
+              t.role === 'user' ? (
+                <UserTurn
                   key={i}
-                  className="mt-5 rounded-xl bg-surface-2 px-3 py-2 text-[13px] whitespace-pre-wrap text-ink first:mt-0"
-                >
-                  {m.text}
-                </div>
+                  text={t.text}
+                  selected={selTurn === i}
+                  editing={editing === i}
+                  draft={editDraft}
+                  canEdit={!streaming}
+                  onSelect={() => setSelTurn(selTurn === i ? null : i)}
+                  onEdit={() => {
+                    setEditing(i)
+                    setEditDraft(t.text)
+                  }}
+                  onDraft={setEditDraft}
+                  onSubmit={() => {
+                    const text = editDraft
+                    setEditing(null)
+                    void send(text, i)
+                  }}
+                  onCancel={() => setEditing(null)}
+                />
               ) : (
                 <div key={i} className="mt-2.5 text-[13px] leading-relaxed text-ink">
-                  {m.text === '' && streaming && i === messages.length - 1 ? (
-                    <span className="text-[12px] text-ink-faint">
-                      {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
-                    </span>
-                  ) : (
-                    <Answer text={m.text} onReview={setReview} />
-                  )}
-                  {m.note && (
-                    <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>
+                  <Answer text={t.text} onReview={setReview} />
+                  {/* what it did, folded into one line it can be opened
+                      from — a turn with no tool calls draws nothing */}
+                  <ActivityRows
+                    rows={rowsFromRecord(t.tools)}
+                    stage={null}
+                    collapsed={!openTools.has(i)}
+                    onToggle={() => toggleTools(i)}
+                  />
+                  {t.note && (
+                    <div className="mt-1 text-[11px] text-ink-faint italic">— {t.note}</div>
                   )}
                 </div>
               ),
             )}
-            {/* one fact, one place: on a backend with no memory EVERY
-                question is read fresh, which subsumes "the engine
-                forgot this one conversation" */}
-            {noMemory ? (
+            {live !== null && (
+              <div className="mt-2.5 text-[13px] leading-relaxed text-ink">
+                {/* live, the work reads top-down: what it is doing, then
+                    what it has said so far */}
+                <ActivityRows
+                  rows={live.rows}
+                  stage={live.stage}
+                  collapsed={false}
+                  onToggle={() => undefined}
+                />
+                {live.text !== '' && (
+                  <div className="mt-1.5">
+                    <Answer text={live.text} onReview={setReview} />
+                  </div>
+                )}
+              </div>
+            )}
+            {noMemory && (
               <div className="mt-4 flex items-center gap-2 text-[10px] text-ink-faint">
                 <span className="h-px flex-1 bg-edge" />
                 this backend keeps no conversation — each question is read fresh
                 <span className="h-px flex-1 bg-edge" />
               </div>
-            ) : (
-              engineForgot && (
-                <div className="mt-4 flex items-center gap-2 text-[10px] text-ink-faint">
-                  <span className="h-px flex-1 bg-edge" />
-                  restored on this tab — the engine reads your next question fresh
-                  <span className="h-px flex-1 bg-edge" />
-                </div>
-              )
             )}
           </div>
         )}
@@ -727,7 +960,7 @@ export default function AssistantPanel({
             <button
               className="mb-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-bg transition-colors enabled:bg-ink enabled:hover:bg-ink-dim disabled:cursor-default disabled:bg-surface-3 disabled:text-ink-faint"
               onClick={() => void send(input)}
-              disabled={input.trim() === '' || unavailable !== null}
+              disabled={input.trim() === '' || unavailable !== null || wrongBackend}
               title="send (Enter)"
               aria-label="send"
             >

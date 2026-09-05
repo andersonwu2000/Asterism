@@ -1,3 +1,5 @@
+import type { ChatToolRow } from './types'
+
 /*
  * One assistant turn, reduced from the wire (assistant_redesign
  * _2026-09-06.md §3). Pure, so the grammar of a turn can be held still
@@ -284,4 +286,28 @@ export function summarizeTools(rows: ToolRow[]): string {
   const parts = order.map((f) => phrase(f, count.get(f) ?? 0))
   if (last > first) parts.push(wall(last - first))
   return parts.join(' · ')
+}
+
+/** The rows of a turn read back from disk.
+ *
+ * The record keeps each call's DURATION, never the clock it ran on, so
+ * the timeline is rebuilt sequentially — which is what the CLI makes:
+ * one tool at a time, each starting where the last one ended. The fold
+ * then reports the sum, and says the same thing it said live. */
+export function rowsFromRecord(tools: ChatToolRow[] | null | undefined): ToolRow[] {
+  let at = 0
+  return (tools ?? []).map((t, i) => {
+    const row: ToolRow = {
+      id: t.id || `row-${i}`,
+      name: t.name,
+      input: t.input ?? {},
+      startedAt: at,
+      ms: t.ms ?? null,
+      ok: t.ok,
+      result: t.result ?? null,
+      running: false,
+    }
+    at += t.ms ?? 0
+    return row
+  })
 }
