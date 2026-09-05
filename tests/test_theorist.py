@@ -152,7 +152,7 @@ def test_an_accepted_document_lands_and_settles_its_request(
     text = landed.read_text(encoding="utf-8")
     # The provenance the attempts dir cannot keep: it is deleted at
     # pipeline end, so the reviewer's per-criterion sentence lives here.
-    assert text.startswith("<!--")
+    assert text.startswith('<!--\nstatus: accepted\n')
     assert "pipeline: th-1" in text and "rounds: 1" in text
     for k in _verdict.CRITERIA_KEYS:
         assert f"criterion {k}: clear:" in text
@@ -182,6 +182,63 @@ def test_the_landed_name_carries_group_minute_and_title(
         "SELECT path FROM theory_documents").fetchone()[0]).name
     assert name.startswith(f"g{gid}_")
     assert name.endswith("_the_unit_imbalance_erasure.md")
+    assert "rejected" not in name
+
+
+def test_a_refused_documents_name_says_it_was_refused(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner addendum 2026-09-06: a document kept after the rounds were
+    argued out must be tellable apart from an accepted one by its NAME.
+
+    The two now sit in one flat directory, and every surface that offers
+    a `_docs/agent/` file by path — a citation in a later document, a
+    `grep` of the shelf, the reviewer's read-only grant — hands over the
+    name before anything can read the header. `rejected` rides between
+    the minute and the slug, so the group/minute ordering is untouched
+    and the slug still ends the name."""
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+    name = Path(conn.execute(
+        "SELECT path FROM theory_documents").fetchone()[0]).name
+    assert name.startswith(f"g{gid}_")
+    assert "_rejected_" in name
+    assert name.endswith("_the_unit_imbalance_erasure.md")
+
+
+def test_a_second_document_in_the_same_minute_does_not_overwrite_the_first(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The name is group + minute + slug, and none of the three is
+    unique. Two wakes on one wall write the SAME title — the author is
+    re-asked the same objective — so a second landing inside the same
+    minute used to overwrite the first silently, and both rows then
+    pointed at one file.
+
+    That was survivable while only the accepted road landed (one
+    document per wall, hours apart). It is not now: every run lands, and
+    the record the 2026-09-06 ruling exists to keep is exactly the one
+    that would be destroyed."""
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did, pipeline_id="th-1")
+
+    did2 = _theorize(conn, workspace)
+    _run(conn, workspace, pintent, did2, pipeline_id="th-2")
+
+    paths = [r[0] for r in conn.execute(
+        "SELECT path FROM theory_documents ORDER BY id")]
+    assert len(paths) == 2 and len(set(paths)) == 2, paths
+    for p, pid in zip(paths, ("th-1", "th-2")):
+        assert (workspace / p).is_file()
+        assert f"pipeline: {pid}" in (workspace / p).read_text(
+            encoding="utf-8")
 
 
 def test_the_slug_falls_back_to_the_abstracts_first_sentence(
@@ -227,15 +284,20 @@ def test_a_fired_verdict_buys_a_revision_on_the_same_session(
     assert "the wall is only named" in dialogue.read_text(encoding="utf-8")
 
 
-def test_three_fired_rounds_reject_and_the_document_does_not_land(
+def test_three_fired_rounds_reject_and_the_document_lands_as_the_record(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Four author turns (one cold + three revisions), then the run is
-    over. Nothing reaches the Project's shelf — it did not earn a place
-    there — and the row that survives carries the request, the rounds
-    and the last verdict, which is what the next request is written
-    against."""
+    over — and the document LANDS anyway (owner ruling 2026-09-06).
+
+    A refused document is post-mortem material: what was tried on this
+    wall and why it failed is exactly what the next request is written
+    against, and a record that lives only in a `dead_attempts` blob is
+    a record nobody reads. It lands under the same shelf with the same
+    name, marked `status: rejected` and carrying the LAST round's
+    ruling verbatim — the fired lines under their criterion numbers,
+    not only the clear ones."""
     did = _theorize(conn, workspace)
     fake, state = _script(verdicts=[_fired("1"), _fired("1"),
                                     _fired("1"), _fired("1")])
@@ -249,12 +311,21 @@ def test_three_fired_rounds_reject_and_the_document_does_not_land(
     row = conn.execute(
         "SELECT path, status, rounds, verdict_json FROM theory_documents"
     ).fetchone()
-    assert row["status"] == "rejected" and row["path"] is None
-    assert row["rounds"] == 4
+    assert row["status"] == "rejected" and row["rounds"] == 4
     assert "the relation is not argued" in row["verdict_json"]
-    assert not list((workspace / "Problems" / "p" / "_docs" / "agent"
-                     ).glob("*")) if (
-        workspace / "Problems" / "p" / "_docs" / "agent").is_dir() else True
+    assert row["path"] and "_docs/agent/" in row["path"]
+    landed = workspace / row["path"]
+    assert landed.is_file()
+    text = landed.read_text(encoding="utf-8")
+    assert text.startswith('<!--\nstatus: rejected\n')
+    assert "pipeline: th-1" in text and "rounds: 4" in text
+    assert "criterion 1: fired: the relation is not argued" in text
+    for k in ("2", "3", "4"):
+        assert f"criterion {k}: clear:" in text
+    # criterion 2 (Rigour) is clear here, so the reviewer re-derived the
+    # theorems and the citability flag must NOT be raised.
+    assert "rigour:" not in text
+    assert "# The unit-imbalance erasure" in text
 
     d = conn.execute(
         "SELECT outcome, outcome_detail FROM strategist_decisions"
@@ -264,6 +335,40 @@ def test_three_fired_rounds_reject_and_the_document_does_not_land(
     assert str(d["outcome"]) == "failed:theory_rejected"
     assert theorist.REJECTED_DETAIL in d["outcome_detail"]
     assert "the relation is not argued" in d["outcome_detail"]
+    # …and the wake that reads this outcome can OPEN the document.
+    assert row["path"] in d["outcome_detail"]
+    assert "criterion 1" in d["outcome_detail"]
+
+
+def test_a_rejection_on_rigour_flags_the_document_as_uncitable(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Citability follows criterion 2 (Rigour), not the status.
+
+    A document refused on 1/3/4 with criterion 2 clear has had its
+    theorems re-derived by the reviewer and may be cited as results —
+    the previous test pins that road. This is the other one: criterion
+    2 fired, so nothing in the document is established, and the header
+    and the outcome both have to say so where a citing agent reads
+    them."""
+    did = _theorize(conn, workspace)
+    bad = _fired("2", "Lemma 3's induction step is asserted, not proved")
+    fake, _ = _script(verdicts=[bad, bad, bad, bad])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.failure_reason == "theory_rejected"
+    row = conn.execute(
+        "SELECT path, status FROM theory_documents").fetchone()
+    text = (workspace / row["path"]).read_text(encoding="utf-8")
+    assert "rigour: defective — see criterion 2" in text
+    assert ("criterion 2: fired: Lemma 3's induction step is asserted,"
+            " not proved") in text
+    detail = conn.execute(
+        "SELECT outcome_detail FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()[0]
+    assert "rigour: defective — see criterion 2" in detail
 
 
 def test_a_settled_request_wakes_the_group(

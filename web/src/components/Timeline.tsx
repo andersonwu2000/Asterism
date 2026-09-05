@@ -142,8 +142,9 @@ function Row({
     e.object_kind === 'programme' && typeof e.rev_id === 'number' && revProblem
       ? { problem: revProblem, revId: e.rev_id }
       : null
-  // an accepted theory document is a FILE, and the row's whole point is
-  // that the reader can open it (serve fills `path` on no other row)
+  // a reviewed theory document is a FILE — accepted or refused, both
+  // land — and the row's whole point is that the reader can open it
+  // (serve fills `path` on no other row)
   const docOf = e.path && onOpenDocument ? e.path : null
   const expandable = Boolean(e.body || e.note || argument || verdictOf || docOf)
   const note = e.kind === 'failed' || e.kind === 'hiccup'

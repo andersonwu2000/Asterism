@@ -25,6 +25,22 @@ from .verdict import (REPORT_BASENAME, VERDICT_BASENAME, VERDICT_TRIES,
 PROJECTION_DIRNAME = "review"
 REQUEST_BASENAME = "request.md"
 
+#: What `agent/` under the papers dir actually holds, appended to the
+#: reviewer's rendered prompt rather than written into the static one:
+#: the shelf gained refused documents on 2026-09-06 and the prompt still
+#: describes it as the accepted ones. A reviewer reading a refusal as
+#: settled prior work fires criterion 1 on a document for restating
+#: something nothing established.
+AGENT_SHELF_NOTE = (
+    "`agent/` under the papers dir holds REFUSED theory documents "
+    "beside the accepted ones. A refused one is named `_rejected_` and "
+    "its header opens `status: rejected`; it is a record of what was "
+    "tried, not a result. Its theorems count as established only if "
+    "that header clears criterion 2 (Rigour) — one marked "
+    "`rigour: defective` establishes nothing, so a document under review "
+    "here is not restating known work by proving what such a file "
+    "claims.")
+
 
 def projection_dir(attempts_dir: Path, round_no: int) -> Path:
     """Where round `round_no`'s reviewer runs — its dossier, its verdict
@@ -130,7 +146,12 @@ def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
                 + "\n(a file the prompt names that is not listed here "
                   "does not exist this round — do not probe for it)\n\n"
                   "Workspace paths the prompt references:\n"
-                + "\n".join(ext) + "\n")
+                + "\n".join(ext) + "\n\n"
+                # The papers dir's `agent/` holds REFUSED documents too
+                # since 2026-09-06, and a reviewer that reads one as
+                # settled prior work would fire criterion 1 on a
+                # document for restating something nothing established.
+                + AGENT_SHELF_NOTE + "\n")
     dst.write_text(
         src.read_text(encoding="utf-8")
         .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())

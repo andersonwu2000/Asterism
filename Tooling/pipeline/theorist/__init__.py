@@ -23,9 +23,13 @@ What is different from both, and deliberately:
     Trigger` section carries the request, and `## Programme` becomes a
     pointer, because a theory author reads the Programme by section
     when it bears on the wall rather than paying for all of it inline.
-  * a run that never passes review still leaves a row. The document
-    stays in the attempts dir; the request, the rounds and the last
-    verdict are what the next request on that wall is written against.
+  * a run that never passes review lands ANYWAY (owner ruling
+    2026-09-06). The row, and the document beside it under the same
+    shelf: what was tried on that wall and why it failed is what the
+    next request there is written against, and its header carries the
+    refusal so nothing reads it as an accepted result. Whether its
+    theorems may be CITED is decided by the reviewer's criterion 2
+    (Rigour), not by the status — see `landing`.
 """
 from __future__ import annotations
 
@@ -36,12 +40,16 @@ from pathlib import Path
 
 from . import landing as _landing
 from .review import projection_dir, review as review_round
-from .verdict import (REPORT_BASENAME, clear_lines, parse_theory_verdict)
+from .verdict import (REPORT_BASENAME, RIGOUR_DEFECTIVE, fired_criteria,
+                      parse_theory_verdict, rigour_is_defective)
 
 #: What the failure outcome says to the Strategist that asked. Fixed
 #: wording (theory_wake_design.md §3.7): a rejection is not a bug
 #: report, it is an instruction — the request itself is what the next
-#: wake has to change. RESERVED for a real ruling that fired.
+#: wake has to change. RESERVED for a real ruling that fired. The
+#: landed path and the criteria that fired ride BELOW it, so the wake
+#: can read the document it is being told to write a better request
+#: against (owner ruling 2026-09-06).
 REJECTED_DETAIL = "The Theorist's document did not pass review — reconsider your request"
 
 #: The OTHER road, and it is not that one. A wake that never came back
@@ -280,28 +288,48 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
 
     accepted = bool(verdict) and verdict.get("verdict") == "pass"
     verdict_json = json.dumps(verdict or {}, ensure_ascii=False)
-    if not accepted:
-        _landing.record(
-            conn, problem=problem, group_id=group_id,
-            pipeline_id=pipeline_id, decision_id=decision_id,
-            objective=objective, situation=situation, path=None,
-            status="rejected", rounds=turn, verdict_json=verdict_json)
-        summary = "\n".join(f"- {c}"
-                            for c in (verdict or {}).get("criticisms", []))
-        return _fail(
-            "theory_rejected",
-            f"{turn} round(s), the reviewer's last ruling still fired:\n"
-            f"{summary}", headline=REJECTED_DETAIL)
-
+    status = (_landing.STATUS_ACCEPTED if accepted
+              else _landing.STATUS_REJECTED)
+    # BOTH roads land (owner ruling 2026-09-06). A refused document is
+    # the record of what was tried on this wall and why it failed —
+    # post-mortem material the next request is written against — and it
+    # used to survive only inside a `dead_attempts` artifacts blob,
+    # which is a record nobody reads. The header and the filename carry
+    # the refusal, so nothing on the shelf reads as an accepted result.
     path = _landing.land(
         workspace, conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, body=body, rounds=turn,
-        clear_lines=clear_lines(verdict))
+        verdict=verdict, status=status)
     _landing.record(
         conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, decision_id=decision_id,
         objective=objective, situation=situation, path=path,
-        status="accepted", rounds=turn, verdict_json=verdict_json)
+        status=status, rounds=turn, verdict_json=verdict_json)
+    if not accepted:
+        fired = fired_criteria(verdict)
+        summary = "\n".join(f"- {c}"
+                            for c in (verdict or {}).get("criticisms", []))
+        # The path FIRST: `outcomes._theorize_result_lines` truncates
+        # this detail at 1200 chars on the batch scoreboard, and the one
+        # line the wake cannot do without is the one that lets it read
+        # the document.
+        lines = [f"the document landed anyway, as the record of what was "
+                 f"tried: `{path}`"]
+        if rigour_is_defective(verdict):
+            # Citability follows criterion 2, not the status: this
+            # document's theorems were never re-derived, so a later wake
+            # citing them would be citing an attempt as a result.
+            lines.append(RIGOUR_DEFECTIVE
+                         + " — its results are attempts, not established")
+        lines.append(
+            f"{turn} round(s), the reviewer's last ruling still fired"
+            + (f" on criterion {', '.join(fired)}" if fired else "")
+            + f":\n{summary}")
+        print(f"[theorist] {problem} g{group_id}: rejected after {turn} "
+              f"round(s) — landed as the record at {path}", flush=True)
+        return _fail("theory_rejected", "\n".join(lines),
+                     headline=REJECTED_DETAIL)
+
     _settle(conn, decision_id, outcome="success", detail=path)
     print(f"[theorist] {problem} g{group_id}: accepted after {turn} "
           f"round(s) — {path}", flush=True)

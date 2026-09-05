@@ -118,8 +118,13 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         Found by PATH. `theory_documents.path` is workspace-relative and
         this Project's agent area is exactly one prefix of it, so no
         problem→Project join is needed — and a row whose `path` is NULL
-        (the refused run, which lands no file) never matches, which is
-        the right answer for a listing of files.
+        (a wake that died before any ruling, or a refusal filed before
+        the 2026-09-06 landing rule) never matches, which is the right
+        answer for a listing of files.
+
+        A REFUSED document is on the shelf like any other and carries
+        its record the same way; `status` is what tells the two apart,
+        and the reviewer's own lines under it are the fired ones.
         """
         prefix = (_docs.root(workspace, project)
                   .relative_to(workspace).as_posix() + "/")
@@ -134,7 +139,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         # made every rebut report as `passed` for a week (44ff4321).
         # Lazily, on `data/verdict.py`'s precedent: the shape belongs to
         # the code that writes it, not to the door that serves it.
-        from ..pipeline.theorist.verdict import clear_lines
+        from ..pipeline.theorist.verdict import verdict_lines
         out: "dict[str, dict]" = {}
         for r in rows:
             rel = str(r["path"]).replace("\\", "/")[len(prefix):]
@@ -151,7 +156,7 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                 "objective": str(r["objective"] or ""),
                 # a row the parser cannot read costs the four lines and
                 # nothing else — the record is the point
-                "verdict": (clear_lines(ruling)
+                "verdict": (verdict_lines(ruling)
                             if isinstance(ruling, dict) else []),
             }
         return out

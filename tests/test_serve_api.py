@@ -2989,8 +2989,9 @@ def test_docs_listing_carries_each_theory_document_s_record(
         " VALUES ('Erdos.p1', ?, 'what breaks the counting?', 's', ?,"
         " 'accepted', 2, ?, '2026-09-04T16:12:00+00:00')",
         (gid, f"Problems/Erdos/_docs/{rel}", json.dumps(ruling)))
-    # A REFUSED run keeps its row and lands no file — the row is the
-    # evidence for why the answer was refused, and the shelf lists files.
+    # A row with no file: a wake that died before any ruling, or a
+    # refusal filed before the 2026-09-06 landing rule. The shelf lists
+    # files, so it has no row of its own here.
     conn.execute(
         "INSERT INTO theory_documents (problem, group_id, objective,"
         " situation, path, status, rounds, verdict_json, created_at)"
@@ -3009,11 +3010,11 @@ def test_docs_listing_carries_each_theory_document_s_record(
         "status": "accepted",
         "rounds": 2,
         "objective": "what breaks the counting?",
-        "verdict": _verdict.clear_lines(ruling)}
-    assert len(_verdict.clear_lines(ruling)) == 4
+        "verdict": _verdict.verdict_lines(ruling)}
+    assert len(_verdict.verdict_lines(ruling)) == 4
     # a file with no row carries no record at all — absent, not null
     assert "theory" not in by_path["agent/notes.md"]
-    # and the refused run is on no row of the shelf
+    # and the row that landed no file is on no row of the shelf
     assert "refused" not in json.dumps(entries)
 
 

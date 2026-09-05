@@ -344,9 +344,10 @@ export default function ProjectShell({
                   const target = p ?? problem
                   if (target) navigate(projectPath(project, 'groups', target))
                 }}
-                /* a theory row landed a FILE, and its expansion offers
-                   it. The path is workspace-relative, the Documents tab
-                   is root-relative, and a path this Project's shelf does
+                /* a theory row landed a FILE — the refused ones land
+                   too — and its expansion offers it. The path is
+                   workspace-relative, the Documents tab is
+                   root-relative, and a path this Project's shelf does
                    not hold simply has nowhere to go. */
                 onOpenDocument={(p) => {
                   const ref = docRefFromWorkspacePath(project, p)

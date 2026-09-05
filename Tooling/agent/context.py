@@ -11,6 +11,7 @@ absent". `compile_context` orchestrates ordering + writes Context.md.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -1676,31 +1677,66 @@ def _owner_note_title(path: Path) -> str:
     return ""
 
 
-def _theory_doc_marks(conn, workspace: Path) -> "dict[str, str]":
-    """`workspace-relative path -> "group N, YYYY-MM-DD, accepted"`, for
-    every landed theory document.
+def _theory_doc_marks(conn, workspace: Path) -> "dict[str, dict]":
+    """`workspace-relative path -> {"status", "mark"}`, for every landed
+    theory document.
 
     An agent-written document is not self-describing the way a person's
     note is: the reader needs to know WHOSE wall it was written for and
-    that a reviewer passed it, and neither fact is in the prose. The
-    row is where both live (`theory_documents`), so the roster reads
-    them off it rather than parsing the file's own header comment."""
+    what the reviewer ruled, and neither fact is in the prose. The row
+    is where both live (`theory_documents`), so the roster reads them
+    off it rather than parsing the file's own header comment.
+
+    A REFUSED document is on the shelf too (owner ruling 2026-09-06), so
+    the mark carries the criteria that fired — and, when criterion 2
+    (Rigour) is one of them, the flag that says its theorems were never
+    re-derived. Citability follows that criterion, not the status: a
+    document refused on 1/3/4 with rigour clear holds results, one
+    refused on rigour holds attempts, and the reader deciding whether to
+    cite it decides from this line."""
     if conn is None:
         return {}
     try:
         rows = conn.execute(
-            "SELECT path, group_id, status, created_at"
+            "SELECT path, group_id, status, created_at, verdict_json"
             " FROM theory_documents WHERE path IS NOT NULL").fetchall()
     except Exception:  # noqa: BLE001 — never break Context
         return {}
-    out: "dict[str, str]" = {}
+    from ..pipeline.theorist import verdict as _verdict
+    out: "dict[str, dict]" = {}
     for r in rows:
-        gid = r["group_id"]
-        out[str(r["path"]).replace("\\", "/")] = ", ".join(
-            [f"group {int(gid)}" if gid is not None else "no group",
-             str(r["created_at"] or "")[:10],
-             f"review {str(r['status'])}"])
+        gid, status = r["group_id"], str(r["status"])
+        try:
+            ruling = json.loads(str(r["verdict_json"] or "") or "{}")
+        except ValueError:
+            ruling = {}
+        fired = (_verdict.fired_criteria(ruling)
+                 if isinstance(ruling, dict) else [])
+        review = f"review {status}"
+        if status == "rejected" and fired:
+            review += f" (criteria {', '.join(fired)})"
+        parts = [f"group {int(gid)}" if gid is not None else "no group",
+                 str(r["created_at"] or "")[:10], review]
+        if status == "rejected" and _verdict.RIGOUR_CRITERION in fired:
+            parts.append("rigour defective — see criterion "
+                         + _verdict.RIGOUR_CRITERION)
+        out[str(r["path"]).replace("\\", "/")] = {
+            "status": status, "mark": ", ".join(parts)}
     return out
+
+
+#: The sub-list a refused theory document is listed under, and the one
+#: framework sentence that says what its contents are worth. Both fixed
+#: strings: three seats read this roster (Strategist, Theorist, every
+#: worker wake) and a paraphrase per surface is a rule each would have
+#: to learn separately.
+REFUSED_DOCS_HEADING = "The programme wrote these and the review refused them"
+REFUSED_DOCS_BLURB = (
+    "the record of what was tried on that wall and why it failed — read "
+    "one before repeating its approach. Whether its theorems may be "
+    "CITED is decided by criterion 2 (Rigour), not by the refusal: a "
+    "document marked `rigour defective` was never re-derived by the "
+    "reviewer, so its results are attempts and are not established")
 
 
 def _section_owner_notes(intent: intent_mod.ProblemIntent,
@@ -1721,8 +1757,16 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
     Strategist are told, in their prompts, to build on it and never to
     present it as new. So it is listed for EVERY kind of wake, not only
     the theory read, and each agent file carries the three facts its
-    prose does not: which group's wall it answered, when, and that a
-    reviewer passed it.
+    prose does not: which group's wall it answered, when, and what the
+    reviewer ruled.
+
+    THE REFUSED ONES GET THEIR OWN SUB-LIST (owner ruling 2026-09-06).
+    They land on the same shelf now, and a reader who meets one in the
+    same list as the accepted work will cite it as prior work that
+    holds. Their line says which criteria fired, and — when criterion 2
+    (Rigour) is one of them — that the reviewer never re-derived the
+    theorems, which is the only thing that decides whether they may be
+    cited.
 
     A roster, never the bodies: path, size, date, title, one line each —
     the same lazy layer CATALOG.md and PAST_*.md are, and absent
@@ -1750,6 +1794,7 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
         if not base.is_dir():
             continue
         rows: list[str] = []
+        refused: list[str] = []
         for p in sorted(base.rglob("*")):
             if "papers" in p.relative_to(base).parts:
                 continue
@@ -1770,12 +1815,18 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
             except ValueError:
                 shown = p.as_posix()
             title = _owner_note_title(p)
-            mark = marks.get(shown)
-            rows.append(f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
-                        + (f" — {title}" if title else "")
-                        + (f" [{mark}]" if mark else ""))
+            rec = marks.get(shown) or {}
+            mark = str(rec.get("mark") or "")
+            line = (f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
+                    + (f" — {title}" if title else "")
+                    + (f" [{mark}]" if mark else ""))
+            (refused if rec.get("status") == "rejected"
+             else rows).append(line)
         if rows:
             groups.append((heading, blurb, rows))
+        if refused:
+            groups.append((REFUSED_DOCS_HEADING, REFUSED_DOCS_BLURB,
+                           refused))
     if not groups:
         return []
     out = ["## Notes on this problem", ""]

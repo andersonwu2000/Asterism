@@ -604,7 +604,9 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
                             and this pair is then the only trace of it.
       `theory_documents`  → the ANSWER: `theory` with the path it landed
                             and what the review cost, or `theory_refused`
-                            with the rounds and no path.
+                            with the rounds and — since the 2026-09-06
+                            landing rule — the path of the record it
+                            left.
                             NO row, on a wake that finished failed, is
                             the third answer and gets `theory_died`: the
                             spawn never came back, so no reviewer ever
@@ -639,7 +641,13 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
             str(r["created_at"]),
             "theory" if accepted else "theory_refused",
             object_kind="theory", label=label, n=int(r["rounds"]),
-            path=(str(r["path"]) if accepted and r["path"] else None),
+            # BOTH roads carry a path now (owner ruling 2026-09-06): a
+            # refused document lands too, as the record of what was
+            # tried, so the row opens it exactly as an accepted one is
+            # opened. A row with no `path` — a refusal filed before that
+            # rule — still offers none, which is right: the reader must
+            # not be handed a link into a 404.
+            path=(str(r["path"]) if r["path"] else None),
             eid=f"td{int(r['id'])}", batch_id=batch, group_id=gid))
         if r["pipeline_id"]:
             by_pipeline[str(r["pipeline_id"])] = (batch, label)

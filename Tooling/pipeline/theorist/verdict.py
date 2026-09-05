@@ -263,12 +263,16 @@ def parse_theory_verdict(text: str, criteria_keys=CRITERIA_KEYS
     }, ""
 
 
-def clear_lines(verdict: "dict | None") -> "list[str]":
-    """One line per criterion of an ACCEPTED verdict, for the landed
-    document's header. The reviewer's own sentence about why the
-    criterion holds for this document is the only durable record of
-    what was checked — the verdict file lives in an attempts dir that
-    is deleted at pipeline end."""
+def verdict_lines(verdict: "dict | None") -> "list[str]":
+    """One line per criterion, for the landed document's header.
+
+    The reviewer's own sentence is the only durable record of what was
+    checked — the verdict file lives in an attempts dir that is deleted
+    at pipeline end. EVERY bullet, on both roads: a refused document
+    lands too (owner ruling 2026-09-06), and its header's whole job is
+    to carry the ruling that refused it. Rendering only the clears
+    would land a rejection reading as a pass on the criteria that
+    fired."""
     out: "list[str]" = []
     for k in CRITERIA_KEYS:
         vals = _bullets((verdict or {}).get("criteria", {}).get(k)) or []
@@ -276,3 +280,38 @@ def clear_lines(verdict: "dict | None") -> "list[str]":
         out.append(f"criterion {k}: {text}" if text
                    else f"criterion {k}: (no line recorded)")
     return out
+
+
+#: Which criterion of `prompts/theorist/review.md`'s rubric is Rigour.
+#: The one that decides whether the document's theorems are RESULTS: the
+#: reviewer clears it by re-deriving them, so a document it cleared may
+#: be cited whatever the other three said, and one it fired on carries
+#: attempts however well the rest reads (owner ruling 2026-09-06).
+RIGOUR_CRITERION = "2"
+
+#: The flag a rigour-defective document carries, verbatim, everywhere a
+#: reader could otherwise cite it: the landed header, the Notes roster
+#: and the outcome the Strategist reads. ONE spelling, because the three
+#: surfaces are read by three different seats and a paraphrase is a
+#: fourth rule they would each have to learn.
+RIGOUR_DEFECTIVE = f"rigour: defective — see criterion {RIGOUR_CRITERION}"
+
+
+def fired_criteria(verdict: "dict | None") -> "list[str]":
+    """The criterion keys whose ruling FIRED, in rubric order.
+
+    `parse_theory_verdict` already refuses a criterion that mixes clear
+    and fired bullets, so one fired bullet is the whole criterion's
+    ruling."""
+    out: "list[str]" = []
+    for k in CRITERIA_KEYS:
+        vals = _bullets((verdict or {}).get("criteria", {}).get(k)) or []
+        if any(re.match(r"fired\b", str(v).strip(), re.IGNORECASE)
+               for v in vals):
+            out.append(k)
+    return out
+
+
+def rigour_is_defective(verdict: "dict | None") -> bool:
+    """Whether this ruling leaves the document's theorems unestablished."""
+    return RIGOUR_CRITERION in fired_criteria(verdict)
