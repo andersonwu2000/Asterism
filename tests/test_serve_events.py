@@ -607,16 +607,19 @@ def test_an_accepted_document_lands_with_its_path_and_its_cost(
     assert got[0]["group_id"] == gid
 
 
-def test_a_refused_document_is_still_an_event_and_lands_nothing(
+def test_a_refused_document_is_an_event_that_offers_its_path(
         workspace: Path) -> None:
-    """A rejected run keeps its row: the request, the rounds and the
-    refusal are what the NEXT request on that wall is written against.
-    It landed no file, so it offers no path — absent, not a dead link."""
+    """A rejected run keeps its row AND its document (owner ruling
+    2026-09-06): the request, the rounds and the refusal are what the
+    NEXT request on that wall is written against, and the document is
+    the record of what was tried. So the row carries the path, and the
+    Timeline opens it exactly as it opens an accepted one."""
     conn = _open_db(workspace)
     gid = _top(conn)
     did = _theorize(conn, workspace, objective="the refused question")
+    rel = "Problems/P/_docs/agent/g1_20260906-1100_the_refused.md"
     _theory_doc(conn, group_id=gid, decision_id=did,
-                objective="the refused question", path=None,
+                objective="the refused question", path=rel,
                 status="rejected", rounds=3)
     conn.close()
     ev = _events(workspace)["events"]
@@ -624,8 +627,25 @@ def test_a_refused_document_is_still_an_event_and_lands_nothing(
     assert len(refused) == 1
     assert refused[0]["label"] == "the refused question"
     assert refused[0]["n"] == 3
-    assert refused[0]["path"] is None
+    assert refused[0]["path"] == rel
     assert not [e for e in ev if e["kind"] == "theory"]
+
+
+def test_a_refusal_that_landed_no_file_offers_no_path(
+        workspace: Path) -> None:
+    """The rows written before the landing rule, and any road that
+    refuses before a document exists: `path` is absent, not a dead
+    link the reader can click into a 404."""
+    conn = _open_db(workspace)
+    gid = _top(conn)
+    did = _theorize(conn, workspace, objective="the older refusal")
+    _theory_doc(conn, group_id=gid, decision_id=did,
+                objective="the older refusal", path=None,
+                status="rejected", rounds=2)
+    conn.close()
+    refused = [e for e in _events(workspace)["events"]
+               if e["kind"] == "theory_refused"]
+    assert len(refused) == 1 and refused[0]["path"] is None
 
 
 def test_a_wake_that_died_before_any_ruling_is_not_a_refusal(

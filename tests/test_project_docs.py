@@ -321,6 +321,77 @@ def test_an_agent_document_carries_its_group_date_and_verdict(
     assert "review accepted" in entry
 
 
+def test_a_refused_document_is_listed_under_its_own_sub_list(
+        ws: Path) -> None:
+    """Owner ruling 2026-09-06: a refused theory document lands too, and
+    the roster must not let a reader mistake it for prior work that
+    holds. Its own sub-list, the criteria that fired, and the framework's
+    one sentence about what a rigour-defective document's results are.
+
+    Citability follows criterion 2 (Rigour), not the status: the
+    document refused on 1/3 had its theorems re-derived and may be
+    cited; the one refused on 2 carries attempts, and the flag says so
+    on the line the reader decides from."""
+    import json as _json
+    from Tooling.state import db as _db
+    from Tooling.state import groups as _groups
+    conn = _db.connect(ws / "t.db")
+    _db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+                 " VALUES ('Erdos.p1', ?, 1)", (_db.now(),))
+    conn.commit()
+    gid = _groups.ensure_top_group(conn, "Erdos.p1")
+
+    def _file(name: str, status: str, ruling) -> None:
+        pd.write(ws, "Erdos", f"agent/{name}", f"# {name}\n",
+                 area=pd.AREA_AGENT)
+        conn.execute(
+            "INSERT INTO theory_documents (problem, group_id, objective,"
+            " situation, path, status, rounds, verdict_json, created_at)"
+            " VALUES ('Erdos.p1', ?, 'o', 's', ?, ?, 2, ?,"
+            " '2026-09-06T12:00:00+00:00')",
+            (gid, f"Problems/Erdos/_docs/agent/{name}", status,
+             None if ruling is None else _json.dumps(ruling)))
+
+    def _ruling(**fired) -> dict:
+        base = {k: [f"clear: criterion {k} holds"] for k in "1234"}
+        base.update({k: [f"fired: {v}"] for k, v in fired.items()})
+        return {"criteria": base}
+
+    _file("g1_20260906-1200_kept.md", "accepted", _ruling())
+    _file("g1_20260906-1201_citable.md", "rejected",
+          _ruling(**{"1": "answers a different request",
+                     "3": "the wall is only named"}))
+    _file("g1_20260906-1202_attempts.md", "rejected",
+          _ruling(**{"2": "Lemma 3 is asserted"}))
+    conn.commit()
+
+    lines = _owner_notes(ws, conn=conn)
+    assert "### The programme wrote these" in lines
+    accepted = next(ln for ln in lines if "kept.md" in ln)
+    assert "review accepted" in accepted
+
+    # A sub-list of their own, under the accepted one.
+    refused_heading = next(
+        i for i, ln in enumerate(lines)
+        if ln.startswith("### ") and "refused" in ln.lower())
+    assert refused_heading > lines.index("### The programme wrote these")
+    tail = "\n".join(lines[refused_heading:])
+    assert "kept.md" not in tail
+
+    citable = next(ln for ln in lines if "citable.md" in ln)
+    assert "rejected" in citable
+    assert "criteria 1, 3" in citable
+    assert "rigour" not in citable
+
+    attempts = next(ln for ln in lines if "attempts.md" in ln)
+    assert "rejected" in attempts and "criteria 2" in attempts
+    assert "rigour defective — see criterion 2" in attempts
+
+    # the framework's own sentence, once, in the sub-list's blurb
+    assert "not established" in tail
+
+
 def test_owner_notes_section_excludes_the_papers_shelf(ws: Path) -> None:
     """§3.9 parks fetched papers under `_docs/<area>/papers/<id>/`, and
     they have their own `## Paper` section. Listing `text.md` here would
