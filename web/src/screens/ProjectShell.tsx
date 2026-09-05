@@ -146,6 +146,7 @@ export default function ProjectShell({
   chatStreaming,
   chatUnread,
   onToggleChat,
+  onOpenSettings,
 }: {
   route: ProjectRoute
   railOpen: boolean
@@ -154,6 +155,7 @@ export default function ProjectShell({
   chatStreaming: boolean
   chatUnread: boolean
   onToggleChat: () => void
+  onOpenSettings: () => void
 }) {
   const { project, section, problem } = route
   const { data } = usePoll<BoardResponse>(
@@ -242,7 +244,7 @@ export default function ProjectShell({
             where the drawer comes from. */}
         <div data-corner className="ml-auto flex items-center gap-2">
           <IconButton
-            to="/settings"
+            onClick={onOpenSettings}
             label="Settings"
             title="settings — accounts, machine, appearance"
           >

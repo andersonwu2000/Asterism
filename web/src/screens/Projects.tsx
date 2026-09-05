@@ -323,7 +323,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
   )
 }
 
-export default function Projects() {
+export default function Projects({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { data, error, refresh } = usePoll<{ projects: ProjectCard[] }>('/api/projects', 5000)
   /** the shelf a floating window is about, and which window it is */
   const [acting, setActing] = useState<{ p: ProjectCard; kind: 'rename' | 'delete' } | null>(
@@ -342,7 +342,7 @@ export default function Projects() {
           {/* the same labelled control the Project header wears, so the
               place is named the same way from both doors */}
           <IconButton
-            to="/settings"
+            onClick={onOpenSettings}
             label="Settings"
             title="settings — accounts, machine, appearance"
           >

@@ -101,21 +101,35 @@ are exactly two frames and no sidebar.
 
 ### Outside a Project
 
-- **Settings** (`#/settings`) — the one gear page, shared by the picker
-  and every Project: the accounts the engine spends and what is left of
-  them, the machine's parameters, appearance, and quit. Run parameters
-  are deliberately NOT here.
+- **Settings** — the gear, shared by the picker and every Project. It is
+  a window, not a page: it opens over whatever you are reading and hands
+  the page back when you close it, because reaching the accounts should
+  not cost you your place. Inside: the accounts the engine spends and
+  what is left of them, the machine's parameters, appearance, and quit.
+  Run parameters are deliberately NOT here. `#/settings` still opens it,
+  for links minted while it was an address, and then steps out of the
+  address.
 - **New task** (`#/new`, or `#/new/<project>` from a shelf, which files
   it there) — a name and a natural-language description, paper bindings,
   and two advanced folds (pinned Defs/Root; axiom whitelist, forbidden
   lemmas, lemma hints). The description IS the goal.
 - **Assistant** — the docked right panel, opened by the corner glyph or
   `Ctrl+/`; the glyph blinks while it is thinking and holds a mark when
-  an answer landed unseen. One conversation per Project, and every
-  question carries the focus: the star that is open, the group being
-  read, the document under the cursor. When an answer carries a prepared
-  command it offers to review it — in the same window a command from a
-  star opens. The panel prepares; the window submits.
+  an answer landed unseen. A Project keeps MANY conversations, on disk
+  beside the workspace, and one of them is current: the header names it,
+  and the fold under the header lists the rest newest-first, with
+  `rename · delete` under the selected row and `+ new conversation` at
+  the top (keys: ↑↓, Enter, F2, Delete). A question you asked can be
+  edited in place and re-asked, which drops everything after it on both
+  ends. Every question carries the focus: the star that is open, the
+  group being read, the document under the cursor. While the answer is
+  being written the panel shows what it is DOING — a row per tool call
+  with its argument and its clock — and folds them into one line when
+  the answer lands. The model picker offers every backend this machine
+  has; a conversation that already has turns keeps the one it started
+  on. When an answer carries a prepared command it offers to review it —
+  in the same window a command from a star opens. The panel prepares;
+  the window submits.
 - `#/problems/<name>` still opens: it asks the DB which shelf the task
   is on and redirects. The name's first segment is only a default at
   registration (§3.1), so it is never split to guess.

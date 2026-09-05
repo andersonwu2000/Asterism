@@ -20,13 +20,25 @@ export const MARK = (
   </svg>
 )
 
-/** two sliders — the things you set. One mark for the one settings
- * page, kept from the retired sidebar. */
+/** A gear — the settings mark, and now it looks like one
+ * (assistant_redesign_2026-09-06.md §5). Two sliders said "things you
+ * set" to whoever already knew; the ring-and-teeth is the one
+ * pictogram every reader arrives already knowing, which is the whole
+ * job of a corner mark.
+ *
+ * Eight teeth, machine-built rather than hand-drawn: each is a
+ * trapezoid between the ring (r 4.5) and the tip circle (r 6.35), at
+ * 45° apart, wider at the base than at the tip. The ring closes their
+ * feet, so a tooth is an open polyline — a closed one would draw a
+ * chord across the ring and thicken every base. The hub is filled with
+ * the surface it sits on, the way the sliders' knobs were. */
 export const GEAR = (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-    <path d="M2 5.5h12M2 10.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
-    <circle cx="10" cy="5.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
-    <circle cx="6" cy="10.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
+    <g stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" opacity="0.7">
+      <circle cx="8" cy="8" r="4.5" />
+      <path d="M6.95 3.62L7.06 1.72L8.94 1.72L9.05 3.62M10.35 4.16L11.78 2.90L13.10 4.22L11.84 5.65M12.38 6.95L14.28 7.06L14.28 8.94L12.38 9.05M11.84 10.35L13.10 11.78L11.78 13.10L10.35 11.84M9.05 12.38L8.94 14.28L7.06 14.28L6.95 12.38M5.65 11.84L4.22 13.10L2.90 11.78L4.16 10.35M3.62 9.05L1.72 8.94L1.72 7.06L3.62 6.95M4.16 5.65L2.90 4.22L4.22 2.90L5.65 4.16" />
+    </g>
+    <circle cx="8" cy="8" r="2.1" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
   </svg>
 )
 

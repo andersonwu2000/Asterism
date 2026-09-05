@@ -30,11 +30,14 @@ import * as ReactDOM from 'react-dom'
  * its POST is in flight).
  */
 
-/** The two widths the console uses. `sm` is a window that asks one
- * short question; `md` holds a list the reader has to read. */
+/** The three widths the console uses. `sm` is a window that asks one
+ * short question; `md` holds a list the reader has to read; `lg` is a
+ * window that is a PLACE — Settings, whose body is a page's worth of
+ * cards and scrolls inside the panel rather than off the screen. */
 const WIDTH = {
   sm: 'w-[26rem]',
   md: 'w-[34rem]',
+  lg: 'w-[44rem]',
 } as const
 
 export function ConfirmWindow({
@@ -53,7 +56,7 @@ export function ConfirmWindow({
   /** the engine's own name for it, quiet, top right */
   badge?: string
   badgeTitle?: string
-  width?: 'sm' | 'md'
+  width?: 'sm' | 'md' | 'lg'
   /** Focus lands inside on open, and by default that is the panel.
    *
    * A window whose body opens ON an input (a name to type back, a
@@ -90,7 +93,7 @@ export function ConfirmWindow({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`${WIDTH[width]} max-w-full rounded-xl border border-edge bg-surface p-5 focus:outline-none`}
+        className={`${WIDTH[width]} max-h-[85vh] max-w-full overflow-y-auto rounded-xl border border-edge bg-surface p-5 focus:outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-baseline gap-2">

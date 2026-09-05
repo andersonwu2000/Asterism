@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RouterProvider, useRoute, navigate } from './lib/router'
+import { RouterProvider, useRoute, navigate, replace } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
 import { parseProjectRoute, projectPath } from './lib/projectRoute'
 import { stalePair } from './lib/freshness'
@@ -7,7 +7,7 @@ import { onAssistantRequest } from './lib/focus'
 import Projects from './screens/Projects'
 import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
-import Settings from './screens/Settings'
+import SettingsWindow from './components/SettingsWindow'
 import AssistantPanel from './components/AssistantPanel'
 import type { BoardResponse, Meta } from './lib/types'
 import { isStopped, onStopped } from './lib/shutdown'
@@ -19,7 +19,10 @@ import { isStopped, onStopped } from './lib/shutdown'
  * own header, and the tasks are the column beside them.
  *
  * Everything global that is not a Project lives at one address each:
- * #/settings is the gear and #/new mints a task. (#/papers went with
+ * #/new mints a task. The gear is no longer one of them — Settings is
+ * a window over wherever you are standing (assistant_redesign
+ * _2026-09-06.md §5), so the reader keeps their place; #/settings
+ * remains legal for old links and opens it. (#/papers went with
  * the workspace-global shelf — §3.9: a paper is one of its Project's
  * documents.) The banners below are the exception the
  * old shell also made: a state that silently fails EVERY run has to
@@ -153,12 +156,23 @@ function Shell() {
   useEffect(() => {
     const leaf = project
       ? (project.problem?.split('.').pop() ?? project.project)
-      : { settings: 'Settings', new: 'New task' }[section]
+      : { new: 'New task' }[section]
     const base = leaf ? `${leaf} — Asterism` : 'Asterism'
     document.title = inboxCount > 0 ? `(${inboxCount}) ${base}` : base
   }, [inboxCount, section, project])
 
-  // the Assistant drawer: open state persists, width does not
+  // Settings is a window, not a place: its open state lives here, and
+  // the address is left alone. The one old address still opens it and
+  // then gets out of the way (`replace`, so Back does not walk into a
+  // page that no longer exists).
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  useEffect(() => {
+    if (section !== 'settings') return
+    setSettingsOpen(true)
+    replace('/')
+  }, [section])
+
+  // the Assistant drawer: open state persists, width is remembered
   const [chatOpen, setChatOpen] = useState(
     () => localStorage.getItem('asterism.chatOpen') === '1',
   )
@@ -224,9 +238,8 @@ function Shell() {
               chatStreaming={chatStreaming}
               chatUnread={chatUnread}
               onToggleChat={() => setChat((o) => !o)}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
-          ) : section === 'settings' ? (
-            <Settings />
           ) : section === 'new' ? (
             /* `#/new/<project>` files the task on that shelf (§3.1: the
                name's first segment is only a default) */
@@ -241,7 +254,7 @@ function Shell() {
               }
             />
           ) : (
-            <Projects />
+            <Projects onOpenSettings={() => setSettingsOpen(true)} />
           )}
         </main>
         <AssistantPanel
@@ -251,6 +264,7 @@ function Shell() {
           onReplyWaiting={setChatUnread}
         />
       </div>
+      {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }

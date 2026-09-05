@@ -1,22 +1,30 @@
 import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
-import { Link } from '../lib/router'
 import { signOut, switchAccount } from '../lib/providerAuth'
 import { relTime } from '../lib/format'
 import { currentTheme, setTheme } from '../lib/theme'
 import type { Theme } from '../lib/theme'
-import { Button } from '../components/ui'
-import { MachineParameters } from '../components/RunParameters'
-import { QuotaMeter } from './EngineRoom'
+import { Button } from './ui'
+import { MachineParameters } from './RunParameters'
+import { QuotaMeter } from '../screens/EngineRoom'
 import { scopedRows } from '../lib/quota'
 import { PROVIDER_LABEL, windowLabel } from '../lib/vocab'
 import type { Meta, ProviderRow, RunStatus } from '../lib/types'
 import type { ShutdownPreview } from '../lib/types'
 import { markStopped } from '../lib/shutdown'
+import { ConfirmWindow } from './ConfirmWindow'
 
 /*
- * The gear — the ONE settings page (human_interface_design.md §1.4:
+ * The gear — the ONE settings surface (human_interface_design.md §1.4:
  * "全域、很少動的東西"), shared by the Project picker and every Project.
+ *
+ * It FLOATS (assistant_redesign_2026-09-06.md §5). Settings is a task
+ * of its own — accounts, the machine's numbers, how to stop everything
+ * — and reaching it used to cost the reader their place: `#/settings`
+ * was an address, so opening the gear from a task's Sky and closing it
+ * again landed them on the picker. A window over the page they were
+ * reading answers the same questions and gives the page back
+ * (DESIGN.md: float where a task is genuinely a task of its own).
  *
  * What earns a place here is what you set once for the installation:
  * the accounts the engine spends and what is left of them, the machine
@@ -446,17 +454,15 @@ function Machine() {
   )
 }
 
-export default function Settings() {
+/** The body, in the console's one floating window. Open state lives in
+ * `App`, not in the address: the reader stays where they were, and
+ * `#/settings` survives only as a legal old link that opens this and
+ * rewrites the address. */
+export default function SettingsWindow({ onClose }: { onClose: () => void }) {
   const { data: meta, refresh } = usePoll<Meta>('/api/meta', 5000)
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
-      <div className="mb-5 flex items-baseline gap-3">
-        <Link to="/" className="text-[11px] text-ink-faint transition-colors hover:text-ink">
-          ‹ projects
-        </Link>
-        <h1 className="font-display text-[22px] font-medium text-ink">Settings</h1>
-      </div>
-      <div className="flex flex-col gap-3">
+    <ConfirmWindow title="Settings" width="lg" onClose={onClose}>
+      <div className="mt-4 flex flex-col gap-3">
         {(meta?.providers ?? []).map((p) => (
           <Account key={p.name} p={p} onChanged={refresh} />
         ))}
@@ -465,6 +471,6 @@ export default function Settings() {
         <Appearance />
         <ShutDown />
       </div>
-    </div>
+    </ConfirmWindow>
   )
 }

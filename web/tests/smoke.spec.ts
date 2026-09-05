@@ -173,15 +173,43 @@ test('legacy problem address redirects into its Project', async ({ page, request
   expect(page.url()).toContain(encodeURIComponent(s.project))
 })
 
-test('settings: accounts, machine, appearance, quit', async ({ page }) => {
-  await page.goto('/#/settings')
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
-  await expect(page.getByText('Machine', { exact: true })).toBeVisible()
-  await expect(page.getByText('Appearance', { exact: true })).toBeVisible()
-  await expect(page.getByText('Shut down', { exact: true })).toBeVisible()
+test('settings: a window over the page, not a page of its own', async ({ page }) => {
+  // the gear stopped being an address (assistant_redesign_2026-09-06
+  // 5): the reader keeps their place, so the assertion is that the
+  // sections are ON SCREEN and the address never moved
+  await page.goto('/#/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const sheet = page.locator('.fixed.inset-0')
+  await expect(sheet.getByText('Settings', { exact: true })).toBeVisible()
+  await expect(sheet.getByText('Machine', { exact: true })).toBeVisible()
+  await expect(sheet.getByText('Appearance', { exact: true })).toBeVisible()
+  await expect(sheet.getByText('Shut down', { exact: true })).toBeVisible()
+  expect(page.url()).not.toContain('settings')
   // the RUN parameters are NOT here (owner: what changes every run is
   // not hidden in settings)
   await expect(page.getByText('formalizer.model')).toHaveCount(0)
+})
+
+test('the old settings address opens the window and steps out of the way', async ({
+  page,
+}) => {
+  // a bookmark minted while it was a page still works, and leaves the
+  // reader on the picker rather than on an address that is gone
+  await page.goto('/#/settings')
+  await expect(page.locator('.fixed.inset-0').getByText('Shut down', { exact: true })).toBeVisible()
+  await expect.poll(() => page.url()).not.toContain('settings')
+})
+
+test('the Assistant answers Ctrl+/', async ({ page, request }) => {
+  await openShelf(page, request, 'tasks', false)
+  const panel = page.locator('[aria-label="assistant"]')
+  // the drawer's open state is remembered, so start from closed
+  if (await panel.isVisible()) await page.keyboard.press('Control+/')
+  await expect(panel).toBeHidden()
+  await page.keyboard.press('Control+/')
+  await expect(panel).toBeVisible()
+  // its conversations open in place, under the header
+  await expect(panel.getByLabel('conversations')).toBeVisible()
 })
 
 test('run parameters live beside Run, not in settings', async ({ page, request }) => {
