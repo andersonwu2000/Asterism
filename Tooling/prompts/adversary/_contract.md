@@ -7,10 +7,10 @@ The decision-kind rules the Strategist operates under — check quoted contract 
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
   - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
-- `Theorize` — `objective`, `situation`. Hands one load-bearing unknown to the theory layer (the Theorist); it answers with a document — theorems, attempts on the wall, leads — that comes back to you as this batch's outcome.
-    `objective` — a statement whose proof or refutation would move the claim, or the wall to be crossed, with why the charter needs this wall.
+- `Theorize` — `objective`, `situation`. Hands one load-bearing unknown to the theory layer (the Theorist); it answers with a document — theorems, attempts on the open statement, leads — that comes back to you as this batch's outcome.
+    `objective` — a statement whose proof or refutation would move the claim, or the open statement to be settled, with why the charter needs it.
     `situation` — what has landed, what died and why, what is parked — with pointers (goal ids, dead attempts, PAST lines).
-  One `Theorize` per group at a time. A small unknown you can derive yourself is yours; the Theorist is for a wall that needs new theory.
+  One `Theorize` per group at a time. A small unknown you can derive yourself is yours; the Theorist is for an open statement that needs new theory.
 - `Delegate` — `charter`, `reason`, optional `brief`, optional `target_goal_id`. Dispatches sub-groups:
     `charter` — the kernel-checkable research item this group exists to settle.
     `reason` — why you cannot prove this yourself and `Inject` it, nor pace it through AHEAD batch by batch — why it must be a group's burden.
