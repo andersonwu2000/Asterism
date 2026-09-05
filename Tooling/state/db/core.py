@@ -600,6 +600,13 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             REFERENCES groups(id) ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
     outcome_detail      TEXT NULL DEFAULT NULL,
+    -- infra_deaths (2026-09-06): how many times the worker answering this
+    -- decision died of an INFRA cause. An infra death says nothing about
+    -- the request, so the framework re-queues it rather than settling it
+    -- (owner ruling) — and this column is what bounds that: past
+    -- `theorist.INFRA_REDISPATCHES` the next death settles the row, so a
+    -- provider broken for good still surfaces instead of looping.
+    infra_deaths        INTEGER NOT NULL DEFAULT 0,
     -- report_carried_at (2026-09-03): this batch finished mid-debate and
     -- the wake in flight neither received nor acted on it, so its REPORT
     -- has reached no Strategist. The clock ratchet (`last_strategist_at`)
@@ -902,7 +909,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 52
+_CURRENT_USER_VERSION = 53
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 
@@ -70,6 +71,14 @@ NO_REQUEST_DETAIL = "The Theorize decision carried no usable request"
 #: Three, from the experiment: the author that has not answered the
 #: reviewer by its third revision is not one round away.
 DEFAULT_ROUNDS = 3
+
+#: Times the framework re-issues ONE request after an infra death before
+#: it settles with `SPAWN_DIED_DETAIL`. An infra cause is the
+#: framework's own fault and says nothing about the request, so the
+#: machine re-queues rather than hand it back (owner ruling 2026-09-06)
+#: — bounded here so a provider broken for good still reaches a person
+#: instead of looping. `cascade_one` owns the count.
+INFRA_REDISPATCHES = 3
 
 
 def _rc_reason(rc: int, seat: str, spawn_dir: "Path | None" = None) -> str:
@@ -166,7 +175,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     came back."""
     from ... import agent
     from ...core import config
-    from ...state import db
+    from ...state import db, failures as _failures
     from .. import PipelineResult, PROMPT_DIR, write_tools_mcp_config
     from ...agent.phase2_context import compile_strategist_context
 
@@ -186,7 +195,17 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
                               failure_detail=detail)
 
     def _fail_spawn(reason: str, detail: str):
-        """A wake that did not come back: nothing was reviewed."""
+        """A wake that did not come back: nothing was reviewed.
+
+        An INFRA reason is the framework's own fault, so the row is left
+        UNSETTLED and the request is re-queued (owner ruling
+        2026-09-06); `cascade_one`'s Theorist arm holds the count and
+        writes this same headline once the re-issues are spent."""
+        if (_failures.is_infra(reason) and decision_id is not None
+                and db.decision_infra_deaths(conn, int(decision_id))
+                < INFRA_REDISPATCHES):
+            return PipelineResult(outcome="failed", failure_reason=reason,
+                                  failure_detail=detail)
         return _fail(reason, detail,
                      headline=SPAWN_DIED_DETAIL.format(reason=reason))
 
@@ -216,6 +235,19 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     prompt_path = PROMPT_DIR / "theorist" / "theory.md"
     report_path = attempts_dir / REPORT_BASENAME
     sid = str(uuid.uuid4())
+
+    # Quota-park budget for this run, on the Strategist wake's terms: the
+    # queue row's lease is reclaimed on AGE ALONE at LEASE_TTL_SEC even
+    # with this thread alive, and a reclaimed row means a second Theorist
+    # on the same request.
+    _t0 = time.monotonic()
+
+    def _quota_park(label: str) -> bool:
+        from ...core import quota_wait as _qw
+        from ...core.dispatcher import LEASE_TTL_SEC
+        return _qw.park_in_pipeline(
+            f"{problem} {label}",
+            budget_sec=(LEASE_TTL_SEC * 0.8) - (time.monotonic() - _t0))
 
     dialogue: "list[dict]" = []
     verdict: "dict | None" = None
@@ -270,7 +302,8 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             round_no=turn, attempts_dir=attempts_dir, conn=conn,
             workspace=workspace, problem=problem, group_id=group_id,
             objective=objective, situation=situation, report_body=body,
-            dialogue=dialogue, pipeline_id=pipeline_id)
+            dialogue=dialogue, pipeline_id=pipeline_id,
+            quota_park=_quota_park)
         if rrc != 0:
             return _fail_spawn(
                 _rc_reason(rrc, "theory_reviewer",
