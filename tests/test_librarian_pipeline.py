@@ -202,15 +202,27 @@ def test_a_librarian_spawn_death_is_named_not_flattened(conn, tmp_path,
     charged to the unit's own retry cap instead (2026-09-06)."""
     from Tooling import agent
     from Tooling.pipeline import librarian as _lib
+    from Tooling.state import failures as _failures
     monkeypatch.setattr(_lib.run, "compile_librarian_context",
                         lambda *a, **k: None)
-    monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 126)
-    res = _lib.run._run_structured(
-        conn, problem="p", work_kind="classify", workspace=tmp_path,
-        attempts_dir=tmp_path, problem_dir=tmp_path,
-        prompt_path=tmp_path / "prompt.md")
+
+    def _run(rc: int, stderr: str = ""):
+        (tmp_path / "_spawn.stderr").write_text(stderr, encoding="utf-8")
+        monkeypatch.setattr(agent, "spawn_llm", lambda **kw: rc)
+        return _lib.run._run_structured(
+            conn, problem="p", work_kind="classify", workspace=tmp_path,
+            attempts_dir=tmp_path, problem_dir=tmp_path,
+            prompt_path=tmp_path / "prompt.md")
+
+    # The stderr half proves the shared classifier is the one answering:
+    # only it reads transport prose, and that reading outranks every
+    # duration heuristic.
+    res = _run(1, "error sending request")
     assert res.outcome == "failed"
-    assert res.failure_reason == "quota_exhausted"
+    assert res.failure_reason == "provider_network"
+    # And the property both the chain cap and the dispatcher cooldown
+    # actually read — `agent_error` carried neither.
+    assert _failures.is_infra(_run(126).failure_reason)
 
 
 # ---------------------------------------------------------------------

@@ -131,7 +131,11 @@ _WATERMARKS = {
     # 560→570 (2026-08-13): harvest seeds scope to the top group —
     # the Library is curated for people, so what enters it is what the
     # top group promoted (user ruling). Conscious bump.
-    "Tooling/pipeline/librarian/run.py": 570,
+    # 570→580 (2026-09-06): the serial spawn names its rc through the
+    # shared `_spawn_failure` instead of answering `agent_error` for
+    # every one — an infra death must be readable as infra by the
+    # chain cap and the dispatcher cooldown. Conscious bump.
+    "Tooling/pipeline/librarian/run.py": 580,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

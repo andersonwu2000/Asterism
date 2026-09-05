@@ -1,6 +1,7 @@
 """librarian.run — split out of the former pipeline/librarian.py monolith."""
 from __future__ import annotations
 
+import time as _time
 from pathlib import Path as _Path
 from ...state import db
 
@@ -493,6 +494,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                             env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int)
         timeout_override = trap_override + max(0, spawn_to - base)
     from .. import write_tools_mcp_config as _write_tools_cfg
+    _t0 = _time.monotonic()
     rc = agent.spawn_llm(
         kind="librarian", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
@@ -506,9 +508,17 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                                          seat="librarian",
                                          problem=problem))
     if rc != 0:
-        return PipelineResult(
-            outcome="failed", failure_reason="agent_error",
-            failure_detail=f"agent rc={rc}")
+        # NAMED, through the same classifier every other pipeline uses.
+        # This branch used to answer `agent_error` for every rc, which is
+        # an agent-origin reason — so a quota window on the Librarian
+        # seat reached neither the dispatcher's per-kind backoff nor the
+        # chain's own infra exemption, and was charged to the unit's
+        # 2-strike cap instead (2026-09-06).
+        from .. import _spawn_failure
+        reason, detail = _spawn_failure(
+            rc, attempts_dir, _time.monotonic() - _t0, kind="librarian")
+        return PipelineResult(outcome="failed", failure_reason=reason,
+                              failure_detail=detail)
 
     out_path = attempts_dir / "plan.json"
     if not out_path.exists():
