@@ -1370,21 +1370,15 @@ class ClaudeCliProvider:
                 )
             elif req.kind == "adversary":
                 # The judge retries on a REFUSED verdict.json, not a
-                # lake build — it never ran one. Told "failed lake
-                # build … produce a fresh patch.lean" it goes hunting a
-                # phantom error (same class as the thinking-trap
-                # wording below, 2026-06-15). The refusal text already
-                # names the rule and the file.
-                err = (req.retry_context
-                       or "(refusal not captured)").strip()
+                # lake build — it never ran one, and "produce a fresh
+                # patch.lean" sends it hunting a phantom error (same
+                # class as the thinking-trap wording below, 06-15).
+                err = (req.retry_context or "(refusal not captured)").strip()
                 prompt = (
-                    f"The framework refused your previous "
-                    f"verdict.json:\n\n```\n{err}\n```\n\nWrite the "
-                    f"corrected verdict.json to "
-                    f"{req.attempts_dir}/verdict.json. Your reading of "
-                    f"the proposal is unchanged; this is the file's "
-                    f"shape."
-                )
+                    f"The framework refused your previous verdict.json:"
+                    f"\n\n```\n{err}\n```\n\nWrite the corrected file to "
+                    f"{req.attempts_dir}/verdict.json — your reading of "
+                    f"the proposal is unchanged; this is its shape.")
             elif req.retry_reason == "agent_stuck_thinking":
                 # Prior attempt died mid-thinking (watchdog / subprocess-
                 # timeout trap), NOT a lake error — rc=0, no build ran.
