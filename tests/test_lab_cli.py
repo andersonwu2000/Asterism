@@ -51,6 +51,38 @@ def test_lab_is_registered_with_its_four_actions(monkeypatch):
     assert build.lab_action == "build"
 
 
+def test_the_standard_sets_are_run_through_lab_run(monkeypatch):
+    """`asterism lab run standard <set|item|all>` — the same two
+    positionals `lab run <exp> <arm>` takes, because a standard set IS
+    an experiment whose arms have recorded answers. `--seats` moves a
+    seat for the whole run, which is the one thing a standard set is
+    re-run to measure."""
+    args = _parse(["lab", "run", "standard", "traps", "--root", "R",
+                   "--seats", "adversary=codex/gpt-5:xhigh",
+                   "--seats", "strategist=claude/opus"], monkeypatch)
+    assert (args.lab_action, args.exp, args.arm) == ("run", "standard",
+                                                     "traps")
+    assert args.seats == ["adversary=codex/gpt-5:xhigh",
+                          "strategist=claude/opus"]
+
+
+def test_a_seat_override_must_be_seat_equals_provider_slash_model(tmp_path,
+                                                                  capsys):
+    rc = lab_cli.cmd_lab(argparse.Namespace(
+        lab_action="run", root=str(tmp_path), exp="standard", arm="all",
+        reps=None, keep=False, seats=["adversary:codex/gpt-5"]))
+    assert rc == 1
+    assert "seat=provider/model" in capsys.readouterr().err
+
+
+def test_lab_run_standard_refuses_a_root_with_no_sets(tmp_path, capsys):
+    rc = lab_cli.cmd_lab(argparse.Namespace(
+        lab_action="run", root=str(tmp_path), exp="standard", arm="all",
+        reps=None, keep=False, seats=None))
+    assert rc == 1
+    assert "standard.yaml" in capsys.readouterr().err
+
+
 def test_the_cli_refuses_when_no_root_is_named(monkeypatch, capsys):
     """The refusal has to reach the operator as a message and an rc, not
     as a traceback: `lab` is run from a shell and its failures are read

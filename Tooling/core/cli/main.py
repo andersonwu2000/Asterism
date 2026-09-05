@@ -132,9 +132,17 @@ def main(argv: list[str] | None = None) -> int:
                        choices=("snapshot", "build", "run", "gc"))
     p_lab.add_argument("exp", nargs="?", default=None,
                        help="build/run: the experiment, i.e. the "
-                            "directory holding lab.yaml under <root>/docs/")
+                            "directory holding lab.yaml under <root>/docs/. "
+                            "`standard` is the reserved name of the standard "
+                            "test sets in <root>/sets/standard.yaml")
     p_lab.add_argument("arm", nargs="?", default=None,
-                       help="build/run: which arm of it")
+                       help="build/run: which arm of it — for `standard`, "
+                            "which <set>, <set>/<item>, or `all`")
+    p_lab.add_argument(
+        "--seats", action="append", default=None, metavar="SEAT=PROV/MODEL",
+        help="run: move one seat for the whole run, e.g. "
+             "`--seats adversary=codex/gpt-5:xhigh`. Repeatable; merged "
+             "over whatever the arm or the set declares")
     p_lab.add_argument(
         "--root", default=None,
         help="the lab's root (snapshots/, runs/, docs/). Falls back to "

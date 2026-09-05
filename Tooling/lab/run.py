@@ -124,6 +124,28 @@ def collect_transcripts(ws: Path, out: Path) -> "list[str]":
     return kept
 
 
+def collect_mcp_logs(ws: Path, out: Path) -> "list[str]":
+    """`<ws>/.asterism/mcp_logs/` — the gateway's own per-call record of
+    every tool a spawn used, copied out beside the transcripts.
+
+    The one machine-readable answer to "which tools did this run
+    actually reach": the transcripts carry it too, but only in whichever
+    shape the provider happened to write, and a run whose seat left no
+    transcript (a daemon spawning through a provider that files
+    nothing) still has this. It dies with the workspace unless it is
+    copied — the same reason the codex rollout is."""
+    src = Path(ws) / ".asterism" / "mcp_logs"
+    if not src.is_dir():
+        return []
+    dst = out / "mcp_logs"
+    dst.mkdir(parents=True, exist_ok=True)
+    kept: "list[str]" = []
+    for log in sorted(src.glob("*.jsonl")):
+        shutil.copyfile(log, dst / log.name)
+        kept.append(f"mcp_logs/{log.name}")
+    return kept
+
+
 # ---------------------------------------------------------------------
 # launching the driver
 # ---------------------------------------------------------------------
@@ -163,20 +185,35 @@ def launch_subprocess(ws: Path, spec_path: Path) -> "tuple[int, float]":
 
 def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
              commit: str, rep: int, keep: bool = False,
-             launch=launch_subprocess) -> Path:
-    """Build, wake, record, clean up. Returns the run directory."""
+             launch=launch_subprocess, problem: "str | None" = None,
+             score=None, extra: "dict | None" = None) -> Path:
+    """Build, wake, record, clean up. Returns the run directory.
+
+    `slice_` may be None — a workspace built from the base alone, which
+    is what a standard set's seeded problems need — and then `problem`
+    says which problem the driver works on, since there is no manifest
+    to read it off.
+
+    `score` is called with the finished record and returns what goes in
+    under `score:`. It runs HERE, before the record is written, because
+    `_out/` is the only thing that survives the workspace and a scorer
+    that ran later would be reading a subset of what it needs."""
     arm = exp.arm(arm_name)
     ws = _build.build(root, exp, arm_name, slice_=slice_, base=base,
                       commit=commit, rep=rep)
     out = ws / OUT_DIRNAME
     out.mkdir(parents=True, exist_ok=True)
+    if problem is None and slice_ is None:
+        raise LabError(
+            f"{exp.name}/{arm_name}: a run with no slice must name its "
+            f"`problem` — the driver has no manifest to read it off")
     spec = {
         "kind": arm.kind,
-        "problem": slice_.problem,
-        "cutoff": slice_.cutoff,
+        "problem": problem or slice_.problem,
+        "cutoff": slice_.cutoff if slice_ is not None else None,
         "workspace": str(ws),
         "out": str(out),
-        "source_db": str(slice_.source_db),
+        "source_db": (str(slice_.source_db) if slice_ is not None else None),
         "options": arm.options,
     }
     spec_path = ws / SPEC_BASENAME
@@ -196,22 +233,24 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
 
     artefacts = list(result.get("artefacts") or [])
     artefacts += collect_transcripts(ws, out)
+    artefacts += collect_mcp_logs(ws, out)
     record = {
         "experiment": exp.name,
         "arm": arm_name,
         "rep": rep,
         "kind": arm.kind,
+        "problem": spec["problem"],
         "started_utc": started,
         "finished_utc": datetime.now(timezone.utc).isoformat(),
         "wall_sec": round(wall, 1),
         "rc": rc,
         "outcome": result.get("outcome") or ("failed" if rc else "unknown"),
-        "slice": slice_.id,
-        "slice_manifest": {
-            k: slice_.manifest.get(k)
-            for k in ("problem", "taken_utc", "programme_rev", "goal_count",
-                      "code_commit", "schema_user_version", "rewind")},
+        "slice": slice_.id if slice_ is not None else None,
+        "slice_manifest": _build.slice_manifest(slice_),
         "code_commit": commit,
+        # Where `_out/` ended up. A scorer reads the transcripts and the
+        # gateway log out of it, and the record is what it is handed.
+        "out_dir": str(out),
         # What the arm ASKED the driver to do. The lab.yaml is edited
         # between runs — that is what arms are — so a record that only
         # named the experiment would be read against whichever version
@@ -225,6 +264,9 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
         "artefacts": sorted(set(artefacts)),
         "workspace_kept": bool(keep),
     }
+    record.update(extra or {})
+    if score is not None:
+        record["score"] = score(record)
     (out / RECORD_BASENAME).write_text(
         json.dumps(record, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8")
