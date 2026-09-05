@@ -41,7 +41,10 @@ asterism lab gc       [--keep-latest 3] [--root R]
 * `build` refuses a target holding `daemon.pid`, never puts a `.git` in
   the workspace, takes `Tooling/` from a **commit** (never the working
   tree), lands the slice with `carry import --allow-migrate`, and
-  junctions `.lake`.
+  junctions `.lake/packages` — the dependency tree only. Not `.lake`:
+  `build/` under it is the live workspace's own output, written right
+  now by the running daemon under lake's lock, so the lab workspace gets
+  its own and pays a cold build for it.
 * `run` builds a fresh workspace per repetition, spawns the driver with
   `cwd` in that workspace (so the arm's prompt overlay and seat config
   are the ones actually read), copies artefacts and both providers'

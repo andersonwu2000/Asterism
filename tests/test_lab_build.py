@@ -304,6 +304,39 @@ def test_build_migrates_a_slice_taken_on_an_older_schema(tmp_path, base,
         c.close()
 
 
+def test_the_workspace_shares_the_dependency_tree_but_not_the_build_tree(
+        tmp_path, base, head, monkeypatch):
+    """`.lake/packages` is Mathlib and friends — 6.8 GB, built once,
+    only read once built, and the difference between a lab run starting
+    now and a lab run starting tomorrow. `.lake/build` is the LIVE
+    workspace's own output: 78 GB of it, written by the daemon that is
+    running right now, under lake's own lock.
+
+    Sharing the whole `.lake` would put a lab `lake build` inside that —
+    writing this experiment's oleans into the live tree and contending
+    for its lock. So the dependency tree is linked and the build tree is
+    the workspace's own, which costs a cold build of this problem's
+    modules and is the correct price."""
+    live = _workspace(tmp_path)
+    fake_repo = tmp_path / "repo"
+    (fake_repo / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    (fake_repo / ".lake" / "packages" / "mathlib" / "x.olean").write_text(
+        "shared", encoding="utf-8")
+    (fake_repo / ".lake" / "build" / "lib").mkdir(parents=True)
+    monkeypatch.setattr(build_mod, "REPO", fake_repo)
+    sl = snap_mod.take(live, tmp_path / "lab", problem=PROBLEM)
+    exp = _exp(tmp_path / "lab", sl.id)
+    ws = build_mod.build(tmp_path / "lab", exp, "a", slice_=sl,
+                         base=base, commit=head, rep=1)
+    pkgs = ws / ".lake" / "packages"
+    assert (pkgs / "mathlib" / "x.olean").is_file(), "the deps are reachable"
+    assert pkgs.is_symlink() or pkgs.is_junction(), "…and shared, not copied"
+    assert not (ws / ".lake" / "build").is_symlink(), \
+        "the build tree is never the live one"
+    rec = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))
+    assert rec["links"][".lake/packages"] in ("link", "copy")
+
+
 def test_clearing_a_workspace_unlinks_the_shared_tree_it_does_not_own(
         tmp_path):
     """`.lake` is a JUNCTION into the framework's own build tree — 20 GB
@@ -318,17 +351,20 @@ def test_clearing_a_workspace_unlinks_the_shared_tree_it_does_not_own(
     or a `copy` fallback could reintroduce it."""
     ws = tmp_path / "ws"
     (ws / ".attempts").mkdir(parents=True)
+    (ws / ".lake").mkdir()
     (ws / "keep.txt").write_text("x", encoding="utf-8")
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "precious.olean").write_text("do not delete", encoding="utf-8")
-    build_mod._link_or_copy(shared, ws / ".lake")
+    # NESTED, the way a real workspace has it: `.lake/` is the
+    # workspace's own directory and only `packages` inside it is shared.
+    build_mod._link_or_copy(shared, ws / ".lake" / "packages")
 
     build_mod.clear_workspace(ws, keep=("keep.txt",))
 
     assert (shared / "precious.olean").is_file(), \
         "the shared tree the junction points at survived"
-    assert not (ws / ".lake").exists() and not (ws / ".lake").is_symlink()
+    assert not (ws / ".lake").exists()
     assert not (ws / ".attempts").exists()
     assert (ws / "keep.txt").is_file(), "kept entries stay"
 

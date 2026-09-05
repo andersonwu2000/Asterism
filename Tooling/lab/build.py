@@ -67,13 +67,24 @@ PROBLEMS_README = (
     "A lab workspace starts empty; `asterism lab build` lands exactly "
     "one problem here, imported from a slice.\n")
 
-#: Never in a lab workspace. `.lake` is deliberately NOT here: it is the
-#: one heavy tree that IS linked (see `_link_or_copy`).
+#: Never in a lab workspace. `.lake/packages` is deliberately NOT here:
+#: it is the one heavy tree that IS linked (see `LINKED_TREES`).
 FORBIDDEN = ("daemon.pid", ".asterism/daemon.pid", ".git")
 
-#: Linked into the workspace instead of copied — read-only, shared, and
-#: measured in gigabytes.
-LINKED_TREES = (".lake",)
+#: Linked into the workspace instead of copied.
+#:
+#: `.lake/PACKAGES`, NOT `.lake`. The two halves of that directory are
+#: opposites. `packages/` is Mathlib and its friends — 6.8 GB, built
+#: once, only read once built, and the whole difference between a lab
+#: run that starts now and one that starts tomorrow. `build/` is the
+#: LIVE workspace's own output: 78 GB of it, written by the daemon that
+#: is running right now, under lake's own lock. Linking the parent would
+#: put a lab `lake build` inside that — writing this experiment's oleans
+#: into the live tree and contending for its lock, which is precisely
+#: what "the lab never writes the live workspace" forbids. So the
+#: workspace gets its own `build/`, and pays a cold build of this
+#: problem's modules for it.
+LINKED_TREES = (".lake/packages",)
 
 BASE_STAMP = "base.json"
 WORKSPACE_STAMP = "workspace.json"
@@ -219,13 +230,15 @@ def _link_or_copy(src: Path, dst: Path) -> str:
 def clear_workspace(ws: Path, *, keep: "tuple[str, ...]" = ()) -> None:
     """Delete a workspace's contents, minus `keep`.
 
-    THE LINKED TREES ARE UNLINKED, NEVER DESCENDED INTO. `.lake` is a
-    junction into the framework's own build tree — Mathlib's oleans,
-    shared by every lab workspace on the box — and a delete that
-    followed it would take the live tree with it. Python's `rmtree` has
-    not followed a junction since 3.8, but the invariant is the lab's to
-    hold: an `onerror=` handler or a `copy` fallback added later would
-    reintroduce exactly that.
+    THE LINKED TREES ARE UNLINKED, NEVER DESCENDED INTO.
+    `.lake/packages` is a junction into the framework's own dependency
+    tree — Mathlib's oleans, shared by every lab workspace on the box —
+    and a delete that followed it would take the live tree with it. A
+    top-level link is unlinked here; a nested one (which is where
+    `.lake/packages` actually sits) is left to `rmtree`, which has not
+    followed a junction since 3.8. Both depths are pinned by
+    `tests/test_lab_build.py`, because an `onerror=` handler or a `copy`
+    fallback added later would reintroduce exactly that.
     """
     ws = Path(ws)
     if not ws.is_dir():
@@ -340,6 +353,7 @@ def build(root: Path, exp, arm_name: str, *, slice_: Slice,
     for rel in LINKED_TREES:
         src = REPO / rel
         if src.is_dir():
+            (ws / rel).parent.mkdir(parents=True, exist_ok=True)
             links[rel] = _link_or_copy(src, ws / rel)
         else:
             links[rel] = "absent"
