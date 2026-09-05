@@ -383,7 +383,8 @@ def finish_routine_audit(conn: sqlite3.Connection, *, problem: str,
     from .. import PipelineResult
     from ...state import groups as _groups
     from . import audit as _audit
-    from .wake import _apply_kb_curation, _persist_plan
+    from ...state import failures as _failures
+    from .wake import _apply_kb_curation, _persist_plan, _rc_to_reason
 
     gid = (int(group_id) if group_id is not None
            else _groups.ensure_top_group(conn, problem))
@@ -421,8 +422,15 @@ def finish_routine_audit(conn: sqlite3.Connection, *, problem: str,
                 f"rulings, fix the shape."),
             timeout_sec=strategist_timeout, mcp_config_path=tools_cfg)
         _persist_plan(problem_dir, attempts_dir, group_id)
-        if rc_fix == 0:
-            verdict, err, missing = _read()
+        # The file outranks the rc, and an infra rc is named — the same
+        # two rules the action wake's corrective turn takes, and for the
+        # same reasons (see `wake._read_and_parse`'s caller).
+        verdict, err, missing = _read()
+        _fix_reason = _rc_to_reason(rc_fix) if rc_fix else ""
+        if (missing or verdict is None) and _failures.is_infra(_fix_reason):
+            return PipelineResult(
+                outcome="failed", failure_reason=_fix_reason,
+                failure_detail=f"corrective turn rc={rc_fix}; {defect}")
     if missing:
         return PipelineResult(
             outcome="failed", failure_reason="agent_no_output",

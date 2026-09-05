@@ -423,8 +423,13 @@ def test_a_dead_author_spawn_is_not_reported_as_a_rejection(
     not pass review — reconsider your request". Nothing was reviewed.
     A transport death must name the reachable action instead, and the
     decision's own `outcome` must say which road it was, so a reader
-    does not have to parse prose to tell them apart."""
+    does not have to parse prose to tell them apart.
+
+    The re-issues are spent first (owner ruling 2026-09-06): the
+    framework re-queues an infra death itself, so this message is the
+    LAST word, not the first one."""
     did = _theorize(conn, workspace)
+    _spend_infra_budget(conn, did)
     fake, state = _dead_spawn("theorist")
     monkeypatch.setattr(agent, "spawn_llm", fake)
 
@@ -447,8 +452,15 @@ def test_a_dead_reviewer_spawn_is_not_reported_as_a_rejection(
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The reviewer's transport can die on the same wall as the
-    author's, and its rc says nothing about the document either."""
+    author's, and its rc says nothing about the document either. Its own
+    re-spawn budget and the request's re-issues are both spent first —
+    what is under test here is the LAST word."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
     did = _theorize(conn, workspace)
+    _spend_infra_budget(conn, did)
     fake, _ = _dead_spawn("theory_reviewer", report=_REPORT)
     monkeypatch.setattr(agent, "spawn_llm", fake)
 
@@ -531,6 +543,10 @@ def test_the_reviewers_transport_death_is_read_in_its_own_projection(
     reviewer's stderr is not where the author's is. Reading the author's
     dir for the reviewer's death would charge one seat's failure to the
     other's evidence."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
     did = _theorize(conn, workspace)
     monkeypatch.setattr(agent, "spawn_llm",
                         _dies_with_stderr("theory_reviewer", _NET_STDERR))
@@ -571,6 +587,7 @@ def test_a_revision_that_died_without_rewriting_is_still_a_dead_wake(
     and would hand the same document back to the same rubric until the
     rounds ran out."""
     did = _theorize(conn, workspace)
+    _spend_infra_budget(conn, did)
     state = {"author": 0, "review": 0}
 
     def fake_spawn(**kw):
@@ -595,6 +612,123 @@ def test_a_revision_that_died_without_rewriting_is_still_a_dead_wake(
         " WHERE id = ?", (did,)).fetchone()
     assert theorist.REJECTED_DETAIL not in d["outcome_detail"]
     assert "did not complete" in d["outcome_detail"]
+
+
+# ---------------------------------------------------------------------
+# an infra death is the framework's, not the request's
+# ---------------------------------------------------------------------
+
+def _spend_infra_budget(conn: sqlite3.Connection, did: int) -> None:
+    """Charge this request every re-issue the framework owes it, so the
+    next infra death is the one that settles."""
+    conn.execute(
+        "UPDATE strategist_decisions SET infra_deaths = ? WHERE id = ?",
+        (theorist.INFRA_REDISPATCHES, did))
+    conn.commit()
+
+
+def test_a_quota_death_leaves_the_request_standing(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """union_closed d5922 / d5933, 2026-09-05 20:32Z: two Theorists died
+    on rc=126 and both requests were settled `failed:quota_exhausted`
+    saying "the request stands — re-issue it". Nothing re-dispatched
+    them; the Strategist had to notice on a later wake and re-file. A
+    quota window is the framework's problem, so the row stays UNSETTLED
+    and `reconcile_stuck_states` re-queues it once the kind's backoff
+    lifts (owner ruling 2026-09-06)."""
+    did = _theorize(conn, workspace)
+    fake, state = _dead_spawn("theorist", rc=126)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.failure_reason == "quota_exhausted"
+    assert state["review"] == 0
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert d["outcome"] is None and d["outcome_detail"] is None
+
+
+def test_a_request_that_has_spent_its_re_issues_is_settled(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bounded, not forever: a provider broken for good must still reach
+    a person. Once the framework has re-issued the request
+    `INFRA_REDISPATCHES` times, the next infra death settles it with the
+    message it always carried."""
+    did = _theorize(conn, workspace)
+    _spend_infra_budget(conn, did)
+    fake, _ = _dead_spawn("theorist", rc=126)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.failure_reason == "quota_exhausted"
+    d = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (did,)).fetchone()
+    assert str(d["outcome"]) == "failed:quota_exhausted"
+    assert "re-issue" in d["outcome_detail"]
+
+
+def test_a_reviewer_that_dies_on_quota_does_not_cost_the_document(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer's provider says nothing about the document. Its rc
+    used to end the wake and throw away an author turn that had already
+    written a report; the round re-spawns the reviewer instead, on the
+    batch judge's own budget (`adversary.INFRA_SPAWN_RETRIES`)."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    did = _theorize(conn, workspace)
+    state = {"review": 0}
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "theory_reviewer":
+            state["review"] += 1
+            if state["review"] == 1:
+                return 126
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps(_clear()), encoding="utf-8")
+            return 0
+        (kw["attempts_dir"] / "report.md").write_text(
+            _REPORT, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    assert state["review"] == 2
+    assert conn.execute(
+        "SELECT status FROM theory_documents").fetchone()[0] == "accepted"
+
+
+def test_the_reviewers_infra_budget_is_bounded(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A systematically dead reviewer still ends the round — and the
+    request it was reviewing for stays standing, because the death is
+    still the framework's."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    did = _theorize(conn, workspace)
+    fake, state = _dead_spawn("theory_reviewer", rc=126, report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.failure_reason == "quota_exhausted"
+    assert state["review"] == _review.INFRA_SPAWN_RETRIES + 1
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()[0] is None
 
 
 # ---------------------------------------------------------------------

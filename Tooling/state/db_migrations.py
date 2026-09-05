@@ -1090,6 +1090,23 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v52(conn)
         conn.execute("PRAGMA user_version = 52")
         conn.commit()
+    if v < 53:
+        # v53 — `strategist_decisions.infra_deaths` (owner ruling
+        # 2026-09-06). An INFRA death says nothing about the request the
+        # worker was answering, so the framework re-queues it instead of
+        # settling; this column is what BOUNDS that, so a provider broken
+        # for good still surfaces. See the SCHEMA comment. Additive, no
+        # backfill: 0 is what every pre-v53 row means. Same
+        # duplicate-column tolerance as v50 — a disk whose SCHEMA already
+        # minted it.
+        try:
+            conn.execute("ALTER TABLE strategist_decisions ADD COLUMN"
+                         " infra_deaths INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+        conn.execute("PRAGMA user_version = 53")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the

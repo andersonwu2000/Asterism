@@ -1701,6 +1701,34 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # stall rescue forever and never wake it. This is the backstop,
         # `outcome IS NULL`-guarded, so a normal return costs nothing.
         if decision_id is not None:
+            if is_infra:
+                # …except when the death was the FRAMEWORK's. An infra
+                # cause says nothing about the request, so settling on
+                # it hands work back to the Strategist for a fault it
+                # cannot act on (union_closed d5922 / d5933, 2026-09-05:
+                # two rc=126 deaths settled `failed:quota_exhausted`
+                # telling it to re-issue the request itself). Leave the
+                # row open — `reconcile_stuck_states`' Theorize arm
+                # re-queues an unanswered request every tick, and the
+                # kind's own quota backoff is what makes that "after the
+                # cooldown". Bounded by the count, so a provider broken
+                # for good still reaches the Strategist.
+                from ..pipeline.theorist import (INFRA_REDISPATCHES,
+                                                 SPAWN_DIED_DETAIL)
+                n = db.record_decision_infra_death(conn, int(decision_id))
+                if n <= INFRA_REDISPATCHES:
+                    print(f"[theorist] d{decision_id} died on "
+                          f"{failure_reason} ({n}/{INFRA_REDISPATCHES}) "
+                          f"— the request stands, re-queued after the "
+                          f"cooldown", flush=True)
+                    return
+                # Spent: the pipeline's own headline, so the road reads
+                # the same whichever half of it ran out first.
+                _record_inject_decision_outcome(
+                    conn, int(decision_id), "failed", failure_reason,
+                    detail=SPAWN_DIED_DETAIL.format(reason=failure_reason))
+                _maybe_enqueue_inject_batch_done(conn, int(decision_id))
+                return
             _record_inject_decision_outcome(
                 conn, int(decision_id), outcome or "failed",
                 failure_reason, pipeline_id=pipeline_id)

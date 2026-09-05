@@ -62,6 +62,13 @@ class DisproofVerdict:
     ok: bool
     #: teaching / certification detail for the pipeline result.
     detail: str
+    #: non-empty when the PROBE could not be judged at all — the axiom
+    #: gate answered with an infra reason (a gateway 5xx, a transport
+    #: death). The caller must abort on THIS reason instead of teaching
+    #: the agent: nothing about the submission was learned, and
+    #: `agent_declined` would burn a goal attempt for a machine fault
+    #: (owner ruling 2026-09-06).
+    infra_reason: str = ""
 
 
 BRICK_SUFFIX = "_disproof"
@@ -273,6 +280,15 @@ def run_disproof_gate(*, workspace: Path, attempts_dir: Path,
         workspace=workspace, attempts_dir=attempts_dir,
         write_olean=False)
     if not gate.ok:
+        from ..state import failures as _failures
+        reason = str(gate.failure_reason or "")
+        if _failures.is_infra(reason):
+            # The gate never got to ask the kernel anything — see
+            # `infra_reason`. Its own third arm exists for exactly this
+            # (08-12), and folding it into teaching here undid that.
+            return DisproofVerdict(
+                False, f"the probe unit could not be judged ({reason}: "
+                       f"{(gate.detail or '')[:400]})", reason)
         return DisproofVerdict(False, teaching(
             locked_signature,
             f"the probe unit did not certify "

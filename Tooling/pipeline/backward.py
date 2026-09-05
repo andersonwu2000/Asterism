@@ -1142,6 +1142,12 @@ def _backward_parse_and_commit(
                           f"brick did not land ({exc}) — recorded degraded",
                           flush=True)
                 return _abort("agent_infeasible", verdict.detail, leading)
+            # A probe nothing could judge is not a submission that
+            # failed: abort on the INFRA reason so the goal takes no
+            # attempt and the dispatcher cools the channel, exactly as
+            # every other infra road here does.
+            if verdict.infra_reason:
+                return _abort(verdict.infra_reason, verdict.detail, leading)
             return _abort("agent_declined", verdict.detail, leading)
         if decline == DECLINE_UNPROVABLE:
             # A bare falsity CLAIM never terminates a goal any more

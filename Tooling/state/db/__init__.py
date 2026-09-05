@@ -125,6 +125,8 @@ from .strategies import (
     maybe_enqueue_inject_batch_done,
     reconcile_settled_inject_outcomes,
     reconcile_spent_theorize_outcomes,
+    decision_infra_deaths,
+    record_decision_infra_death,
     delete_strategy,
     strategies_ready_for_verify,
 )

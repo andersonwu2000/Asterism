@@ -301,6 +301,32 @@ def reconcile_settled_inject_outcomes(
     return resolved
 
 
+def decision_infra_deaths(conn: sqlite3.Connection,
+                          decision_id: int) -> int:
+    """How many INFRA deaths the worker answering this decision has
+    already cost it."""
+    row = conn.execute(
+        "SELECT infra_deaths FROM strategist_decisions WHERE id = ?",
+        (int(decision_id),)).fetchone()
+    return int(row["infra_deaths"]) if row is not None else 0
+
+
+def record_decision_infra_death(conn: sqlite3.Connection,
+                                decision_id: int) -> int:
+    """Charge one infra death to this decision; return the new total.
+
+    `cascade_one` is the ONE caller, and that is what makes the count
+    honest: it sees every worker ending exactly once, a normal return
+    and a thrown exception alike. A pipeline counting its own deaths
+    would miss the second kind and double the first."""
+    conn.execute(
+        "UPDATE strategist_decisions"
+        " SET infra_deaths = infra_deaths + 1, updated_at = ?"
+        " WHERE id = ?", (now(), int(decision_id)))
+    conn.commit()
+    return decision_infra_deaths(conn, decision_id)
+
+
 def reconcile_spent_theorize_outcomes(conn: sqlite3.Connection, *,
                                       scope: "str | None" = None) -> int:
     """Settle every `Theorize` whose GROUP has left — the complement of

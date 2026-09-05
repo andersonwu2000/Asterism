@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 
+from ..adversary import INFRA_RETRY_BACKOFF_SEC, INFRA_SPAWN_RETRIES
 from .verdict import (REPORT_BASENAME, VERDICT_BASENAME, VERDICT_TRIES,
                       describe_verdict_shape, keep_rejected_verdict,
                       parse_theory_verdict, write_rubric)
@@ -165,7 +167,7 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
            workspace: Path, problem: str, group_id: "int | None",
            objective: str, situation: str, report_body: str,
            dialogue: "list[dict]", pipeline_id: str,
-           ) -> "tuple[dict | None, str, int]":
+           quota_park=None) -> "tuple[dict | None, str, int]":
     """One review round: fresh reviewer, projection-isolated.
 
     Returns (verdict, err, rc): rc != 0 → provider failure; rc == 0 with
@@ -201,22 +203,52 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
                                        seat="theory_reviewer",
                                        problem=problem)
     last_err = ""
+    infra_tries = 0
+    spawn_kw = dict(
+        kind="theory_reviewer", prompt_path=prompt_path,
+        problem_dir=proj, attempts_dir=proj, timeout_sec=timeout_sec,
+        mcp_config_path=tools_cfg,
+        # Read-only, in place — the same grant the batch judge has, and
+        # for the same reason: the landed proofs and the Project's
+        # documents are ground truth, not the author's narrative, so
+        # reading them widens no independence boundary.
+        extra_read_dirs=(proofs_dir, papers_dir),
+        # The projection breaks the standard attempts layout; attribute
+        # the cost explicitly or the spawn_usage row is silently dropped
+        # (the invisible-judge class).
+        usage_workspace=workspace, usage_problem=problem,
+        usage_pipeline_id=pipeline_id)
+
+    def _spawn() -> int:
+        """The reviewer, with the PROVIDER's own failures absorbed.
+
+        An infra rc here costs the AUTHOR's document: the round hands rc
+        back, the wake fails, and the whole run is re-authored from
+        cold. Same budget and the same park the batch judge gets
+        (`adversary.review`) — a confirmed quota window is slept to, a
+        blind one buys two re-spawns."""
+        nonlocal infra_tries
+        from ...state import failures as _failures
+        from . import _rc_reason
+        while True:
+            rc = agent.spawn_llm(session_id=str(uuid.uuid4()), **spawn_kw)
+            if rc == 0 or not _failures.is_infra(
+                    _rc_reason(rc, "theory_reviewer", proj)):
+                return rc
+            if quota_park is not None and quota_park(
+                    f"theory review r{round_no}"):
+                continue
+            if infra_tries >= INFRA_SPAWN_RETRIES:
+                return rc
+            infra_tries += 1
+            print(f"[theorist] review r{round_no}: spawn rc={rc} (infra) "
+                  f"— retry {infra_tries}/{INFRA_SPAWN_RETRIES} in "
+                  f"{INFRA_RETRY_BACKOFF_SEC:.0f}s; the document stays "
+                  f"alive", flush=True)
+            time.sleep(INFRA_RETRY_BACKOFF_SEC)
+
     for attempt in range(VERDICT_TRIES):
-        rc = agent.spawn_llm(
-            kind="theory_reviewer", prompt_path=prompt_path,
-            problem_dir=proj, attempts_dir=proj,
-            session_id=str(uuid.uuid4()), timeout_sec=timeout_sec,
-            mcp_config_path=tools_cfg,
-            # Read-only, in place — the same grant the batch judge has,
-            # and for the same reason: the landed proofs and the
-            # Project's documents are ground truth, not the author's
-            # narrative, so reading them widens no independence boundary.
-            extra_read_dirs=(proofs_dir, papers_dir),
-            # The projection breaks the standard attempts layout;
-            # attribute the cost explicitly or the spawn_usage row is
-            # silently dropped (the invisible-judge class).
-            usage_workspace=workspace, usage_problem=problem,
-            usage_pipeline_id=pipeline_id)
+        rc = _spawn()
         if rc != 0:
             return None, "", rc
         vpath = proj / VERDICT_BASENAME

@@ -298,6 +298,71 @@ def test_verify_marks_a_non_goal_name_instead_of_presenting_it_bare(tmp_path):
     assert "never import it as a sibling proof file" in section
 
 
+def _presearch_env(tmp_path, monkeypatch, spawn):
+    """`_ensure` with its spawn scripted and its waits made free."""
+    from pathlib import Path
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline import agent as agent_mod
+    import Tooling.pipeline as pipeline_pkg
+    monkeypatch.setattr(_presearch, "_presearch_enabled", lambda ws: True)
+    monkeypatch.setattr(_presearch, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    monkeypatch.setattr(agent_mod, "spawn_llm", spawn)
+    monkeypatch.setattr(pipeline_pkg, "write_tools_mcp_config",
+                        lambda *a, **k: None)
+    pdir = tmp_path / "Problems" / "Logic" / "t"
+    (pdir / "proofs").mkdir(parents=True)
+    attempts = pdir / ".att"
+    attempts.mkdir()
+    prompts = Path(_presearch.__file__).resolve().parents[1] / "prompts"
+    cache = pdir / "cache.md"
+    return cache, (lambda: _presearch._ensure(
+        cache=cache, label="t", statement="True", exclude_slug="",
+        problem="Logic.t", workspace=tmp_path, problem_dir=pdir,
+        attempts_dir=attempts, prompt_dir=prompts))
+
+
+def test_a_quota_window_is_waited_out_not_built_around(tmp_path, monkeypatch):
+    """A quota window is not a reason to build a WORSE brick (owner
+    ruling 2026-09-06). Any rc used to mean "this node's brick proceeds
+    without candidates", and the presearch seat can sit on a different
+    provider from the prover's — so the search could be quota-dead while
+    the work turn was perfectly healthy, and the brick was built blind."""
+    import json
+    calls = {"n": 0}
+
+    def spawn(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 126
+        (kw["attempts_dir"] / "_presearch.json").write_text(
+            json.dumps({"mathlib": []}), encoding="utf-8")
+        return 0
+
+    cache, run = _presearch_env(tmp_path, monkeypatch, spawn)
+    assert run() == cache
+    assert calls["n"] == 2
+    assert cache.is_file()
+
+
+def test_the_presearch_infra_budget_is_bounded(tmp_path, monkeypatch, capsys):
+    """Bounded, and the death line NAMES the cause: the search is
+    best-effort, so a provider broken for good must not hold the brick
+    that is waiting on it."""
+    calls = {"n": 0}
+
+    def spawn(**kw):
+        calls["n"] += 1
+        return 126
+
+    cache, run = _presearch_env(tmp_path, monkeypatch, spawn)
+    assert run() is None
+    assert calls["n"] == _presearch.INFRA_SPAWN_RETRIES + 1
+    assert not cache.exists()
+    out = capsys.readouterr().out
+    assert "[presearch-death]" in out and "quota_exhausted" in out
+
+
 def test_cold_start_preflag_renders_only_for_fresh_problems(tmp_path, monkeypatch):
     """3 reports in the first Oracle hour (2026-08-24): a fresh problem
     has no proofs/ and no TREE.md, so the prompt's source-1 grep is dead

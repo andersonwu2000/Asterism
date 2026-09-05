@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from ..state import db
+from ..state import db, failures as _failures
 
 LIBRARIAN_MAX_CHAIN_RETRIES = 2
 
@@ -143,6 +143,17 @@ def _advance_librarian_chain(
         print(f"[librarian] {target_id.split(chr(31))[0]}: unit busy "
               f"(same-path migrate in flight) — will retry, not counted",
               flush=True)
+        return
+    if _failures.is_infra(reason):
+        # The same law, one class wider (owner ruling 2026-09-06): the cap
+        # is a budget for the UNIT's own failures, and a quota window or a
+        # dead transport is not one of them. Three of these used to STALL a
+        # unit for good — a persisted strike each — and `_harvest_
+        # outstanding` then lets the daemon exit on a chain nobody finished.
+        # Registry-driven, like every other infra branch: a reason minted
+        # later cannot go on being charged here by omission.
+        print(f"[librarian] {target_id.split(chr(31))[0]}: unit died on "
+              f"{reason} (infra) — will retry, not counted", flush=True)
         return
     n = fail_counts.get(target_id, 0) + 1
     fail_counts[target_id] = n
