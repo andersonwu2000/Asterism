@@ -2,7 +2,7 @@
 
 A dev-mode channel for the framework developer to hear, from the agents
 that worked inside the framework, what to improve. Two entry kinds land
-in ONE file (`docs/internal/agent_feedback.md`, gitignored):
+in ONE file (`.asterism/agent_feedback.md`, gitignored):
 
   1. Survivor self-report — an agent that ran to a resumable terminal
      writes ONE sentence (friction / suggestion / critique) into a scratch
@@ -24,8 +24,9 @@ sandbox scratch; the framework serializes the appends).
 
 Off by default. Enable with `feedback.enabled: true` in Asterism.yaml (or
 `ASTERISM_FEEDBACK_ENABLED=true`). The output file lives under the
-gitignored `docs/internal/`, so a shared framework checkout neither has it
-nor triggers it.
+gitignored `.asterism/` runtime-state tree, so a shared framework checkout
+neither has it nor triggers it, and `envelope.PRIVATE_READ_SUBTREES`
+already denies every spawn read access to it.
 """
 from __future__ import annotations
 
@@ -34,7 +35,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-_FEEDBACK_REL = "docs/internal/agent_feedback.md"
+#: Owner ruling 2026-09-06: the private docs tree moved to its own
+#: repository, so production must never write into `docs/internal/`. This
+#: sink is runtime state, so it lives with the rest of it under
+#: `.asterism/` — gitignored, and already a spawn read-deny root.
+_FEEDBACK_REL = ".asterism/agent_feedback.md"
 _SCRATCH_FILENAME = "_agent_feedback.md"
 
 # Standalone framework-feedback questionnaire. Rendered by `attempt_feedback`

@@ -5,7 +5,11 @@ import pytest
 
 from Tooling.pipeline import _feedback
 
-_OUT = "docs/internal/agent_feedback.md"
+# Owner ruling 2026-09-06: the private docs tree moved out of this repo, so
+# production must never write into `docs/internal/`. The sink is runtime
+# state — it belongs in `.asterism/` with the rest of it (already gitignored,
+# and already a `PRIVATE_READ_SUBTREES` deny-root, so no spawn can read it).
+_OUT = ".asterism/agent_feedback.md"
 
 
 @pytest.fixture

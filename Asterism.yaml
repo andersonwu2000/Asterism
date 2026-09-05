@@ -294,12 +294,13 @@ librarian:
 
 # Developer-only agent framework-feedback questionnaire. Off by default.
 # When on: survivor agents append one sentence (friction / suggestion /
-# critique) to docs/internal/agent_feedback.md (piggybacks the reflection
+# critique) to .asterism/agent_feedback.md (piggybacks the reflection
 # spawn — no extra spawn), and the framework writes a death-cause line for
 # agents that died without a resumable session. The output file is under the
-# gitignored docs/internal/, so a shared checkout neither has it nor triggers
-# it. Survivor reports require reflection on (lessons.reflection_enabled,
-# default on); death-cause writes are independent.
+# gitignored .asterism/ runtime-state tree, so a shared checkout neither has
+# it nor triggers it. Survivor reports require reflection on
+# (lessons.reflection_enabled, default on); death-cause writes are
+# independent.
 feedback:
   enabled: true                # re-enabled for the Formalizer e2e acceptance (user 2026-07-29); the ~15-30s questionnaire resume per spawn is acceptable in dev runs
 
