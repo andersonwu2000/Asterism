@@ -210,6 +210,37 @@ def test_a_refused_documents_name_says_it_was_refused(
     assert name.endswith("_the_unit_imbalance_erasure.md")
 
 
+def test_a_second_document_in_the_same_minute_does_not_overwrite_the_first(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The name is group + minute + slug, and none of the three is
+    unique. Two wakes on one wall write the SAME title — the author is
+    re-asked the same objective — so a second landing inside the same
+    minute used to overwrite the first silently, and both rows then
+    pointed at one file.
+
+    That was survivable while only the accepted road landed (one
+    document per wall, hours apart). It is not now: every run lands, and
+    the record the 2026-09-06 ruling exists to keep is exactly the one
+    that would be destroyed."""
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did, pipeline_id="th-1")
+
+    did2 = _theorize(conn, workspace)
+    _run(conn, workspace, pintent, did2, pipeline_id="th-2")
+
+    paths = [r[0] for r in conn.execute(
+        "SELECT path FROM theory_documents ORDER BY id")]
+    assert len(paths) == 2 and len(set(paths)) == 2, paths
+    for p, pid in zip(paths, ("th-1", "th-2")):
+        assert (workspace / p).is_file()
+        assert f"pipeline: {pid}" in (workspace / p).read_text(
+            encoding="utf-8")
+
+
 def test_the_slug_falls_back_to_the_abstracts_first_sentence(
 ) -> None:
     """A document with no `# ` line is still findable: the Abstract's
