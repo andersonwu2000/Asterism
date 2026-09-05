@@ -182,6 +182,32 @@ def test_the_landed_name_carries_group_minute_and_title(
         "SELECT path FROM theory_documents").fetchone()[0]).name
     assert name.startswith(f"g{gid}_")
     assert name.endswith("_the_unit_imbalance_erasure.md")
+    assert "rejected" not in name
+
+
+def test_a_refused_documents_name_says_it_was_refused(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner addendum 2026-09-06: a document kept after the rounds were
+    argued out must be tellable apart from an accepted one by its NAME.
+
+    The two now sit in one flat directory, and every surface that offers
+    a `_docs/agent/` file by path — a citation in a later document, a
+    `grep` of the shelf, the reviewer's read-only grant — hands over the
+    name before anything can read the header. `rejected` rides between
+    the minute and the slug, so the group/minute ordering is untouched
+    and the slug still ends the name."""
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+    name = Path(conn.execute(
+        "SELECT path FROM theory_documents").fetchone()[0]).name
+    assert name.startswith(f"g{gid}_")
+    assert "_rejected_" in name
+    assert name.endswith("_the_unit_imbalance_erasure.md")
 
 
 def test_the_slug_falls_back_to_the_abstracts_first_sentence(
