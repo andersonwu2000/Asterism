@@ -257,3 +257,148 @@ def no_window_creationflags() -> int:
         return 0
     import subprocess
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+# ---------------------------------------------------------------------------
+# the protocol pipes, taken off the inheritance path
+# ---------------------------------------------------------------------------
+
+#: Whatever the fence had to keep alive for the process's lifetime — the
+#: null-device handle Windows now calls STD_INPUT, and (on POSIX) the
+#: file objects the transport was moved onto. Closing any of it would
+#: hand the next child the pipe back.
+_fence_keepalive: "list" = []
+_fenced = False
+
+_STD_INPUT_HANDLE = -10
+_STD_OUTPUT_HANDLE = -11
+_STD_ERROR_HANDLE = -12
+_HANDLE_FLAG_INHERIT = 0x00000001
+
+
+def fence_std_handles_from_children() -> bool:
+    """Stop this process's OWN stdin/stdout being what a child inherits.
+
+    For a stdio JSON-RPC server (`knowledge/mcp_tools`) those two pipes
+    are the protocol, and a child that inherits either is a bug with two
+    faces:
+
+      * stdout — anything the child prints lands in the middle of a
+        JSON-RPC frame and the client drops the connection. The module
+        docstring has said "nothing may be written to stdout" since the
+        server shipped; a docstring binds the code we write, not the
+        `perl` three levels down a TeX toolchain.
+      * stdin — and this one does not need the child to read anything at
+        all. MEASURED 2026-09-06 on win32: `latexmk.EXE` spawned with
+        stdin inherited was created, loaded 15 modules, and then parked
+        its main thread in an Executive wait for the whole 300 s time
+        box without executing a line — no `main.log`, no `pdflatex`. It
+        woke the instant the parent died. Windows serialises every
+        operation on a synchronous file object, so the child's own CRT
+        start-up (`GetFileType` on its std handles) queues behind the
+        blocking `readline` that `mcp.server.stdio` leaves pending on
+        that pipe for the life of the server. Nothing in the child's
+        code is involved and no timeout of the child's can help.
+
+    2026-08-11 measured the same wall from the other side ("no
+    subprocess started from this stdio server ever runs"), moved
+    `compute` to the gateway, and wrote the reason down as a comment.
+    `tex_check` shipped a spawn from here on 2026-09-06 and cost the
+    Assistant two dead turns. So this is a property of the PROCESS: a
+    tool that redirects nothing is correct, and the next tool's author
+    does not have to know any of the above.
+
+    After it, `Popen(stdin=None)` gives the child the null device and
+    `Popen(stdout=None)` gives it this process's stderr — where a stray
+    line is a log entry instead of a protocol violation. `sys.stdin` and
+    `sys.stdout` keep reading and writing the real pipes, so the
+    transport is untouched.
+
+    Idempotent; soft — False where the OS refuses, and callers that care
+    keep passing `stdin=subprocess.DEVNULL` explicitly.
+    """
+    global _fenced
+    if _fenced:
+        return True
+    try:
+        if sys.platform == "win32":
+            _fenced = _fence_win32()
+        else:
+            _fenced = _fence_posix()
+    except Exception:  # noqa: BLE001 — a fence that fails is not fatal
+        return False
+    return _fenced
+
+
+def _fence_win32() -> bool:
+    """`SetStdHandle` writes the PEB's own copy, which is what
+    `subprocess` reads (`_get_handles`: `stdin is None` →
+    `GetStdHandle(STD_INPUT_HANDLE)`) and what `CreateProcess` copies
+    into the child. It does NOT touch the CRT's fd table, so fd 0/1 —
+    and therefore `sys.stdin`/`sys.stdout` — still reach the client."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetStdHandle.restype = wintypes.HANDLE
+    k32.GetStdHandle.argtypes = [wintypes.DWORD]
+    k32.SetStdHandle.restype = wintypes.BOOL
+    k32.SetStdHandle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+    k32.SetHandleInformation.restype = wintypes.BOOL
+    k32.SetHandleInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                         wintypes.DWORD]
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD,
+                                wintypes.HANDLE]
+    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ|WRITE, OPEN_EXISTING
+    nul = k32.CreateFileW(r"\.\NUL", 0xC0000000, 0x3, None, 3, 0, None)
+    if not nul or nul == wintypes.HANDLE(-1).value:
+        return False
+    # inheritable, or `CreateProcess` hands the child a closed slot
+    # instead of the null device and `os.read(0, …)` raises there
+    k32.SetHandleInformation(nul, _HANDLE_FLAG_INHERIT, _HANDLE_FLAG_INHERIT)
+    err = k32.GetStdHandle(_STD_ERROR_HANDLE)
+    if not k32.SetStdHandle(_STD_INPUT_HANDLE, nul):
+        return False
+    _fence_keepalive.append(nul)
+    if err:
+        k32.SetStdHandle(_STD_OUTPUT_HANDLE, err)
+    return True
+
+
+def _fence_posix() -> bool:
+    """No PEB here: a child inherits fd 0 and fd 1 themselves, so the
+    transport has to MOVE. The pipes are duplicated onto private,
+    non-inheritable descriptors, `sys.stdin`/`sys.stdout` are rebound to
+    those, and fd 0/1 become the null device and this process's stderr."""
+    import io
+    import os
+
+    kept_in, kept_out = sys.stdin, sys.stdout
+    try:
+        dup_in = os.dup(0)
+        dup_out = os.dup(1)
+    except OSError:
+        return False
+    os.set_inheritable(dup_in, False)
+    os.set_inheritable(dup_out, False)
+    try:
+        kept_out.flush()
+    except (OSError, ValueError):
+        pass
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    os.dup2(2, 1)
+    sys.stdin = io.TextIOWrapper(
+        io.BufferedReader(io.FileIO(dup_in, "rb")),
+        encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(
+        io.BufferedWriter(io.FileIO(dup_out, "wb")),
+        encoding="utf-8", errors="replace", line_buffering=True)
+    # the ORIGINALS still own fd 0/1; dropping them would close what the
+    # null device and stderr now sit on
+    _fence_keepalive.extend((kept_in, kept_out, sys.stdin, sys.stdout))
+    return True

@@ -1081,6 +1081,14 @@ def _workspace_root():
 
 
 def main() -> None:
+    # The two pipes below are the protocol, and until this call they are
+    # also what every child of this process inherits. `tex_check` spawns
+    # a TeX toolchain; a spawn that inherits stdin does not run AT ALL on
+    # win32 (2026-09-06, measured — see `process_group`), and one that
+    # inherits stdout writes into the middle of a JSON-RPC frame. Fenced
+    # here, once, so no tool below has to know that.
+    from ..core import process_group
+    process_group.fence_std_handles_from_children()
     mcp.run()
 
 

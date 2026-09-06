@@ -467,6 +467,95 @@ def _page_context(workspace: Path, page: "dict | None", *,
 # spawn plumbing (dialects live in llm/explainer.py)
 
 
+#: How much of the seat's stderr the record quotes back. The FILE keeps
+#: all of it; this is what fits in one line of a note.
+_ERR_TAIL_LINES = 40
+_ERR_TAIL_CHARS = 400
+
+
+class _SeatLog:
+    """The seat's stderr — drained as it arrives, kept on disk.
+
+    2026-09-06 15:19Z: the Assistant called `tex_check`, the claude CLI
+    went away mid-call, and nothing on this machine said why. Its stderr
+    — where the CLI reports an MCP server that died, a tool that never
+    returned, a model that refused — was a pipe read ONCE at EOF and
+    clipped to 400 characters, so a turn that ended without reaching
+    that line left no trace at all.
+
+    Two things are wrong with reading a pipe only at the end, and this
+    fixes both: a spawn whose stderr fills 64 kB of pipe buffer BLOCKS
+    until someone reads it, and a death nobody can read afterwards
+    repeats. The file is named for the conversation, so the next one is
+    `.asterism/logs/explainer_<session>.log` and the transcript beside
+    it names the same turn.
+    """
+
+    def __init__(self, workspace: Path, session_id: str) -> None:
+        self._path = (workspace / ".asterism" / "logs"
+                      / f"explainer_{session_id}.log")
+        self._tail: "list[str]" = []
+        self._lock = threading.Lock()
+        self._thread: "threading.Thread | None" = None
+
+    def drain(self, proc: "subprocess.Popen", *, provider: str,
+              model: str) -> None:
+        """Start reading `proc.stderr`. One spawn at a time — a cold
+        retry replaces the first one's reader, and both append to the
+        same file because they are the same question."""
+        if proc.stderr is None:
+            return
+        self.settle()
+        self._thread = threading.Thread(
+            target=self._pump, args=(proc, provider, model),
+            daemon=True, name="chat-stderr")
+        self._thread.start()
+
+    def _pump(self, proc: "subprocess.Popen", provider: str,
+              model: str) -> None:
+        import datetime as _dt
+
+        fh = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fh = self._path.open("a", encoding="utf-8", errors="replace")
+            stamp = _dt.datetime.now(_dt.timezone.utc).isoformat(
+                timespec="seconds")
+            fh.write(f"--- {stamp} {provider} {model} pid={proc.pid}\n")
+            fh.flush()
+        except OSError:
+            fh = None          # a log that cannot be opened is not fatal
+        try:
+            for line in proc.stderr:      # type: ignore[union-attr]
+                with self._lock:
+                    self._tail.append(line.rstrip("\r\n"))
+                    del self._tail[:-_ERR_TAIL_LINES]
+                if fh is not None:
+                    try:
+                        fh.write(line if line.endswith("\n") else line + "\n")
+                        fh.flush()
+                    except OSError:
+                        fh = None
+        except (OSError, ValueError):
+            pass               # the pipe went with the process
+        finally:
+            if fh is not None:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+
+    def settle(self, timeout: float = 2.0) -> str:
+        """Wait for the reader to reach EOF, then the tail it collected.
+        Bounded: a CLI that is still talking must not hold the turn's
+        record open."""
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout)
+        with self._lock:
+            return "\n".join(self._tail)[-_ERR_TAIL_CHARS:]
+
+
 class _ChatState:
     """The one slot.
 
@@ -805,17 +894,25 @@ def register(app: FastAPI, workspace: Path) -> None:
             state.lock.release()
             raise
 
+        seat_log = _SeatLog(workspace, session_id)
+
         def _spawn(t: explainer.Turn, text: str) -> subprocess.Popen:
             from ..core.process_group import no_window_creationflags
             argv, env = backend.launch(
                 workspace=workspace, system=_SYSTEM_PROMPT, prompt=text,
                 model=model, turn=t, timeout_sec=idle_sec)
-            return subprocess.Popen(
+            proc = subprocess.Popen(
                 argv, env=env, cwd=str(workspace),
+                # never this server's own stdin: a CLI that inherits it
+                # competes with the panel for the socket, and on win32 a
+                # detached serve has no console to give away
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
             )
+            seat_log.drain(proc, provider=provider, model=model)
+            return proc
 
         #: The answer being assembled, so the `finally` below can write
         #: it down whatever ends the stream (§2: partial answers are
@@ -881,12 +978,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                     last_ping = last_event
                     if item is None:
                         rc = proc.wait()
-                        err = ""
-                        if proc.stderr is not None:
-                            try:
-                                err = (proc.stderr.read() or "")[-400:]
-                            except (OSError, ValueError):
-                                err = ""
+                        err = seat_log.settle()
                         if rc != 0 and not got_any and turn.resume:
                             # a dead resume handle (aborted turn, swept
                             # session, a conversation id the CLI no
@@ -960,6 +1052,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                 # turn it was waiting for.
                 if proc is not None and proc.poll() is None:
                     proc.kill()
+                seat_log.settle()
                 if not outcome["done"] and outcome["note"] is None:
                     outcome["note"] = ("the stream ended before the answer "
                                        "did")

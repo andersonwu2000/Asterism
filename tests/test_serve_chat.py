@@ -431,6 +431,7 @@ class _FakePopen:
         self.stdout = io.StringIO("\n".join(_ACTIVE_STREAM["lines"]) + "\n")
         self.stderr = io.StringIO("")
         self.killed = False
+        self.pid = 4242          # a spawn has one, and the seat log says it
 
     def wait(self, timeout=None) -> int:  # noqa: ARG002
         return 0
@@ -1266,3 +1267,48 @@ def test_the_tex_box_fits_inside_the_turn_that_waits_for_it() -> None:
 
     assert tex_engine.TIMEOUT_SEC + 120 <= _chat._IDLE_SEC_DEFAULT
     assert tex_engine.TIMEOUT_SEC + 300 <= MCP_TOOL_TIMEOUT_SEC
+
+
+# -- the death that left no record ----------------------------------------
+
+
+def test_the_explainers_own_words_land_in_a_log_named_for_the_session(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-06 15:19Z: the Assistant called `tex_check`, the CLI went
+    away, and NOTHING on this machine said why — `serve_detached.log`
+    was empty, the seat's stderr was a pipe read once at EOF and clipped
+    to 400 characters, and the MCP server's own diagnostics went into it
+    and out of the world.
+
+    A turn that dies has to leave a file behind. The seat's stderr is
+    drained as it arrives (a pipe nobody reads is also a spawn that
+    blocks when it fills) into `.asterism/logs/explainer_<session>.log`.
+    """
+    said = ["MCP server asterism_tools: connection closed",
+            "Error: tool call never returned"]
+
+    class _Talks(_FakePopen):
+        def __init__(self, argv, **kw) -> None:
+            super().__init__(argv, **kw)
+            self.stderr = io.StringIO("\n".join(said) + "\n")
+
+    seen: "list[_Talks]" = []
+    monkeypatch.setattr(_chat.subprocess, "Popen",
+                        lambda argv, **kw: seen.append(
+                            _Talks(argv, **kw)) or seen[-1])
+    monkeypatch.setattr(explainer.CLAUDE, "executable",
+                        lambda: "C:/claude.exe")
+    monkeypatch.setitem(_ACTIVE_STREAM, "lines", _STREAM)
+
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    _ask(c, session=sid)
+
+    log = workspace / ".asterism" / "logs" / f"explainer_{sid}.log"
+    assert log.is_file(), sorted(
+        p.name for p in (workspace / ".asterism" / "logs").glob("*")) \
+        if (workspace / ".asterism" / "logs").is_dir() else "no logs dir"
+    text = log.read_text(encoding="utf-8")
+    for line in said:
+        assert line in text, text

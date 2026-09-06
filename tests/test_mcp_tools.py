@@ -1029,3 +1029,176 @@ def test_tex_check_hands_back_what_the_log_already_said_on_timeout(
     assert "user/paper.tex:12: Undefined control sequence." in out
     assert "300s" in out
     assert "main.tex" not in out
+
+
+# ---------------------------------------------------------------------
+# the protocol pipe is not a channel a build may inherit
+# (incident 2026-09-06 13:44Z and 15:19Z; first measured 2026-08-11)
+# ---------------------------------------------------------------------
+
+#: A parent that IS this server: its stdin is the JSON-RPC pipe, and a
+#: blocking read is pending on it for the whole life of the process
+#: (`mcp.server.stdio` wraps `sys.stdin` and its reader task never
+#: returns). It then runs the engine and reports what the child saw.
+#:
+#: `mode` picks what is under test: `engine` drives `tex_engine`, `bare`
+#: drives a plain `subprocess.run` with nothing redirected at all — the
+#: shape every future tool will reach for.
+_SERVER_SHAPED_PARENT = r"""
+import os, pathlib, subprocess, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+mode, work = sys.argv[2], pathlib.Path(sys.argv[3])
+
+# the reader that never returns — this is what makes the handle hot
+threading.Thread(target=sys.stdin.buffer.readline, daemon=True).start()
+time.sleep(0.3)
+
+if mode == "fence":
+    from Tooling.core import process_group
+    process_group.fence_std_handles_from_children()
+
+child = work / "child.py"
+child.write_text(
+    "import os, pathlib, sys\n"
+    "b = os.read(0, 1)\n"
+    "pathlib.Path(sys.argv[1]).write_bytes(b or b'EOF')\n",
+    encoding="utf-8")
+saw = work / "saw.txt"
+
+if mode == "engine":
+    from Tooling.core import tex_engine
+    # tectonic's shape is [exe, main.tex]: python IS the engine and the
+    # source IS the script it runs
+    src = ("import os, pathlib\n"
+           "b = os.read(0, 1)\n"
+           f"pathlib.Path(r'{saw}').write_bytes(b or b'EOF')\n")
+    tex_engine.compile_into(work / "build", src, work, "tectonic",
+                            sys.executable, timeout_sec=8)
+else:
+    try:
+        subprocess.run([sys.executable, str(child), str(saw)], timeout=8)
+    except subprocess.TimeoutExpired:
+        pass
+print("PARENT-DONE", flush=True)
+"""
+
+
+def _run_server_shaped(tmp_path: Path, mode: str) -> "str | None":
+    """Run `_SERVER_SHAPED_PARENT` with a pipe on its stdin that nobody
+    ever writes to, and hand back what the child read from fd 0 (None =
+    the child never got that far)."""
+    import subprocess as sp
+    import sys
+
+    import threading
+
+    work = tmp_path / mode
+    work.mkdir(parents=True, exist_ok=True)
+    root = str(Path(__file__).resolve().parents[1])
+    proc = sp.Popen([sys.executable, "-c", _SERVER_SHAPED_PARENT, root,
+                     mode, str(work)],
+                    stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE,
+                    text=True, encoding="utf-8", errors="replace")
+    # NEVER close that stdin. `communicate()` would, and the pending read
+    # it releases is the whole subject of the test — closing it here is
+    # how the first draft of this file passed against the bug.
+    done = threading.Event()
+    threading.Thread(target=lambda: (proc.stdout.readline(), done.set()),
+                     daemon=True).start()
+    done.wait(60)
+    proc.kill()
+    saw = work / "saw.txt"
+    return saw.read_text(encoding="utf-8") if saw.is_file() else None
+
+
+def test_the_engine_never_inherits_the_protocol_pipe(tmp_path: Path) -> None:
+    """A build started from the stdio server must not be handed the
+    server's own stdin.
+
+    Measured 2026-09-06 on this box: `latexmk.EXE` spawned with stdin
+    inherited was CREATED and then never ran — 15 modules loaded, the
+    main thread parked in an Executive wait, no `main.log`, for the
+    whole 300 s box; it woke the instant the server's pending read went
+    away. Windows serialises every operation on a synchronous file
+    object, so the child's own CRT start-up (`GetFileType` on its std
+    handles) queues behind the reader that `mcp.server.stdio` leaves
+    pending on that pipe forever. On POSIX the same inheritance is a
+    quieter bug with the same shape: the child reads the JSON-RPC
+    stream.
+
+    The invariant is the same on both and does not depend on either
+    mechanism: what a build reads on fd 0 is the null device.
+    """
+    assert _run_server_shaped(tmp_path, "engine") == "EOF"
+
+
+def test_a_plain_spawn_from_the_server_inherits_nothing(
+    tmp_path: Path,
+) -> None:
+    """And the next tool does not have to remember.
+
+    2026-08-11 measured that no subprocess started from this server ever
+    ran, moved `compute` to the gateway, and wrote the reason down as a
+    COMMENT. On 2026-09-06 `tex_check` spawned an engine from here and
+    walked into the identical wall. A comment is not a mechanism: the
+    fence belongs to the process, so a spawn that redirects nothing is
+    safe by construction.
+    """
+    assert _run_server_shaped(tmp_path, "fence") == "EOF"
+
+
+def test_a_stale_log_is_not_this_builds_diagnosis(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build directory is reused per document, so yesterday's log is
+    sitting in it. If the engine is stopped before it writes one, the
+    answer must not be the PREVIOUS build's errors.
+
+    Measured 2026-09-06 23:26 local: the Assistant had already fixed
+    line 110, the compile deadlocked and wrote nothing, and `tex_check`
+    answered `user/…tex:110: Environment definition* undefined` off a
+    log 90 minutes old. Being told to fix what one has just fixed is
+    worse than being told nothing.
+    """
+    import shutil
+    import subprocess as sp
+
+    from Tooling.core import tex_engine
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    monkeypatch.setattr(shutil, "which",
+                        lambda n: "/usr/bin/latexmk" if n == "latexmk"
+                        else None)
+
+    class _WritesNothing:
+        """An engine stopped before it opened its log."""
+
+        def __init__(self, cmd, **kw) -> None:
+            self.returncode = None
+            self.pid = 0
+
+        def communicate(self, timeout=None):
+            raise sp.TimeoutExpired("latexmk", timeout or 0)
+
+        def poll(self):
+            return None
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(sp, "Popen", _WritesNothing)
+    monkeypatch.setattr(tex_engine, "_kill_tree", lambda proc: None)
+
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "fixed now")
+    # the build directory `tex_check` will reuse, with the old log in it
+    import hashlib
+    key = hashlib.sha1("Erdos\0user/paper.tex".encode()).hexdigest()[:16]
+    build = assistant_ws / ".asterism" / "tmp" / "tex_check" / key
+    build.mkdir(parents=True, exist_ok=True)
+    (build / f"{tex_engine.JOBNAME}.log").write_text(_BAD_LOG,
+                                                     encoding="utf-8")
+
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
+    assert "Undefined control sequence" not in out, out
+    assert "nothing in its log yet" in out, out

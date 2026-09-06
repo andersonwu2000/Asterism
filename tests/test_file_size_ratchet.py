@@ -732,7 +732,7 @@ _WATERMARKS = {
     "Tooling/serve/data/__init__.py": 200,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/status.py": 220,  # +9 2026-09-03 the board asks the stall predicate about ITS shelf only (one graph walk per problem, 373 of them to label a shelf of two)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/edges.py": 570,  # +8 2026-09-03 the dead-attempt tally is scoped to the problem being read (it built the whole workspace's map to use 12% of it, every poll)  # born 2026-08-28 from the data.py split (B3)
-    "Tooling/serve/data/timeline.py": 1410,  # +10 2026-09-06 a refused theory document lands too (owner ruling): `theory_refused` carries the landed path so the row opens it  # +150 2026-09-04 the theory layer reaches the Timeline: the `Theorize` verb, the wake's two instants and the document's two verdicts (`_theory_events`, kept beside `_ev`/`_LIFE_RANK` — a split would have put one feature's row shape and its ordering rank in two files)  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/timeline.py": 1420,  # +10 2026-09-06 every landing row opens what it landed (`7c3733ac`) — the growth shipped without the bump, so the ratchet was red at HEAD until this line  # +10 2026-09-06 a refused theory document lands too (owner ruling): `theory_refused` carries the landed path so the row opens it  # +150 2026-09-04 the theory layer reaches the Timeline: the `Theorize` verb, the wake's two instants and the document's two verdicts (`_theory_events`, kept beside `_ev`/`_LIFE_RANK` — a split would have put one feature's row shape and its ordering rank in two files)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/verdict.py": 100,  # born 2026-08-29 — one revision's judge verdict
     "Tooling/serve/data/projects.py": 150,  # born 2026-09-02 — the Project cards (HID §1.4)
@@ -795,7 +795,27 @@ _WATERMARKS = {
     # contract with one lifetime; splitting the ending away from the
     # loop that produces it would put the two halves of "how a turn
     # ends" in two files. Conscious bump.
-    "Tooling/serve/chat.py": 1060,
+    # 1060 → 1140 2026-09-06 — `_SeatLog`: the seat's stderr drained as
+    # it arrives into `.asterism/logs/explainer_<session>.log`. The turn
+    # that died mid-`tex_check` left no record anywhere on the machine
+    # because that pipe was read once at EOF and clipped to 400 chars —
+    # and a pipe nobody reads is also a spawn that blocks when it fills.
+    # It lives here because `drain`/`settle` are called at the three
+    # points of the generator's own lifetime (spawn, cold retry, and the
+    # `finally` that writes the transcript). Conscious bump.
+    "Tooling/serve/chat.py": 1140,
+    # 1000 (the default cap) → 1100 2026-09-06 — WHICH MODELS a backend
+    # can run joins install, auth and the rc contract as a thing the
+    # provider declares about itself (`models_argv` / `models` /
+    # `model_series_token`). The console had been keeping that list on
+    # its own side and it rotted exactly as this file's whole premise
+    # predicts: four retired claude tiers offered while the board ran
+    # `claude-opus-5`, and one codex model named out of seven with
+    # nothing ever asking codex at all. This table does not split on
+    # the usual rule — it is ONE answer per provider to "what can you
+    # tell us?", and a second declaration site is the name-keyed copy
+    # the module exists to abolish. Conscious bump.
+    "Tooling/llm/capabilities.py": 1100,
 }
 
 

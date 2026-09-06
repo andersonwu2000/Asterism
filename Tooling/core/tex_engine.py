@@ -189,7 +189,8 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
     else:
         try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=_REAP_GRACE_SEC)
+                           stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=_REAP_GRACE_SEC)
             return
         except (OSError, subprocess.SubprocessError):
             pass
@@ -238,6 +239,16 @@ def _run_boxed(cmd: "list[str]", *, cwd: str, env: "dict[str, str]",
                                 process_group.no_window_creationflags()})
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                # NEVER the caller's own stdin. This runs
+                                # inside the stdio MCP server, where fd 0
+                                # is the JSON-RPC pipe with a blocking
+                                # read pending on it forever; a child
+                                # that inherits it does not start on
+                                # win32 at all (2026-09-06, measured).
+                                # `mcp_tools.main` fences the process
+                                # too — this is the half that is true
+                                # for every caller of this module.
+                                stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True,
                                 encoding="utf-8", errors="replace", **kw)
@@ -275,6 +286,34 @@ class Result:
         self.pdf = pdf
 
 
+def _clear(build: Path) -> None:
+    """Empty the build directory before a run.
+
+    A build directory is REUSED — one per document, keyed on its path —
+    so the previous run's `main.log`, `.aux`, `.fls` and `.fdb_latexmk`
+    are sitting in it. `log_text` reads whatever log is there, and a run
+    that is stopped before it opens its own therefore answers with the
+    LAST one: measured 2026-09-06 23:26 local, `tex_check` reported
+    `:110: Environment definition* undefined` off a log 90 minutes old,
+    against a source whose line 110 the Assistant had already fixed and
+    which compiles in 1.6 s. Being told to fix what one has just fixed
+    is worse than being told nothing.
+
+    latexmk's own `.fdb_latexmk` cache goes with them, and that is the
+    point: a scratch build has to say what THIS source does.
+    """
+    import shutil
+
+    for entry in build.iterdir():
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink()
+        except OSError:
+            pass       # a handle still open on it — the run will overwrite
+
+
 def compile_into(build: Path, source: str, doc_dir: Path, name: str,
                  exe: str, *, timeout_sec: int = TIMEOUT_SEC) -> Result:
     """Write `source` into `build` as `main.tex` and run `name` over it.
@@ -285,11 +324,8 @@ def compile_into(build: Path, source: str, doc_dir: Path, name: str,
     resolve, and reading it is not writing it.
     """
     build.mkdir(parents=True, exist_ok=True)
+    _clear(build)
     pdf = build / f"{JOBNAME}.pdf"
-    try:
-        pdf.unlink()
-    except OSError:
-        pass
     (build / f"{JOBNAME}.tex").write_text(source, encoding="utf-8",
                                           newline="")
     env = {**os.environ}
