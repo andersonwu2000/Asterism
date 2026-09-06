@@ -793,3 +793,61 @@ describe('syncedScrollTop', () => {
     expect(syncedScrollTop({ ...source, scrollTop: 1800 }, target)).toBe(2400)
   })
 })
+
+describe('the split divider — where the reader put it', () => {
+  it('keeps both panes readable, whatever is dragged', async () => {
+    const { SPLIT_MIN, clampSplit } = await import('./docShell')
+    // a pane dragged to nothing is not a layout, it is a lost pane
+    expect(clampSplit(0.5)).toBe(0.5)
+    expect(clampSplit(0)).toBe(SPLIT_MIN)
+    expect(clampSplit(1)).toBe(1 - SPLIT_MIN)
+    expect(clampSplit(-4)).toBe(SPLIT_MIN)
+    // a ratio that is not a number at all leaves the default standing
+    expect(clampSplit(Number.NaN)).toBe(0.5)
+  })
+
+  it('walks the same grammar with keys as with the pointer', async () => {
+    const { SPLIT_MIN, splitStep } = await import('./docShell')
+    expect(splitStep(0.5, 'ArrowRight')).toBeCloseTo(0.52)
+    expect(splitStep(0.5, 'ArrowLeft')).toBeCloseTo(0.48)
+    expect(splitStep(SPLIT_MIN, 'ArrowLeft')).toBe(SPLIT_MIN)
+    expect(splitStep(0.5, 'Home')).toBe(SPLIT_MIN)
+    expect(splitStep(0.5, 'End')).toBe(1 - SPLIT_MIN)
+    // every other key belongs to whoever else wants it
+    expect(splitStep(0.5, 'ArrowUp')).toBeNull()
+    expect(splitStep(0.5, 'a')).toBeNull()
+  })
+
+  it('remembers per viewer, and reads 50/50 when nothing can be stored', async () => {
+    const { SPLIT_KEY, readSplit, writeSplit } = await import('./docShell')
+    const store = new Map<string, string>()
+    const g = globalThis as unknown as { localStorage?: unknown }
+    const had = 'localStorage' in g
+    g.localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    }
+    try {
+      expect(readSplit()).toBe(0.5)
+      writeSplit(0.34)
+      expect(store.get(SPLIT_KEY)).toBe('0.34')
+      expect(readSplit()).toBe(0.34)
+      // a stored value is still bound by the law
+      store.set(SPLIT_KEY, '0.99')
+      expect(readSplit()).toBe(0.8)
+      store.set(SPLIT_KEY, 'wide please')
+      expect(readSplit()).toBe(0.5)
+      // a private window, cleared site data, a browser that refuses:
+      // the page still lays out, it just does not remember
+      g.localStorage = {
+        getItem: () => { throw new Error('denied') },
+        setItem: () => { throw new Error('denied') },
+      }
+      expect(readSplit()).toBe(0.5)
+      expect(() => writeSplit(0.4)).not.toThrow()
+    } finally {
+      if (had) delete g.localStorage
+      else delete g.localStorage
+    }
+  })
+})

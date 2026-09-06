@@ -243,6 +243,78 @@ export function syncedScrollTop(
   return Math.round(ratio * to)
 }
 
+// -- the split's divider -----------------------------------------------------
+
+/*
+ * Where the reader put the line between writing and reading.
+ *
+ * The two panes are not fixed halves: a `.tex` source is long lines and
+ * a `.md` render is a column of prose, and which one wants the room is
+ * the reader's answer, not the mode table's. So the divider moves — by
+ * pointer and by key, one grammar — and the ratio is remembered for
+ * whoever is looking, in their own browser.
+ *
+ * The law lives here rather than in the shell because it is the part
+ * with a right answer, and because the shell is where it would drift
+ * between `.md` and `.tex` (which is what happened to every other pane
+ * decision before `modeFor` collected them).
+ */
+
+/** The smallest share a pane may be squeezed to. A pane dragged to
+ * nothing is not a layout — it is the `source`/`render` tabs, which the
+ * segmented control already offers, reached by accident. */
+export const SPLIT_MIN = 0.2
+
+/** Half and half: the mode table's `even` is still the starting truth,
+ * and it is what a viewer with nothing stored gets. */
+export const SPLIT_DEFAULT = 0.5
+
+/** One key press. Small enough to place a line, large enough that
+ * crossing the pane takes a held key rather than a career. */
+export const SPLIT_NUDGE = 0.02
+
+/** Per viewer, per browser — never per document. A person who wants a
+ * wide editor wants it for the writing, not for one file. */
+export const SPLIT_KEY = 'asterism.docSplit'
+
+/** The ratio, inside the law. Anything unreadable falls back to half —
+ * a stored string from an older build, a NaN out of a zero-width drag. */
+export function clampSplit(ratio: number): number {
+  if (!Number.isFinite(ratio)) return SPLIT_DEFAULT
+  return Math.min(1 - SPLIT_MIN, Math.max(SPLIT_MIN, ratio))
+}
+
+/** Keys walk the same grammar as the pointer (DESIGN.md). Anything this
+ * does not own returns null, so the handler leaves the event alone. */
+export function splitStep(ratio: number, key: string): number | null {
+  if (key === 'ArrowLeft') return clampSplit(ratio - SPLIT_NUDGE)
+  if (key === 'ArrowRight') return clampSplit(ratio + SPLIT_NUDGE)
+  if (key === 'Home') return SPLIT_MIN
+  if (key === 'End') return 1 - SPLIT_MIN
+  return null
+}
+
+/** What this viewer last chose. Every access is guarded: a private
+ * window, cleared site data or a browser set to refuse storage all
+ * throw on the ACCESSOR, and a page that let that through would fail to
+ * lay out for the reason "we could not remember". */
+export function readSplit(): number {
+  try {
+    const v = localStorage.getItem(SPLIT_KEY)
+    return v === null ? SPLIT_DEFAULT : clampSplit(Number(v))
+  } catch {
+    return SPLIT_DEFAULT
+  }
+}
+
+export function writeSplit(ratio: number): void {
+  try {
+    localStorage.setItem(SPLIT_KEY, String(clampSplit(ratio)))
+  } catch {
+    /* the layout is the point; remembering it is the courtesy */
+  }
+}
+
 /** The kinds the console can put in a box. A pdf and an image are
  * shown, not written. */
 export function isTextDoc(path: string): boolean {

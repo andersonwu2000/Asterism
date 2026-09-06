@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { claimLeanSlot, releaseLeanSlot } from '../lib/leanSlot'
 import type { LeanCursor } from '../lib/leanSession'
-import { editable, modeFor, ownerOf, syncedScrollTop } from '../lib/docShell'
+import {
+  SPLIT_MIN,
+  clampSplit,
+  editable,
+  modeFor,
+  ownerOf,
+  readSplit,
+  splitStep,
+  syncedScrollTop,
+  writeSplit,
+} from '../lib/docShell'
 import type { DocPane, DocRef, DocView } from '../lib/docShell'
 import type { TheoryMeta } from '../lib/docShelf'
 import { requestAssistant } from '../lib/focus'
@@ -48,11 +58,83 @@ const lastSegment = (path: string): string => path.split('/').pop() ?? path
 /** The mode table's pane widths, spelt in the one place that draws
  * them. `even` splits the room between writing and reading; the other
  * two hold content with a width of its own (a compiled page, a column
- * of diagnostics) that would only dilute the writing by taking half. */
+ * of diagnostics) that would only dilute the writing by taking half.
+ *
+ * These are the STARTING widths. In a split the reader owns the line
+ * (`Divider` below), and the ratio they set overrides all three — a
+ * `.tex` pdf and a `.md` render want different room on different days,
+ * and the mode table cannot know which day it is. */
 const PANE_WIDTH: Record<DocPane, string> = {
   even: 'flex-1',
   narrow: 'w-[30rem] shrink-0',
   side: 'w-96 shrink-0',
+}
+
+/** The line between writing and reading, and the handle that moves it.
+ *
+ * One implementation for every split — `.md`, `.tex` and Lean's Info
+ * panel are one behaviour, because they are one question ("how much
+ * room does the other half need?") and separate handlers would drift
+ * the way every other per-format pane decision did before `modeFor`.
+ *
+ * Achromatic, and subtractive: at rest it is the same 1px `border-edge`
+ * the pane already had. Under the pointer it takes one ink, and while
+ * it is being dragged it holds that ink — no new colour, no widening of
+ * the layout (the visible thickening happens inside a 9px hit area that
+ * costs the panes nothing).
+ */
+function Divider({
+  ratio,
+  onRatio,
+}: {
+  ratio: number
+  onRatio: (r: number) => void
+}) {
+  const [live, setLive] = useState(false)
+  const pct = Math.round(ratio * 100)
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="resize the panes"
+      aria-valuenow={pct}
+      aria-valuemin={Math.round(SPLIT_MIN * 100)}
+      aria-valuemax={Math.round((1 - SPLIT_MIN) * 100)}
+      tabIndex={0}
+      data-split-handle
+      className="group relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize touch-none focus:outline-none"
+      onPointerDown={(e) => {
+        // the whole gesture belongs to this element, including the part
+        // of it that happens over an iframe or a pdf viewer
+        e.currentTarget.setPointerCapture(e.pointerId)
+        setLive(true)
+      }}
+      onPointerMove={(e) => {
+        if (!live) return
+        const box = e.currentTarget.parentElement?.getBoundingClientRect()
+        if (!box || box.width === 0) return
+        onRatio(clampSplit((e.clientX - box.left) / box.width))
+      }}
+      onPointerUp={(e) => {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+        setLive(false)
+      }}
+      onKeyDown={(e) => {
+        const next = splitStep(ratio, e.key)
+        if (next === null) return
+        e.preventDefault()
+        onRatio(next)
+      }}
+    >
+      {/* the 1px line itself, centred in the hit area */}
+      <span
+        aria-hidden
+        className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+          live ? 'bg-ink-faint' : 'bg-edge group-hover:bg-ink-faint group-focus:bg-ink-faint'
+        }`}
+      />
+    </div>
+  )
 }
 
 /** Where the document sits, said once. The rail already highlights the
@@ -105,6 +187,11 @@ export default function DocShell({
   onKeepMine: () => void
 }) {
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  /* Where this reader put the divider. It survives the document, the
+   * tab and the browser, because it is a fact about the PERSON — how
+   * much room they want for writing — not about the file. */
+  const [ratio, setRatio] = useState(readSplit)
+  useEffect(() => writeSplit(ratio), [ratio])
   /* The render pane follows the writing. One direction only: a render
    * that scrolled the source back would fight the reader's wheel, and
    * the pane a person is IN is the one that decides where both are
@@ -152,6 +239,9 @@ export default function DocShell({
   const hasViews = !isDir && mode.third !== null
   const showLeft = view !== 'render'
   const showRight = view !== 'source'
+  // only a SPLIT has a line to move; one pane alone has the whole room
+  // and the segmented control is how you get back
+  const split = showLeft && showRight
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -258,7 +348,14 @@ export default function DocShell({
             <div
               ref={sourcePane}
               onScroll={mode.scrollSync && showRight ? followScroll : undefined}
+              // the ratio, not a class: it is a continuous value the
+              // reader sets, and Tailwind has no rung for "wherever
+              // they let go". The whole shorthand, because `flex-1`'s
+              // grow:1 would otherwise hand the surplus back and both
+              // panes would settle level again whatever the basis said.
+              style={split ? { flex: `0 0 ${ratio * 100}%` } : undefined}
               className="flex min-w-0 flex-1 flex-col overflow-auto p-4"
+              data-source-pane
             >
               {mode.editor === 'lean' ? (
                 <LeanEditor
@@ -305,11 +402,16 @@ export default function DocShell({
               )}
             </div>
           )}
+          {split && <Divider ratio={ratio} onRatio={setRatio} />}
           {showRight && (
+            // in a split the divider IS the line, and the pane takes
+            // whatever the reader left it — the mode table's starting
+            // width only applies when there is nothing to negotiate
             <div
               className={`flex min-h-0 min-w-0 flex-col ${
-                showLeft ? 'border-l border-edge' : ''
-              } ${PANE_WIDTH[mode.pane]}`}
+                split ? 'flex-1' : PANE_WIDTH[mode.pane]
+              }`}
+              data-render-pane
             >
               {panel === 'render' ? (
                 <ProsePanel text={text} scrollRef={renderPane} />
