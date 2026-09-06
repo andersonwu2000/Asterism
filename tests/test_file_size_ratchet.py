@@ -778,6 +778,15 @@ _WATERMARKS = {
     "Tooling/pipeline/forward.py": 1200,
     "Tooling/lsp/lifecycle.py": 1200,  # +28 2026-09-03 gateway_live_marker/_pid — the gateway's presence as a file, so no reader proves absence with a connect that hangs; 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
     "Tooling/llm/antigravity_cli.py": 1150,
+    # 1000→1100 2026-09-06 — `tex_check`, the Assistant's LaTeX compile.
+    # This file does NOT get split on the usual rule: the tool list IS
+    # the whitelist (`test_server_exposes_exactly_the_intended_tools`),
+    # and a second registration site would be a second answer to "what
+    # may an agent do" — which is the failure mode the whole seat table
+    # exists to prevent. The compile machinery itself went the other way
+    # and moved OUT, to `Tooling/core/tex_engine.py`, shared with
+    # `serve/tex_render.py`. Conscious bump.
+    "Tooling/knowledge/mcp_tools.py": 1100,
 }
 
 

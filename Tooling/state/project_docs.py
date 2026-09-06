@@ -218,10 +218,11 @@ def write(workspace: Path, project: str, path: str,
           content: "str | bytes", *, area: str = AREA_USER) -> str:
     """Write one document; returns its root-relative path.
 
-    `area` is the fence, not a default to be trusted: the console passes
-    `user`, the Assistant's tool passes `agent`, and a path in the other
-    area is REFUSED rather than rewritten. Parent folders are created —
-    a person naming a chapter folder in the path means to have one.
+    `area` is the fence, not a default to be trusted: the console and
+    the Assistant's tool both pass `user` (the shelf a person can edit),
+    the theory layer passes `agent`, and a path in the other area is
+    REFUSED rather than rewritten. Parent folders are created — a person
+    naming a chapter folder in the path means to have one.
     """
     if area not in AREAS:
         raise ValueError(f"unknown docs area {area!r}; "

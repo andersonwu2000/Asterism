@@ -55,6 +55,10 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
         # union, which is why they appear here.
         "write_project_doc", "list_project_docs", "read_project_doc",
         "prepare_command", "daemon_status",
+        # A `.tex` the Assistant wrote, compiled before it is handed
+        # over (owner, 2026-09-06). Not a write channel: the build runs
+        # in a scratch directory outside every Project.
+        "tex_check",
     }
 
 
@@ -756,3 +760,159 @@ def test_daemon_status_is_read_only(assistant_ws: Path) -> None:
 
     out = json.loads(mcp_tools.daemon_status())
     assert out["running"] is False
+
+
+# ---------------------------------------------------------------------
+# tex_check — a .tex the Assistant wrote, compiled before it is handed
+# over (owner, 2026-09-06)
+# ---------------------------------------------------------------------
+
+
+def _fake_engine(monkeypatch, *, name: str = "latexmk", rc: int = 0,
+                 log: str = "", pdf: bytes = b"%PDF-1.5 fake") -> list:
+    """A TeX engine that is on PATH and writes what one writes. Never
+    the real one: a suite that shells out to pdflatex fails on a machine
+    without it, and this repo runs on two."""
+    import shutil
+    import subprocess as sp
+
+    from Tooling.core import tex_engine
+
+    calls: list = []
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda n: f"/usr/bin/{n}" if n == name else None)
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "cwd": kw.get("cwd")})
+        d = Path(kw["cwd"])
+        if log:
+            (d / f"{tex_engine.JOBNAME}.log").write_text(log,
+                                                         encoding="utf-8")
+        if rc == 0:
+            (d / f"{tex_engine.JOBNAME}.pdf").write_bytes(pdf)
+        return sp.CompletedProcess(cmd, rc, "out", "err")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    return calls
+
+
+_OK_LOG = "Output written on main.pdf (3 pages, 12345 bytes).\n"
+_BAD_LOG = (
+    "This is pdfTeX\n"
+    "./main.tex:12: Undefined control sequence.\n"
+    "l.12 \thsi\n"
+    "./main.tex:20: LaTeX Error: Environment align undefined.\n")
+
+
+def test_tex_check_is_on_the_assistants_seat(assistant_ws: Path) -> None:
+    from Tooling.llm.envelope import asterism_tools_for
+
+    assert "tex_check" in asterism_tools_for("explainer")
+    for worker in ("formalizer", "strategist", "theorist"):
+        assert "tex_check" not in asterism_tools_for(worker), worker
+
+
+def test_tex_check_compiles_a_document_and_says_which_engine(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    calls = _fake_engine(monkeypatch, log=_OK_LOG)
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex",
+                       r"\documentclass{article}")
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
+    assert "compiled OK (3 pages)" in out
+    assert "latexmk" in out
+    # the owner's flags, and a build that never ran in the Yours area
+    assert calls[0]["cmd"][1:4] == ["-pdf", "-interaction=nonstopmode",
+                                    "-halt-on-error"]
+    assert "_docs" not in calls[0]["cwd"]
+    assert not (assistant_ws / "Problems" / "Erdos" / "_docs" / "user"
+                / "paper.pdf").exists()
+
+
+def test_tex_check_returns_the_error_lines_at_the_documents_own_name(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`main.tex` is the copy's name, not the reader's. An error the
+    author cannot locate in their own file is an error report they
+    have to translate."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    _fake_engine(monkeypatch, rc=1, log=_BAD_LOG)
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "broken")
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
+    assert "user/paper.tex:12: Undefined control sequence." in out
+    assert "user/paper.tex:20: LaTeX Error: Environment align undefined." \
+        in out
+    assert "main.tex" not in out
+
+
+def test_tex_check_keeps_the_pdf_only_when_asked(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    _fake_engine(monkeypatch, log=_OK_LOG)
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "x")
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex",
+                              keep_pdf=True)
+    beside = (assistant_ws / "Problems" / "Erdos" / "_docs" / "user"
+              / "paper.pdf")
+    assert beside.is_file() and beside.read_bytes() == b"%PDF-1.5 fake"
+    assert "user/paper.pdf" in out
+
+
+def test_tex_check_refuses_outside_the_persons_shelf(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same fence the write goes through, and the same refusal: it
+    names the one root, so the model does not go looking for another."""
+    from Tooling.knowledge import mcp_tools
+
+    def _no_spawn(*a, **k):  # pragma: no cover — the assertion is that
+        raise AssertionError("a refused path may not reach an engine")
+
+    import subprocess as sp
+    monkeypatch.setattr(sp, "run", _no_spawn)
+    assert "user/" in mcp_tools.tex_check(project="Erdos",
+                                          path="agent/theirs.tex")
+    assert "user/" in mcp_tools.tex_check(project="Erdos",
+                                          path="../../escape.tex")
+
+
+def test_tex_check_refuses_what_is_not_a_tex_document(
+    assistant_ws: Path,
+) -> None:
+    from Tooling.knowledge import mcp_tools
+
+    out = mcp_tools.tex_check(project="Erdos", path="user/notes.md")
+    assert ".tex" in out
+
+
+def test_tex_check_says_precisely_that_there_is_no_toolchain(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other machine this runs on has no TeX. Saying so by name —
+    and spawning nothing to find out — is the difference between a fact
+    and a failed build."""
+    import shutil
+    import subprocess as sp
+
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    monkeypatch.setattr(shutil, "which", lambda n: None)
+
+    def _no_spawn(*a, **k):  # pragma: no cover
+        raise AssertionError("no engine, so nothing may be run")
+
+    monkeypatch.setattr(sp, "run", _no_spawn)
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "x")
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
+    for engine in ("latexmk", "pdflatex", "tectonic"):
+        assert engine in out, engine

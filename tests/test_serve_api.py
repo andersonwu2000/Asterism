@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -3631,12 +3632,12 @@ def test_tex_render_says_no_engine_when_there_is_none(
     """SP7 has no TeX. The panel must say so plainly rather than fail —
     and nothing may be spawned to find that out."""
     from Tooling.serve import tex_render as tr
-    monkeypatch.setattr(tr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     def _no_spawn(*a, **k):  # pragma: no cover — the assertion is that
         raise AssertionError("no engine, so nothing may be run")
 
-    monkeypatch.setattr(tr.subprocess, "run", _no_spawn)
+    monkeypatch.setattr(subprocess, "run", _no_spawn)
     _with_project(workspace)
     c = _client(workspace)
     c.put("/api/projects/Erdos/docs/user/paper.tex",
@@ -3655,7 +3656,7 @@ def _fake_latex(workspace: Path, monkeypatch, *, rc: int = 0,
     from Tooling.serve import tex_render as tr
     calls: list = []
     monkeypatch.setattr(
-        tr.shutil, "which",
+        shutil, "which",
         lambda name: f"/usr/bin/{name}" if name == "latexmk" else None)
 
     def fake_run(cmd, **kw):
@@ -3668,7 +3669,7 @@ def _fake_latex(workspace: Path, monkeypatch, *, rc: int = 0,
             (d / f"{tr.JOBNAME}.pdf").write_bytes(pdf)
         return subprocess.CompletedProcess(cmd, rc, "out", "err")
 
-    monkeypatch.setattr(tr.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     return calls
 
 

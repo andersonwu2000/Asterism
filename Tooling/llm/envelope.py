@@ -85,8 +85,15 @@ _NL_TOOLS = frozenset({"inspect", "write_file", "compute", "loogle",
 #:                          only the kernel does that. It is arithmetic
 #:                          the Assistant would otherwise do in its head
 #:                          and get wrong in front of a mathematician.
-#:   *_project_doc(s)       its one write surface, and it is `agent/`
-#:                          only (state/project_docs enforces the area)
+#:   *_project_doc(s)       its one write surface, and it is `user/`
+#:                          only — the shelf the person can edit (owner
+#:                          2026-09-06; state/project_docs enforces the
+#:                          area)
+#:   tex_check              compiles a `.tex` it wrote, in a scratch
+#:                          directory outside every Project, and reports
+#:                          the errors. Not a write channel: the build
+#:                          reads the shelf and only `keep_pdf` puts
+#:                          anything back, through the same fence.
 #:   prepare_command        §3.8: it PREPARES; the person confirms
 #:   daemon_status          the matrix's daemon 狀態 row, read-only
 #: Deliberately absent: `write_file` (writes a worker's attempts dir —
@@ -95,7 +102,7 @@ _NL_TOOLS = frozenset({"inspect", "write_file", "compute", "loogle",
 _ASSISTANT_TOOLS = frozenset({
     "inspect", "loogle", "paper_search", "paper_fetch", "compute",
     "write_project_doc", "list_project_docs", "read_project_doc",
-    "prepare_command", "daemon_status"})
+    "tex_check", "prepare_command", "daemon_status"})
 
 SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "strategist": _NL_TOOLS | {"paper_search", "paper_fetch"},

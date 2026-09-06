@@ -29,41 +29,20 @@ cannot be compiled any more than it could be read.
 from __future__ import annotations
 
 import hashlib
-import os
-import shutil
-import subprocess
 from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from ..core import tex_engine
+from ..core.tex_engine import (  # re-exported: this module's own surface
+    ENGINES, JOBNAME, NO_ENGINE_DETAIL, TIMEOUT_SEC, find_engine)
 from ..state import project_docs as _docs
 from ..state import projects as _projects
 
-#: What every build is called inside its own directory. One name, so
-#: the log, the pdf and the source are found without parsing anything.
-JOBNAME = "main"
-
-#: The engines this module knows, in preference order. `latexmk` runs
-#: the document to a fixed point itself (references, toc); bare
-#: `pdflatex` does not, so it is run TWICE.
-ENGINES = ("latexmk", "pdflatex")
-
-#: Said once, here, so the endpoint and its test cannot drift on it.
-NO_ENGINE_DETAIL = (
-    "no LaTeX engine on this machine — install TeX Live, MiKTeX or "
-    "TinyTeX (the console looks for latexmk, then pdflatex, on PATH "
-    "each time you press Render)")
-
-#: A document that has not finished in this long is not going to. TeX
-#: waits for input forever on some errors even under `nonstopmode`.
-TIMEOUT_SEC = 120
-
-#: How much of the log the panel is handed. The interesting line is at
-#: the END of a TeX log, always.
-LOG_TAIL_LINES = 60
-LOG_TAIL_CHARS = 6000
+__all__ = ["ENGINES", "JOBNAME", "NO_ENGINE_DETAIL", "TIMEOUT_SEC",
+           "find_engine", "register"]
 
 
 class TexBody(BaseModel):
@@ -76,43 +55,6 @@ class TexBody(BaseModel):
     path: str = ""
     content: "str | None" = None
     force: bool = False
-
-
-def find_engine() -> "tuple[str, str] | tuple[None, None]":
-    """(name, absolute path) of the first engine on PATH, or (None,
-    None). Looked up on every call — see the module header."""
-    for name in ENGINES:
-        exe = shutil.which(name)
-        if exe:
-            return name, exe
-    return None, None
-
-
-def _log_tail(build: Path, stdout: str) -> str:
-    """The end of the engine's own log, or of what it printed when it
-    wrote none (a toolchain that died before opening the file)."""
-    text = ""
-    log = build / f"{JOBNAME}.log"
-    try:
-        text = log.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        text = ""
-    if not text.strip():
-        text = stdout or ""
-    lines = text.splitlines()[-LOG_TAIL_LINES:]
-    return "\n".join(lines)[-LOG_TAIL_CHARS:]
-
-
-def _command(name: str, exe: str) -> "list[list[str]]":
-    """The runs one compile takes. The flags are the owner's: never
-    stop for input, and stop at the first real error rather than
-    limping to a pdf nobody should trust."""
-    common = ["-interaction=nonstopmode", "-halt-on-error"]
-    if name == "latexmk":
-        return [[exe, "-pdf", *common, f"{JOBNAME}.tex"]]
-    # pdflatex resolves references on the SECOND pass; one run leaves
-    # every \ref reading "??"
-    return [[exe, *common, f"{JOBNAME}.tex"]] * 2
 
 
 def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
@@ -178,44 +120,15 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             return {"status": "ok", "engine": name, "sha1": sha1,
                     "pdf": url, "log_tail": ""}
 
-        build.mkdir(parents=True, exist_ok=True)
-        try:
-            pdf.unlink()
-        except OSError:
-            pass
-        (build / f"{JOBNAME}.tex").write_text(source, encoding="utf-8",
-                                              newline="")
-        env = {**os.environ}
-        # a trailing separator means "and then the usual places" — drop
-        # it and TeX stops finding its own class files
-        env["TEXINPUTS"] = (f"{doc_dir}{os.pathsep}"
-                            + (os.environ.get("TEXINPUTS") or ""))
-        out = ""
-        rc = 0
-        for cmd in _command(name, exe):
-            try:
-                r = subprocess.run(cmd, cwd=str(build), env=env,
-                                   capture_output=True, text=True,
-                                   timeout=TIMEOUT_SEC)
-            except subprocess.TimeoutExpired:
-                return {"status": "failed", "engine": name, "sha1": sha1,
-                        "detail": f"{name} did not finish in "
-                                  f"{TIMEOUT_SEC}s",
-                        "log_tail": _log_tail(build, out)}
-            except OSError as e:  # the engine vanished between which() and run
-                return {"status": "failed", "engine": name, "sha1": sha1,
-                        "detail": str(e), "log_tail": ""}
-            out = (r.stdout or "") + (r.stderr or "")
-            rc = r.returncode
-            if rc != 0:
-                break
-        if rc != 0 or not pdf.is_file():
+        res = tex_engine.compile_into(build, source, doc_dir, name, exe)
+        tail = "\n".join(
+            res.log.splitlines()[-tex_engine.LOG_TAIL_LINES:]
+        )[-tex_engine.LOG_TAIL_CHARS:]
+        if res.status != "ok":
             return {"status": "failed", "engine": name, "sha1": sha1,
-                    "detail": f"{name} exited {rc}" if rc else
-                              f"{name} wrote no pdf",
-                    "log_tail": _log_tail(build, out)}
+                    "detail": res.detail, "log_tail": tail}
         return {"status": "ok", "engine": name, "sha1": sha1, "pdf": url,
-                "log_tail": _log_tail(build, out)}
+                "log_tail": tail}
 
     @app.get("/api/projects/{project}/tex/{name}")
     def tex_pdf(project: str, name: str) -> FileResponse:

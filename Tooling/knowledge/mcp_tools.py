@@ -893,6 +893,90 @@ def read_project_doc(project: str = "", path: str = "") -> str:
     return text
 
 
+#: Where a `tex_check` build runs. Under `.asterism/`, never under the
+#: Project: a compile that could write into the document's own folder
+#: would be a second write channel wearing a compiler's name.
+_TEX_BUILD = ("tmp", "tex_check")
+
+
+@_seat_tool(structured_output=False)
+def tex_check(project: str = "", path: str = "",
+              keep_pdf: bool = False) -> str:
+    """Compile a `.tex` you wrote and hand back what LaTeX said.
+
+    `path` is one of the Project's documents under `user/` — the same
+    shelf `write_project_doc` writes. The document is copied into a
+    scratch directory and compiled there, so this never touches what is
+    on the shelf; pass `keep_pdf=True` to have the resulting pdf placed
+    beside the source when it succeeds.
+
+    Answers: the error lines (`user/paper.tex:12: message`), or
+    `compiled OK (N pages)`, or the fact that this machine has no TeX
+    engine at all. Time-boxed; the engine is looked for at call time and
+    named in the answer.
+
+        tex_check(project="Erdos", path="user/note.tex")
+    """
+    from ..core import tex_engine
+    from ..state import project_docs
+    if not (project or "").strip() or not (path or "").strip():
+        return _ARG_HELP.format(
+            tool="tex_check",
+            hint='the parameters are `project` and `path`, e.g. '
+                 'tex_check(project="Erdos", path="user/note.tex")')
+    rel = str(path).replace("\\", "/").strip("/")
+    if not rel.lower().endswith(".tex"):
+        return (f"tex_check: {path!r} is not a .tex file — this compiles "
+                f"LaTeX documents. Give it the .tex you wrote.")
+    workspace = _workspace_root()
+    try:
+        # the fence FIRST, and the same one the write goes through: the
+        # area argument is what makes "only the person's shelf" a
+        # property of the call rather than of this docstring
+        doc = project_docs.locate(workspace, project, rel,
+                                  area=project_docs.AREA_USER)
+        if not doc.is_file():
+            raise KeyError(rel)
+        source = doc.read_bytes().decode("utf-8", errors="replace")
+    except (KeyError, ValueError, OSError) as e:
+        return _project_docs_error(e, tool="tex_check", project=project)
+
+    name, exe = tex_engine.find_engine()
+    if name is None or exe is None:
+        return f"tex_check: {tex_engine.NO_ENGINE_DETAIL}. Nothing was run."
+
+    import hashlib
+    key = hashlib.sha1(f"{project}\0{rel}".encode("utf-8", "replace")
+                       ).hexdigest()[:16]
+    build = workspace.joinpath(".asterism", *_TEX_BUILD, key)
+    res = tex_engine.compile_into(build, source, doc.parent, name, exe)
+    if res.status == "timeout":
+        return (f"tex_check: {res.detail} — an error is waiting for input, "
+                f"or the document is far larger than a note.")
+    if res.status != "ok":
+        errors = tex_engine.error_lines(res.log, as_name=rel)
+        head = (f"tex_check: {name} could not compile {rel} "
+                f"({res.detail}).")
+        if not errors:
+            tail = "\n".join(res.log.splitlines()[-20:])
+            return f"{head} It printed:\n{tail}"
+        return head + "\n" + "\n".join(errors)
+
+    pages = tex_engine.page_count(res.log)
+    said = f"compiled OK ({pages} pages)" if pages else "compiled OK"
+    out = f"tex_check: {said} with {name}."
+    if keep_pdf and res.pdf is not None:
+        beside = rel[: -len(".tex")] + ".pdf"
+        try:
+            project_docs.write(workspace, project, beside,
+                               res.pdf.read_bytes(),
+                               area=project_docs.AREA_USER)
+        except (KeyError, ValueError, OSError) as e:
+            return f"{out} The pdf could not be placed beside it: {e}"
+        out += f" The pdf is beside the source at {beside}."
+    return out
+
+
 @_seat_tool(structured_output=False)
 def prepare_command(problem: str = "", kind: str = "",
                     payload: dict = None) -> str:
