@@ -19,7 +19,8 @@ import type {
   ModelGroup,
 } from '../lib/types'
 import CommandConfirm from './CommandConfirm'
-import { Button, Select } from './ui'
+import ModelPicker from './ModelPicker'
+import { Button } from './ui'
 import ActivityRows from './assistant/ActivityRows'
 import SessionsFold from './assistant/SessionsFold'
 import UserTurn from './assistant/UserTurn'
@@ -724,36 +725,17 @@ export default function AssistantPanel({
           {title}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Select
+          <ModelPicker
             // fixed width, and wide enough for the longest live name:
-            // a base-select trigger hugs its current value, so an
-            // unsized one makes the header jiggle on every switch, and
-            // a narrow one wrapped `claude-sonnet-5` onto two lines
+            // a trigger that hugs its current value makes the header
+            // jiggle on every switch, and a narrow one wrapped
+            // `claude-sonnet-5` onto two lines
             className="w-40 shrink-0"
+            groups={groups}
             value={picked}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={setModel}
             title="stronger models cost more of the same subscription quota"
-          >
-            {groups.length === 0 && picked !== '' && (
-              <option value={picked}>{picked}</option>
-            )}
-            {groups.map((g) => (
-              <optgroup
-                key={g.provider}
-                label={
-                  g.provider +
-                  (g.installed ? '' : ' (not installed)') +
-                  (g.source === 'declared' ? ' — list not live' : '')
-                }
-              >
-                {g.models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Select>
+          />
           <button
             className="cursor-pointer rounded-lg px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
             onClick={toggleWide}

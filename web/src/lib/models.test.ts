@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { draftForPick, explainerGroups, providerForModel } from './models'
+import { draftForPick, explainerGroups, pickerRows, providerForModel } from './models'
+import type { PickerHeader } from './models'
 import type { ModelGroup } from './types'
 
 const GROUPS: ModelGroup[] = [
@@ -77,5 +78,53 @@ describe('the models the Assistant may actually seat', () => {
     const out = explainerGroups(STATE, live)
     expect(out.map((g) => g.provider)).toEqual(['claude', 'antigravity'])
     expect(out[1].source).toBe('declared')
+  })
+})
+
+describe('the picker is a hierarchy, not a flat list', () => {
+  it('opens each provider with a header row and hangs its models under it', () => {
+    const rows = pickerRows(GROUPS)
+    expect(rows.map((r) => r.kind)).toEqual([
+      'header', 'model', 'model', 'header', 'model', 'header', 'model',
+    ])
+    expect(rows[0]).toEqual({
+      kind: 'header', provider: 'claude', note: ' — list not live',
+    })
+    expect(rows[1]).toEqual({
+      kind: 'model', provider: 'claude', model: 'claude-opus-5',
+    })
+  })
+
+  it('says on the HEADER what is true of the whole provider', () => {
+    // "not installed" and "list not live" are facts about the backend,
+    // not about any one model — repeated on every row they would be
+    // the same fact drawn N times
+    const rows = pickerRows(GROUPS)
+    const headers = rows.filter((r): r is PickerHeader => r.kind === 'header')
+    expect(headers.map((h) => `${h.provider}${h.note}`)).toEqual([
+      'claude — list not live',
+      'antigravity',
+      'codex (not installed) — list not live',
+    ])
+  })
+
+  it('draws no header for a provider that offers nothing', () => {
+    expect(
+      pickerRows([{ provider: 'codex', models: [], source: 'probe', installed: true }]),
+    ).toEqual([])
+  })
+
+  it('carries a model the offer does not name, so the seat stays visible', () => {
+    // an env/yaml override may seat anything; a picker that dropped it
+    // would show the reader a value nobody chose
+    const rows = pickerRows(GROUPS, 'some-private-build')
+    expect(rows[0]).toEqual({ kind: 'header', provider: 'set outside this list', note: '' })
+    expect(rows[1]).toEqual({
+      kind: 'model', provider: 'set outside this list', model: 'some-private-build',
+    })
+    // and it is not repeated once it IS in the offer
+    expect(pickerRows(GROUPS, 'claude-opus-5')[0]).toEqual({
+      kind: 'header', provider: 'claude', note: ' — list not live',
+    })
   })
 })

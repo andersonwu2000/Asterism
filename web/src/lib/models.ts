@@ -40,6 +40,63 @@ export function draftForPick(
   return out
 }
 
+// -- the picker's own shape --------------------------------------------------
+
+/** A provider, and what is true of the WHOLE of it. */
+export interface PickerHeader {
+  kind: 'header'
+  provider: string
+  /** `(not installed)` / `— list not live`, or nothing at all */
+  note: string
+}
+
+/** One model, under the provider that runs it. */
+export interface PickerModel {
+  kind: 'model'
+  provider: string
+  model: string
+}
+
+export type PickerRow = PickerHeader | PickerModel
+
+/** Where a model the offer does not name is filed. An env or yaml
+ * override may seat anything; dropping it would show the reader a
+ * picker that disagrees with the seat it is describing. */
+export const OFF_LIST = 'set outside this list'
+
+/** The picker as a HIERARCHY: a header per provider, its models under
+ * it, in the offer's own order.
+ *
+ * The two caveats — a backend that is not installed, a list that is
+ * declared rather than probed — are facts about the PROVIDER. They
+ * belong on its header once, not on each of its models, where they
+ * would draw one fact as many times as the vendor ships tiers
+ * (DESIGN.md: never draw the same fact twice). A provider offering
+ * nothing draws no header: an empty group is not a group.
+ *
+ * `current` keeps a seated model visible even when no group claims it,
+ * under a header that says exactly that rather than inventing an owner
+ * for it (`providerForModel` is the same rule from the other side). */
+export function pickerRows(groups: ModelGroup[], current = ''): PickerRow[] {
+  const rows: PickerRow[] = []
+  if (current !== '' && providerForModel(groups, current) === null) {
+    rows.push({ kind: 'header', provider: OFF_LIST, note: '' })
+    rows.push({ kind: 'model', provider: OFF_LIST, model: current })
+  }
+  for (const g of groups) {
+    if (g.models.length === 0) continue
+    rows.push({
+      kind: 'header',
+      provider: g.provider,
+      note:
+        (g.installed ? '' : ' (not installed)') +
+        (g.source === 'declared' ? ' — list not live' : ''),
+    })
+    for (const m of g.models) rows.push({ kind: 'model', provider: g.provider, model: m })
+  }
+  return rows
+}
+
 /** The groups the Assistant may actually seat.
  *
  * `/api/models/refresh` answers for every backend installed on this

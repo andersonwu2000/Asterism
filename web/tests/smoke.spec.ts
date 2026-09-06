@@ -265,6 +265,44 @@ test('the Assistant header names the conversation and nothing else', async ({
   await expect(toggle).toHaveText('▾')
 })
 
+test('the Assistant model picker is two levels, not a flat list', async ({
+  page,
+  request,
+}) => {
+  await openShelf(page, request, 'tasks', false)
+  const panel = page.locator('[aria-label="assistant"]')
+  if (!(await panel.isVisible())) await page.keyboard.press('Control+/')
+  await expect(panel).toBeVisible()
+
+  await panel.getByRole('button', { name: 'model', exact: true }).click()
+  const menu = panel.locator('[data-model-menu]')
+  await expect(menu).toBeVisible()
+
+  // a machine has BACKENDS and a backend ships models: both levels are
+  // drawn, and the models sit further in than the header above them
+  const headers = menu.locator('[data-provider-header]')
+  await expect(headers.first()).toBeVisible()
+  const options = menu.getByRole('option')
+  await expect(options.first()).toBeVisible()
+  // the TEXT's left edge, not the row box's: both rows span the menu,
+  // and it is the writing that steps in
+  const textLeft = (el: Element) =>
+    el.getBoundingClientRect().x + parseFloat(getComputedStyle(el).paddingLeft)
+  const headLeft = await headers.first().evaluate(textLeft)
+  const optLeft = await options.first().evaluate(textLeft)
+  expect(optLeft).toBeGreaterThan(headLeft)
+
+  // the caveats are the PROVIDER's, so they ride its header — never
+  // repeated onto each of its models
+  const noteOnHeader = await headers.allInnerTexts()
+  for (const t of await options.allInnerTexts()) {
+    expect(t).not.toMatch(/list not live|not installed/)
+  }
+  expect(noteOnHeader.length).toBeGreaterThan(0)
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+})
+
 test('run parameters live beside Run, not in settings', async ({ page, request }) => {
   await openShelf(page, request, 'tasks', false)
   await page.getByRole('button', { name: /run parameters/ }).click()
