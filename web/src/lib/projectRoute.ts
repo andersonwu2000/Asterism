@@ -54,6 +54,13 @@ export interface ProjectRoute {
   /** `…/sky/<task>/g/<id>` — a star named in the address, so a link to
    * one node survives being mailed */
   goal: number | null
+  /** `…/groups/<task>/rev/<id>` — one Programme revision, the same way.
+   * A Timeline row already knows which revision it IS; until this
+   * existed the only place to send it was the group's history list,
+   * where the reader had to find the row again (owner, 2026-09-06).
+   * The `revisions` row id, never the rev NUMBER: a killed proposal
+   * and the revision that later takes its number are both "rev N". */
+  rev: number | null
   /** everything after the section that is not a task — the documents
    * path, and nothing else today */
   rest: string[]
@@ -72,16 +79,20 @@ export function parseProjectRoute(segments: string[]): ProjectRoute | null {
     : 'tasks'
   const tail = segments.slice(3)
   if (section === 'docs')
-    return { project, section, problem: null, goal: null, rest: tail }
+    return { project, section, problem: null, goal: null, rev: null, rest: tail }
   // every other section may carry a task: the three that REQUIRE one
   // (TASK_SECTIONS) and the two where it is a pin the reader set on a
-  // fleet — one shape, so the shell never parses two.
-  const goal = tail[1] === 'g' && tail[2] ? Number(tail[2]) : NaN
+  // fleet — one shape, so the shell never parses two. After the task,
+  // a section may name ONE object of its own: the Sky a star, Groups a
+  // revision. Same slot, same guard against a NaN selection.
+  const node = tail[1] === 'g' || tail[1] === 'rev' ? Number(tail[2]) : NaN
+  const at = Number.isFinite(node) ? node : null
   return {
     project,
     section,
     problem: tail[0] ?? null,
-    goal: Number.isFinite(goal) ? goal : null,
+    goal: tail[1] === 'g' ? at : null,
+    rev: tail[1] === 'rev' ? at : null,
     rest: [],
   }
 }
@@ -96,6 +107,21 @@ export function projectPath(
   if (!problem) return base
   const withTask = `${base}/${encodeURIComponent(problem)}`
   return goal === undefined || goal === null ? withTask : `${withTask}/g/${goal}`
+}
+
+/** One Programme revision's address, or the argument as it stands.
+ *
+ * Its own function rather than a fifth argument to `projectPath`: a
+ * revision is not a star, the two can never both be named, and a
+ * caller that had to pass `null` past one to reach the other is a
+ * caller that will one day pass it to the wrong one. */
+export function programmePath(
+  project: string,
+  problem: string,
+  rev?: number | null,
+): string {
+  const base = projectPath(project, 'groups', problem)
+  return rev === undefined || rev === null ? base : `${base}/rev/${rev}`
 }
 
 /** The rows that belong to THIS shelf.

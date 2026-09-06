@@ -129,7 +129,7 @@ function Row({
   /** the row's own task — a shelf-wide feed merges several, so the
    * Programme this row is about is not necessarily the one the reader
    * is scoped to (the same shape `onOpenGoal` already carries) */
-  onOpenProgramme?: (problem: string | null) => void
+  onOpenProgramme?: (problem: string | null, rev: number | null) => void
   /** where the document a theory row landed opens, by its
    * workspace-relative path — the one row whose object is a FILE */
   onOpenDocument?: (path: string) => void
@@ -148,6 +148,34 @@ function Row({
   // (serve fills `path` on no other row)
   const docOf = e.path && onOpenDocument ? e.path : null
   const expandable = Boolean(e.body || e.note || argument || verdictOf || docOf)
+  /* DESIGN.md's log grammar: the third field is a NAME the reader can
+   * act on, and its click OPENS that object — a star on the map, a
+   * revision, a document. Until 2026-09-06 only a goal had somewhere to
+   * go: a Programme row landed on the group's page (the argument as it
+   * stands, with the revision the row is about buried in a history list
+   * the reader had to reopen) and a theory row's document was one click
+   * further in, inside the expansion. Following the log is what moves
+   * down into the expansion when the name has a destination — the same
+   * trade a goal row already made (owner, 2026-08-24). */
+  const openName: (() => void) | null =
+    e.goal_id !== null && onOpenGoal
+      ? () => onOpenGoal(e.goal_id as number, e.problem ?? null)
+      : verdictOf && onOpenProgramme
+        ? () => onOpenProgramme(verdictOf.problem, verdictOf.revId)
+        : docOf && onOpenDocument
+          ? () => onOpenDocument(docOf)
+          : null
+  const follow = () => onFollow(followFor(e))
+  const nameTitle =
+    e.object_kind === 'unbuilt'
+      ? `${e.label} — asked for; no such brick exists yet. Click to follow it.`
+      : openName === null
+        ? `${e.label} — click to follow it through the log`
+        : e.goal_id !== null
+          ? `${e.label} — click to open it on the map`
+          : verdictOf
+            ? `${e.label} — click to read this revision`
+            : `${e.label} — click to open the document it landed`
   const note = e.kind === 'failed' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
@@ -215,26 +243,15 @@ function Row({
             } ${
               e.object_kind === 'unbuilt' ? 'text-ink-faint' : 'text-ink-dim'
             } cursor-pointer underline decoration-transparent underline-offset-2 hover:text-ink hover:decoration-edge-strong`}
-            title={
-              e.object_kind === 'unbuilt'
-                ? `${e.label} — asked for; no such brick exists yet. Click to follow it.`
-                : e.object_kind === 'goal' && e.goal_id !== null && onOpenGoal
-                  ? `${e.label} — click to open it on the map`
-                  : `${e.label} — click to follow it through the log`
-            }
+            title={nameTitle}
             onClick={(ev) => {
               ev.stopPropagation()
-              /* the map IS the goal's history now (the side panel reads
-                 it out) — the name goes there; following the log moved
-                 one click down, into the expansion (owner, 2026-08-24) */
-              if (e.goal_id !== null && onOpenGoal) onOpenGoal(e.goal_id, e.problem ?? null)
-              else onFollow(followFor(e))
+              ;(openName ?? follow)()
             }}
             onKeyDown={(ev) => {
               if (ev.key === 'Enter') {
                 ev.stopPropagation()
-                if (e.goal_id !== null && onOpenGoal) onOpenGoal(e.goal_id, e.problem ?? null)
-                else onFollow(followFor(e))
+                ;(openName ?? follow)()
               }
             }}
           >
@@ -297,11 +314,11 @@ function Row({
             <JudgeVerdict problem={verdictOf.problem} revId={verdictOf.revId} />
           )}
           <div className="mt-1.5 flex items-center gap-3 text-[11px]">
-            {e.goal_id !== null && onOpenGoal && (
+            {openName !== null && (
               <button
                 className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-                title="one click and you read this brick's whole life right here"
-                onClick={() => onFollow(followFor(e))}
+                title="one click and you read this object's whole life right here"
+                onClick={follow}
               >
                 follow through the log
               </button>
@@ -309,18 +326,10 @@ function Row({
             {e.object_kind === 'programme' && onOpenProgramme && (
               <button
                 className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-                onClick={() => onOpenProgramme(revProblem ?? null)}
+                title="where the argument stands NOW — the row's own name opens the revision it is about"
+                onClick={() => onOpenProgramme(revProblem ?? null, null)}
               >
-                read the Programme
-              </button>
-            )}
-            {docOf && (
-              <button
-                className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-                title="the document this run landed, on the Documents shelf"
-                onClick={() => onOpenDocument?.(docOf)}
-              >
-                read the document
+                read the current argument
               </button>
             )}
           </div>
@@ -355,13 +364,14 @@ export default function Timeline({
    * carries the history). The run view navigates to the problem's own
    * page — the second argument says which. */
   onSelectGoal?: (id: number, problem: string | null) => void
-  /** where "read the Programme" lands, told which task the row is
-   * about — on the shelf-wide feed that is the row's own, not the
-   * reader's scope */
-  onOpenProgramme?: (problem: string | null) => void
-  /** where "read the document" lands, given the workspace-relative path
-   * the row carries. Documents are the PROJECT's shelf, so the path is
-   * the whole address — no task has to be told to it. */
+  /** where a Programme row lands, told which task the row is about (on
+   * the shelf-wide feed that is the row's own, not the reader's scope)
+   * and WHICH revision: the row's own name opens the revision it is
+   * about, and the expansion offers the argument as it stands (`null`) */
+  onOpenProgramme?: (problem: string | null, rev: number | null) => void
+  /** where a theory row's document lands, given the workspace-relative
+   * path the row carries. Documents are the PROJECT's shelf, so the
+   * path is the whole address — no task has to be told to it. */
   onOpenDocument?: (path: string) => void
 }) {
   const { data, error, loading } = usePoll<{

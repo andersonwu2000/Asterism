@@ -27,10 +27,16 @@ import type { Programme, RunStatus } from '../lib/types'
 export default function Groups({
   project,
   problem,
+  rev,
   benched,
 }: {
   project: string
   problem: string
+  /** the revision the address names (`…/groups/<task>/rev/<id>`), or
+   * null for the argument as it stands. A Timeline row sends the reader
+   * to THAT revision; the history list is where they end up only when
+   * they asked for the list. */
+  rev?: number | null
   /** the shelf row's own flag — the top group's sheet offers the bench
    * (stop this task) and has to know which direction to offer. The
    * shell already polls the board, so this rides down rather than
@@ -90,7 +96,7 @@ export default function Groups({
   // server's own answer, so it can never name a sibling's argument
   usePublishFocus({ problem, group_id: data?.group_id ?? null })
   if (error) return <ErrorState error={error} />
-  if (!data) return null
+  if (!data) return <p role="status" className="px-6 py-8 text-sm text-ink-dim">Reading the discussion…</p>
   // which group the reader is standing on — the server's own answer,
   // never the picker's, so the sheet and the argument on screen are
   // about the same charter
@@ -107,6 +113,16 @@ export default function Groups({
         livePhase={livePhase}
         onPickGroup={setPick}
         stale={stale}
+        initialView={rev ? 'history' : 'current'}
+        history={
+          <RevisionHistory
+            key={data.group_id ?? 'top'}
+            problem={problem}
+            group={data.group_id ?? null}
+            openRev={rev ?? null}
+            initiallyOpen
+          />
+        }
         // a delivered brick opens on the SKY next door — the section is
         // one click away, so leaving the Project to read a node this
         // shell can show is the defect the link audit removed
@@ -121,10 +137,8 @@ export default function Groups({
                 <CycleLine cycle={cycle} />
               </div>
             )}
-            {/* what this group has DECIDED, and how each one was argued
-                (§1.4-2). Under the tree, collapsed: the standing
-                argument below is what this screen is for. */}
-            <RevisionHistory problem={problem} group={data.group_id ?? null} />
+            {/* Actions stay with the current argument. Revision
+                history has its own reading view beside this one. */}
             {shown &&
               (acting ? (
                 <GroupCommandSheet

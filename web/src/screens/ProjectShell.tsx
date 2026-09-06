@@ -6,6 +6,7 @@ import {
   SECTION_LABEL,
   TASK_SECTIONS,
   defaultTask,
+  programmePath,
   projectPath,
   railVisible,
   shelfOrder,
@@ -20,6 +21,7 @@ import Sky from './Sky'
 import Groups from './Groups'
 import EngineRoom from './EngineRoom'
 import Docs from './Docs'
+import { ErrorState } from '../components/ui'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
 /*
@@ -158,7 +160,7 @@ export default function ProjectShell({
   onOpenSettings: () => void
 }) {
   const { project, section, problem } = route
-  const { data } = usePoll<BoardResponse>(
+  const { data, error, refresh } = usePoll<BoardResponse>(
     `/api/problems?project=${encodeURIComponent(project)}`,
     5000,
   )
@@ -201,10 +203,10 @@ export default function ProjectShell({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-6 border-b border-edge px-5">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-6 border-b border-edge px-5">
         <Link
           to="/"
-          className="flex min-w-0 items-center gap-2"
+          className="flex min-w-0 max-w-64 items-center gap-2 py-3"
           title="all projects"
         >
           {MARK}
@@ -212,10 +214,11 @@ export default function ProjectShell({
             {project}
           </span>
         </Link>
-        <nav data-menu className="flex gap-5">
+        <nav data-menu aria-label="Project sections" className="order-3 flex w-full gap-5 overflow-x-auto xl:order-none xl:w-auto">
           {SECTIONS.map((s) => (
             <Link
               key={s}
+              aria-current={s === section ? 'page' : undefined}
               to={projectPath(project, s, TASK_SECTIONS.includes(s) ? current : null)}
               className={`relative py-4 text-xs whitespace-nowrap transition-colors duration-150 ${
                 s === section ? 'text-ink' : 'text-ink-dim hover:text-ink'
@@ -288,7 +291,14 @@ export default function ProjectShell({
             visited inside its own poll interval, so a switch back paints
             from data rather than from a spinner. */}
         <main className="min-w-0 flex-1 overflow-y-auto">
-          {section === 'tasks' ? (
+          {error && data && (
+            <div role="status" className="border-b border-edge px-6 py-3 text-xs text-ink-dim">
+              Task updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button>
+            </div>
+          )}
+          {error && !data && section !== 'docs' ? (
+            <div><ErrorState error={error} /><div className="text-center"><button className="cursor-pointer rounded-lg border border-edge px-3 py-2 text-xs text-ink-dim hover:text-ink" onClick={refresh}>Retry</button></div></div>
+          ) : section === 'tasks' ? (
             <Tasks project={project} rows={rows} problem={problem} loaded={loaded} />
           ) : section === 'sky' ? (
             current ? (
@@ -312,6 +322,10 @@ export default function ProjectShell({
                 key={current}
                 project={project}
                 problem={current}
+                /* the revision the address names, if it names one — a
+                   Timeline row sends the reader to THAT revision, not
+                   to the list it lives in */
+                rev={route.rev}
                 benched={rows.find((p) => p.name === current)?.benched}
               />
             ) : (
@@ -342,9 +356,9 @@ export default function ProjectShell({
                    link simply never drew. On the shelf-wide feed the
                    row's OWN task is the target — the reader is scoped
                    to none. */
-                onOpenProgramme={(p) => {
+                onOpenProgramme={(p, rev) => {
                   const target = p ?? problem
-                  if (target) navigate(projectPath(project, 'groups', target))
+                  if (target) navigate(programmePath(project, target, rev))
                 }}
                 /* a theory row landed a FILE — the refused ones land
                    too — and its expansion offers it. The path is

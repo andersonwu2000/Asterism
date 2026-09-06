@@ -543,6 +543,55 @@ test('timeline: the state label never paints over the objective', async ({
   }
 })
 
+test('timeline: a row opens the object it names, not a list to find it in', async ({
+  page,
+  request,
+}) => {
+  // DESIGN.md's log grammar: the third field is a NAME the reader can
+  // act on, and the name click opens THAT object. A Programme row used
+  // to land on the group's page — the argument as it stands now, with
+  // the revision the row is about somewhere down a history list the
+  // reader had to reopen (owner, 2026-09-06). A theory row's document
+  // was one click further in, inside the expansion.
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  await stubEvents(page, [
+    EVENT({
+      id: 'r',
+      kind: 'rev',
+      object_kind: 'programme',
+      label: 'the antichain route, third pass',
+      n: 3,
+      rev_id: 412,
+    }),
+    EVENT({
+      id: 't',
+      kind: 'theory',
+      object_kind: 'theory',
+      n: 2,
+      path: `Problems/${s.project}/_docs/agent/theory_note.md`,
+    }),
+  ])
+  await page.goto(at(s.project, 'timeline', s.task))
+  const rows = page.locator('[data-event-row]')
+  await expect(rows).toHaveCount(2)
+
+  await rows.nth(0).locator('[data-event-detail] [role="button"]').click()
+  await expect.poll(() => page.url()).toContain('/rev/412')
+  await expect.poll(() => page.url()).toContain('/groups/')
+  // and it lands on the revision's own reading, not on the argument as
+  // it stands with the history folded behind a second click
+  await expect(
+    page.getByRole('button', { name: 'Revision history' }),
+  ).toHaveAttribute('aria-pressed', 'true')
+
+  await page.goBack()
+  await expect(rows).toHaveCount(2)
+  await rows.nth(1).locator('[data-event-detail] [role="button"]').click()
+  await expect.poll(() => page.url()).toContain('/docs/agent/theory_note.md')
+})
+
 test('timeline: a revision row opens onto the judge that ruled on it', async ({
   page,
   request,

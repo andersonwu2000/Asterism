@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
@@ -186,14 +186,29 @@ function Row({
 export default function RevisionHistory({
   problem,
   group,
+  openRev: asked = null,
+  initiallyOpen = false,
 }: {
   problem: string
   /** whose chain — the group the screen is standing on. Chains never
    * interleave (v35), so this is not optional information. */
   group: number | null
+  /** The revision the ADDRESS named, already unfolded. A Timeline row
+   * knows which revision it is about; landing the reader on the list to
+   * find it again is the trip this prop deletes (owner, 2026-09-06). */
+  openRev?: number | null
+  /** In the dedicated history view, the collection is the page. */
+  initiallyOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
-  const [openRev, setOpenRev] = useState<number | null>(null)
+  const [open, setOpen] = useState(initiallyOpen || asked !== null)
+  const [openRev, setOpenRev] = useState<number | null>(asked)
+  // the address may name another one while this stays mounted
+  useEffect(() => {
+    if (asked !== null) {
+      setOpen(true)
+      setOpenRev(asked)
+    }
+  }, [asked])
   // read ONCE when it opens (`intervalMs <= 0`), never on a poll: this
   // is history, and it changes when something happens, not every 15s
   const { data, error } = usePoll<{ revisions: RevisionRow[] }>(
@@ -206,7 +221,7 @@ export default function RevisionHistory({
   const rows = data?.revisions ?? []
   return (
     <div className="mb-5">
-      <button
+      {!initiallyOpen && <button
         className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
         onClick={() => setOpen((v) => !v)}
         title="every proposal this group decided, passed and discarded"
@@ -220,7 +235,7 @@ export default function RevisionHistory({
           ▸
         </span>
         revision history
-      </button>
+      </button>}
       {open && (
         <div className="mt-1 rounded-xl border border-edge">
           {error && !data ? (

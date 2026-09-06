@@ -4,6 +4,7 @@ import {
   TASK_SECTIONS,
   defaultTask,
   parseProjectRoute,
+  programmePath,
   projectPath,
   railVisible,
   shelfOrder,
@@ -44,6 +45,7 @@ describe('parseProjectRoute', () => {
       section: 'sky',
       problem: 'Erdos.p358',
       goal: null,
+      rev: null,
       rest: [],
     })
   })
@@ -54,6 +56,7 @@ describe('parseProjectRoute', () => {
       section: 'tasks',
       problem: null,
       goal: null,
+      rev: null,
       rest: [],
     })
   })
@@ -74,6 +77,7 @@ describe('parseProjectRoute', () => {
       section: 'docs',
       problem: null,
       goal: null,
+      rev: null,
       rest: ['user', 'notes', 'a.md'],
     })
   })
@@ -87,6 +91,36 @@ describe('parseProjectRoute — a star in the address', () => {
   })
   it('ignores a goal that is not a number rather than selecting NaN', () => {
     expect(parseProjectRoute(['p', 'Erdos', 'sky', 'Erdos.p358', 'g', 'x'])?.goal).toBeNull()
+  })
+})
+
+describe('parseProjectRoute — a revision in the address', () => {
+  it('reads /rev/<id> after the task, so a Timeline row can open THAT one', () => {
+    // a revision used to be reachable only by opening the group and
+    // walking its history list — the row knew which one and the
+    // address had nowhere to put it (owner, 2026-09-06)
+    const r = parseProjectRoute(['p', 'Erdos', 'groups', 'Erdos.p358', 'rev', '412'])
+    expect(r?.rev).toBe(412)
+    expect(r?.problem).toBe('Erdos.p358')
+    expect(r?.section).toBe('groups')
+  })
+  it('ignores a revision that is not a number rather than selecting NaN', () => {
+    expect(
+      parseProjectRoute(['p', 'Erdos', 'groups', 'Erdos.p358', 'rev', 'x'])?.rev,
+    ).toBeNull()
+  })
+  it('leaves the group page itself unrevisioned', () => {
+    expect(parseProjectRoute(['p', 'Erdos', 'groups', 'Erdos.p358'])?.rev).toBeNull()
+  })
+})
+
+describe('programmePath', () => {
+  it('names one revision, or the argument as it stands', () => {
+    expect(programmePath('Erdos', 'Erdos.p1', 412)).toBe(
+      '/p/Erdos/groups/Erdos.p1/rev/412',
+    )
+    expect(programmePath('Erdos', 'Erdos.p1')).toBe('/p/Erdos/groups/Erdos.p1')
+    expect(programmePath('Erdos', 'Erdos.p1', null)).toBe('/p/Erdos/groups/Erdos.p1')
   })
 })
 

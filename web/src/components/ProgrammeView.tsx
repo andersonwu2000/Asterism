@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { emitGoalOpen } from '../lib/goalFocus'
 import {
   charterTitle,
@@ -136,6 +136,7 @@ export function GroupTree({
               on ? 'bg-surface' : 'hover:bg-surface/60'
             }`}
             onClick={() => onPick(g.is_top ? null : g.id)}
+            aria-current={on ? 'true' : undefined}
             title={`${groupLabel(g.id, charterTitle(g))} — ${
               g.is_top
                 ? "the problem's own argument; what it did not hand out"
@@ -158,7 +159,7 @@ export function GroupTree({
                   {groupCode(g.id)}
                 </span>
                 <span
-                  className={`truncate text-[12px] ${
+                  className={`line-clamp-3 text-[12px] leading-5 ${
                     tone === 'live' || on
                       ? 'text-ink'
                       : tone === 'idle'
@@ -324,6 +325,8 @@ export default function ProgrammeView({
   extra,
   brickHome,
   stale,
+  history,
+  initialView = 'current',
 }: {
   data: Programme
   group: number | null
@@ -336,7 +339,16 @@ export default function ProgrammeView({
    * while the chosen one loads — the tree stays put and only the
    * reading fades, instead of the whole panel blinking out */
   stale?: boolean
+  history?: React.ReactNode
+  /** which reading the ADDRESS asked for. A revision named in the
+   * address opens the history side; anything else opens on the
+   * argument as it stands. The reader may still switch — this seeds
+   * the choice, it does not hold it. */
+  initialView?: 'current' | 'history'
 }) {
+  const [view, setView] = useState<'current' | 'history'>(initialView)
+  // the address may name a different revision while this stays mounted
+  useEffect(() => setView(initialView), [initialView])
   const hasDelegation = (data.groups ?? []).some((g) => !g.is_top)
   const shownGroup =
     (data.groups ?? []).find((g) => g.id === data.group_id) ??
@@ -359,35 +371,28 @@ export default function ProgrammeView({
     </div>
   ) : null
   const reading = stale ? 'opacity-40 transition-opacity duration-150' : ''
-  if (data.current === null)
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-5">
-        {picker}
-        <div className={reading}>
-          {extra}
-          <Around charter={data.charter} reservations={[]} />
-          <div className="py-6 text-sm text-ink-faint">
-            no programme yet — the first passed proposal will start the revision chain
-          </div>
-          <ReturnedBricks data={data} group={group} brickHome={brickHome} />
-        </div>
-      </div>
-    )
   const cur = data.current
   return (
-    <div className="mx-auto max-w-3xl px-6 py-5">
-      {picker}
-      <div className={reading}>
-      {/* the revision's own vital signs (rev, rounds survived, age,
-          discarded drafts) came off the page: the tree already names
-          the rev, and a reader of the STANDING argument does not read
-          its provenance (owner, 2026-08-07) */}
-      {extra}
-      <Around charter={data.charter} reservations={cur.reservations} />
-      <div className="text-sm leading-relaxed text-ink-dim">
-        {renderProse(cur.body, { mode: 'document' })}
-      </div>
-      <ReturnedBricks data={data} group={group} brickHome={brickHome} />
+    <div className={`mx-auto grid gap-6 px-5 py-5 ${hasDelegation ? 'max-w-6xl lg:grid-cols-[260px_minmax(0,1fr)]' : 'max-w-3xl'}`}>
+      {hasDelegation && <aside aria-label="Discussion groups" className="min-w-0 self-start lg:sticky lg:top-5 lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto lg:border-r lg:border-edge lg:pr-4">{picker}</aside>}
+      <div className="min-w-0">
+        {!hasDelegation && picker}
+        {history && <div role="group" aria-label="Argument view" className="mb-5 flex gap-1 border-b border-edge pb-3">
+          {(['current', 'history'] as const).map(value => <button key={value} aria-pressed={view === value}
+            className={`cursor-pointer rounded-lg px-3 py-2 text-xs ${view === value ? 'bg-ink text-bg' : 'text-ink-dim hover:bg-surface'}`}
+            onClick={() => setView(value)}>{value === 'current' ? 'Current argument' : 'Revision history'}</button>)}
+        </div>}
+        <div className={reading} aria-busy={stale || undefined}>
+          {stale && <p role="status" className="mb-3 text-xs text-ink-dim">Loading the selected group…</p>}
+          {view === 'history' && history ? history : <>
+            {extra}
+            <Around charter={data.charter} reservations={cur?.reservations ?? []} />
+            {cur ? <article aria-label="Current argument" className="text-sm leading-relaxed text-ink-dim">
+              {renderProse(cur.body, { mode: 'document' })}
+            </article> : <p className="py-6 text-sm text-ink-faint">No programme yet — the first passed proposal will start the revision chain.</p>}
+            <ReturnedBricks data={data} group={group} brickHome={brickHome} />
+          </>}
+        </div>
       </div>
     </div>
   )
