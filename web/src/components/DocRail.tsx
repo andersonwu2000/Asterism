@@ -38,7 +38,7 @@ export interface UploadItem {
 const READ_ONLY: Record<RailGroupId, string | null> = {
   yours: null,
   papers: 'read-only — a paper. Removing one is not offered here yet.',
-  agent: "read-only — the Assistant's",
+  agent: "read-only — the machine's",
   engine: "read-only — the engine's",
   proofs: "read-only — the engine's",
 }
@@ -47,7 +47,7 @@ const READ_ONLY: Record<RailGroupId, string | null> = {
 const EMPTY: Record<RailGroupId, string> = {
   yours: 'nothing here yet — “+ file” starts one.',
   papers: 'no papers yet — drop one anywhere on this page.',
-  agent: 'nothing here yet — the Assistant writes into this one.',
+  agent: 'nothing here yet — the theory layer writes into this one.',
   engine: 'this task has written nothing yet.',
   proofs: 'no proofs on this task yet.',
 }

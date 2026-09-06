@@ -650,28 +650,37 @@ def test_the_assistant_seat_is_declared_and_carries_no_act_channel(
         assert banned not in seat, banned
 
 
-def test_write_project_doc_lands_under_agent(assistant_ws: Path) -> None:
+def test_write_project_doc_lands_in_the_persons_own_shelf(
+    assistant_ws: Path,
+) -> None:
+    """The Assistant writes where the person can EDIT what it wrote —
+    `user/`, the area the Documents rail calls "yours" (owner,
+    2026-09-06). A document nobody can revise is a document handed
+    over the fence."""
     from Tooling.knowledge import mcp_tools
     from Tooling.state import project_docs
 
     out = mcp_tools.write_project_doc(
-        project="Erdos", path="agent/summary.md", content="# what I read\n")
-    assert "agent/summary.md" in out
-    assert project_docs.read(assistant_ws, "Erdos", "agent/summary.md") \
+        project="Erdos", path="user/summary.md",
+        content="# what I read\n")
+    assert "user/summary.md" in out
+    assert project_docs.read(assistant_ws, "Erdos", "user/summary.md") \
         == b"# what I read\n"
 
 
-def test_write_project_doc_refuses_the_persons_area(
+def test_write_project_doc_refuses_the_engines_area(
     assistant_ws: Path,
 ) -> None:
-    """The Assistant's whole write surface. A refusal that did not name
-    `agent/` would be a refusal it routes around."""
+    """The Assistant's whole write surface. `agent/` is the theory
+    layer's shelf and the console marks it read-only; a refusal that
+    did not name the one allowed root would be a refusal the Assistant
+    routes around by guessing."""
     from Tooling.knowledge import mcp_tools
 
     out = mcp_tools.write_project_doc(
-        project="Erdos", path="user/notes.md", content="x")
-    assert "agent/notes.md" in out
-    assert not (assistant_ws / "Problems" / "Erdos" / "_docs" / "user"
+        project="Erdos", path="agent/notes.md", content="x")
+    assert "user/notes.md" in out
+    assert not (assistant_ws / "Problems" / "Erdos" / "_docs" / "agent"
                 ).exists()
 
 

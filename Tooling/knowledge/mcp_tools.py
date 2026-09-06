@@ -773,10 +773,16 @@ def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
 # widening anyone's surface: the server reads ASTERISM_SEAT and registers
 # the seat's table.
 #
-# The write is ONE call into `state/project_docs.write(area='agent')`.
+# The write is ONE call into `state/project_docs.write(area='user')`.
 # Everything the Assistant may ever write goes through that function, and
 # the area is its argument — so "the Assistant cannot write outside
-# `_docs/agent/`" is a property of the call, not of the prompt.
+# `_docs/user/`" is a property of the call, not of the prompt.
+#
+# `user/` — the area the Documents rail calls "yours" — and not `agent/`
+# (owner, 2026-09-06). The Assistant writes FOR the person: a summary,
+# a note, a draft they will revise. `agent/` is read-only in the console,
+# so a document landed there was one the reader could not touch. The
+# theory layer keeps `agent/`; that shelf is the engine's own record.
 
 
 def _project_docs_error(e: Exception, *, tool: str, project: str) -> str:
@@ -794,17 +800,20 @@ def _project_docs_error(e: Exception, *, tool: str, project: str) -> str:
 @_seat_tool(structured_output=False)
 def write_project_doc(project: str = "", path: str = "",
                       content: str = "") -> str:
-    """Write a document into the Project's `agent/` shelf.
+    """Write a document into the Project's `user/` shelf — "yours" in
+    the console's Documents rail.
 
     This is your ONLY write. `path` is relative to the Project's
-    document root and must start with `agent/` — `user/` is the
-    person's own shelf and you cannot write there. Full-file overwrite:
-    send the whole text.
+    document root and must start with `user/`; every other area is
+    read-only to you, `agent/` included. Full-file overwrite: send the
+    whole text.
 
     Extensions: .md .tex .txt .lean .png .jpg .svg .pdf. Write the
     mathematics in LaTeX; a document a mathematician reads is the point.
+    A `.tex` you wrote can be compiled with `tex_check` before you hand
+    it over.
 
-        write_project_doc(project="Erdos", path="agent/p1_summary.md",
+        write_project_doc(project="Erdos", path="user/p1_summary.md",
                           content="# What the route proves\\n…")
     """
     from ..state import project_docs
@@ -813,7 +822,7 @@ def write_project_doc(project: str = "", path: str = "",
             tool="write_project_doc",
             hint='the parameters are `project`, `path` and `content`, '
                  'e.g. write_project_doc(project="Erdos", '
-                 'path="agent/notes.md", content="# …")')
+                 'path="user/notes.md", content="# …")')
     if not content:
         return _ARG_HELP.format(
             tool="write_project_doc",
@@ -821,7 +830,7 @@ def write_project_doc(project: str = "", path: str = "",
                  '`content` (a mis-spelled parameter name lands here)')
     try:
         rel = project_docs.write(_workspace_root(), project, path,
-                                 content, area=project_docs.AREA_AGENT)
+                                 content, area=project_docs.AREA_USER)
     except (KeyError, ValueError, OSError) as e:
         return _project_docs_error(e, tool="write_project_doc",
                                    project=project)
@@ -830,10 +839,11 @@ def write_project_doc(project: str = "", path: str = "",
 
 @_seat_tool(structured_output=False)
 def list_project_docs(project: str = "") -> str:
-    """List the Project's documents — both shelves.
+    """List the Project's documents — every shelf.
 
-    `user/` is what the person wrote, `agent/` is what you wrote. One
-    line per entry: path, kind, size.
+    `user/` is the person's shelf and the one you write into; `agent/`
+    is the theory layer's, readable and not yours. One line per entry:
+    path, kind, size.
     """
     from ..state import project_docs
     if not (project or "").strip():
@@ -848,7 +858,7 @@ def list_project_docs(project: str = "") -> str:
     if not entries:
         return (f"{project} has no documents yet. Write one with "
                 f"write_project_doc(project=\"{project}\", "
-                f"path=\"agent/<name>.md\", content=…).")
+                f"path=\"user/<name>.md\", content=…).")
     lines = [f"{e['path']}{'/' if e['kind'] == 'dir' else ''}"
              + ("" if e["kind"] == "dir" else f"  {e['size']}B")
              for e in entries]
@@ -858,7 +868,7 @@ def list_project_docs(project: str = "") -> str:
 
 @_seat_tool(structured_output=False)
 def read_project_doc(project: str = "", path: str = "") -> str:
-    """Read one of the Project's documents, from either shelf.
+    """Read one of the Project's documents, from any shelf.
 
     `path` is relative to the document root (`user/…` or `agent/…`).
     Read the person's own notes before writing beside them.

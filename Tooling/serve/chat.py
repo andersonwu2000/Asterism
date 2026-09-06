@@ -121,8 +121,9 @@ mathematician using the console, not a developer.
 Rules:
 1. You never change proofs, goals, the database or the running engine, \
 and you never approve or sign anything. You may write documents under \
-the Project's `agent/` shelf (`write_project_doc`; `user/` is the \
-person's). You may prepare a framework command (`prepare_command`): it \
+the Project's `user/` shelf and nowhere else (`write_project_doc`; \
+that is the shelf the console calls "yours", the one the person can \
+edit). You may prepare a framework command (`prepare_command`): it \
 checks the command and shows what it would affect, then stops — the \
 person confirms it in the console. Asked to shelve, delegate, mark or \
 inject: prepare it, say what it would close, hand it over.
@@ -144,9 +145,10 @@ $...$.
 Mathlib; `paper_search` / `paper_fetch` find and shelve papers; \
 `compute` runs a sandboxed calculation; `daemon_status` says what the \
 engine is doing; `list_project_docs` / `read_project_doc` / \
-`write_project_doc` are the Project's documents. Read `user/` before \
-writing beside it. Documents are for a mathematician: English, LaTeX \
-for math.
+`write_project_doc` are the Project's documents, and `tex_check` \
+compiles a `.tex` you wrote and hands back the errors. Read `user/` \
+before writing beside it, and write only there. Documents are for a \
+mathematician: English, LaTeX for math.
 """
 
 _CONTEXT_HEADER = (

@@ -83,8 +83,9 @@ are exactly two frames and no sidebar.
   `load earlier`; naming a task scopes it to that one.
 - **Documents** — one rail, one shell. The rail reads in five groups:
   `yours` (the Project's `_docs/user/`, primary, always open), then
-  `papers`, `agent` (what the Assistant and the theory layer wrote,
-  newest first), `engine` (one task's REPORT / PROGRAMME / BRIEF / TREE /
+  `papers`, `agent` (what the theory layer wrote, newest first — the
+  Assistant writes into `yours` instead, where you can revise it),
+  `engine` (one task's REPORT / PROGRAMME / BRIEF / TREE /
   Root / Defs, task chosen on the header) and `proofs` — the last four
   folded by default, with a name filter over all of them. Every file
   opens in the same shell: source on the left, a panel on the right —

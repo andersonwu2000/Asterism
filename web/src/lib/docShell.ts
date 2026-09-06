@@ -165,10 +165,10 @@ export function defaultView(ref: DocRef): DocView {
 /** Whose writing this is — shown only when it is not the reader's.
  *
  * `user/` returns null: the settled norm earns no ink (DESIGN.md). The
- * `agent/` area holds two hands — what the Assistant wrote for the
- * reader, and what the theory layer landed for its reviewer
- * (theory_wake_design.md §4) — and the listing's own record is what
- * tells them apart. */
+ * `agent/` area holds two hands — what the theory layer landed for its
+ * reviewer (theory_wake_design.md §4), and what the Assistant left
+ * there before its write moved to `user/` (owner, 2026-09-06) — and
+ * the listing's own record is what tells them apart. */
 export function ownerOf(ref: DocRef, theory?: TheoryMeta | null): string | null {
   if (ref.kind === 'task') return "the engine's — read-only"
   if (ref.path.startsWith('user/') || ref.path === 'user') return null
