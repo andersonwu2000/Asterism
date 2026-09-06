@@ -610,6 +610,79 @@ def test_transcripts_are_copied_out_before_the_workspace_goes(tmp_path,
     assert "transcripts/codex" in kept
 
 
+_FEEDBACK = (
+    "# Agent framework feedback (dev-only)\n\n"
+    "_Survivor self-reports + framework-written death causes._\n\n"
+    "- [2026-09-06T20:42 | adversary | claude-opus-5 | pass | p/r1] "
+    "the manifest pointed at a path I cannot read.\n"
+    "  evidence: two permission errors before I found the copy.\n"
+    "- [2026-09-06T20:47 | backward | claude-sonnet-5 | success | p/main] "
+    "`rw` rewrote both sides silently.\n")
+
+
+def test_the_agents_feedback_is_copied_out_and_counted(tmp_path):
+    """The lab is where a prompt change is judged by what the agents
+    complain about, and `.asterism/agent_feedback.md` is the only place
+    they say it — inside the runtime-state tree `lab run` deletes."""
+    ws = tmp_path / "ws"
+    (ws / ".asterism").mkdir(parents=True)
+    (ws / ".asterism" / "agent_feedback.md").write_text(_FEEDBACK,
+                                                        encoding="utf-8")
+    out = tmp_path / "out"
+
+    kept, n = driver_mod.keep_feedback(ws, out)
+
+    assert kept == ["agent_feedback.md"]
+    assert (out / "agent_feedback.md").read_text(
+        encoding="utf-8") == _FEEDBACK
+    # TWO records, not four lines: a record is a `- [` line plus its
+    # indented continuation, which is the unit the file's own ring
+    # trims in (`pipeline/_feedback`).
+    assert n == 2
+
+
+def test_a_workspace_with_no_feedback_file_reports_zero(tmp_path):
+    """Feedback is off by default (`feedback.enabled`), so "no file" is
+    the ordinary case for a production-config arm — it must not be an
+    error, and must not leave an empty file that reads as a run whose
+    agents had nothing to say."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    assert driver_mod.keep_feedback(ws, out) == ([], 0)
+    assert not (out / "agent_feedback.md").exists()
+
+
+def test_the_record_carries_the_feedback_count(tmp_path, base, head):
+    """And it survives the workspace: `_out/` is what `lab gc` keeps."""
+    root = tmp_path / "lab"
+    live = _workspace(tmp_path)
+    sl = snap_mod.take(live, root, problem=PROBLEM)
+    exp = _exp(root, sl.id)
+
+    def launch(ws: Path, spec_path: Path):
+        # A driver that ran spawns and then DIED before its own copy —
+        # the run whose complaints are worth reading most.
+        (ws / ".asterism").mkdir(parents=True, exist_ok=True)
+        (ws / ".asterism" / "agent_feedback.md").write_text(
+            _FEEDBACK, encoding="utf-8")
+        out = Path(json.loads(
+            Path(spec_path).read_text(encoding="utf-8"))["out"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / driver_mod.RESULT_BASENAME).write_text(
+            json.dumps({"outcome": "success"}), encoding="utf-8")
+        return 0, 1.0
+
+    ws = run_mod.run_once(root, exp, "a", slice_=sl, base=base, commit=head,
+                          rep=1, launch=launch)
+    rec = json.loads((ws / "_out" / "run_record.json").read_text(
+        encoding="utf-8"))
+    assert rec["feedback_records"] == 2
+    assert "agent_feedback.md" in rec["artefacts"]
+    assert (ws / "_out" / "agent_feedback.md").is_file(), \
+        "it outlived the workspace clear"
+
+
 def test_the_claude_transcript_directory_uses_the_clis_own_munge(tmp_path,
                                                                 monkeypatch):
     """`D:\\Asterism` -> `D--Asterism`: every character that is not a

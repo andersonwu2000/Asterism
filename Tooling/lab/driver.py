@@ -42,6 +42,12 @@ Every kind writes `driver_result.json` and copies its attempts tree into
 2026-09-04 was a REFUSED verdict, which arm3h_r2 had unlinked, and the
 shape had to be dug out of a codex rollout afterwards.
 
+Every kind also copies `.asterism/agent_feedback.md` out
+(`keep_feedback`, reported as `feedback_records`). The lab is where a
+prompt change is judged by what the agents complain about, and that file
+is the only place they say it — inside the runtime-state tree the run
+deletes.
+
 And every kind runs under `teardown.with_gateway_teardown`. A gateway
 that outlives its daemon is the production feature; in a lab workspace,
 which is discarded when the run ends, it is a 2 GB orphan holding the
@@ -177,6 +183,48 @@ def keep_attempts(workspace: Path, out: Path,
                         ignore=shutil.ignore_patterns("__pycache__"))
         kept.append(f"attempts/{pid}")
     return kept
+
+
+#: Where the agents' own feedback lands in `_out/`. Flat, beside
+#: `driver_result.json`: it is not an attempt's artefact — every spawn
+#: in the run appends to one file — and a reader looking for "what did
+#: the agents say about the framework" should not have to guess which
+#: pipeline id to open.
+FEEDBACK_BASENAME = "agent_feedback.md"
+
+
+def keep_feedback(workspace: Path, out: Path) -> "tuple[list[str], int]":
+    """Copy the agents' feedback file out of the workspace, and count
+    the records in it. Returns (artefact names, record count).
+
+    THE LAB IS WHERE A PROMPT CHANGE IS JUDGED BY WHAT THE AGENTS
+    COMPLAIN ABOUT, and this file is the only place they say it —
+    survivor self-reports plus the framework's own death causes
+    (`pipeline/_feedback.py`). It is written into `.asterism/`, which is
+    runtime state, which is exactly what `lab run` deletes when the run
+    ends: without this copy the first end-to-end run's four reports
+    survived only because the workspace happened to still be standing
+    (2026-09-07).
+
+    Called for EVERY kind, from `main`, rather than per-kind beside
+    `keep_attempts`: the daemon arm keeps no attempts tree at all
+    (`run_daemon` returns no pipeline ids) and it is the arm that runs
+    the most spawns. Best-effort — a run that produced a verdict must
+    not fail because a copy did not."""
+    try:
+        from Tooling.pipeline._feedback import count_records, feedback_path
+        src = feedback_path(Path(workspace))
+        if not src.is_file():
+            return [], 0
+        dst = Path(out) / FEEDBACK_BASENAME
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        return [FEEDBACK_BASENAME], count_records(
+            dst.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:            # noqa: BLE001 — see docstring
+        print(f"[lab] agent feedback not kept: {type(exc).__name__}: {exc}",
+              flush=True)
+        return [], 0
 
 
 def _intent(conn, problem: str):
@@ -925,9 +973,16 @@ def main(argv=None) -> int:
     from Tooling.lab.teardown import with_gateway_teardown
     t0 = time.monotonic()
     result = with_gateway_teardown(KINDS[kind], spec, ws, out)
+    # After the kind, before the record: the feedback file is appended
+    # to by every spawn the run made, so it is only whole once they are
+    # all done — and it must be out of `.asterism/` before `lab run`
+    # clears the workspace.
+    fb_kept, fb_n = keep_feedback(ws, out)
     result.update({"kind": kind, "problem": spec["problem"],
                    "wall_sec": round(time.monotonic() - t0, 1),
-                   "seats": seats_now()})
+                   "seats": seats_now(),
+                   "artefacts": list(result.get("artefacts") or []) + fb_kept,
+                   "feedback_records": fb_n})
     (out / RESULT_BASENAME).write_text(
         json.dumps(result, ensure_ascii=False, indent=2, default=str),
         encoding="utf-8")

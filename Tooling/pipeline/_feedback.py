@@ -42,6 +42,11 @@ from pathlib import Path
 _FEEDBACK_REL = ".asterism/agent_feedback.md"
 _SCRATCH_FILENAME = "_agent_feedback.md"
 
+#: What starts a record. The ring trim below counts in these units, and
+#: so does anything else that asks how much this file holds — a second
+#: spelling of the marker would drift the first time the prefix changes.
+RECORD_MARK = "- ["
+
 # Standalone framework-feedback questionnaire. Rendered by `attempt_feedback`
 # as its OWN `--resume` turn at every pipeline's tail (no longer piggybacked on
 # reflection — feedback is decoupled so it covers ALL pipelines uniformly, not
@@ -85,6 +90,28 @@ _HEADER = (
 _APPEND_LOCK = threading.Lock()
 
 
+def feedback_path(workspace: Path) -> Path:
+    """The shared feedback file for a workspace — the ONE place its
+    location is spelled.
+
+    A lab run's workspace is deleted when the run ends, so `lab/driver`
+    copies this file into `_out/` before that happens; without a name to
+    ask for, that copier would carry a second spelling of the path and
+    rot the first time this one moves. It has moved once already (owner
+    ruling 2026-09-06, out of `docs/internal/`)."""
+    return Path(workspace) / _FEEDBACK_REL
+
+
+def count_records(text: str) -> int:
+    """How many whole records a feedback file's text holds.
+
+    The count the lab reports, and the unit the ring trims in: a record
+    is a `RECORD_MARK` line plus whatever indented continuation lines
+    follow it, so counting LINES would double every entry that carries
+    an `evidence:` line."""
+    return sum(1 for ln in text.splitlines() if ln.startswith(RECORD_MARK))
+
+
 def _trim_locked(path: Path) -> None:
     """Drop the oldest records past `MAX_ENTRIES`, in WHOLE-record units
     (a `- [` line plus its indented continuation lines); the header block
@@ -92,7 +119,7 @@ def _trim_locked(path: Path) -> None:
     `_APPEND_LOCK`, right after an append; atomic replace so a crash
     mid-trim cannot eat the file."""
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    starts = [i for i, ln in enumerate(lines) if ln.startswith("- [")]
+    starts = [i for i, ln in enumerate(lines) if ln.startswith(RECORD_MARK)]
     if len(starts) <= MAX_ENTRIES:
         return
     keep_from = starts[len(starts) - MAX_ENTRIES]
@@ -139,7 +166,7 @@ def _append(workspace: Path, line: str) -> None:
     """Globally-locked append of one record to the shared feedback file,
     creating it (with header) on first write. Best-effort: any error is
     swallowed — feedback must never block or fail the dispatcher."""
-    path = workspace / _FEEDBACK_REL
+    path = feedback_path(workspace)
     try:
         with _APPEND_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)

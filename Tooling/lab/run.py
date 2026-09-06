@@ -24,6 +24,12 @@ derivable later:
   tokens / turns / wall  the provider's own accounting, out of the
                          workspace's `spawn_usage`.
   outcome + artefacts    what came back, and where it is.
+  feedback_records       how many things the agents said about the
+                         framework (`_out/agent_feedback.md`, copied out
+                         by the driver). The lab is where a prompt
+                         change is judged by what the agents complain
+                         about; the file lives in `.asterism/`, which
+                         this module deletes.
 
 Transcripts are the builder's responsibility, not the seat's: claude
 files them under `~/.claude/projects/<munged cwd>/` and codex under the
@@ -47,7 +53,7 @@ from pathlib import Path
 from . import LabError
 from . import build as _build
 from . import snapshot as _snapshot
-from .driver import RESULT_BASENAME
+from .driver import RESULT_BASENAME, keep_feedback
 
 OUT_DIRNAME = "_out"
 RECORD_BASENAME = "run_record.json"
@@ -263,6 +269,15 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
     artefacts = list(result.get("artefacts") or [])
     artefacts += collect_transcripts(ws, out)
     artefacts += collect_mcp_logs(ws, out)
+    # The agents' own feedback, again. The driver already copied it
+    # (every kind — `driver.keep_feedback`); this repeats the copy from
+    # out here because a driver that DIED before it got there is exactly
+    # the run whose complaints are worth reading, and the clear below is
+    # not undoable. Idempotent when the driver did its job, and the
+    # driver's own count wins when it reported one: that count came from
+    # the WORKSPACE's code, which is the code that wrote the file.
+    fb_kept, fb_n = keep_feedback(ws, out)
+    artefacts += fb_kept
     # The clear runs BEFORE the record is built, so what it could not
     # remove is part of the record rather than a line in a log nobody
     # kept. Everything that reads the workspace is done by here: the
@@ -301,6 +316,13 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
         "prompt_sha256": hashes,
         "seats": result.get("seats") or {},
         "usage": result.get("usage") or {},
+        # How many things the agents said about the framework this run
+        # (`_out/agent_feedback.md`). A top-level field, not something a
+        # reader digs out of `driver_result`: "did this arm's prompt
+        # edit stop the complaint it targeted" is a question asked of
+        # the record, and a zero here says the channel was off or the
+        # spawns never reached their feedback turn.
+        "feedback_records": int(result.get("feedback_records") or fb_n),
         "driver_result": result,
         "artefacts": sorted(set(artefacts)),
         "workspace_kept": bool(keep),

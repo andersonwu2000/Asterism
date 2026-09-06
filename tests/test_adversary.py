@@ -913,6 +913,78 @@ def test_judge_reads_proofs_and_papers_in_place(
     assert papers_dir.as_posix() in rendered
 
 
+def _review_prompt(workspace: Path, conn: sqlite3.Connection,
+                   attempts_name: str, monkeypatch) -> str:
+    """One round against a mocked spawn; returns the rendered prompt."""
+    from Tooling.pipeline import adversary as adv
+    attempts = workspace / ".attempts" / attempts_name
+    attempts.mkdir(parents=True)
+    seen: dict = {}
+
+    def fake_spawn(**kw):
+        seen.update(kw)
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            _clear_criteria_json(), encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    verdict, err, rc = adv.review(
+        round_no=1, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p", conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert rc == 0 and verdict is not None
+    return Path(seen["prompt_path"]).read_text(encoding="utf-8")
+
+
+def test_the_manifest_names_the_dossier_copy_never_the_unreadable_original(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """`Root.lean` / `Defs.lean` reach the judge as COPIES in its
+    dossier, and the manifest must name the copy.
+
+    The judge cannot open the problem-tree originals: claude's trust
+    boundary is `cwd ∪ --add-dir`, and an adversary spawn's is its
+    projection plus the `proofs/` and `_docs/` grants
+    (`llm/claude_cli` — the projection IS its problem_dir, and the
+    mathlib/Library/_docs grants are explicitly zeroed for this kind).
+    The manifest is read before the dossier list, so an advertised
+    original is the path the judge tries FIRST: two permission denials
+    per round, reported by the judge itself (2026-09-06, and the 07-19
+    ×7 that put the copies in the dossier to begin with)."""
+    pdir = workspace / "Problems" / "p"
+    (pdir / "Root.lean").write_text("theorem main : True := trivial\n",
+                                    encoding="utf-8")
+    (pdir / "Defs.lean").write_text("def T : Prop := True\n",
+                                    encoding="utf-8")
+
+    rendered = _review_prompt(workspace, conn, "adv-manifest", monkeypatch)
+
+    proj = workspace / ".attempts" / "adv-manifest" / "adversary" / "r1"
+    for name in ("Root.lean", "Defs.lean"):
+        assert (proj / name).is_file(), "the dossier carries the copy"
+        assert (proj / name).as_posix() in rendered, \
+            "the manifest names the path the judge can actually read"
+        # The original travels as PROVENANCE only — never as a bullet's
+        # subject, which is what "this file is yours to open" looks like
+        # in this manifest's shape.
+        assert f"- `{(pdir / name).as_posix()}`" not in rendered
+
+
+def test_the_manifest_says_so_when_the_problem_has_no_formal_files(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """No `Root.lean` in the problem dir → none in the dossier → the
+    manifest says DOES NOT EXIST. The whole point of the manifest is
+    that no round is spent discovering the package layout (x62 feedback
+    2026-08-25), so an absent file must be named absent rather than
+    left out."""
+    rendered = _review_prompt(workspace, conn, "adv-nofiles", monkeypatch)
+    for name in ("Root.lean", "Defs.lean"):
+        assert f"- `{name}`: DOES NOT EXIST" in rendered
+    proj = workspace / ".attempts" / "adv-nofiles" / "adversary" / "r1"
+    assert not (proj / "Root.lean").exists()
+
+
 # ---------------------------------------------------------------------
 # spawn_usage attribution (invisible-judge class, 2026-07-18)
 # ---------------------------------------------------------------------

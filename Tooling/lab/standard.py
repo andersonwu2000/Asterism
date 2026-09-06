@@ -532,6 +532,14 @@ def tools_seen(out_dir: Path) -> "set[str]":
 # the scorecard
 # ---------------------------------------------------------------------
 
+#: Deliberately WITHOUT a `feedback_records` column (2026-09-07). The
+#: count is in every `run_record.json` and this table has no natural
+#: place for it — every column here is either the item's identity or its
+#: expectation-vs-result, and the agents' complaints are neither. Adding
+#: one would also be silent corruption: the file is APPENDED to and its
+#: header is written once, so a tenth cell on new rows would sit under a
+#: nine-column header beside every baseline row this set is read
+#: against. `run_record.feedback_records` is where the count lives.
 _COLUMNS = ("date", "set/item", "kind", "seats", "prompt sha", "expected",
             "got", "ok", "run_record")
 

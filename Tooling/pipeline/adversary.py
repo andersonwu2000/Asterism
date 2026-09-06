@@ -819,16 +819,33 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         else:
             _ext_lines.append(f"- {label} `{path.as_posix()}`: "
                               f"DOES NOT EXIST — do not probe it")
+    # The one pair the judge reads as COPIES (`build_projection`), so
+    # the manifest names the COPY. Naming the problem-tree original
+    # advertised a file no judge can open — claude's trust boundary is
+    # `cwd ∪ --add-dir` and an adversary spawn's is its projection plus
+    # the `proofs/`/`_docs/` grants (`llm/claude_cli`) — and it is read
+    # BEFORE the dossier list, so that was the path tried first: two
+    # denied reads a round (judge feedback 2026-09-06; the 07-19 ×7 that
+    # put the copies here were the same denials).
     for name in ("Root.lean", "Defs.lean"):
-        p = problem_dir / name
-        _ext_lines.append(
-            f"- `{p.as_posix()}`: "
-            + ("exists" if p.is_file() else "DOES NOT EXIST"))
+        copy = proj / name
+        if copy.is_file():
+            _ext_lines.append(
+                f"- `{name}`: read it HERE — `{copy.as_posix()}`, this"
+                f" dossier's own copy of"
+                f" `{(problem_dir / name).as_posix()}`. That original is"
+                f" outside your readable roots; the copy is byte-identical"
+                f" and is the file the criteria mean.")
+        else:
+            _ext_lines.append(
+                f"- `{name}`: DOES NOT EXIST — this problem has none,"
+                f" here or anywhere; do not probe for it.")
     manifest = ("\n\n## This round's dossier — actually present\n"
                 + ", ".join(f"`{n}`" for n in present)
                 + "\n(a dossier file from the list above that is not "
                   "named here does not exist this round — do not probe "
-                  "for it)\n\nWorkspace paths the prompt references:\n"
+                  "for it)\n\nThe other paths the prompt names, and "
+                  "which one of each to read:\n"
                 + "\n".join(_ext_lines) + "\n")
     prompt_path.write_text(
         prompt_src.read_text(encoding="utf-8")
