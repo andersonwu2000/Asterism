@@ -3645,7 +3645,7 @@ def test_tex_render_says_no_engine_when_there_is_none(
     def _no_spawn(*a, **k):  # pragma: no cover — the assertion is that
         raise AssertionError("no engine, so nothing may be run")
 
-    monkeypatch.setattr(subprocess, "run", _no_spawn)
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
     _with_project(workspace)
     c = _client(workspace)
     c.put("/api/projects/Erdos/docs/user/paper.tex",
@@ -3667,17 +3667,30 @@ def _fake_latex(workspace: Path, monkeypatch, *, rc: int = 0,
         shutil, "which",
         lambda name: f"/usr/bin/{name}" if name == "latexmk" else None)
 
-    def fake_run(cmd, **kw):
-        calls.append({"cmd": list(cmd), "cwd": kw.get("cwd"),
-                      "env": kw.get("env") or {}})
-        d = Path(kw["cwd"])
-        if log:
-            (d / f"{tr.JOBNAME}.log").write_text(log, encoding="utf-8")
-        if rc == 0:
-            (d / f"{tr.JOBNAME}.pdf").write_bytes(pdf)
-        return subprocess.CompletedProcess(cmd, rc, "out", "err")
+    class _FakeProc:
+        """Popen, not run: the time box reaps the whole build TREE
+        now, which needs a handle on the child (2026-09-06). No
+        assertion below changed with it."""
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def __init__(self, cmd, **kw) -> None:
+            calls.append({"cmd": list(cmd), "cwd": kw.get("cwd"),
+                          "env": kw.get("env") or {}})
+            d = Path(kw["cwd"])
+            if log:
+                (d / f"{tr.JOBNAME}.log").write_text(log,
+                                                     encoding="utf-8")
+            if rc == 0:
+                (d / f"{tr.JOBNAME}.pdf").write_bytes(pdf)
+            self.returncode = rc
+            self.pid = -1
+
+        def communicate(self, timeout=None):  # noqa: ARG002
+            return "out", "err"
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _FakeProc)
     return calls
 
 

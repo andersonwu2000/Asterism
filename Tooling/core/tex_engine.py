@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -46,7 +47,23 @@ NO_ENGINE_DETAIL = (
 
 #: A document that has not finished in this long is not going to. TeX
 #: waits for input forever on some errors even under `nonstopmode`.
-TIMEOUT_SEC = 120
+#:
+#: 120 → 300 (2026-09-06). Measured on this box: a WARM latexmk run of a
+#: 43 kB article is 0.3–0.7 s, but the first run of the afternoon took
+#: 228 s before pdfTeX had even started (`main.tex` written 21:44:24.678,
+#: the log's own header `6 SEP 2026 21:48`) — a cold TinyTeX start pays
+#: for perl and the kpathsea database once, and the 120 s box fired in
+#: the middle of it. 300 s is that cold start with room to spare, and it
+#: still fits inside the Assistant turn's 600 s idle deadline, which is
+#: the real ceiling: a tool call is SILENCE on that stream.
+#: `tests/test_serve_chat.py::test_the_tex_box_fits_inside_the_turn_that_
+#: waits_for_it` pins the order of the three clocks.
+TIMEOUT_SEC = 300
+
+#: After the box fires the tree is already terminated; this is how long
+#: its pipes get to reach EOF before the log is read without them. Not a
+#: second time box — a floor against a handle that outlives its process.
+_REAP_GRACE_SEC = 10
 
 #: How much of the log a caller is handed. The interesting line is at
 #: the END of a TeX log, always.
@@ -158,6 +175,91 @@ def page_count(log: str) -> "int | None":
     return int(m.group(1)) if m is not None else None
 
 
+def _kill_tree(proc: "subprocess.Popen") -> None:
+    """Fallback reaper for a child the Job Object never took (an OS that
+    refused it, or a platform that has none). `taskkill /T` walks the
+    LIVE parent-child chain, which is enough here: the box fires while
+    the tree is still attached."""
+    if os.name == "posix":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except OSError:
+            pass
+    else:
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=_REAP_GRACE_SEC)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_boxed(cmd: "list[str]", *, cwd: str, env: "dict[str, str]",
+               timeout_sec: int) -> "tuple[int | None, str, bool]":
+    """One engine run inside a kill-on-close Job Object, so the time box
+    reaps the WHOLE tree. Returns `(returncode, output, timed_out)`;
+    `returncode` is None when the box fired.
+
+    `subprocess.run(..., timeout=)` cannot do this, twice over — both
+    measured 2026-09-06, when a 120 s box took 228 s of wall clock:
+
+      * it reaps the DIRECT child only. `latexmk` on TinyTeX is a
+        runscript `.EXE` whose real work is a `perl` GRANDCHILD, and
+        `pdflatex` is that one's child; killing the wrapper leaves the
+        compile running.
+      * after the kill, its Windows branch calls `communicate()` with NO
+        timeout, and that blocks until every holder of the inherited
+        stdout handle exits — i.e. until the survivors finish anyway.
+
+    Job membership survives re-parenting, which `taskkill /T` does not
+    (`core/process_group.create_capped_job`, written for the same shape
+    of bug in the agent spawns). `_kill_tree` is the fallback where the
+    OS refuses the job.
+    """
+    from . import process_group
+
+    job = process_group.create_capped_job(None)
+    reaped = [False]
+
+    def reap() -> bool:
+        if reaped[0]:
+            return False
+        reaped[0] = True
+        return process_group.terminate_job(job)
+
+    kw: "dict[str, object]" = ({"start_new_session": True}
+                               if os.name == "posix" else
+                               {"creationflags":
+                                process_group.no_window_creationflags()})
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", **kw)
+    except BaseException:
+        reap()
+        raise
+    in_job = process_group.assign_to_job(job, proc)
+    try:
+        out, err = proc.communicate(timeout=timeout_sec)
+        return proc.returncode, (out or "") + (err or ""), False
+    except subprocess.TimeoutExpired:
+        if not (in_job and reap()):
+            _kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=_REAP_GRACE_SEC)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        return None, (out or "") + (err or ""), True
+    finally:
+        reap()
+
+
 class Result:
     """What one compile came to. `status` is `ok`, `failed` or
     `timeout`; the rest is whatever that status has to say."""
@@ -199,17 +301,18 @@ def compile_into(build: Path, source: str, doc_dir: Path, name: str,
     rc = 0
     for cmd in commands(name, exe):
         try:
-            r = subprocess.run(cmd, cwd=str(build), env=env,
-                               capture_output=True, text=True,
-                               timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
+            code, out, timed_out = _run_boxed(cmd, cwd=str(build), env=env,
+                                              timeout_sec=timeout_sec)
+        except OSError as e:  # the engine vanished between which() and run
+            return Result("failed", name, detail=str(e))
+        if timed_out:
+            # the log is what it reached before the tree was stopped —
+            # a half-finished build that already named its error still
+            # names it, and the caller hands that on
             return Result("timeout", name,
                           detail=f"{name} did not finish in {timeout_sec}s",
                           log=log_text(build, out))
-        except OSError as e:  # the engine vanished between which() and run
-            return Result("failed", name, detail=str(e))
-        out = (r.stdout or "") + (r.stderr or "")
-        rc = r.returncode
+        rc = code or 0
         if rc != 0:
             break
     log = log_text(build, out)

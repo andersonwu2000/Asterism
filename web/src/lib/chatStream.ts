@@ -162,33 +162,59 @@ export function reduceEvent(
   }
   if (type === 'done') {
     const ok = ev.ok !== false
+    const note = ok ? turn.note : `the answer ended abnormally (${str(ev.subtype) ?? ''})`
     return {
       ...turn,
-      rows: settle(turn.rows),
+      rows: settle(turn.rows, ok ? null : note),
       stage: null,
       done: true,
       ok,
-      note: ok ? turn.note : `the answer ended abnormally (${str(ev.subtype) ?? ''})`,
+      note,
     }
   }
   if (type === 'error') {
+    const note = str(ev.detail) ?? 'unknown error'
     return {
       ...turn,
-      rows: settle(turn.rows),
+      rows: settle(turn.rows, note),
       stage: null,
       done: true,
       ok: false,
-      note: str(ev.detail) ?? 'unknown error',
+      note,
     }
   }
   return turn
 }
 
-/** A turn that ended leaves nothing pulsing. A row we never heard the
- * end of keeps `ok: null` — it is not a failure, it is a silence. */
-function settle(rows: ToolRow[]): ToolRow[] {
+/** The stream stopped without saying so.
+ *
+ * A body that just closes — the CLI gone, the socket dropped, a turn
+ * killed between events — is an ENDING, and one the panel used to draw
+ * as a call still running under an answer that never came (2026-09-06,
+ * a `tex_check` row left pulsing for the rest of the session). The
+ * backend now says it on the wire; this is the same ending for the case
+ * where nothing could be said at all. */
+export function endStream(turn: StreamTurn, reason: string): StreamTurn {
+  return reduceEvent(turn, { type: 'error', detail: reason })
+}
+
+/** A turn that ended leaves nothing pulsing.
+ *
+ * `failed` is the reason the turn ended badly, or null where it ended
+ * well. On a good ending a row we never heard back from keeps
+ * `ok: null` — it is not a failure, it is a silence, and the engine
+ * said the turn was fine. On a bad one it IS the failure: the call is
+ * where the turn stopped, and the row carries the reason so the drawer
+ * says what the note above it says. */
+function settle(rows: ToolRow[], failed: string | null): ToolRow[] {
   if (!rows.some((r) => r.running)) return rows
-  return rows.map((r) => (r.running ? { ...r, running: false } : r))
+  return rows.map((r) =>
+    r.running
+      ? failed === null
+        ? { ...r, running: false }
+        : { ...r, running: false, ok: false, result: r.result ?? failed }
+      : r,
+  )
 }
 
 // -- what a row says ---------------------------------------------------------

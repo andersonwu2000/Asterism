@@ -822,7 +822,11 @@ def register(app: FastAPI, workspace: Path) -> None:
         #: first-class — the person read what streamed).
         answer: "list[str]" = []
         rows: "list[dict]" = []
-        outcome: "dict[str, object]" = {"ok": False, "note": None}
+        #: `done` is whether the engine ENDED the turn. Without it the
+        #: turn stopped, which is a different thing and has to be said
+        #: out loud — see `_stopped_note`.
+        outcome: "dict[str, object]" = {"ok": False, "note": None,
+                                        "done": False}
 
         async def gen():
             nonlocal turn
@@ -877,32 +881,39 @@ def register(app: FastAPI, workspace: Path) -> None:
                     last_ping = last_event
                     if item is None:
                         rc = proc.wait()
-                        if rc != 0 and not got_any:
+                        err = ""
+                        if proc.stderr is not None:
+                            try:
+                                err = (proc.stderr.read() or "")[-400:]
+                            except (OSError, ValueError):
+                                err = ""
+                        if rc != 0 and not got_any and turn.resume:
                             # a dead resume handle (aborted turn, swept
                             # session, a conversation id the CLI no
                             # longer knows) gets ONE clean cold retry
                             # before surfacing the error — and the cold
                             # prompt carries the transcript we still hold
-                            err = ""
-                            if proc.stderr is not None:
-                                err = (proc.stderr.read() or "")[-400:]
-                            if turn.resume:
-                                turn = explainer.plan_turn(provider, None)
-                                chat_sessions.set_handle(
-                                    workspace, session_id, None, None)
-                                yield _sse({"type": "status",
-                                            "stage": "retry"})
-                                proc = _spawn(turn, cold_prompt)
-                                q2: "queue.Queue[dict | None]" = \
-                                    queue.Queue()
-                                threading.Thread(
-                                    target=backend.reader, args=(proc, q2),
-                                    daemon=True,
-                                    name="chat-reader-2").start()
-                                q = q2
-                                continue
-                            outcome["note"] = (f"{provider} exited rc={rc} "
-                                               f"{err}").strip()
+                            turn = explainer.plan_turn(provider, None)
+                            chat_sessions.set_handle(
+                                workspace, session_id, None, None)
+                            yield _sse({"type": "status", "stage": "retry"})
+                            proc = _spawn(turn, cold_prompt)
+                            q2: "queue.Queue[dict | None]" = queue.Queue()
+                            threading.Thread(
+                                target=backend.reader, args=(proc, q2),
+                                daemon=True, name="chat-reader-2").start()
+                            q = q2
+                            continue
+                        if not outcome["done"]:
+                            # THE ENGINE WENT AWAY WITHOUT ENDING THE
+                            # TURN (2026-09-06 13:48:12Z, mid `tex_check`).
+                            # The old guard only spoke when the exit code
+                            # was non-zero AND nothing had streamed, so a
+                            # turn that had said a sentence first ended
+                            # in silence: no `done`, no `error`, a row
+                            # left pulsing and `note: None` on the record.
+                            outcome["note"] = _stopped_note(
+                                provider, rc, rows, err)
                             yield _sse({"type": "error",
                                         "detail": outcome["note"]})
                         break
@@ -918,6 +929,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                     elif kind == "tool_end":
                         _settle_row(rows, item)
                     elif kind == "done":
+                        outcome["done"] = True
                         outcome["ok"] = bool(item.get("ok"))
                         # The handle to replay next time: the one we
                         # minted (claude), the one the provider minted
@@ -931,6 +943,14 @@ def register(app: FastAPI, workspace: Path) -> None:
                     yield _sse(item)
                     if kind == "done":
                         break
+            except GeneratorExit:
+                # the tab closed or the stop button was pressed: nothing
+                # can be sent any more, but the record still has to say
+                # why this answer is half of one
+                if not outcome["done"] and outcome["note"] is None:
+                    outcome["note"] = ("the page stopped listening before "
+                                       "the answer ended")
+                raise
             finally:
                 # Runs on every ending, the client walking away included
                 # (the stop button and a closed tab both throw in here).
@@ -940,6 +960,14 @@ def register(app: FastAPI, workspace: Path) -> None:
                 # turn it was waiting for.
                 if proc is not None and proc.poll() is None:
                     proc.kill()
+                if not outcome["done"] and outcome["note"] is None:
+                    outcome["note"] = ("the stream ended before the answer "
+                                       "did")
+                if outcome["note"] is not None:
+                    # a call whose result never came back is not still
+                    # running, and the record must not read as if the
+                    # panel simply stopped watching it
+                    _fail_open_rows(rows, str(outcome["note"]))
                 if persist:
                     try:
                         chat_sessions.append_assistant(
@@ -952,6 +980,39 @@ def register(app: FastAPI, workspace: Path) -> None:
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
+
+
+def _open_rows(rows: "list[dict]") -> "list[dict]":
+    """The calls whose result never came back."""
+    return [r for r in rows if r.get("ok") is None]
+
+
+def _stopped_note(provider: str, rc: int, rows: "list[dict]",
+                  err: str) -> str:
+    """One line saying why a turn stopped instead of ending.
+
+    It NAMES the call it stopped inside where there is one: "it stopped"
+    is not a reason, and on 2026-09-06 the call was the whole story —
+    `tex_check` had been compiling for four minutes.
+    """
+    open_now = _open_rows(rows)
+    where = ""
+    if open_now:
+        name = str(open_now[-1].get("name") or "").split("__")[-1]
+        where = f" while {name or 'a tool'} was still running"
+    tail = f" — {err.strip()}" if err.strip() else ""
+    return (f"the {provider} explainer stopped without ending the answer "
+            f"(exit {rc}){where}{tail}")
+
+
+def _fail_open_rows(rows: "list[dict]", reason: str) -> None:
+    """Close every call the turn never heard back from, as the failure
+    it is. The reason goes in the result, because a row that says
+    nothing is what the panel showed for four minutes."""
+    for row in _open_rows(rows):
+        row["ok"] = False
+        if not row.get("result"):
+            row["result"] = reason
 
 
 def _settle_row(rows: "list[dict]", item: dict) -> None:

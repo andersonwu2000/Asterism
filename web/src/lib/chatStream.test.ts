@@ -160,7 +160,9 @@ describe('reducing a turn', () => {
     expect(t.ok).toBe(false)
     expect(t.note).toBe('the claude explainer stopped without finishing the answer')
     expect(t.rows[0]).toMatchObject({ running: false, ok: false })
-    expect(t.text).toBe('I will compile it.')
+    // the paragraph break the tool call opened is the reducer's, and
+    // an ending does not take it back
+    expect(t.text).toBe('I will compile it.\n\n')
   })
 
   it('an error fails the row it interrupted, and says there what it says above', () => {

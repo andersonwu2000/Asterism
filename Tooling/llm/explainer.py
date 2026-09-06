@@ -386,8 +386,17 @@ class ClaudeExplainer(_Backend):
         ]
 
     def env(self, workspace: Path) -> "dict[str, str]":
+        from .base import MCP_TOOL_TIMEOUT_SEC
         env = dict(os.environ)
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        # MCP tool call ceiling, in MILLISECONDS — the same one the
+        # pipeline spawns carry (`claude_cli`), because this seat gets
+        # the same tool server. Two of those tools hold a call for
+        # minutes (`compute`'s sandbox, `tex_check`'s engine), and a
+        # seat that leaves the ceiling to whatever the CLI ships with
+        # is a seat whose tool results can be thrown away before they
+        # are handed back — 2026-09-06, a tex_check that never returned.
+        env["MCP_TOOL_TIMEOUT"] = str(MCP_TOOL_TIMEOUT_SEC * 1000)
         return env
 
     def reader(self, proc: "subprocess.Popen",

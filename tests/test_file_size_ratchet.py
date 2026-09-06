@@ -787,6 +787,15 @@ _WATERMARKS = {
     # and moved OUT, to `Tooling/core/tex_engine.py`, shared with
     # `serve/tex_render.py`. Conscious bump.
     "Tooling/knowledge/mcp_tools.py": 1100,
+    # 1000 (the default cap) → 1060 2026-09-06 — a turn that stops is an
+    # ending and has to say so: `_stopped_note` / `_fail_open_rows` and
+    # the two places that reach them (the reader's EOF, and the reader
+    # walking away). The incident this closes cost the answer, the
+    # error and the record's `note` all three. The SSE generator is one
+    # contract with one lifetime; splitting the ending away from the
+    # loop that produces it would put the two halves of "how a turn
+    # ends" in two files. Conscious bump.
+    "Tooling/serve/chat.py": 1060,
 }
 
 

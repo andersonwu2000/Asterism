@@ -772,7 +772,12 @@ def _fake_engine(monkeypatch, *, name: str = "latexmk", rc: int = 0,
                  log: str = "", pdf: bytes = b"%PDF-1.5 fake") -> list:
     """A TeX engine that is on PATH and writes what one writes. Never
     the real one: a suite that shells out to pdflatex fails on a machine
-    without it, and this repo runs on two."""
+    without it, and this repo runs on two.
+
+    Fakes `Popen`, not `run`: the time box has to reap the whole build
+    TREE, which needs a handle on the child, so `tex_engine` no longer
+    goes through `subprocess.run`. No assertion below changed with it.
+    """
     import shutil
     import subprocess as sp
 
@@ -783,17 +788,25 @@ def _fake_engine(monkeypatch, *, name: str = "latexmk", rc: int = 0,
         shutil, "which",
         lambda n: f"/usr/bin/{n}" if n == name else None)
 
-    def fake_run(cmd, **kw):
-        calls.append({"cmd": list(cmd), "cwd": kw.get("cwd")})
-        d = Path(kw["cwd"])
-        if log:
-            (d / f"{tex_engine.JOBNAME}.log").write_text(log,
-                                                         encoding="utf-8")
-        if rc == 0:
-            (d / f"{tex_engine.JOBNAME}.pdf").write_bytes(pdf)
-        return sp.CompletedProcess(cmd, rc, "out", "err")
+    class _FakeProc:
+        def __init__(self, cmd, **kw) -> None:
+            calls.append({"cmd": list(cmd), "cwd": kw.get("cwd")})
+            d = Path(kw["cwd"])
+            if log:
+                (d / f"{tex_engine.JOBNAME}.log").write_text(
+                    log, encoding="utf-8")
+            if rc == 0:
+                (d / f"{tex_engine.JOBNAME}.pdf").write_bytes(pdf)
+            self.returncode = rc
+            self.pid = -1
 
-    monkeypatch.setattr(sp, "run", fake_run)
+        def communicate(self, timeout=None):  # noqa: ARG002
+            return "out", "err"
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(sp, "Popen", _FakeProc)
     return calls
 
 
@@ -878,7 +891,7 @@ def test_tex_check_refuses_outside_the_persons_shelf(
         raise AssertionError("a refused path may not reach an engine")
 
     import subprocess as sp
-    monkeypatch.setattr(sp, "run", _no_spawn)
+    monkeypatch.setattr(sp, "Popen", _no_spawn)
     assert "user/" in mcp_tools.tex_check(project="Erdos",
                                           path="agent/theirs.tex")
     assert "user/" in mcp_tools.tex_check(project="Erdos",
@@ -911,7 +924,7 @@ def test_tex_check_says_precisely_that_there_is_no_toolchain(
     def _no_spawn(*a, **k):  # pragma: no cover
         raise AssertionError("no engine, so nothing may be run")
 
-    monkeypatch.setattr(sp, "run", _no_spawn)
+    monkeypatch.setattr(sp, "Popen", _no_spawn)
     project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "x")
     out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
     for engine in ("latexmk", "pdflatex", "tectonic"):

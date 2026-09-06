@@ -951,8 +951,18 @@ def tex_check(project: str = "", path: str = "",
     build = workspace.joinpath(".asterism", *_TEX_BUILD, key)
     res = tex_engine.compile_into(build, source, doc.parent, name, exe)
     if res.status == "timeout":
-        return (f"tex_check: {res.detail} — an error is waiting for input, "
-                f"or the document is far larger than a note.")
+        # the build was stopped, but what it had already written is
+        # still the diagnosis — dropping it costs the reader the one
+        # line they can act on (2026-09-06: the log held `:110: …
+        # Environment definition* undefined` and the answer said only
+        # that a clock had run out)
+        errors = tex_engine.error_lines(res.log, as_name=rel)
+        if not errors:
+            return (f"tex_check: {res.detail} and was stopped, with nothing "
+                    f"in its log yet — an error is waiting for input, or "
+                    f"the document is far larger than a note.")
+        return (f"tex_check: {res.detail} and was stopped. This is how far "
+                f"the log had got:\n" + "\n".join(errors))
     if res.status != "ok":
         errors = tex_engine.error_lines(res.log, as_name=rel)
         head = (f"tex_check: {name} could not compile {rel} "

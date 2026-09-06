@@ -9,7 +9,7 @@ import type { ScreenFocus } from '../lib/focus'
 import { renderProse } from '../lib/prose'
 import { canSwitchModel, deriveTitle, sortSessions, truncateAt } from '../lib/chatSessions'
 import { explainerGroups } from '../lib/models'
-import { emptyTurn, parseSseFrames, reduceEvent, rowsFromRecord } from '../lib/chatStream'
+import { emptyTurn, endStream, parseSseFrames, reduceEvent, rowsFromRecord } from '../lib/chatStream'
 import type { StreamTurn } from '../lib/chatStream'
 import type {
   ChatSession,
@@ -586,9 +586,19 @@ export default function AssistantPanel({
             }
           }
         }
-        if (!landed && liveRef.current.text === '' && liveRef.current.rows.length === 0) {
-          rollback('the stream ended before an answer arrived')
-          return
+        if (!landed) {
+          // the body closed without a `done` or an `error`. With nothing
+          // to show, the question goes back to the composer; with half
+          // an answer that half is kept -- and it now says why it is
+          // half, instead of leaving the call it stopped inside pulsing
+          // under it forever (2026-09-06).
+          const why = 'the stream ended before the answer did'
+          if (liveRef.current.text === '' && liveRef.current.rows.length === 0) {
+            rollback(why)
+            return
+          }
+          liveRef.current = endStream(liveRef.current, why)
+          setLive(liveRef.current)
         }
         commit()
       } catch (e) {
