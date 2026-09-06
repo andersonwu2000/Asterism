@@ -73,10 +73,18 @@ export function ConfirmWindow({
   const panelRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
+      if (e.key !== 'Escape') return
+      // The INNERMOST surface answers first. This listener is on
+      // `window` in the CAPTURE phase — it has to be, or a keystroke
+      // inside the panel would never reach it — which means it also
+      // beats every dismissible layer the window itself contains. A
+      // model menu open inside Settings was being escaped by having
+      // the whole window vanish out from under it (2026-09-06). A
+      // layer that can be dismissed says so with `data-dismissible`
+      // and takes the key; the window closes on the next press.
+      if (document.querySelector('[data-dismissible]') !== null) return
+      e.stopPropagation()
+      onClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)

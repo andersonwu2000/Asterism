@@ -331,19 +331,25 @@ export default function AssistantPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, listSessions, loadRecord])
 
-  // Which models exist is a question only the machine can answer, and
-  // a kept list goes stale the day a vendor ships a tier. One probe per
-  // mount, exactly as RunParameters does it.
-  useEffect(() => {
-    let gone = false
+  // Which models exist is a question only the machine can answer, and a
+  // kept list goes stale the day a vendor ships a tier — so it is asked,
+  // but not on MOUNT. The probe spawns a subprocess per backend, and
+  // this panel mounts on every project page: opening a task to read it
+  // was making the console run `agy models` (the research-entry cases
+  // caught exactly that, 2026-09-06 — a reading page must write and
+  // spawn nothing). It is asked when someone opens the picker, which is
+  // the moment the answer is wanted, and once per panel after that: the
+  // menu is already open by then, and a list rearranging under an open
+  // menu is worse than a list one click old.
+  const askedModels = useRef(false)
+  const refreshModels = useCallback(() => {
+    if (askedModels.current) return
+    askedModels.current = true
     apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
-      .then((r) => !gone && setLiveGroups(r.groups))
+      .then((r) => setLiveGroups(r.groups))
       .catch(() => {
         /* keep the declared lists — never blank the picker */
       })
-    return () => {
-      gone = true
-    }
   }, [])
 
   useEffect(() => {
@@ -744,6 +750,7 @@ export default function AssistantPanel({
             groups={groups}
             value={picked}
             onChange={setModel}
+            onOpen={refreshModels}
             title="stronger models cost more of the same subscription quota"
           />
           <button

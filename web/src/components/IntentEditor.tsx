@@ -5,6 +5,7 @@ import { docAddress } from '../lib/docShell'
 import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
+import { renderProse } from '../lib/prose'
 import type { IntentData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
 
 /*
@@ -207,6 +208,7 @@ export default function IntentEditor({
   const [touched, setTouched] = useState<Set<'charter' | 'word' | 'settings'>>(new Set())
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [editing, setEditing] = useState(false)
   const dirty = touched.size > 0
 
   // the parent shows an unsaved-changes dot on the tab
@@ -309,6 +311,28 @@ export default function IntentEditor({
         </div>
       )}
       <div className="flex flex-col gap-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-edge pb-3">
+          <h2 className="font-display text-2xl text-ink">The question</h2>
+          <div className="flex items-center gap-3">
+            {dirty && <span role="status" className="text-xs text-ink-dim">Unsaved changes</span>}
+            <Button onClick={() => setEditing(value => !value)} aria-expanded={editing} aria-controls="task-intent-fields">
+              {editing ? 'Read' : 'Edit intent'}
+            </Button>
+          </div>
+        </div>
+        {!editing && (
+          <div className="text-sm leading-relaxed text-ink-dim">
+            {charter.trim() ? renderProse(charter) : <p>No goal written yet. Use “Edit intent” to describe the question.</p>}
+            {word.trim() && <section className="mt-6 border-t border-edge pt-5">
+              <h3 className={eyebrow}>Your standing word</h3>
+              {renderProse(word)}
+            </section>}
+            {dirty && <p className="mt-4 text-xs">Reading your unsaved draft — return to “Edit intent” to save it.</p>}
+          </div>
+        )}
+        {/* Keep the form mounted when reading: toggling the view must
+            never discard a draft or make an implicit save. */}
+        <div id="task-intent-fields" hidden={!editing} className={editing ? 'flex flex-col gap-5' : undefined}>
         {/* THE GOAL — the engine may propose a change to it, so it locks */}
         <fieldset disabled={data.pending_amend}>
           <div
@@ -318,6 +342,7 @@ export default function IntentEditor({
             the goal
           </div>
           <MarkdownEditor
+            label="The goal"
             value={charter}
             onChange={(v) => {
               setCharter(v)
@@ -336,6 +361,7 @@ export default function IntentEditor({
             your standing word
           </div>
           <MarkdownEditor
+            label="Your standing word"
             heightClass="h-64"
             value={word}
             onChange={(v) => {
@@ -409,6 +435,7 @@ export default function IntentEditor({
             </span>
           </div>
         </fieldset>
+        </div>
       </div>
       {/* NOTE: outside the lock on purpose — paper bindings are their own
           DB rows, not part of the goal, so a pending amend does not

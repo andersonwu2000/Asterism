@@ -11,6 +11,7 @@ import { Button, StatusBadge } from '../components/ui'
 import IntentEditor from '../components/IntentEditor'
 import RunControl, { StopButton } from '../components/RunControl'
 import RunParameters from '../components/RunParameters'
+import CollectionSearch from '../components/CollectionSearch'
 import Inbox from './Inbox'
 import type { BoardProblem, DaemonStatus } from '../lib/types'
 
@@ -36,15 +37,12 @@ const WEEK_MS = 7 * 86400_000
 
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0)) return null
-  const rest = Math.max(0, p.goals.total - p.goals.proved - p.goals.open)
   return (
     <span
       className="tnum text-xs whitespace-nowrap text-ink-dim"
-      title={`${p.goals.proved} proved · ${p.goals.open} open${
-        rest > 0 ? ` · ${rest} parked` : ''
-      } of ${p.goals.total} goals`}
+      title="Proof inventory, not a completion percentage for the main question"
     >
-      {p.goals.proved}/{p.goals.total} proved
+      {p.goals.proved} proved · {p.goals.open} open
     </span>
   )
 }
@@ -75,14 +73,15 @@ function Row({
           onClick={(e) => e.stopPropagation()}
           onChange={(e) => onPick(p.name, e.target.checked)}
           title="run this task in the next run"
+          aria-label={`Select ${p.name} for the next run`}
           className="cursor-pointer align-middle"
         />
       </td>
-      <td className="h-9 pr-4">
+      <td className="py-4 pr-4">
         <span className="flex min-w-0 items-center gap-2">
           <Link
             to={to}
-            className="truncate font-mono text-[13px] text-ink"
+            className="truncate font-mono text-sm text-ink"
             title={p.name}
             onClick={(e) => e.stopPropagation()}
           >
@@ -110,12 +109,23 @@ function Row({
             </span>
           )}
         </span>
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-dim">
+          {(['sky', 'groups', 'timeline'] as const).map(section => (
+            <Link key={section} to={projectPath(project, section, p.name)}
+              onClick={e => e.stopPropagation()}
+              className="transition-colors hover:text-ink hover:underline"
+              aria-label={`${section === 'sky' ? 'Proof map' : section === 'groups' ? 'Read the argument' : 'History'} — ${p.name}`}>
+              {section === 'sky' ? 'proof map' : section === 'groups' ? 'read the argument' : 'history'}
+            </Link>
+          ))}
+        </div>
       </td>
       <td className="pr-4">
         <StatusBadge status={p.status} />
       </td>
       <td className="pr-3 text-right">
         <GoalCounts p={p} />
+        {p.last_event && <div className="mt-1 text-[11px] text-ink-faint" title={p.last_event}>updated {relTime(p.last_event)}</div>}
       </td>
     </tr>
   )
@@ -277,27 +287,23 @@ function Shelf({
   )
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
+    <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="mb-7">
+        <h1 className="font-display text-3xl text-ink">Questions in progress.</h1>
+        <p className="mt-2 text-xs leading-relaxed text-ink-dim">Read the argument, trace a proof, or choose what runs next.</p>
+      </div>
       <Inbox project={project} />
       <section className="mb-6 flex flex-col gap-3 rounded-xl border border-edge bg-surface px-4 py-3">
         <RunBar project={project} picked={[...picked]} onClear={() => setPicked(new Set())} />
         <RunParameters running={daemon?.running ?? false} />
       </section>
 
-      <div className="mb-2 flex items-center gap-3">
-        <input
-          className="w-64 rounded-lg border border-edge bg-surface px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
-          placeholder="filter tasks…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setQuery('')
-              e.currentTarget.blur()
-            }
-          }}
-        />
-        {filtering && <span className="tnum text-[11px] text-ink-faint">{sorted.length}</span>}
+      <div className="mb-2 flex flex-wrap items-center gap-3">
+        <div className="w-72 max-w-full">
+          <CollectionSearch value={query} onChange={setQuery} label="Search tasks" placeholder="filter tasks…" />
+        </div>
+        <span className="tnum text-[11px] text-ink-faint">{loaded ? `${sorted.length} task${sorted.length === 1 ? '' : 's'}` : '—'}</span>
+        {picked.size > 0 && <button className="cursor-pointer text-xs text-ink-dim underline" onClick={() => setPicked(new Set())}>clear {picked.size} selected</button>}
         <Link
           to={`/new/${encodeURIComponent(project)}`}
           className="ml-auto rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
@@ -315,13 +321,19 @@ function Shelf({
         ) : (
           <div className="late-fade py-16 text-center text-xs text-ink-faint">Loading…</div>
         )
+      ) : sorted.length === 0 ? (
+        <div role="status" className="py-12 text-center">
+          <p className="font-display text-2xl">No matching tasks.</p>
+          <button className="mt-3 cursor-pointer text-xs text-ink-dim underline" onClick={() => setQuery('')}>Clear the search</button>
+        </div>
       ) : (
-        <table className="w-full table-fixed border-collapse text-left">
+        <div className="overflow-x-auto"><table className="w-full min-w-[620px] table-fixed border-collapse text-left">
+          <caption className="sr-only">Tasks and their proof inventory; counts do not measure completion of the main question.</caption>
           <colgroup>
             <col className="w-8" />
             <col />
             <col className="w-[132px]" />
-            <col className="w-[128px]" />
+            <col className="w-[180px]" />
           </colgroup>
           <tbody>
             {filtering ? (
@@ -355,7 +367,7 @@ function Shelf({
               </>
             )}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   )
@@ -461,7 +473,8 @@ function OneTask({
     // no horizontal padding of its own: the intent editor brings the
     // page's gutter, and two of them put the header a notch left of
     // everything it introduces
-    <div className="mx-auto max-w-4xl py-6">
+    <div className="mx-auto max-w-4xl py-8">
+      <Link to={projectPath(project, 'tasks')} className="mx-6 mb-4 inline-block text-xs text-ink-dim hover:text-ink">‹ All tasks</Link>
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 px-6">
         <span className="font-mono text-sm text-ink">{problem}</span>
         {row && <StatusBadge status={row.status} />}
@@ -476,6 +489,18 @@ function OneTask({
       <div className="px-6">
         <RunParameters running={daemon?.running ?? false} />
       </div>
+      <nav aria-label="Read this task" className="mx-6 mt-6 grid gap-3 sm:grid-cols-3">
+        {([
+          ['groups', 'Read the argument', 'The current plan and its discussions.'],
+          ['sky', 'Explore the proof', 'Claims, dependencies and proved steps.'],
+          ['timeline', 'Follow the history', 'Decisions and what became of them.'],
+        ] as const).map(([section, title, description]) => (
+          <Link key={section} to={projectPath(project, section, problem)} className="group rounded-xl border border-edge bg-surface p-4 transition-colors hover:border-ink-faint hover:bg-surface-2">
+            <span className="flex items-center justify-between gap-2 text-xs font-medium text-ink">{title}<span aria-hidden="true" className="text-ink-faint group-hover:text-ink">↗</span></span>
+            <span className="mt-2 block text-[11px] leading-relaxed text-ink-dim">{description}</span>
+          </Link>
+        ))}
+      </nav>
       <div className="mt-3 mb-3 px-6 text-[11px] text-ink-faint">
         {mine
           ? 'the run is live — what you save below reaches the next agent it spawns, no restart'
@@ -506,7 +531,7 @@ export default function Tasks({
   problem: string | null
   loaded: boolean
 }) {
-  if (problem === null) return <Shelf project={project} rows={rows} loaded={loaded} />
+  if (problem === null) return <Shelf key={project} project={project} rows={rows} loaded={loaded} />
   return (
     <OneTask
       key={problem}

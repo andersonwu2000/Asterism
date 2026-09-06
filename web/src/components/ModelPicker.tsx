@@ -31,6 +31,7 @@ export default function ModelPicker({
   groups,
   value,
   onChange,
+  onOpen,
   className = '',
   title,
   label = 'model',
@@ -39,6 +40,12 @@ export default function ModelPicker({
   groups: ModelGroup[]
   value: string
   onChange: (model: string) => void
+  /** the menu is being opened — the moment to ask the backends what
+   * they actually run. Asking on MOUNT spawned a subprocess for every
+   * reader who merely opened a page (five research-entry cases caught
+   * it, 2026-09-06); asking here spends it on someone who is choosing.
+   * The caller decides whether that is once or every time. */
+  onOpen?: () => void
   className?: string
   title?: string
   /** what this picker seats — the trigger's accessible name */
@@ -69,14 +76,27 @@ export default function ModelPicker({
     listRef.current?.querySelector<HTMLElement>(`[data-at="${at}"]`)?.focus()
   }, [open, at])
 
-  // a click anywhere else is a dismissal, not a choice
+  // A click anywhere else is a dismissal, not a choice — and so is
+  // Escape, WHEREVER the caret happens to be. Escape used to be handled
+  // on the menu itself, which meant it only worked once focus had
+  // landed on an option: press it in the frame between the click and
+  // that effect and the menu simply stayed open (caught as a flake in
+  // the smoke run, 2026-09-06 — a race, not a rare one). The key
+  // belongs to the OPEN LAYER, so the open layer listens for it.
   useEffect(() => {
     if (!open) return
     const away = (e: MouseEvent) => {
       if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
     }
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
     window.addEventListener('mousedown', away)
-    return () => window.removeEventListener('mousedown', away)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('mousedown', away)
+      window.removeEventListener('keydown', key, true)
+    }
   }, [open])
 
   const step = (d: number) => {
@@ -92,6 +112,11 @@ export default function ModelPicker({
     setOpen(false)
   }
 
+  const show = (next: boolean) => {
+    if (next && !open) onOpen?.()
+    setOpen(next)
+  }
+
   return (
     <div ref={boxRef} className={`relative ${className}`}>
       <button
@@ -102,11 +127,11 @@ export default function ModelPicker({
         aria-expanded={open}
         aria-label={label}
         title={title}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => show(!open)}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            setOpen(true)
+            show(true)
           }
         }}
       >
@@ -121,15 +146,16 @@ export default function ModelPicker({
           role="listbox"
           aria-label={`${label} choices`}
           data-model-menu
+          // an open layer that Escape belongs to, so a floating window
+          // this menu happens to sit inside does not take the key first
+          // (`ConfirmWindow`)
+          data-dismissible
           // the picker's own rung of the radius ladder: a 10px menu
           // holding 6px rows, exactly as the native one is styled in
           // index.css — the two must not read as different objects
           className="absolute right-0 z-30 mt-1 max-h-72 min-w-full overflow-x-hidden overflow-y-auto rounded-[10px] border border-edge-strong bg-surface-2 p-1 shadow-none"
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.stopPropagation()
-              setOpen(false)
-            } else if (e.key === 'ArrowDown') {
+            if (e.key === 'ArrowDown') {
               e.preventDefault()
               step(1)
             } else if (e.key === 'ArrowUp') {

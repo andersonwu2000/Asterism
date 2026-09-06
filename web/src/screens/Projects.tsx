@@ -3,6 +3,10 @@ import { ApiError, apiDelete, apiPatch, apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { projectPath } from '../lib/projectRoute'
+import { visibleProjects } from '../lib/projectShelf'
+import type { ProjectFilter } from '../lib/projectShelf'
+import CollectionSearch from '../components/CollectionSearch'
+import ProjectSkyPreview from '../components/ProjectSkyPreview'
 import { ConfirmWindow } from '../components/ConfirmWindow'
 import { GEAR, HelpButton, IconButton, MARK } from '../components/glyphs'
 import { Button, ErrorState } from '../components/ui'
@@ -15,11 +19,9 @@ import type { ProjectCard } from '../lib/types'
  * are the gear and the help glyph, the same two the Project header
  * carries and the only two either screen has.
  *
- * A tile says three things: what this shelf is, how much is on it, and
- * whether it wants the reader. Nothing else earns ink — an empty
- * description leaves an empty line rather than a placeholder, because
- * "no description" is not news. Order is alphabetical and stays that
- * way: a picker whose tiles move between visits cannot be learned.
+ * A tile names the project, its task inventory and any live or human
+ * attention. Search and activity filters narrow the collection without
+ * changing its alphabetical order. An empty description earns no copy.
  */
 
 /** A shelf's own two acts. They appear on hover and on keyboard focus,
@@ -36,7 +38,7 @@ function TileActions({
   onDelete: () => void
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-5 bottom-5 flex justify-end gap-3 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+    <div className="pointer-events-none absolute right-5 top-4 flex justify-end gap-3 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
       {(
         [
           ['rename…', onRename, `rename ${p.name} — the tasks keep their names and their folders`],
@@ -206,26 +208,19 @@ function Tile({ p }: { p: ProjectCard }) {
   return (
     <Link
       to={projectPath(p.name, 'tasks')}
-      className="flex flex-col rounded-xl border border-edge bg-surface p-5 transition-colors duration-150 hover:border-edge-strong hover:bg-surface-2"
+      className={`relative isolate flex h-full min-h-[400px] flex-col overflow-hidden rounded-xl border bg-surface p-6 pt-10 transition-colors duration-150 hover:border-ink-faint ${p.attention > 0 ? 'border-ink-faint' : 'border-edge'}`}
       title={p.last_event ? `last event ${relTime(p.last_event)}` : undefined}
     >
-      <div className="flex items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate font-display text-[18px] text-ink">
+      <ProjectSkyPreview project={p.name} empty={p.problems === 0} />
+      <div className="relative flex items-baseline gap-2">
+        <span className="min-w-0 flex-1 break-words font-display text-[26px] leading-tight text-ink">
           {p.name}
         </span>
-        {/* the human's move, in the mark that means exactly that
-            everywhere else in this console */}
-        {p.attention > 0 && (
-          <span
-            className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn"
-            title={`${p.attention} task${p.attention === 1 ? '' : 's'} waiting on you`}
-          />
-        )}
       </div>
-      <p className="mt-1.5 min-h-[3.1em] text-[12.5px] leading-relaxed text-ink-dim">
+      <p className="relative mt-2 mb-4 line-clamp-2 text-[12.5px] leading-relaxed text-ink-dim" title={p.description || undefined}>
         {p.description}
       </p>
-      <div className="tnum mt-4 flex items-center gap-3 text-[11px] text-ink-faint">
+      <div className="tnum relative mt-auto flex flex-wrap items-center gap-x-3 gap-y-2 pt-3 text-[11px] text-ink-dim">
         <span>
           {p.problems} task{p.problems === 1 ? '' : 's'}
         </span>
@@ -233,6 +228,11 @@ function Tile({ p }: { p: ProjectCard }) {
           <span className="flex items-center gap-1.5 text-ink-dim">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
             {p.running} running
+          </span>
+        )}
+        {p.attention > 0 && (
+          <span className="ml-auto rounded-full bg-ink px-2 py-0.5 text-bg">
+            {p.attention} need{p.attention === 1 ? 's' : ''} you
           </span>
         )}
       </div>
@@ -274,7 +274,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
   return (
     <>
       <button
-        className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-edge p-5 text-[12.5px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink-dim"
+        className="flex min-h-[400px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-edge p-5 text-[12.5px] text-ink-dim transition-colors hover:border-ink-faint hover:bg-surface"
         onClick={() => setOpen(true)}
       >
         <span className="mb-1 text-[18px] leading-none">+</span>
@@ -329,10 +329,18 @@ export default function Projects({ onOpenSettings }: { onOpenSettings: () => voi
   const [acting, setActing] = useState<{ p: ProjectCard; kind: 'rename' | 'delete' } | null>(
     null,
   )
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<ProjectFilter>('all')
   if (error && !data) return <ErrorState error={error} />
   const projects = data?.projects ?? []
+  const visible = visibleProjects(projects, query, filter)
+  const filters = [
+    ['all', 'All projects', projects.length],
+    ['running', 'Running', projects.filter(p => p.running > 0).length],
+    ['attention', 'Needs you', projects.filter(p => p.attention > 0).length],
+  ] as const
   return (
-    <div className="mx-auto max-w-6xl px-8 py-9">
+    <div className="mx-auto max-w-7xl px-8 py-9">
       <header className="mb-9 flex items-center">
         <span className="flex items-center gap-2">
           {MARK}
@@ -351,8 +359,36 @@ export default function Projects({ onOpenSettings }: { onOpenSettings: () => voi
           <HelpButton />
         </div>
       </header>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {projects.map((p) => (
+      <section className="mb-8 mt-12">
+        <h1 className="font-display text-4xl text-ink sm:text-5xl">Your research.</h1>
+        <p className="mt-3 text-sm leading-relaxed text-ink-dim">
+          A place for each question. Pick up the argument where it stands.
+        </p>
+      </section>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Filter projects">
+          {filters.map(([value, label, count]) => (
+            <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}
+              className={`cursor-pointer rounded-lg px-3 py-2 text-xs transition-colors ${filter === value ? 'bg-ink text-bg' : 'text-ink-dim hover:bg-surface-2 hover:text-ink'}`}>
+              {label}<span className="tnum ml-2 opacity-65">{data ? count : '—'}</span>
+            </button>
+          ))}
+        </div>
+        <div className="w-full sm:w-72">
+          <CollectionSearch value={query} onChange={setQuery} label="Search projects" placeholder="find a project…" />
+        </div>
+      </div>
+      {error && data && <div role="status" className="mb-4 text-xs text-ink-dim">Updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></div>}
+      {!data ? <p role="status" className="py-12 text-sm text-ink-dim">Loading projects…</p> : <>
+      {projects.length === 0 && <p className="mb-6 text-sm text-ink-dim">Start with a project. Its tasks, documents and discussions will live together here.</p>}
+      {visible.length === 0 && projects.length > 0 && (
+        <div role="status" className="mb-6 rounded-xl border border-edge px-6 py-10">
+          <p className="font-display text-2xl">No matching projects.</p>
+          <p className="mt-2 text-xs text-ink-dim">Try another name or description, or <button className="cursor-pointer underline" onClick={() => { setQuery(''); setFilter('all') }}>show all projects</button>.</p>
+        </div>
+      )}
+      <div className="grid gap-5 md:grid-cols-2">
+        {visible.map((p) => (
           // the tile is a link; its acts are SIBLINGS of the anchor, not
           // children of it — a button inside a link is one element that
           // does two things
@@ -367,6 +403,7 @@ export default function Projects({ onOpenSettings }: { onOpenSettings: () => voi
         ))}
         <NewProject onDone={refresh} />
       </div>
+      </>}
       {acting?.kind === 'rename' && (
         <RenameProject p={acting.p} onClose={() => setActing(null)} onDone={refresh} />
       )}
