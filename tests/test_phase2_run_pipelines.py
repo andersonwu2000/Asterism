@@ -133,12 +133,13 @@ def test_run_strategist_inject_enqueues_forward(
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({
                 "kind": "Inject", "pipeline": "Forward",
-                "proof": "Theorem. Roadmap: contour lemma\n## Need\nA contour lemma.\nProof. as argued.",
+                "brick": "contour_lemma",
             }),
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
             "# Contour step\n## Argument\nNeed the lemma.\n"
-            "## Proof\nRoute holds.\n## Roadmap\n1. contour lemma\n",
+            "## Proof\n### contour_lemma\nTheorem. Route holds.\n"
+            "Proof. as argued.\n## Roadmap\n1. contour lemma\n",
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
@@ -381,7 +382,7 @@ def test_run_strategist_verify_retry_recovers(
             (attempts_dir / "decision.json").write_text(
                 json.dumps({
                     "kind": "Inject", "pipeline": "Backward",
-                    "target_goal_id": 9999, "proof": "Theorem. stale id\nProof. as argued.",
+                    "target_goal_id": 9999, "brick": "stale_target",
                 }),
                 encoding="utf-8")
         else:
@@ -420,7 +421,7 @@ def test_run_strategist_verify_retry_both_fail(
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Backward",
-                        "target_goal_id": 9999, "proof": "Theorem. stale\nProof. as argued."}),
+                        "target_goal_id": 9999, "brick": "stale_target"}),
             encoding="utf-8")
         return 0
 
@@ -479,7 +480,7 @@ def test_run_strategist_verify_retry_disabled_via_env(
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Backward",
-                        "target_goal_id": 9999, "proof": "Theorem. stale\nProof. as argued."}),
+                        "target_goal_id": 9999, "brick": "stale_target"}),
             encoding="utf-8")
         return 0
 

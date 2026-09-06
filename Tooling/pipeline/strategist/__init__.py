@@ -63,6 +63,7 @@ from .verify import (
     _group_retired_status,
     verify_decision,
     verify_decisions,
+    verify_injects,
 )
 from .commit import (
     CommitOutcome,

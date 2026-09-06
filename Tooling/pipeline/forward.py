@@ -593,6 +593,49 @@ def _extract_statement_string(body: str, slug: str,
     return s
 
 
+def _decision_brick_name(conn: sqlite3.Connection,
+                         decision_id: "int | None") -> str:
+    """The name the Inject's brick carries, or '' when it carries none.
+
+    '' covers every case the gate must NOT fire on: a BFS-auto-dispatched
+    spawn (no decision), a legacy Inject whose argument was hand-copied
+    into `brief`, and a human Inject filed through the command queue —
+    none of them named a brick, so none of them can be held to one."""
+    if decision_id is None:
+        return ""
+    try:
+        row = conn.execute(
+            "SELECT brick_name FROM strategist_decisions WHERE id = ?",
+            (int(decision_id),)).fetchone()
+    except sqlite3.OperationalError:      # pre-v54 schema
+        return ""
+    return str(row["brick_name"] or "").strip() if row is not None else ""
+
+
+def brick_name_defect(want: str, metadata: "ForwardMetadata") -> str:
+    """'' when the declaration head carries the brick's name, else the
+    commit refusal.
+
+    Named bricks (owner ruling 2026-09-07): the brick's name IS the
+    declaration's name. The Strategist chose it, the judge passed it
+    under that name, and everything downstream addresses the node by it
+    — a sibling brick's `Uses:` line, the batch delivery report, a later
+    sub-goal declared to collect this argument. A mint under a different
+    head silently breaks all three.
+
+    `want` empty means nobody named a brick (a BFS-auto-dispatch, a
+    legacy Inject, a human-filed one), and an unnamed brick can be held
+    to no name."""
+    if not want or metadata.slug == want:
+        return ""
+    return (f"declaration is `{metadata.kind} {metadata.slug}`, but this "
+            f"brick is named `{want}` — the name in `## The argument for "
+            f"this brick` is the node's name and is not the worker's to "
+            f"change. Rename the declaration head to "
+            f"`{metadata.kind} {want}` (the Lean shape stays yours) and "
+            f"retry.")
+
+
 # ---------------------------------------------------------------------
 # Outer entry — full agent integration
 # ---------------------------------------------------------------------
@@ -770,6 +813,24 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
                 failure_detail=f"parse rejected: {parse_err}",
+            )
+
+        # Named bricks (owner ruling 2026-09-07): the brick's name IS the
+        # declaration's name. The Strategist chose it, the judge passed
+        # it under that name, and everything downstream addresses the
+        # node by it — the `Uses:` line of a sibling brick, the delivery
+        # report, a later sub-goal declared to collect this argument. A
+        # mint under a different head silently breaks all three, so the
+        # commit is refused here, before the LSP elaboration, with the
+        # required name in hand. Retryable: `forward_no_new_goal` rides
+        # the helper's loop and the detail becomes the next turn's
+        # `retry_context`.
+        name_defect = brick_name_defect(
+            _decision_brick_name(conn, decision_id), metadata)
+        if name_defect:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=name_defect,
             )
 
         # Soundness guard: Forward must not redefine a symbol that appears
@@ -1097,14 +1158,25 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # reuses it instead of paying for a second search.
         if decision_id is None:
             return
-        row = conn.execute(
-            "SELECT brief FROM strategist_decisions WHERE id = ?",
-            (decision_id,)).fetchone()
-        brief = str((row["brief"] if row else "") or "")
+        # Named bricks (2026-09-07): the brick row carries the statement
+        # and the name as fields, so neither has to be recovered from
+        # prose. `claim_from_brief` / `slug_from_brief` answer only for
+        # legacy rows now — the fallback, not the road.
+        from ..state import programme as _programme
+        brick = _programme.brick_for_decision(conn, decision_id)
+        if brick is not None:
+            statement, slug = brick.statement, brick.name
+        else:
+            row = conn.execute(
+                "SELECT brief FROM strategist_decisions WHERE id = ?",
+                (decision_id,)).fetchone()
+            brief = str((row["brief"] if row else "") or "")
+            statement = _presearch.claim_from_brief(brief)
+            slug = _presearch.slug_from_brief(brief)
         _presearch.ensure_mint_presearch(
             decision_id=decision_id,
-            statement=_presearch.claim_from_brief(brief),
-            slug=_presearch.slug_from_brief(brief),
+            statement=statement,
+            slug=slug,
             problem=problem, workspace=workspace,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             prompt_dir=PROMPT_DIR, conn=conn)

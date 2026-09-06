@@ -21,7 +21,8 @@ from ...state import db, transitions
 from ...state import programme as _programme
 from ...state import groups as _groups
 
-from .model import BATCH_DONE_LIKE, Decision, RETURN_FLAVOURS
+from .model import (BATCH_DONE_LIKE, Decision, RETURN_FLAVOURS,
+                    brick_name_of)
 
 
 # Files allowed in RequestUserAmend(file=...).
@@ -164,47 +165,78 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"in problem {problem!r}. If this slug is minted by "
                     f"another Inject in THIS batch: a batch's decisions "
                     f"run in parallel and cannot target each other — "
-                    f"fold the dependent step into that mint's own "
-                    f"proof, or dispatch it next wake once the brick "
-                    f"lands. If a PRIOR batch was to mint it: that mint "
-                    f"died before creating the goal (check its outcome "
-                    f"in `## Completed Inject batches`) — re-mint it "
-                    f"rather than target it. Otherwise use the integer "
-                    f"goal id shown in Context.md's active goal list")
+                    f"give that brick a `Uses: {decision.target_id}` line "
+                    f"instead, and its Theorem and Proof reach the worker "
+                    f"that declares a sub-goal of that name. If a PRIOR "
+                    f"batch was to mint it: that mint died before creating "
+                    f"the goal (check its outcome in `## Completed Inject "
+                    f"batches`) — re-mint it rather than target it. "
+                    f"Otherwise use the integer goal id shown in "
+                    f"Context.md's active goal list")
         decision.target_id = int(row["id"])
 
     if k == "Inject":
         # Shape-derived mode (update_plan_2026_07 #1): `target_goal_id`
         # present → work that goal (the Formalizer decides prove-vs-
-        # split itself — steer with the brief's mathematics, not a
-        # mode); absent → mint ONE new brick from the brief. The legacy
-        # `pipeline` payload field is ignored when present.
-        if not isinstance(decision.brief, str) or not decision.brief.strip():
-            # Emptiness is the only mechanical check here, and it stays
-            # that way. A length floor cannot tell a genuinely short
-            # argument from padding — it fails the right batch and
-            # passes the wrong one, which is what retired the `Roadmap:`
-            # check on this same field. The reader who CAN tell is the
-            # worker, and `return_to_nl` is how it says so.
-            return ("Inject requires non-empty `proof` (string): this "
-                    "brick's `Theorem.` statement and `Proof.` argument, "
-                    "copied from this batch's `## Proof` with the "
-                    "vocabulary it uses")
-        # The two-part brick (owner ruling 2026-08-30): the statement is
-        # a structural position — the mint worker's assignment, the
-        # judge's unit — so its presence is checked here, its truth is
-        # not (that reader is the worker, via `return_to_nl`).
-        _, _, _, shape_err = _programme.parse_brick_proof(decision.brief)
-        if shape_err:
-            return f"Inject `proof`: {shape_err}"
+        # split itself — steer with the brick's mathematics, not a
+        # mode); absent → mint ONE new brick. The legacy `pipeline`
+        # payload field is ignored when present.
+        #
+        # Named bricks (owner ruling 2026-09-07): an Inject NAMES a brick
+        # of this batch's `## Proof`; it no longer carries a copy of it.
+        # A decision that still carries `proof` is REJECTED rather than
+        # aliased — silently accepting the copy is how the two texts
+        # drift, and drift here means the worker formalizes an argument
+        # the judge never read.
+        if isinstance(decision.brief, str) and decision.brief.strip():
+            return (
+                "Inject no longer carries `proof`: name the brick "
+                "instead — `{\"kind\": \"Inject\", \"brick\": \"<name>\"}`. "
+                "Every brick of your `## Proof` opens with a "
+                "`### <name>` header, and that name is what an Inject "
+                "names (and what the node is called). Delete the `proof` "
+                "field.")
+        name = brick_name_of(decision)
+        if not name:
+            return ("Inject requires `brick` (string): the name of a "
+                    "brick in this batch's `## Proof`. Each brick there "
+                    "opens with `### <name>`; the Inject names one of "
+                    "them, and the worker formalizes that brick's "
+                    "`Theorem.` against its `Proof.`")
+        defect = _programme._name_defect(name, "Inject `brick`")
+        if defect:
+            return defect
         if (decision.payload.get("briefs") or decision.payload.get("directive")
                 or decision.payload.get("brief")):
-            return (f"Inject schema uses top-level `proof: str`; "
+            return (f"Inject schema uses top-level `brick: str`; "
                     f"`brief` / `briefs` / `directive` fields are legacy "
-                    f"— remove them and put the argument in `proof`")
+                    f"— remove them and name the brick with `brick`")
         target = decision.target_id
         if target is None:
-            return ""          # mint shape — brief is the whole payload
+            # Mint shape. The brick's name IS the declaration's name, so
+            # a name already taken in this problem is a landing-time
+            # hard failure — checked here instead, before the worker
+            # spends its budget on a brick that cannot commit.
+            taken = conn.execute(
+                "SELECT id, status FROM goals WHERE problem = ? AND slug = ?",
+                (problem, name)).fetchone()
+            if taken is not None:
+                return (f"Inject `brick`: name `{name}` is taken by "
+                        f"g{taken['id']} ({taken['status']}) — a mint "
+                        f"lands as `theorem {name}` in "
+                        f"`proofs/L_{name}.lean` and that name already "
+                        f"exists. Target it "
+                        f"(`\"target_goal_id\": \"{name}\"`), or pick "
+                        f"another name for the brick.")
+            if workspace is not None:
+                landed = (db.problem_dir(Path(workspace), problem)
+                          / "proofs" / f"L_{name}.lean")
+                if landed.exists():
+                    return (f"Inject `brick`: `proofs/L_{name}.lean` "
+                            f"already exists — a mint under that name "
+                            f"cannot commit. Cite the landed brick and "
+                            f"pick another name for this one.")
+            return ""
         g = db.get_goal(conn, int(target))
         if g is None:
             return f"target_goal_id={target} not found"
@@ -250,6 +282,15 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 f"line from a NEW statement that survives it, or "
                 f"ConfirmShelve this one."
             )
+        # Target mode: the brick's name IS the goal's slug (owner ruling
+        # 2026-09-07). The name is the node's identity — a brick called
+        # something else names a different node, and the worker would be
+        # handed an argument addressed to nobody.
+        if name != str(g["slug"]):
+            return (f"Inject `brick`: the brick for g{g['id']} must be "
+                    f"named `{g['slug']}` — a brick's name IS its node's "
+                    f"name, and this Inject targets that goal. Rename the "
+                    f"`### {name}` header to `### {g['slug']}`.")
         return ""
 
     if k == "Noop":
@@ -757,6 +798,77 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 #: argument to judge, and stays exempt — see `_PACKAGE_EXEMPT_KINDS`).
 
 
+#: Goal statuses a `Uses:` name may resolve to when it names an EXISTING
+#: node rather than a brick of this batch. Parked and settled-false nodes
+#: are refused by name: an argument that leans on one leans on work
+#: nobody is doing, and the author is the only reader who can say what to
+#: do about it.
+_USES_LIVE_STATUSES = frozenset({"open", "attempting", "proved"})
+
+
+def verify_injects(decisions: "list[Decision]",
+                   bricks: "list[_programme.Brick]",
+                   conn: sqlite3.Connection, *, problem: str) -> str:
+    """The checks that need this batch's `## Proof` AND the record.
+
+    Runs after `verify_proposal_package` has parsed the proposal, so the
+    per-decision gate (which also serves callers with no proposal at all)
+    stays shape-only. Returns '' or one teaching message.
+
+    Rules (owner ruling 2026-09-07):
+      1. every `Inject.brick` names a brick of THIS batch's `## Proof`;
+      2. a brick another brick lists under `Uses:` is NOT injected — it
+         reaches the worker that declares a sub-goal of that name;
+      3. every `Uses:` name resolves to a same-batch brick or to a live
+         or proved goal of this problem.
+    (The mint-collision and target-slug rules are per-decision — they
+    need no proposal — and live in `verify_decision`.)"""
+    by_name = {b.name: b for b in bricks}
+    used_by: "dict[str, list[str]]" = {}
+    for b in bricks:
+        for u in b.uses:
+            used_by.setdefault(u, []).append(b.name)
+    roster = (", ".join(f"`{b.name}`" for b in bricks)
+              or "(the `## Proof` names none)")
+    for i, d in enumerate(decisions):
+        if d.kind != "Inject":
+            continue
+        name = brick_name_of(d)
+        if name not in by_name:
+            return (f"decision #{i}: Inject `brick`: `{name}` is not a "
+                    f"brick of this batch's `## Proof`. Every brick there "
+                    f"opens with a `### <name>` header; this Proof's "
+                    f"bricks are {roster}. Name one of them, or add the "
+                    f"brick you meant to inject.")
+        if name in used_by:
+            others = ", ".join(f"`{o}`" for o in used_by[name])
+            return (f"decision #{i}: `{name}` is used by {others}; it is "
+                    f"not injected — its Theorem and Proof reach the "
+                    f"worker that declares a sub-goal named `{name}`, at "
+                    f"any depth. Inject {others} instead.")
+    for b in bricks:
+        for u in b.uses:
+            if u in by_name:
+                continue
+            g = conn.execute(
+                "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
+                " ORDER BY id DESC LIMIT 1", (problem, u)).fetchone()
+            if g is None:
+                return (f"brick `{b.name}` lists `Uses: {u}`, but `{u}` is "
+                        f"neither a brick of this `## Proof` ({roster}) nor "
+                        f"a node of this problem — nothing carries an "
+                        f"argument for it. Add a `### {u}` brick, or drop "
+                        f"it from the `Uses:` line.")
+            if str(g["status"]) not in _USES_LIVE_STATUSES:
+                return (f"brick `{b.name}` lists `Uses: {u}`, but g{g['id']} "
+                        f"`{u}` is {g['status']} — an argument cannot lean "
+                        f"on a node nobody is working. Revive it with an "
+                        f"`Inject(target_goal_id=\"{u}\")`, write a `### {u}` "
+                        f"brick that replaces it, or drop it from the "
+                        f"`Uses:` line.")
+    return ""
+
+
 def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str,
                      workspace: "Path | None" = None,
@@ -900,8 +1012,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     f" the queued Backward/Builder dispatches on a now-"
                     f"shelved goal and moots immediately. Pick one"
                     f" intent: drop the ConfirmShelve and Inject(target="
-                    f"{anc_id}, proof=\"…retry with the new tools at"
-                    f" hand…\") to re-attack the whole subtree with the"
+                    f"{anc_id}, brick=\"…the brick whose Proof retries"
+                    f" the whole subtree…\") to re-attack it with the"
                     f" sub-rescue argument; OR keep the ConfirmShelve and"
                     f" drop this Inject (the descendant is acknowledged"
                     f" as cascade-dead)."
@@ -942,10 +1054,10 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 "and RequestUserAmend alone (user escalation) do not "
                 "count — they don't dispatch a fresh attempt or redirect "
                 "focus. Pair with one of:\n"
-                "  - Inject(proof=..., no target) to mint the missing "
+                "  - Inject(brick=..., no target) to mint the missing "
                 "tool the shelved goal needed.\n"
                 "  - Inject(target_goal_id=..., "
-                "proof=...) to redispatch another goal (typically the "
+                "brick=...) to redispatch another goal (typically the "
                 "parent of the shelved subgoal — its strategy will "
                 "otherwise stay 'proposed' with an unfeasible subgoal), "
                 "or to refocus on another goal worth attacking with a "
@@ -1204,12 +1316,12 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     f"  - your charter is settled → `MarkDeliverable` + "
                     f"`Ingest`: a delivering exit is progress (it wakes "
                     f"the level above), OR\n"
-                    f"  - `Inject(proof=...)` / `Delegate(...)` to "
+                    f"  - `Inject(brick=...)` / `Delegate(...)` to "
                     f"dispatch the work still missing (root stays "
                     f"{rstat!r}; inject_batch_done will re-fire you), "
                     f"OR\n"
                     f"  - the root subtree is yours and the toolkit is "
-                    f"ready → `Inject(target_goal_id={rid}, proof=...)` "
+                    f"ready → `Inject(target_goal_id={rid}, brick=...)` "
                     f"re-engages BFS on it, OR\n"
                     f"  - `RequestUserAmend(...)` ONLY if a user file is "
                     f"factually wrong."

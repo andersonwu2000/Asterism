@@ -416,8 +416,7 @@ def test_action_batch_must_act_on_every_fired_root(wconn, workspace):
     shelve, _ = strategist.parse_decisions(json.dumps(
         [{"kind": "ConfirmShelve", "target_goal_id": root,
           "reason": "Roadmap PAST: retired; restart when a band consumes it"},
-         {"kind": "Inject", "proof": "Theorem. replacement_bound: the "
-          "prerequisite the audit named.\n\nProof. Trivial."}]))
+         {"kind": "Inject", "brick": "replacement_bound"}]))
     err2 = strategist.verify_decisions(
         shelve, wconn, problem="p", workspace=workspace,
         trigger_kind="routine_fired", group_id=top)
@@ -471,8 +470,7 @@ def test_action_batch_is_not_asked_to_act_on_a_root_no_longer_live(wconn, worksp
     shelve, _ = strategist.parse_decisions(json.dumps(
         [{"kind": "ConfirmShelve", "target_goal_id": root,
           "reason": "Roadmap PAST: retired; restart when a band consumes it"},
-         {"kind": "Inject", "proof": "Theorem. replacement_bound.\n\n"
-          "Proof. Trivial."}]))
+         {"kind": "Inject", "brick": "replacement_bound"}]))
     err = strategist.verify_decisions(
         shelve, wconn, problem="p", workspace=workspace,
         trigger_kind="routine_fired", group_id=top)

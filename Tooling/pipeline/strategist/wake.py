@@ -26,7 +26,8 @@ from ...state import db, failures as _failures
 from .commit import commit_decisions
 from .model import (Decision, _PACKAGE_EXEMPT_KINDS, parse_decisions,
                     prompt_kind)
-from .verify import _group_retired_status, verify_decisions
+from .verify import (_group_retired_status, verify_decisions,
+                     verify_injects)
 
 
 PROPOSAL_BASENAME = "proposal.md"
@@ -37,14 +38,20 @@ def package_gate_applies(decisions, trigger_kind: str | None) -> bool:
 
 
 def verify_proposal_package(decisions, attempts_dir) -> tuple[
-        "str | None", "dict[str, str] | None", "str | None"]:
+        "str | None", "dict[str, str] | None", "list | None", "str | None"]:
     """Package-side checks for a gated batch: proposal file present,
-    four-section contract, and the ≥1-experiment rule (endgame batches
-    exempt). Returns (body, sections, err)."""
+    four-section contract, and the `## Proof`'s named bricks.
+    Returns (body, sections, bricks, err).
+
+    The bricks come back with the sections because they are the half of
+    the proposal the DECISIONS point at (2026-09-07): an Inject names
+    one, so the batch cannot be verified until the Proof has been read.
+    Parsing them here keeps one reader — `verify_injects` rules on the
+    same list `record_pass` stores."""
     from ...state import programme
     path = attempts_dir / PROPOSAL_BASENAME
     if not path.exists():
-        return None, None, (
+        return None, None, None, (
             "this batch moves the route, so it must carry a Programme "
             f"proposal: Write `{PROPOSAL_BASENAME}` (bare filename, in "
             "your attempts dir) with the four sections `# <Title>`, "
@@ -53,10 +60,13 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     try:
         body = path.read_text(encoding="utf-8")
     except OSError as e:
-        return None, None, f"{PROPOSAL_BASENAME} unreadable: {e}"
+        return None, None, None, f"{PROPOSAL_BASENAME} unreadable: {e}"
     sections, err = programme.parse_proposal(body)
     if err:
-        return None, None, err
+        return None, None, None, err
+    bricks, berr = programme.parse_bricks((sections or {}).get("proof"))
+    if berr:
+        return None, None, None, f"`## Proof`: {berr}"
     # The ≥1-experiment quota lived here until 2026-08-16 (owner
     # ruling). A per-batch quota gets satisfied with manufactured
     # experiments — the same pathology as the stalled-root Inject tax —
@@ -75,7 +85,7 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     # right, while remaining the last mechanical reader of a field the
     # Strategist writes as prose. Whether an experiment tests the entry
     # it claims is the Adversary's, under criteria 1/4, and always was.
-    return body, sections, None
+    return body, sections, bricks, None
 
 
 def _judge_warning(length_warn: "str | None",
@@ -413,8 +423,14 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                                group_id=group_id)
         err_is_rebuttal = False
         if not err and package_gate_applies(decisions, trigger_kind):
-            proposal_body, sections, err = verify_proposal_package(
+            proposal_body, sections, bricks, err = verify_proposal_package(
                 decisions, attempts_dir)
+            # The Inject checks that need BOTH halves (2026-09-07): a
+            # brick is named by a decision and written in the proposal,
+            # so neither file alone can say whether the pairing holds.
+            if not err:
+                err = verify_injects(decisions, bricks or [], conn,
+                                     problem=problem)
             # ── mechanical delta gate (owner design 2026-08-28): a
             # byte-identical resubmission never reaches the judge — it
             # is an ACCIDENT signature, not author conviction (every

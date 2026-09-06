@@ -22,7 +22,7 @@ from ...core import dispatcher as _dispatcher
 from ...state import db, transitions
 from ...state import groups as _groups
 
-from .model import Decision, _as_bool
+from .model import Decision, _as_bool, brick_name_of
 from .verify import _authoring_group, _group_retired_status
 
 
@@ -132,7 +132,13 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     `inject_batch_done` once every produced lemma terminates. Solo
     (single-decision) calls leave it None and get a fresh batch_id.
     """
-    brief = decision.brief.strip()
+    # Named bricks (2026-09-07): a Strategist Inject names its brick and
+    # writes NOTHING to `brief` — the argument lives in `bricks`, pinned
+    # to the revision the judge passed. A human Inject still arrives with
+    # prose (the human channel skips the verifier by design), and that
+    # prose keeps its legacy home so every reader's fallback answers it.
+    brick = brick_name_of(decision)
+    brief = str(decision.brief or "").strip() or None
     batch_id = batch_id_override or uuid.uuid4().hex
     ts = db.now()
     row_payload = {
@@ -143,9 +149,10 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " brick_name,"
         " reason, payload, batch_id, outcome, actor, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?)",
-        (problem, tick, trigger_kind, group_id, brief,
+        " VALUES (?, ?, ?, 'Inject', ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+        (problem, tick, trigger_kind, group_id, brief, brick or None,
          decision.reason, json.dumps(row_payload, ensure_ascii=False),
          batch_id, actor, ts, ts),
     )
@@ -197,7 +204,10 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     sibling.
     """
     target_id = int(decision.target_id)
-    brief = decision.brief.strip()
+    # See `_commit_inject_forward`: the brick's NAME is what a Strategist
+    # Inject carries; `brief` stays for the human channel's prose.
+    brick = brick_name_of(decision)
+    brief = str(decision.brief or "").strip() or None
     batch_id = batch_id_override or uuid.uuid4().hex
     ts = db.now()
     row_payload = {
@@ -209,12 +219,13 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " brick_name,"
         " reason, payload, batch_id, produced_goal_id, produced_kind,"
         " outcome, actor, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, ?, 'redispatch',"
+        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, ?, ?, 'redispatch',"
         " NULL, ?, ?, ?)",
         (problem, tick, trigger_kind, group_id, target_id,
-         brief, decision.reason,
+         brief, brick or None, decision.reason,
          json.dumps(row_payload, ensure_ascii=False),
          batch_id, target_id, actor, ts, ts),
     )

@@ -71,9 +71,7 @@ def test_an_inject_on_a_disproved_goal_is_refused_with_the_way_out(
     gid = _seed(conn, "claimed_false2", "disproved")
     err = verify_decision(
         Decision(kind="Inject", target_id=gid,
-                 brief="Theorem. the claim holds after all.\nProof. the claimed "
-                       "counterexample fails: row 40 checks out by the "
-                       "landed defs."),
+                 payload={"brick": "claimed_false2"}),
         conn, problem="P")
     assert "disproved" in err
     assert "kernel" in err
@@ -87,7 +85,7 @@ def test_an_inject_on_a_proved_goal_is_refused(
     from Tooling.pipeline.strategist import Decision, verify_decision
     err = verify_decision(
         Decision(kind="Inject", target_id=g2,
-                 brief="Theorem. T.\nProof. again."),
+                 payload={"brick": "really_done"}),
         conn, problem="P")
     assert "'proved'" in err and "redispatch" in err
 

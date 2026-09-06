@@ -88,7 +88,7 @@ def test_one_turn_takes_both_registry_and_route_kinds(
     g = _proved_forward(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "MarkDeliverable", "target_goal_id": g, "reason": "r"},
-        {"kind": "Inject", "pipeline": "Forward", "proof": "Theorem. ## Need\nx\nProof. as argued."},
+        {"kind": "Inject", "pipeline": "Forward", "brick": "need_x"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 

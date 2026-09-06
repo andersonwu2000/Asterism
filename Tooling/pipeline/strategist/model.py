@@ -64,8 +64,25 @@ BRIEF_FIELD_BY_KIND: dict[str, str] = {"Inject": "proof",
 
 
 def brief_field(kind: str) -> str:
-    """The decision.json key whose value lands in `Decision.brief`."""
+    """The decision.json key whose value lands in `Decision.brief`.
+
+    `Inject` still maps to `proof` even though the field is retired
+    (2026-09-07 named bricks): the mapping is what makes a decision.json
+    that still carries one land in `Decision.brief`, where verify can
+    REJECT it by name. Drop the entry and the legacy field would be
+    swallowed into `payload` and silently ignored — the one outcome the
+    ruling forbids."""
     return BRIEF_FIELD_BY_KIND.get(kind, BRIEF_FIELD_DEFAULT)
+
+
+def brick_name_of(decision: "Decision") -> str:
+    """The brick an `Inject` names, or '' when it names none.
+
+    Lives in the payload because `brick` is a structured param like
+    `target_goal_id`, not prose: the `brief` column carries one piece of
+    text per decision and an Inject no longer has any."""
+    v = (getattr(decision, "payload", None) or {}).get("brick")
+    return v.strip() if isinstance(v, str) else ""
 
 
 def _as_bool(v: Any) -> bool:
