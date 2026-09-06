@@ -187,7 +187,15 @@ export function CycleLine({
             </span>
             the reviewer's objections
           </summary>
-          <ul className="mt-1 space-y-1 pl-4 text-[11px] text-ink-faint">
+          {/* what the round was REFUSED for is the one thing on this
+              card a reader acts on, so it does not sit a rung below the
+              sentence that says there was a refusal — the criticism was
+              quieter than the fact of it, and the Groups page renders
+              the same text at this rung already (owner, 2026-09-06) */}
+          <ul
+            data-objections={cycle.objections.length}
+            className="mt-1 space-y-1 pl-4 text-[11px] text-ink-dim"
+          >
             {cycle.objections.map((o, i) => (
               <li key={i} className="list-disc marker:text-ink-faint/60">
                 {renderInline(o, `obj${i}`)}
@@ -695,7 +703,7 @@ export default function EngineRoom({
       : 0
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
+    <div className="mx-auto max-w-5xl px-6 py-8">
       {/* one status line, no page title: the menu already said which
           room this is, and drawing that twice is the law the shell
           exists to keep */}
@@ -733,7 +741,7 @@ export default function EngineRoom({
             </span>
           )}
         </SectionLabel>
-        {workers.length === 0 && free === 0 && builds.length === 0 ? (
+        {workers.length === 0 && ghostsShown === 0 && builds.length === 0 ? (
           <div className="text-xs text-ink-faint">
             {!running
               ? 'the engine is not running — Run lives on a task'
@@ -816,15 +824,9 @@ export default function EngineRoom({
                   </div>
                 )
               })}
-            {Array.from({ length: free }).map((_, i) => (
-              <div
-                key={`free${i}`}
-                className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
-                title="an open berth — the RAM ledger's current target has room for one more agent"
-              >
-                free — waiting for work
-              </div>
-            ))}
+            {/* Free capacity is already counted in the section label.
+                Empty cards repeat that fact and push actual telemetry
+                below the fold; only work occupies the reading area. */}
           </div>
         )}
       </section>

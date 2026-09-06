@@ -49,6 +49,20 @@ async function firstShelf(
   return { project: fit.name, task: rows[0].name }
 }
 
+/** One ink token, as the browser reports a colour. The ladder is a
+ * MEASURED thing (DESIGN.md): reading the class name back would pin
+ * the source string, not the brightness the reader sees. */
+async function inkRgb(page: Page, token: string): Promise<string> {
+  return page.evaluate((t) => {
+    const hex = getComputedStyle(document.documentElement)
+      .getPropertyValue(t)
+      .trim()
+      .replace('#', '')
+    const n = (i: number) => parseInt(hex.slice(i, i + 2), 16)
+    return `rgb(${n(0)}, ${n(2)}, ${n(4)})`
+  }, token)
+}
+
 const at = (project: string, section: string, task?: string) =>
   `/#/p/${encodeURIComponent(project)}/${section}` +
   (task ? `/${encodeURIComponent(task)}` : '')
@@ -159,6 +173,50 @@ test('engine: slots, plan usage, engine log', async ({ page, request }) => {
   await expect(page.getByText(/plan usage|engine log/).first()).toBeVisible()
 })
 
+test('engine: the reviewer\'s objections are not residue ink', async ({
+  page,
+  request,
+}) => {
+  // What a round was REFUSED for is the one thing on the card a reader
+  // acts on, and it was written a rung below the sentence summarising
+  // it — the criticism quieter than the fact that there was criticism
+  // (owner, 2026-09-06). The Groups page already renders the same text
+  // at ink-dim; this is one object wearing two inks.
+  //
+  // The lane only draws while a reviewer is mid-round, so the worker is
+  // fabricated ON TOP of the real /api/run rather than waited for: the
+  // ink is the assertion, not the workspace's state.
+  await page.route('**/api/run*', async (route) => {
+    const res = await route.fetch()
+    const body = await res.json()
+    body.workers = [
+      {
+        kind: 'Theorist',
+        slug: 'smoke-lane',
+        statement: 'the objective under review',
+        leased_at: new Date().toISOString(),
+        mode: null,
+        path: null,
+        file: null,
+        cycle: {
+          phase: 'judging',
+          round: 2,
+          objections: ['the wall named in the second section is not the one that bites'],
+          since_sec: 12,
+        },
+      },
+    ]
+    await route.fulfill({ response: res, json: body })
+  })
+  await openShelf(page, request, 'engine', false)
+  await page.getByText("the reviewer's objections").click()
+  const bullets = page.locator('[data-objections]')
+  await expect(bullets).toBeVisible()
+  const dim = await inkRgb(page, '--color-ink-dim')
+  await expect(bullets).toHaveCSS('color', dim)
+  expect(dim).not.toBe(await inkRgb(page, '--color-ink-faint'))
+})
+
 test('timeline and documents render inside the shell', async ({ page, request }) => {
   const s = await openShelf(page, request, 'timeline')
   await expect(page.locator('[data-menu] a').first()).toBeVisible()
@@ -245,22 +303,9 @@ test('the Assistant header names the conversation and nothing else', async ({
   // find is not settled chrome
   const toggle = panel.getByRole('button', { name: 'conversations' })
   await expect(toggle).toHaveText('▸')
-  const inks = await page.evaluate(() => {
-    const s = getComputedStyle(document.documentElement)
-    return {
-      faint: s.getPropertyValue('--color-ink-faint').trim(),
-      dim: s.getPropertyValue('--color-ink-dim').trim(),
-    }
-  })
-  const rgb = (hex: string) => {
-    const h = hex.replace('#', '')
-    return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(
-      h.slice(4, 6),
-      16,
-    )})`
-  }
-  await expect(toggle).toHaveCSS('color', rgb(inks.dim))
-  expect(rgb(inks.dim)).not.toBe(rgb(inks.faint))
+  const dim = await inkRgb(page, '--color-ink-dim')
+  await expect(toggle).toHaveCSS('color', dim)
+  expect(dim).not.toBe(await inkRgb(page, '--color-ink-faint'))
   await toggle.click()
   await expect(toggle).toHaveText('▾')
 })
