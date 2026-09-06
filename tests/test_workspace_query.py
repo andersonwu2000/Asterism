@@ -1286,3 +1286,165 @@ def test_section_reads_are_size_tiered(here: Path) -> None:
     assert "roster" in out3
     assert '"grep"' in out3 and '"decl"' in out3
     assert "huge roster entry" not in out3, "refusal must not leak content"
+
+
+# ── the wrapper's target comes from the RECORD (2026-09-06) ─────────
+#
+# `inspect({"decl": "main"})` on a promoted ROOT resolved the strategy
+# file by guessing `_strategy_sNNN.lean` BESIDE `Root.lean`, and a
+# root's wrapper sits at `Problems/<p>/Root.lean` while its scratch
+# sits one directory down in `proofs/`. So the answer was
+# `<unreadable: No such file or directory>` on the one document holding
+# the complete root proof: the Strategist built a proposal on the tree
+# shape instead and the Adversary spent a whole round on it. The record
+# knew (`strategies.scratch_path`), and nothing asked it.
+
+_ROOT_REL = "Problems/Combinatorics/union_closed/Root.lean"
+_SCRATCH_REL = ("Problems/Combinatorics/union_closed/proofs/"
+                "_strategy_s1.lean")
+
+
+def _seed_alias_root(ws: Path, here: Path, *, scratch_rel: str,
+                     write_scratch: bool = True,
+                     goal_status: str = "attempting",
+                     strategy_status: str = "succeeded") -> None:
+    """A root shaped the way the promote path leaves one: `Root.lean` at
+    the problem's TOP holding `def main := @…s1`, the strategy's real
+    proof one directory down under `proofs/`. That gap is the defect."""
+    (here / "Root.lean").write_text(
+        "import Mathlib\n\n"
+        "namespace Problems.Combinatorics.union_closed\n\n"
+        "def main := @Problems.Combinatorics.union_closed.s1\n\n"
+        "end Problems.Combinatorics.union_closed\n", encoding="utf-8")
+    if write_scratch:
+        target = ws / scratch_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "import Mathlib\n-- the strategy's own proof\n"
+            "theorem s1 : 1 ≤ 2 := by norm_num\n", encoding="utf-8")
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)", ("union_closed", _db.now()))
+    gid = _db.insert_goal(conn, problem="union_closed", slug="main",
+                          lean_path=_ROOT_REL, statement="True",
+                          origin="root", status=goal_status)
+    sid = _db.insert_strategy(conn, goal_id=gid, lean_path=_ROOT_REL,
+                              created_by="test", scratch_path=scratch_rel)
+    # A plain UPDATE, not `update_strategy_status`: that helper fires the
+    # inject/wake propagation, which this fixture has no rows for.
+    conn.execute("UPDATE strategies SET status = ? WHERE id = ?",
+                 (strategy_status, sid))
+    conn.commit()
+    conn.close()
+
+
+def test_decl_on_an_alias_root_reads_the_scratch_path_from_the_record(
+    ws: Path, here: Path,
+) -> None:
+    """The wrapper's target is `strategies.scratch_path`, not a filename
+    guessed beside `Root.lean` — and the answer READS it."""
+    _seed_alias_root(ws, here, scratch_rel=_SCRATCH_REL)
+    out = wq.run_queries([{"decl": "main"}], cwd=here)
+    assert "wrapper of @s1" in out
+    assert "proofs/_strategy_s1.lean" in out, out
+    assert "theorem s1 : 1 ≤ 2 := by norm_num" in out, out
+    assert "unreadable" not in out, out
+
+
+def test_decl_on_a_missing_wrapper_target_names_what_was_tried_and_the_record(
+    ws: Path, here: Path,
+) -> None:
+    """A file that truly is not there must cost nothing: name every path
+    TRIED and what the record says, so the reader can tell "the proof is
+    gone" from "I looked in the wrong place" without a second call."""
+    _seed_alias_root(ws, here, scratch_rel=_SCRATCH_REL,
+                     write_scratch=False)
+    out = wq.run_queries([{"decl": "main"}], cwd=here)
+    assert "nothing readable at" in out, out
+    # the record's own path, and the sibling guess that was also tried
+    assert "proofs/_strategy_s1.lean" in out, out
+    assert "not on disk" in out, out
+    assert "s1 [succeeded]" in out, out
+
+
+def test_decl_says_why_the_goal_is_attempting_while_its_strategy_succeeded(
+    ws: Path, here: Path,
+) -> None:
+    """"Why is this goal `attempting` when everything under it is
+    proved" was the question the whole 2026-09-06 round turned on, and
+    no tool answered it. Both facts are rows: render them as one line."""
+    _seed_alias_root(ws, here, scratch_rel=_SCRATCH_REL)
+    out = wq.run_queries([{"decl": "main"}], cwd=here)
+    assert ("strategy s1: succeeded; goal: attempting — promotion "
+            "pending or unsettled") in out, out
+
+
+def test_decl_on_a_settled_goal_carries_no_promotion_line(
+    ws: Path, here: Path,
+) -> None:
+    """A goal the kernel has settled raises no such question, and a line
+    about a gate that is not holding anything is its own false signal."""
+    _seed_alias_root(ws, here, scratch_rel=_SCRATCH_REL,
+                     goal_status="proved")
+    out = wq.run_queries([{"decl": "main"}], cwd=here)
+    assert "promotion pending" not in out, out
+
+
+# ── an absolute `in:` is used as given (presearch g3, 2026-09-06) ───
+
+
+def test_grep_searches_an_absolute_in_path_inside_the_read_roots(
+    ws: Path, here: Path,
+) -> None:
+    """`Library` is granted as an additional working directory and the
+    prompt hands it out ABSOLUTE. The path must be searched as given."""
+    lib = ws / "Library"
+    lib.mkdir()
+    (lib / "Shared.lean").write_text(
+        "theorem shared_bound : 1 ≤ 2 := by norm_num\n", encoding="utf-8")
+    out = wq.run_queries([{"grep": "shared_bound", "in": str(lib)}],
+                         cwd=here)
+    assert "shared_bound" in out, out
+    assert "nothing to search" not in out, out
+
+
+def test_an_absolute_miss_does_not_teach_relative_resolution(
+    ws: Path, here: Path,
+) -> None:
+    """The clause describes a resolution that never happens for an
+    absolute path. Appended to an EMPTY granted `Library`, the two
+    halves read as one sentence — "empty" plus "relative paths resolve
+    against …/even_sum_subsets" — and the presearch seat concluded its
+    absolute path had been silently re-pointed, then shipped an empty
+    block (g3). A relative path still gets the teaching."""
+    (ws / "Library").mkdir()
+    out = wq.run_queries([{"grep": "x", "in": str(ws / "Library")}],
+                         cwd=here)
+    assert "relative paths resolve against" not in out, out
+    assert "EMPTY" in out and "used exactly as given" in out, out
+
+    rel = wq.run_queries([{"grep": "x", "in": "nope/*.lean"}], cwd=here)
+    assert "relative paths resolve against" in rel, rel
+
+
+def test_find_and_read_take_an_absolute_path_as_given_too(
+    ws: Path, here: Path,
+) -> None:
+    """Same rule on the sibling queries — one of the three carrying a
+    misleading clause is how the next report gets filed."""
+    lib = ws / "Library"
+    lib.mkdir()
+    (lib / "Shared.lean").write_text("theorem shared : True := trivial\n",
+                                     encoding="utf-8")
+    found = wq.run_queries([{"find": "*.lean", "in": str(lib)}], cwd=here)
+    assert "Shared.lean" in found, found
+
+    read = wq.run_queries([{"read": str(lib / "Shared.lean")}], cwd=here)
+    assert "theorem shared" in read, read
+
+    miss = wq.run_queries([{"find": "*.lean", "in": str(ws / "Nope")}],
+                          cwd=here)
+    assert "no directory at" in miss, miss
+    assert "relative paths resolve against" not in miss, miss

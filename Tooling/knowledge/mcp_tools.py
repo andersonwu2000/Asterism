@@ -482,10 +482,10 @@ def inspect(queries: list = None) -> str:
     byte-faithful content with no labels, so it cannot share a reply.
 
     `decl` answers from the framework's own record — the statement, the
-    file and whether it is proved — so use it instead of grepping for a
-    keyword at the start of a line. `in` and `read` take paths relative
-    to your own directory, or globs. A truncated answer always says
-    where to resume, with no overlap.
+    file, whether it is proved, and why a goal is still unsettled when
+    its strategy succeeded. `in` and `read` take a path relative to your
+    own directory, a glob, or an ABSOLUTE path, used as given. A
+    truncated answer always says where to resume, with no overlap.
     """
     from . import workspace_query
     if not queries:
