@@ -31,6 +31,12 @@ WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
 # ~50% more breathing room for the same pattern.
 POSTMORTEM_TIMEOUT_SEC = 180
 
+#: The theory layer's resume point, spelled here because this module
+#: cannot import the pipeline package (which imports THIS one) at module
+#: level. `pipeline.theorist.checkpoint.CHECKPOINT_BASENAME` is the SoT;
+#: a test holds the two level. See `WorkArea.__exit__`.
+THEORIZE_CHECKPOINT = "_theorize.json"
+
 
 _PROMPT_COND_RE = re.compile(
     r"[ \t]*<!-- #if (\w+) -->[ \t]*\n(.*?)[ \t]*<!-- #endif -->[ \t]*\n?",
@@ -135,10 +141,47 @@ class WorkArea:
             if token:
                 from ..lsp import lifecycle as gateway_lifecycle
                 gateway_lifecycle.release_session(token)
+        keep = self._holds_an_unanswered_theory_request()
         for p in (self.attempts, self.backup):
+            if keep and p == self.attempts:
+                continue
             if p.exists():
                 shutil.rmtree(p, ignore_errors=True)
         return False
+
+    def _holds_an_unanswered_theory_request(self) -> bool:
+        """Does this dir hold the ONLY copy of a theory document nobody
+        has answered for yet?
+
+        `.attempts/<pid>/` is ephemeral by design — every other pipeline
+        keeps its record in the DB and the deletion is unconditional.
+        The theory layer is the exception: its product is a document
+        under review across several spawns, and a mid-review infra death
+        deliberately leaves the `Theorize` row NULL so the request is
+        re-queued (`theorist._fail_spawn`). Deleting the dir under that
+        row is what threw a 228k-token document away on 2026-09-06 and
+        made the re-dispatch author a new one.
+
+        Lazy import, and only when the checkpoint file is actually
+        there: `Tooling.pipeline` imports THIS package, so the reverse
+        edge cannot exist at module level, and no other pipeline should
+        pay an import for a file it never writes."""
+        if not (self.attempts / THEORIZE_CHECKPOINT).is_file():
+            return False
+        try:
+            from ..pipeline.theorist import checkpoint as _checkpoint
+            keep = _checkpoint.holds_an_unanswered_request(
+                self.attempts, workspace=self.workspace)
+        except Exception as exc:  # noqa: BLE001 — never fail a teardown
+            print(f"[theorist] could not adjudicate "
+                  f"{self.attempts}/{THEORIZE_CHECKPOINT} ({exc}) — "
+                  f"keeping the directory", flush=True)
+            return True
+        if keep:
+            print(f"[theorist] keeping .attempts/{self.pipeline_id}/ — its "
+                  f"Theorize request is still unanswered and this is the "
+                  f"only copy of the document", flush=True)
+        return keep
 
 
 def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,

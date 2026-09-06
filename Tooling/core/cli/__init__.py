@@ -105,6 +105,7 @@ from .maint import (
     cmd_repin,
     cmd_bench,
     cmd_revive,
+    cmd_theorize_freeze_adopt,
     cmd_unbench,
     cmd_word,
 )

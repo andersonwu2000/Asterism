@@ -861,6 +861,27 @@ def provider_for_kind(kind: "str | None",
     ))
 
 
+def model_for_kind(kind: "str | None",
+                   workspace: "Path | None" = None) -> str:
+    """Which MODEL that seat is on right now — the mirror of
+    `provider_for_kind`, and read the same way and for the same reason.
+
+    "" when the seat names none, which is a real answer: the provider
+    adapter then picks its own default, and a caller RECORDING what ran
+    (the theory layer's checkpoint) must write down that the config said
+    nothing rather than invent a name."""
+    if not kind:
+        return ""
+    from ..core import config
+    return str(config.get(
+        f"{kind}.model",
+        env_var=f"ASTERISM_{kind.upper()}_MODEL",
+        legacy_env=("ASTERISM_AGENT_MODEL",),
+        default="",
+        workspace=workspace,
+    ) or "")
+
+
 def for_kind(kind: "str | None") -> ProviderCapabilities:
     """The declaration of the provider currently seated for `kind`."""
     return capabilities_for(provider_for_kind(kind))

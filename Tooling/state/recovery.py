@@ -84,6 +84,24 @@ def _attempt_owner_alive(attempt_dir: Path) -> bool:
     return _pid_alive(data.get("owner_pid"))
 
 
+def _holds_an_unanswered_theory_request(conn: sqlite3.Connection,
+                                        attempt_dir: Path) -> bool:
+    """Delegates to `pipeline.theorist.checkpoint` — one owner of "what
+    `_theorize.json` means", because the OTHER sweep (`WorkArea.__exit__`)
+    asks the same question and a second reading of it is a dir deleted
+    on one path and kept on the other.
+
+    Local import for the same reason `_release_gateway_session` has one:
+    `state` must stay import-clean of the pipeline layer, and recovery
+    has to run to completion on a tree where the import fails."""
+    try:
+        from ..pipeline.theorist import checkpoint as _checkpoint
+        return _checkpoint.holds_an_unanswered_request(
+            attempt_dir, conn=conn)
+    except Exception:  # noqa: BLE001 — never let this fail recovery
+        return False
+
+
 def _release_gateway_session(attempt_dir: Path) -> bool:
     """Hand back the gateway worker slot this dead spawn still holds.
 
@@ -429,6 +447,7 @@ def recover_at_startup(conn: sqlite3.Connection,
 
     attempts_cleared = 0
     attempts_live_skipped = 0
+    attempts_kept_theory = 0
     sessions_released = 0
     backups_handled = 0
     tmps_removed = 0
@@ -462,6 +481,16 @@ def recover_at_startup(conn: sqlite3.Connection,
                 # singleton lock already fences other daemons).
                 if _attempt_owner_alive(d):
                     attempts_live_skipped += 1
+                    continue
+                # The theory layer's resume point. A `Theorize` whose
+                # outcome is still NULL is a request the framework has
+                # promised to re-dispatch, and this dir holds the ONLY
+                # copy of the document that answers it — the DB records
+                # a theory run's product only once it LANDS. Sweeping it
+                # is what made the 2026-09-06 re-dispatch re-author a
+                # 228k-token document from scratch.
+                if _holds_an_unanswered_theory_request(conn, d):
+                    attempts_kept_theory += 1
                     continue
                 # Hand the gateway slot back BEFORE deleting the dir that
                 # holds the only handle to it. The gateway outlives
@@ -525,7 +554,7 @@ def recover_at_startup(conn: sqlite3.Connection,
             or goals_reopened or goals_attempting_fixup
             or anchors_reparked
             or attempts_cleared or attempts_live_skipped
-            or sessions_released
+            or attempts_kept_theory or sessions_released
             or backups_handled or tmps_removed
             or patches_salvaged or probes_removed
             or orphans_swept or orphans_kept_cited
@@ -546,6 +575,7 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"salvaged {patches_salvaged} orphan patches, "
               f"removed {attempts_cleared} orphan attempts dirs "
               f"(spared {attempts_live_skipped} live, "
+              f"{attempts_kept_theory} unanswered theory request(s), "
               f"handed back {sessions_released} gateway slot(s)), "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files, "
