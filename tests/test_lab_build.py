@@ -10,6 +10,7 @@ overlay, and the heavy read-only trees linked rather than copied.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -416,13 +417,62 @@ def test_clearing_a_workspace_unlinks_the_shared_tree_it_does_not_own(
     # workspace's own directory and only `packages` inside it is shared.
     build_mod._link_or_copy(shared, ws / ".lake" / "packages")
 
-    build_mod.clear_workspace(ws, keep=("keep.txt",))
+    assert build_mod.clear_workspace(ws, keep=("keep.txt",)) == [], \
+        "a clean sweep reports nothing left behind"
 
     assert (shared / "precious.olean").is_file(), \
         "the shared tree the junction points at survived"
     assert not (ws / ".lake").exists()
     assert not (ws / ".attempts").exists()
     assert (ws / "keep.txt").is_file(), "kept entries stay"
+
+
+def test_a_clear_that_cannot_delete_a_file_says_which_one(tmp_path,
+                                                          monkeypatch):
+    """`ignore_errors=True` made a locked file — the orphaned gateway's
+    own `.asterism/logs/gateway.log`, held open by a `lake serve` tree
+    that outlived the run (2026-09-07) — indistinguishable from a clean
+    sweep, so the run reported success with 2 GB and a live process
+    behind it. The delete stays exactly as forgiving as it was; what
+    changes is that it now says what it could not do.
+
+    The failure is INJECTED because the real one is not portable: only
+    Windows refuses to unlink a file somebody holds open."""
+    ws = tmp_path / "ws"
+    (ws / ".asterism" / "logs").mkdir(parents=True)
+    held = ws / ".asterism" / "logs" / "gateway.log"
+    held.write_text("[gateway] warming slot 0\n", encoding="utf-8")
+
+    def _refuse(path, onexc=None, **kw):
+        onexc(os.unlink, str(held),
+              PermissionError(13, "used by another process"))
+
+    monkeypatch.setattr(build_mod.shutil, "rmtree", _refuse)
+    assert build_mod.clear_workspace(ws) == [
+        (".asterism/logs/gateway.log",
+         "PermissionError: [Errno 13] used by another process")]
+
+
+def test_a_rebuild_over_a_workspace_that_will_not_clear_names_the_file(
+        tmp_path, monkeypatch, base, head):
+    """`ws.rmdir()` would raise anyway — as WinError 145, "the directory
+    is not empty", which names neither the file nor the process holding
+    it."""
+    root = tmp_path / "lab"
+    exp = _exp(root, "Erdos.p1@20260907-000000Z")
+    ws = build_mod.workspace_path(root, "e1", "a", 1)
+    (ws / ".asterism" / "logs").mkdir(parents=True)
+    (ws / ".asterism" / "logs" / "gateway.log").write_text(
+        "x", encoding="utf-8")
+    monkeypatch.setattr(
+        build_mod, "clear_workspace",
+        lambda w, **kw: [(".asterism/logs/gateway.log",
+                          "PermissionError: used by another process")])
+    with pytest.raises(lab.LabError) as exc:
+        build_mod.build(root, exp, "a", slice_=None, base=base, commit=head,
+                        rep=1)
+    assert "gateway.log" in str(exc.value)
+    assert "used by another process" in str(exc.value)
 
 
 # ---------------------------------------------------------------------

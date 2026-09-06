@@ -10,6 +10,7 @@ accounting.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -22,6 +23,7 @@ from Tooling.lab import driver as driver_mod
 from Tooling.lab import run as run_mod
 from Tooling.lab import snapshot as snap_mod
 from Tooling.lab import spec as spec_mod
+from Tooling.lab import teardown as teardown_mod
 from Tooling.state import db, groups as groups_mod
 
 BEFORE = "2026-08-25T12:00:00+00:00"
@@ -280,6 +282,148 @@ def test_a_lab_daemon_never_binds_the_live_workspaces_gateway_port():
 
 
 # ---------------------------------------------------------------------
+# the gateway a lab workspace starts — and never keeps
+# ---------------------------------------------------------------------
+
+def _gateway_marker(ws: Path, pid: int) -> Path:
+    """The live-presence marker a gateway writes at port-bind. `pid` is
+    THIS process's on purpose: `lifecycle._marker_pid` pairs the file
+    with `psutil.pid_exists`, so a made-up number would read as "nothing
+    is running" and the test would pass without testing anything. The
+    kill is stubbed in every test here — nothing is ever signalled."""
+    (ws / ".asterism").mkdir(parents=True, exist_ok=True)
+    marker = ws / ".asterism" / "gateway-live.txt"
+    marker.write_text(str(pid), encoding="utf-8")
+    return marker
+
+
+def _record_kill(killed: list, *, gone: bool = True):
+    def _kill(pid, timeout):
+        killed.append((pid, timeout))
+        return gone, f"killed pid {pid} + 10 descendant(s)"
+    return _kill
+
+
+def test_a_lab_driver_stops_the_gateway_behind_it(tmp_path, monkeypatch):
+    """A gateway outliving its daemon is the PRODUCTION feature — it is
+    spawned with CREATE_BREAKAWAY_FROM_JOB so a daemon restart reuses
+    the warm Mathlib. A lab workspace is discarded when the run ends, so
+    the same survival is a ~2 GB orphan holding the directory open
+    (2026-09-07: pid 103068 with ten descendants, killed by hand)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _gateway_marker(ws, os.getpid())
+    killed: list = []
+    monkeypatch.setattr(teardown_mod, "_kill_gateway_tree",
+                        _record_kill(killed))
+    res = teardown_mod.with_gateway_teardown(
+        lambda spec, w, o: {"outcome": "success"}, {}, ws, ws / "_out")
+    assert killed == [(os.getpid(), teardown_mod.GATEWAY_STOP_TIMEOUT_SEC)]
+    assert res["outcome"] == "success"
+    assert res["gateway_stopped"] is True
+    assert res["gateway_pid"] == os.getpid()
+    assert "descendant" in res["gateway_stop_detail"]
+
+
+def test_the_gateway_goes_even_when_the_driver_raises(tmp_path, monkeypatch):
+    """The road out that leaks is the one nobody writes a teardown for.
+    A wake that dies mid-flight leaves the same orphan as one that
+    finishes, and the workspace is discarded either way."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _gateway_marker(ws, os.getpid())
+    killed: list = []
+    monkeypatch.setattr(teardown_mod, "_kill_gateway_tree",
+                        _record_kill(killed))
+
+    def _boom(spec, w, o):
+        raise RuntimeError("the wake died mid-flight")
+
+    with pytest.raises(RuntimeError, match="mid-flight"):
+        teardown_mod.with_gateway_teardown(_boom, {}, ws, ws / "_out")
+    assert killed == [(os.getpid(), teardown_mod.GATEWAY_STOP_TIMEOUT_SEC)]
+
+
+def test_a_workspace_with_no_gateway_says_so_instead_of_failing(
+        tmp_path, monkeypatch):
+    """Most kinds never start one (`judge_round` is NL end to end), and
+    a teardown that treated its own no-op as a fault would make every
+    such run look broken. It is still reported: `gateway_stopped: false`
+    with no pid is "there was nothing there", which is a different fact
+    from "it would not die"."""
+    ws = tmp_path / "ws"
+    (ws / ".asterism").mkdir(parents=True)
+    killed: list = []
+    monkeypatch.setattr(teardown_mod, "_kill_gateway_tree",
+                        _record_kill(killed))
+    res = teardown_mod.with_gateway_teardown(
+        lambda spec, w, o: {"outcome": "success"}, {}, ws, ws / "_out")
+    assert killed == [], "nothing was signalled"
+    assert res["outcome"] == "success"
+    assert res["gateway_stopped"] is False
+    assert res["gateway_pid"] is None
+    assert "nothing to stop" in res["gateway_stop_detail"]
+
+
+def test_a_gateway_that_will_not_die_is_reported_as_still_standing(
+        tmp_path, monkeypatch):
+    """`gateway_stopped` is the CLEAR's counterpart: a teardown that
+    claimed success it did not achieve would send the reader looking at
+    the wrong half when the workspace then refuses to go."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _gateway_marker(ws, os.getpid())
+    monkeypatch.setattr(teardown_mod, "_kill_gateway_tree",
+                        _record_kill([], gone=False))
+    res = teardown_mod.with_gateway_teardown(
+        lambda spec, w, o: {"outcome": "success"}, {}, ws, ws / "_out")
+    assert res["gateway_stopped"] is False
+    assert res["gateway_pid"] == os.getpid()
+
+
+def test_the_teardown_waits_for_a_marker_only_where_a_gateway_ran(
+        tmp_path, monkeypatch):
+    """The daemon creates `gateway.log` BEFORE it starts the subprocess,
+    and the gateway writes its presence marker seconds later from inside
+    it — a `--once` daemon that drains an empty queue exits in between.
+    So a workspace with a log and no marker is asked again; one with
+    neither is asked once, or every lab run would pay the grace window
+    for a gateway that never existed."""
+    looks: list = []
+    monkeypatch.setattr(teardown_mod, "gateway_pid",
+                        lambda ws: looks.append(ws) and None)
+    ws = tmp_path / "ws"
+    (ws / ".asterism").mkdir(parents=True)
+    teardown_mod.stop_workspace_gateway(ws, grace_sec=0.5)
+    assert len(looks) == 1, "no log means no gateway was ever launched"
+
+    log = teardown_mod.gateway_log_path(ws)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("[gateway] launching subprocess\n", encoding="utf-8")
+    looks.clear()
+    teardown_mod.stop_workspace_gateway(ws, grace_sec=0.5)
+    assert len(looks) > 1, "a log and no marker is asked again"
+
+
+def test_a_clear_that_leaves_a_locked_file_says_which_one(tmp_path, capsys,
+                                                          monkeypatch):
+    """The other half of the same failure: `ignore_errors=True` made an
+    orphan's open handle on `.asterism/logs/gateway.log` look exactly
+    like a clean sweep, so the run reported success over it."""
+    monkeypatch.setattr(
+        run_mod._build, "clear_workspace",
+        lambda ws, **kw: [(".asterism/logs/gateway.log",
+                           "PermissionError: used by another process")])
+    left = run_mod.clear_and_report(tmp_path)
+    assert left == [{"path": ".asterism/logs/gateway.log",
+                     "error": "PermissionError: used by another process"}]
+    said = capsys.readouterr().out
+    assert ".asterism/logs/gateway.log" in said
+    assert "used by another process" in said
+    assert "gateway_stopped" in said, "and where to look for the cause"
+
+
+# ---------------------------------------------------------------------
 # the record
 # ---------------------------------------------------------------------
 
@@ -367,6 +511,8 @@ def test_the_run_record_pins_the_slice_the_commit_and_the_prompts(
     assert rec["seats"]["adversary"]["model"] == "gpt-5"
     assert rec["artefacts"] == ["attempts/pid1"]
     assert rec["slice_manifest"]["problem"] == PROBLEM
+    assert rec["clear_leftovers"] == [], \
+        "the workspace went, and the record says so"
     # What the arm ASKED the driver to do. The lab.yaml is edited
     # between runs — that is the point of arms — so a record that only
     # named the experiment would be read against whichever version of

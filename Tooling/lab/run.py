@@ -147,6 +147,35 @@ def collect_mcp_logs(ws: Path, out: Path) -> "list[str]":
 
 
 # ---------------------------------------------------------------------
+# clearing the workspace
+# ---------------------------------------------------------------------
+
+def clear_and_report(ws: Path, *, keep: "tuple[str, ...]" = KEEP_AFTER_RUN
+                     ) -> "list[dict]":
+    """Clear a finished workspace and SAY what would not go.
+
+    A file that cannot be deleted from a discarded workspace means a
+    process outlived the run and is still holding it — on 2026-09-07 an
+    orphaned LSP gateway tree (gateway → lake serve → lean --server →
+    N × lean --worker, ~2 GB) with `.asterism/logs/gateway.log` open.
+    Under `ignore_errors=True` that was indistinguishable from a clean
+    sweep and the run reported success over it. The driver's own
+    teardown (`lab/teardown.stop_workspace_gateway`, reported as
+    `driver_result.gateway_stopped`) is what should have prevented it;
+    this is the check that says when it did not."""
+    leftovers = _build.clear_workspace(ws, keep=keep)
+    for rel, err in leftovers:
+        print(f"[lab] WARNING: {ws}/{rel} would not be removed — {err}",
+              flush=True)
+    if leftovers:
+        print(f"[lab] WARNING: {len(leftovers)} path(s) survived the clear "
+              f"of {ws} — something still holds this workspace open. Check "
+              f"`driver_result.gateway_stopped` in the record and, if it is "
+              f"false, the gateway tree its `gateway_pid` names.", flush=True)
+    return [{"path": rel, "error": err} for rel, err in leftovers]
+
+
+# ---------------------------------------------------------------------
 # launching the driver
 # ---------------------------------------------------------------------
 
@@ -234,6 +263,18 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
     artefacts = list(result.get("artefacts") or [])
     artefacts += collect_transcripts(ws, out)
     artefacts += collect_mcp_logs(ws, out)
+    # The clear runs BEFORE the record is built, so what it could not
+    # remove is part of the record rather than a line in a log nobody
+    # kept. Everything that reads the workspace is done by here: the
+    # scorers read `_out/` and the record alone, by design
+    # (`lab/standard.py` — "the workspace is gone by then").
+    leftovers: "list[dict]" = []
+    if not keep:
+        # The workspace is throwaway BY DESIGN — "runs, then discarded;
+        # there is no restore" (lab_design.md §2). `_out/` and the
+        # record survive because they are the experiment; the rest is a
+        # copy of a slice and a copy of a commit, both reproducible.
+        leftovers = clear_and_report(ws, keep=KEEP_AFTER_RUN)
     record = {
         "experiment": exp.name,
         "arm": arm_name,
@@ -263,6 +304,9 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
         "driver_result": result,
         "artefacts": sorted(set(artefacts)),
         "workspace_kept": bool(keep),
+        # Empty is the normal answer; anything in it names a file some
+        # process was still holding when the run ended.
+        "clear_leftovers": leftovers,
     }
     record.update(extra or {})
     if score is not None:
@@ -273,12 +317,6 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
     (ws / RECORD_BASENAME).write_text(
         json.dumps(record, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8")
-    if not keep:
-        # The workspace is throwaway BY DESIGN — "runs, then discarded;
-        # there is no restore" (lab_design.md §2). `_out/` and the
-        # record survive because they are the experiment; the rest is a
-        # copy of a slice and a copy of a commit, both reproducible.
-        _build.clear_workspace(ws, keep=KEEP_AFTER_RUN)
     print(f"[lab] {exp.name}/{arm_name}_r{rep}: rc={rc} "
           f"outcome={record['outcome']} wall={wall:.0f}s → {out}",
           flush=True)
@@ -385,7 +423,7 @@ def gc(root: Path, *, keep_latest: int = 3) -> dict:
                              if p.name not in KEEP_AFTER_RUN]
                 if not leftovers:
                     continue
-                _build.clear_workspace(run_dir, keep=KEEP_AFTER_RUN)
+                clear_and_report(run_dir, keep=KEEP_AFTER_RUN)
                 cleared.append(
                     run_dir.relative_to(root).as_posix())
     referenced = referenced_slices(root)

@@ -302,8 +302,11 @@ def _link_or_copy(src: Path, dst: Path) -> str:
         return "copy"
 
 
-def clear_workspace(ws: Path, *, keep: "tuple[str, ...]" = ()) -> None:
-    """Delete a workspace's contents, minus `keep`.
+def clear_workspace(ws: Path, *,
+                    keep: "tuple[str, ...]" = ()
+                    ) -> "list[tuple[str, str]]":
+    """Delete a workspace's contents, minus `keep`. Returns whatever
+    would not go: `[(workspace-relative path, the OS's own words)]`.
 
     THE LINKED TREES ARE UNLINKED, NEVER DESCENDED INTO.
     `.lake/packages` is a junction into the framework's own dependency
@@ -314,19 +317,44 @@ def clear_workspace(ws: Path, *, keep: "tuple[str, ...]" = ()) -> None:
     followed a junction since 3.8. Both depths are pinned by
     `tests/test_lab_build.py`, because an `onerror=` handler or a `copy`
     fallback added later would reintroduce exactly that.
+
+    NOTHING IS SWALLOWED. `ignore_errors=True` made a locked file — the
+    orphaned gateway's own `.asterism/logs/gateway.log`, held open by a
+    `lake serve` tree that outlived the run (2026-09-07) —
+    indistinguishable from a clean sweep, so a run reported success with
+    2 GB and a live process left behind it. The handler below RECORDS
+    and does nothing else: it must never retry, chmod or copy, because
+    every one of those is a way to end up following that junction.
     """
     ws = Path(ws)
+    leftovers: "list[tuple[str, str]]" = []
+
+    def _note(_func, path, exc) -> None:
+        # `onexc` hands the exception; `onerror` (and our own call
+        # below) an exc_info triple. Read both — the day the stdlib
+        # picks one is not the day this should go quiet.
+        err = exc[1] if isinstance(exc, tuple) else exc
+        try:
+            rel = Path(path).relative_to(ws).as_posix()
+        except ValueError:
+            rel = str(path)
+        leftovers.append((rel, f"{type(err).__name__}: {err}"))
+
     if not ws.is_dir():
-        return
+        return leftovers
     for entry in sorted(ws.iterdir()):
         if entry.name in keep:
             continue
-        if entry.is_symlink() or entry.is_junction():
-            entry.unlink(missing_ok=True)
-        elif entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+        try:
+            if entry.is_symlink() or entry.is_junction():
+                entry.unlink(missing_ok=True)
+            elif entry.is_dir():
+                shutil.rmtree(entry, onexc=_note)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError as exc:
+            _note(None, entry, exc)
+    return leftovers
 
 
 def _import_slice(ws: Path, slice_: Slice) -> None:
@@ -446,7 +474,17 @@ def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
         # Through `clear_workspace`, not `rmtree`: a previous build's
         # `.lake` junction is still there, and the shared tree behind it
         # is not this workspace's to delete.
-        clear_workspace(ws)
+        left = clear_workspace(ws)
+        if left:
+            # `ws.rmdir()` would raise here anyway — as WinError 145,
+            # "the directory is not empty", which names nothing. The
+            # usual holder is a process the previous run left running.
+            raise LabError(
+                f"{ws} cannot be rebuilt — the previous run's workspace "
+                f"will not clear:\n"
+                + "\n".join(f"  {rel}: {err}" for rel, err in left)
+                + "\nSomething still holds it open (an orphaned LSP "
+                  "gateway tree is the usual one). Kill it and retry.")
         ws.rmdir()
     ws.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(base, ws,

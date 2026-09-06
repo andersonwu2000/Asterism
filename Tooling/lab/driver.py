@@ -41,6 +41,11 @@ Every kind writes `driver_result.json` and copies its attempts tree into
 `_out/` whole. Whole, not by whitelist: the artefact that mattered on
 2026-09-04 was a REFUSED verdict, which arm3h_r2 had unlinked, and the
 shape had to be dug out of a codex rollout afterwards.
+
+And every kind runs under `teardown.with_gateway_teardown`. A gateway
+that outlives its daemon is the production feature; in a lab workspace,
+which is discarded when the run ends, it is a 2 GB orphan holding the
+directory open.
 """
 from __future__ import annotations
 
@@ -915,8 +920,11 @@ def main(argv=None) -> int:
     if kind not in KINDS:
         raise SystemExit(f"unknown driver kind {kind!r} — have "
                          f"{sorted(KINDS)}")
+    # Deferred like every other framework import here: it must resolve
+    # against the workspace already on `sys.path`.
+    from Tooling.lab.teardown import with_gateway_teardown
     t0 = time.monotonic()
-    result = KINDS[kind](spec, ws, out)
+    result = with_gateway_teardown(KINDS[kind], spec, ws, out)
     result.update({"kind": kind, "problem": spec["problem"],
                    "wall_sec": round(time.monotonic() - t0, 1),
                    "seats": seats_now()})

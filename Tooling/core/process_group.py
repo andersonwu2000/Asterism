@@ -248,6 +248,94 @@ def terminate_job(job) -> bool:
         return False
 
 
+def kill_process_tree(pid, *, timeout: float = 30.0) -> "tuple[bool, str]":
+    """Kill the process `pid` names AND every descendant, by PID.
+
+    The job-object paths above are for a tree THIS process started and
+    still holds a handle for. This one is for a tree nobody holds: the
+    LSP gateway breaks away from the daemon's job on purpose
+    (`lsp/lifecycle.start_gateway` — in production it is reused across
+    daemon restarts), so once the daemon is gone the only name left for
+    `gateway -> lake serve -> lean --server -> lean --worker` is the pid
+    its own presence marker recorded.
+
+    The descendants are enumerated BEFORE anything is killed. On Windows
+    a child does not die with its parent, and one whose parent died
+    first is re-parented — invisible to a walk that starts at the root,
+    which is the blindness `taskkill /T` has (2026-08-08: one orphaned
+    worker outlived 21 backend restarts and reached 102 GB). A list
+    taken at a single instant cannot go stale that way. The root is
+    killed first so it cannot spawn a replacement backend while the
+    descendants are being reaped.
+
+    Returns `(gone, detail)`. `gone` is True only when the root and every
+    captured descendant have actually left the process table within
+    `timeout` — a teardown that reports success it did not achieve is
+    the leak it was written to close. Never raises: `detail` carries
+    whatever went wrong, in the OS's own words.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False, f"not a pid: {pid!r}"
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover — psutil is a hard dependency
+        return _kill_tree_without_psutil(pid)
+    try:
+        root = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return True, f"pid {pid} was already gone"
+    except psutil.Error as exc:  # noqa: BLE001 — reported, never raised
+        return False, f"pid {pid}: {type(exc).__name__}: {exc}"
+    try:
+        kin = root.children(recursive=True)
+    except psutil.Error:
+        kin = []
+    victims = [root] + kin
+    refused: "list[str]" = []
+    for p in victims:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:  # noqa: BLE001 — e.g. AccessDenied
+            refused.append(f"{p.pid} ({type(exc).__name__})")
+    _gone, alive = psutil.wait_procs(victims, timeout=timeout)
+    detail = f"killed pid {pid} + {len(kin)} descendant(s)"
+    if refused:
+        detail += f"; refused the kill: {', '.join(refused)}"
+    if alive:
+        return False, (f"{detail}; still alive after {timeout:.0f}s: "
+                       + ", ".join(str(p.pid) for p in alive))
+    return True, detail
+
+
+def _kill_tree_without_psutil(pid: int) -> "tuple[bool, str]":
+    """Last resort. `taskkill /T` walks the CURRENT parent-child chain,
+    so it cannot see a re-parented orphan — that is exactly why psutil
+    is the primary path, and why this says so in its own answer."""
+    if sys.platform == "win32":
+        import subprocess
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True,
+                           creationflags=no_window_creationflags())
+        out = (r.stdout or b"").decode("utf-8", "replace").strip()
+        return r.returncode == 0, (
+            f"psutil absent — taskkill /T on pid {pid} rc={r.returncode} "
+            f"{out}; a re-parented descendant may have survived it")
+    import os
+    import signal
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True, f"pid {pid} was already gone"
+    except OSError as exc:
+        return False, f"kill {pid}: {exc}"
+    return False, (f"psutil absent — SIGKILL sent to pid {pid} alone; its "
+                   f"descendants were not enumerated")
+
+
 def no_window_creationflags() -> int:
     """`creationflags` addend that stops a console-subsystem child from
     popping a visible console window when its parent has none (the
