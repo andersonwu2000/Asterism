@@ -18,6 +18,15 @@ interface Shelf {
   task: string
 }
 
+// A reading test must not trigger a model refresh, command or save as
+// a side effect of opening a panel. Enforce the promise above in the
+// browser, rather than relying on every component to remain read-only.
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/**', route => route.request().method() === 'GET'
+    ? route.fallback()
+    : route.fulfill({ status: 403, json: { detail: 'Read-only smoke test' } }))
+})
+
 /** A populated Project and one of its tasks. What the workspace holds
  * is not this suite's business, so the address comes from the API — the
  * SMALLEST shelf that meets the bar, so the pages under test stay light
@@ -213,6 +222,47 @@ test('the Assistant answers Ctrl+/', async ({ page, request }) => {
   // what let the old label collision pass as a false green)
   await panel.getByRole('button', { name: 'conversations' }).click()
   await expect(panel.getByLabel('conversation list')).toBeVisible()
+})
+
+test('the Assistant header names the conversation and nothing else', async ({
+  page,
+  request,
+}) => {
+  await openShelf(page, request, 'tasks', false)
+  const panel = page.locator('[aria-label="assistant"]')
+  if (!(await panel.isVisible())) await page.keyboard.press('Control+/')
+  await expect(panel).toBeVisible()
+
+  // the header is the conversation's name. Which page the question is
+  // about is the address's job and the panel already follows it — said
+  // twice, it was just a suffix eating the title's room (owner,
+  // 2026-09-06)
+  await expect(panel.getByText(/^about /)).toHaveCount(0)
+
+  // the fold toggle speaks the console's own fold glyph (▸ closed, ▾
+  // open — every other fold on every other screen), and it is not
+  // written in the faintest ink there is: a control the reader has to
+  // find is not settled chrome
+  const toggle = panel.getByRole('button', { name: 'conversations' })
+  await expect(toggle).toHaveText('▸')
+  const inks = await page.evaluate(() => {
+    const s = getComputedStyle(document.documentElement)
+    return {
+      faint: s.getPropertyValue('--color-ink-faint').trim(),
+      dim: s.getPropertyValue('--color-ink-dim').trim(),
+    }
+  })
+  const rgb = (hex: string) => {
+    const h = hex.replace('#', '')
+    return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(
+      h.slice(4, 6),
+      16,
+    )})`
+  }
+  await expect(toggle).toHaveCSS('color', rgb(inks.dim))
+  expect(rgb(inks.dim)).not.toBe(rgb(inks.faint))
+  await toggle.click()
+  await expect(toggle).toHaveText('▾')
 })
 
 test('run parameters live beside Run, not in settings', async ({ page, request }) => {

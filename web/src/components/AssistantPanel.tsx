@@ -63,6 +63,9 @@ interface ChatState {
   provider?: string
   conversation_memory?: boolean
   read_scope?: 'workspace' | 'process'
+  /** the seat's own sentence about its reach. The panel states the
+   * EXCEPTION (`read_scope: 'process'`) above the composer rather than
+   * hanging the settled case off a tooltip nobody hovers. */
   read_note?: string
   available?: boolean
   unavailable_detail?: string
@@ -96,12 +99,6 @@ function whereFromRoute(segments: string[], screen: ScreenFocus): Where {
     return { page: { kind: 'problem', name: segments[1] }, project: null, focus: null }
   if (s0 === 'settings') return { page: { kind: 'engine' }, project: null, focus: null }
   return { page: { kind: 'board' }, project: null, focus: null }
-}
-
-function pageLabel(w: Where): string {
-  if (w.page.kind === 'problem') return w.page.name ?? 'task'
-  if (w.page.kind === 'board') return w.project ? `project · ${w.project}` : 'projects'
-  return w.page.kind
 }
 
 /** An answer, with whatever it PREPARED lifted out of the prose (§3.8).
@@ -655,11 +652,6 @@ export default function AssistantPanel({
     }
   }
 
-  const where = useMemo(
-    () => whereFromRoute(route.segments, screen),
-    [route.segments, screen],
-  )
-
   // What this backend can and cannot promise. Both notes are exceptions
   // — they appear only when the seated provider is weaker than the
   // fenced, remembering one, so the settled case earns no ink.
@@ -711,28 +703,25 @@ export default function AssistantPanel({
           the two shape controls. `clear` is gone — forgetting a
           conversation is the act on its own row. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2.5">
+        {/* the console's own fold glyph (▸ closed, ▾ open — the shape
+            every other fold on every other screen wears), one ink above
+            the settled floor: a control the reader has to FIND is not
+            chrome that has finished speaking (owner, 2026-09-06) */}
         <button
-          className="cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+          className="cursor-pointer rounded-md px-1 text-[11px] text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
           onClick={() => setFoldOpen((o) => !o)}
           title="the conversations on this project"
           aria-expanded={foldOpen}
           aria-label="conversations"
         >
-          {foldOpen ? '▴' : '▾'}
+          {foldOpen ? '▾' : '▸'}
         </button>
+        {/* the header names the CONVERSATION and nothing else. Which
+            page the question is about is the address's job, and the
+            panel already follows it — as a suffix here it was the same
+            fact drawn twice, spending the title's room to do it. */}
         <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={title}>
           {title}
-        </span>
-        <span
-          className="shrink-0 truncate text-[11px] text-ink-faint"
-          // the backend states its own reach — a fixed sentence here
-          // described claude's fence on every provider
-          title={
-            meta?.read_note ??
-            'questions are answered about this page; it can prepare a command or write a note, and nothing takes effect until you confirm it'
-          }
-        >
-          about {pageLabel(where)}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Select
