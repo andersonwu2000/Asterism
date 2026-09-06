@@ -85,6 +85,36 @@ describe('reducing a turn', () => {
     expect(t.text).toBe('The task is waiting.')
   })
 
+  it('breaks the prose where a tool call interrupted it', () => {
+    // two chunks of prose with a call between them are two thoughts,
+    // and a reader who gets them as one paragraph reads a sentence the
+    // model never wrote
+    let t = emptyTurn()
+    t = reduceEvent(t, { type: 'delta', text: 'Let me look at the tree.' }, 1)
+    t = reduceEvent(t, { type: 'tool_start', id: 'a', name: 'inspect', input: {} }, 2)
+    t = reduceEvent(t, { type: 'tool_end', id: 'a', ok: true, ms: 10 }, 3)
+    t = reduceEvent(t, { type: 'delta', text: 'The root is stalled.' }, 4)
+    expect(t.text).toBe('Let me look at the tree.\n\nThe root is stalled.')
+  })
+
+  it('breaks once however many calls sit between the two chunks', () => {
+    let t = emptyTurn()
+    t = reduceEvent(t, { type: 'delta', text: 'Checking.\n' }, 1)
+    t = reduceEvent(t, { type: 'tool_start', id: 'a', name: 'inspect', input: {} }, 2)
+    t = reduceEvent(t, { type: 'tool_start', id: 'b', name: 'loogle', input: {} }, 3)
+    // an end whose start never arrived is a boundary too
+    t = reduceEvent(t, { type: 'tool_end', id: 'c', ok: true, ms: 5 }, 4)
+    t = reduceEvent(t, { type: 'delta', text: 'Done.' }, 5)
+    expect(t.text).toBe('Checking.\n\nDone.')
+  })
+
+  it('opens no paragraph before the first word', () => {
+    let t = emptyTurn()
+    t = reduceEvent(t, { type: 'tool_start', id: 'a', name: 'inspect', input: {} }, 1)
+    t = reduceEvent(t, { type: 'delta', text: 'The root is stalled.' }, 2)
+    expect(t.text).toBe('The root is stalled.')
+  })
+
   it('done ends the turn and leaves nothing pulsing', () => {
     let t = emptyTurn()
     t = reduceEvent(t, { type: 'tool_start', id: 'a', name: 'compute', input: {} }, 1000)

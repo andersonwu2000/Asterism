@@ -83,6 +83,23 @@ export function parseSseFrames(buf: string): SseChunk {
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const num = (v: unknown): number | null => (typeof v === 'number' ? v : null)
 
+/** A tool call is a boundary in the prose.
+ *
+ * The model says what it is about to look for, calls something, and
+ * then says what it found — two thoughts, minutes apart on the wire.
+ * The deltas around them are separate text blocks in the stream, so
+ * neither carries the newline that separates them, and appending them
+ * to one string glues the second sentence onto the first: the reader
+ * gets a paragraph nobody wrote (owner, 2026-09-06). The break is
+ * written where the interruption happened, not guessed at render time
+ * — `lib/prose` joins single newlines as spaces, so it takes a blank
+ * line to open a paragraph. Nothing is opened before the first word,
+ * and a run of calls with no prose between them breaks only once. */
+function breakAtTool(text: string): string {
+  if (text.trim() === '' || /\n[ \t]*\n[ \t]*$/.test(text)) return text
+  return text.replace(/[ \t\r\n]+$/, '') + '\n\n'
+}
+
 /** Fold one event into the turn. Never mutates: the panel holds the
  * turn in state and React needs a new object to paint. */
 export function reduceEvent(
@@ -115,7 +132,7 @@ export function reduceEvent(
       result: null,
       running: true,
     }
-    return { ...turn, rows: [...turn.rows, row] }
+    return { ...turn, text: breakAtTool(turn.text), rows: [...turn.rows, row] }
   }
   if (type === 'tool_end') {
     const id = str(ev.id) ?? ''
@@ -137,7 +154,7 @@ export function reduceEvent(
         result,
         running: false,
       }
-      return { ...turn, rows: [...turn.rows, row] }
+      return { ...turn, text: breakAtTool(turn.text), rows: [...turn.rows, row] }
     }
     const rows = turn.rows.slice()
     rows[at] = { ...rows[at], ms, ok, result, running: false }
