@@ -164,10 +164,12 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
                     anno = ""
             head += f" → {target}{anno}"
         out.append(head)
-        # The prose column first (its contract name depends on the kind:
-        # an Inject's is `proof`, a Delegate's `charter` — one mapping,
-        # shared with the parser that filled it), then the payload in
-        # the author's own key order, then `reason` last.
+        # The prose column first, under the contract name its kind uses
+        # (a Delegate's is `charter` — one mapping, shared with the
+        # parser that filled it), then the payload in the author's own
+        # key order, then `reason` last. An Inject is skipped: its
+        # brick is on the heading above and its argument is in
+        # `proposal.md`, read there once.
         fields: "list[tuple[str, Any]]" = []
         brief = getattr(d, "brief", None)
         if brief and kind != "Inject":

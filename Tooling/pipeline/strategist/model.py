@@ -288,9 +288,12 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
             return None, (f"target_id must be int, slug string, or null "
                           f"(got {type(target_id).__name__})")
     # One column, three contracts (2026-08-11; Delegate reshaped
-    # 2026-08-19). An Inject's prose is the argument that settles its
-    # brick — the part of the batch's `## Proof` the author copied
-    # across — so the key it is written under is `proof`. A Delegate's
+    # 2026-08-19; Inject's retired 2026-09-07). An Inject used to copy
+    # the argument that settles its brick out of the batch's
+    # `## Proof`, under the key `proof`; it names the brick now and
+    # writes no prose at all, and the mapping survives only so a
+    # decision that still carries one lands where verify can refuse it
+    # BY NAME rather than swallow it into `payload`. A Delegate's prose
     # is the CHARTER: the claim a new group must settle, written under
     # `charter` (its old key `brief` now names the optional guidance
     # hand-off instead — see below). Naming them apart is what stops

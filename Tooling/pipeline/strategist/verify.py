@@ -446,10 +446,10 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             if refuted_goal_for(conn, int(g["id"])) is None:
                 return (f"ReturnToParent(refuted) target g{g['id']} "
                         f"`{g['slug']}` is not a disproof-gate brick. "
-                        f"Inject the node you hold false with the "
-                        f"counterexample in `proof`; the worker certifies "
-                        f"the negation and `<slug>_disproof` lands — name "
-                        f"that node here")
+                        f"Inject the node you hold false, with the "
+                        f"counterexample as its brick's `Proof.`; the "
+                        f"worker certifies the negation and "
+                        f"`<slug>_disproof` lands — name that node here")
         if flavour == "amend":
             proposed = decision.payload.get("proposed_charter")
             if not isinstance(proposed, str) or not proposed.strip():

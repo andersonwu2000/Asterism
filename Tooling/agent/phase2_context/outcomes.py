@@ -299,13 +299,14 @@ def _alias_twin(row) -> str:
 def _prose_label(decision_kind: "str | None") -> str:
     """What to CALL a decision's prose when showing it back to the agent.
 
-    One column, three contracts (`strategist._parse_one`): an Inject's
-    prose is the `proof` that settles its brick; a Delegate's is the
-    `charter` a new group must settle (2026-08-19 reshape — its old key
-    `brief` now names the optional guidance hand-off). They share the
-    DB column `brief` because a decision carries one piece of prose —
-    but echoing the COLUMN name at the agent teaches the wrong field
-    name, and the agent writes back what it was shown. That is the
+    An Inject writes a `brick` — the NAME of a brick in its batch's
+    `## Proof` (2026-09-07); what this label sits over is that brick,
+    resolved out of `bricks`. A Delegate writes a `charter`, the claim
+    a new group must settle (2026-08-19 reshape — its old key `brief`
+    now names the optional guidance hand-off). Every other kind writes
+    a `brief`, the DB column all three historically shared — but
+    echoing the COLUMN name at the agent teaches the wrong field name,
+    and the agent writes back what it was shown. That is the
     whole mechanism by which a 2026-08-11 rename of the wire field kept
     costing rejected batches into 2026-08-14: the spec moved, and every
     surface that still spelled it the old way taught the old way.
