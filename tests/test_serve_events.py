@@ -607,6 +607,44 @@ def test_an_accepted_document_lands_with_its_path_and_its_cost(
     assert got[0]["group_id"] == gid
 
 
+def test_the_wake_that_came_back_names_the_document_it_produced(
+        workspace: Path) -> None:
+    """`theorized` is the wake's own landing row, and DESIGN.md's log
+    grammar says the third field is a NAME the reader can ACT on. It
+    carried no path, so its name click fell through to "follow this
+    object" — the reader asked for the document and got the request's
+    own history back (owner, 2026-09-06). The answer is already joined
+    to the wake by `pipeline_id`; the row simply has to carry it."""
+    conn = _open_db(workspace)
+    gid = _top(conn)
+    did = _theorize(conn, workspace, objective="Is the surplus floor forced?")
+    _theory_pipeline(conn, gid, outcome="success")
+    rel = "Problems/P/_docs/agent/g1_20260906-1612_the_floor.md"
+    _theory_doc(conn, group_id=gid, decision_id=did,
+                objective="Is the surplus floor forced?", path=rel,
+                status="accepted", rounds=2)
+    conn.close()
+    done = [e for e in _events(workspace)["events"]
+            if e["kind"] == "theorized"]
+    assert len(done) == 1
+    assert done[0]["path"] == rel
+
+
+def test_the_wake_that_landed_nothing_offers_no_path(
+        workspace: Path) -> None:
+    """A wake that died before any ruling produced no document, and a
+    row with no file must offer no link into a 404 — the same law the
+    refusal rows already keep."""
+    conn = _open_db(workspace)
+    gid = _top(conn)
+    _theorize(conn, workspace, objective="the question nobody ruled on")
+    _theory_pipeline(conn, gid, outcome="failed")
+    conn.close()
+    done = [e for e in _events(workspace)["events"]
+            if e["kind"] == "theorized"]
+    assert len(done) == 1 and done[0]["path"] is None
+
+
 def test_a_refused_document_is_an_event_that_offers_its_path(
         workspace: Path) -> None:
     """A rejected run keeps its row AND its document (owner ruling

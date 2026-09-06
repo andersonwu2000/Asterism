@@ -20,6 +20,27 @@
  * how the drift started.
  */
 
+/** ONE line ending, for every painter that reads text line by line.
+ *
+ * A file written on Windows arrives CRLF, and every block boundary the
+ * markdown engines look for is a bare `\n`: the paragraph split is
+ * `\n{2,}`, which `\r\n\r\n` does not match, and a heading is
+ * `^#{1,6}\s+(.*)$` whose `.` refuses a `\r`. Live on 2026-09-06,
+ * `user/split_bricks.md` — CRLF on disk, thirteen sections — came out
+ * of the Documents render pane as a SINGLE paragraph with every `---`
+ * and `## Brick n` inline in it, beside a source pane showing the same
+ * bytes on their own lines.
+ *
+ * It lives here because both painters already dress themselves from
+ * this file, and a line ending is a property of the TEXT, not of
+ * either engine's block grammar. Display only: the editor keeps the
+ * document's own bytes, so opening a file never rewrites it. (A
+ * textarea normalises its API value to LF anyway, so the first
+ * keystroke is what converts it — the reader's edit, not our read.) */
+export function oneNewline(text: string): string {
+  return text.replace(/\r\n?/g, '\n')
+}
+
 /** Stacked-textarea editors (LeanEditor, MarkdownEditor): the painted
  * <pre> and the transparent textarea must agree to the pixel. Both
  * files carried their own copy of this string. */

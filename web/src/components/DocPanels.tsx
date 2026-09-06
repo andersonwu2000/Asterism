@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { ApiError, apiPost } from '../lib/api'
 import { engineWord, useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { useLeanSlotActive } from '../lib/leanSlot'
-import { renderProse } from '../lib/prose'
+import { proseIssues, renderProse } from '../lib/prose'
 import { frameClass } from '../lib/textFrame'
 import { DiagList } from './LeanBlock'
 import { Button } from './ui'
@@ -20,12 +21,82 @@ import { Button } from './ui'
  * could not be reused by a shell that owns the view control.
  */
 
-/** Markdown's render, of the DRAFT text — a document reads as it is
- * being written, not as it was last saved. */
-export function ProsePanel({ text }: { text: string }) {
+/** The bar every render pane wears: the CHECK, and what it answered.
+ *
+ * One shape for prose and for TeX. The two formats must operate alike
+ * (owner, 2026-09-06) and "does this read?" is the same question in
+ * both — only the thing that answers it differs, so only that differs
+ * here. Before this the markdown render had no bar at all, which said
+ * markdown could not be wrong. */
+function PanelBar({
+  action,
+  status,
+  warn = false,
+}: {
+  action: ReactNode
+  status: string
+  /** the answer is bad news — the TeX pane's own idiom for it */
+  warn?: boolean
+}) {
   return (
-    <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
-      {renderProse(text, { mode: 'document', frontmatter: true })}
+    <div className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5">
+      {action}
+      <span
+        className={`min-w-0 flex-1 truncate text-[11px] ${warn ? 'text-warn' : 'text-ink-faint'}`}
+      >
+        {status}
+      </span>
+    </div>
+  )
+}
+
+/** Markdown's render, of the DRAFT text — a document reads as it is
+ * being written, not as it was last saved.
+ *
+ * The check is the painter itself (`lib/prose::proseIssues`): the
+ * render below the bar is what the document says, and the bar says
+ * whether anything in it fell out of that reading on the way. No
+ * compile step, because there is none — the paint is already live, and
+ * the button opens the report rather than starting work. */
+export function ProsePanel({
+  text,
+  scrollRef,
+}: {
+  text: string
+  /** the shell drives this pane from the source pane's scroll
+   * (`docShell::syncedScrollTop`) */
+  scrollRef?: Ref<HTMLDivElement>
+}) {
+  const [open, setOpen] = useState(false)
+  const issues = useMemo(() => proseIssues(text), [text])
+  const n = issues.length
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <PanelBar
+        action={
+          <Button size="xs" onClick={() => setOpen((v) => !v)}>
+            {open ? 'Hide' : 'Check'}
+          </Button>
+        }
+        warn={n > 0}
+        status={
+          n === 0
+            ? 'painted by the console — it read every line'
+            : `${n} line${n === 1 ? '' : 's'} the painter could not read`
+        }
+      />
+      {open && (
+        <pre className={frameClass({ tone: 'faint', className: 'mx-3 mt-2 shrink-0' })}>
+          {n === 0
+            ? 'Nothing fell out of the reading. Fences all close and every $formula$ typesets.'
+            : issues.map((i) => `line ${i.line} — ${i.detail}`).join('\n')}
+        </pre>
+      )}
+      <div ref={scrollRef} className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
+        <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
+          {renderProse(text, { mode: 'document', frontmatter: true })}
+        </div>
+      </div>
     </div>
   )
 }
@@ -107,12 +178,15 @@ export function TexPanel({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5">
-        <Button size="xs" disabled={busy} onClick={() => void render(true)}>
-          {busy ? 'Rendering…' : 'Render'}
-        </Button>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
-          {busy
+      <PanelBar
+        action={
+          <Button size="xs" disabled={busy} onClick={() => void render(true)}>
+            {busy ? 'Rendering…' : 'Render'}
+          </Button>
+        }
+        warn={!busy && result?.status === 'failed'}
+        status={
+          busy
             ? 'compiling…'
             : result?.status === 'ok'
               ? `compiled by ${result.engine}`
@@ -120,9 +194,9 @@ export function TexPanel({
                 ? 'no TeX engine here'
                 : result?.status === 'failed'
                   ? `${result.engine} refused it`
-                  : ''}
-        </span>
-      </div>
+                  : ''
+        }
+      />
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {error && <div className="p-3 text-[11px] text-warn">{error}</div>}
         {result === null && !busy && error === null && (

@@ -6,8 +6,9 @@ import { charterTitle } from '../lib/groupTree'
 import { usePublishFocus } from '../lib/focus'
 import { groupLabel } from '../lib/format'
 import { CycleLine } from './EngineRoom'
+import { navigate } from '../lib/router'
 import ProgrammeView from '../components/ProgrammeView'
-import RevisionHistory from '../components/RevisionHistory'
+import RevisionHistory, { RevisionReading } from '../components/RevisionHistory'
 import { GroupCommandSheet } from '../components/CommandSheet'
 import { ErrorState } from '../components/ui'
 import type { Programme, RunStatus } from '../lib/types'
@@ -113,14 +114,19 @@ export default function Groups({
         livePhase={livePhase}
         onPickGroup={setPick}
         stale={stale}
-        initialView={rev ? 'history' : 'current'}
+        /* the row named a revision: read THAT one, in the same shape
+           the argument as it stands is read in (owner, 2026-09-06) —
+           the ruling above, the body under it, and the chain folded
+           away below both */
+        revision={
+          rev ? <RevisionReading key={rev} problem={problem} id={rev} /> : null
+        }
+        onCurrent={() => navigate(projectPath(project, 'groups', problem))}
         history={
           <RevisionHistory
             key={data.group_id ?? 'top'}
             problem={problem}
             group={data.group_id ?? null}
-            openRev={rev ?? null}
-            initiallyOpen
           />
         }
         // a delivered brick opens on the SKY next door — the section is

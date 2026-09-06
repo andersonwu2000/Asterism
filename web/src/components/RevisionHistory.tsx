@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
@@ -72,9 +72,33 @@ function Round({ r }: { r: DebateRound }) {
   )
 }
 
-/** One revision, opened: the Programme body as it was decided, then the
- * debate, then the verdict that closed it. */
-function Revision({ problem, id }: { problem: string; id: number }) {
+/**
+ * ONE revision, read: what the judge said, and then what it said it
+ * about.
+ *
+ * The criticism sits ABOVE the Programme text (owner, 2026-09-06). A
+ * revision is opened to answer "why does the argument say this", and
+ * the ruling is the answer; underneath a body that runs to a screen and
+ * a half it was a footnote nobody reached. It is the same drawing
+ * wherever a revision is read — inside the history list, and as the
+ * Groups page's own reading when the address names one — because two
+ * drawings of one object is exactly the drift this file's own header
+ * warns about.
+ *
+ * `cap` bounds the body inside the LIST (a row that grows to a screen
+ * and a half buries the rows under it) and is off where the revision IS
+ * the reading.
+ */
+export function RevisionReading({
+  problem,
+  id,
+  cap = false,
+}: {
+  problem: string
+  id: number
+  /** inside the list: hold the body to a readable window */
+  cap?: boolean
+}) {
   const [debate, setDebate] = useState(false)
   const { data, error } = usePoll<RevisionDetail>(
     `/api/problems/${encodeURIComponent(problem)}/programme/revisions/${id}`,
@@ -83,13 +107,20 @@ function Revision({ problem, id }: { problem: string; id: number }) {
   if (error) return <div className="py-2 text-[11px] text-warn">{error.message}</div>
   if (!data) return <div className="late-fade py-2 text-[11px] text-ink-faint">…</div>
   return (
-    <div className="border-t border-edge px-3 py-2">
+    <>
       {data.discard_reason && (
         <div className="mb-2 text-[11px] text-ink-dim">
           discarded — {data.discard_reason}
         </div>
       )}
-      <div className="max-h-[28rem] overflow-y-auto text-[12.5px] leading-relaxed text-ink-dim">
+      {/* the ruling first — already in hand, so no second request for
+          the same JSON */}
+      <VerdictBody v={data.verdict} />
+      <div
+        className={`mt-3 text-[12.5px] leading-relaxed text-ink-dim ${
+          cap ? 'max-h-[28rem] overflow-y-auto' : ''
+        }`}
+      >
         {renderProse(data.body, { mode: 'document' })}
       </div>
       {data.last_words && (
@@ -126,10 +157,7 @@ function Revision({ problem, id }: { problem: string; id: number }) {
           )}
         </div>
       )}
-      {/* the per-criterion verdict closes it — already in hand, so no
-          second request for the same JSON */}
-      <VerdictBody v={data.verdict} />
-    </div>
+    </>
   )
 }
 
@@ -178,37 +206,33 @@ function Row({
           {relTime(r.created_at)}
         </span>
       </button>
-      {open && <Revision problem={problem} id={r.id} />}
+      {open && (
+        <div className="border-t border-edge px-3 py-2">
+          <RevisionReading problem={problem} id={r.id} cap />
+        </div>
+      )}
     </div>
   )
 }
 
+/**
+ * The chain, folded. It sits UNDER the reading now and opens on
+ * request: a revision the address names is read where the argument is
+ * read (owner, 2026-09-06), so nothing arrives here needing to be
+ * unfolded for the reader — the list is an index, and an index the
+ * page opens for you is a page that starts by hiding what you came for.
+ */
 export default function RevisionHistory({
   problem,
   group,
-  openRev: asked = null,
-  initiallyOpen = false,
 }: {
   problem: string
   /** whose chain — the group the screen is standing on. Chains never
    * interleave (v35), so this is not optional information. */
   group: number | null
-  /** The revision the ADDRESS named, already unfolded. A Timeline row
-   * knows which revision it is about; landing the reader on the list to
-   * find it again is the trip this prop deletes (owner, 2026-09-06). */
-  openRev?: number | null
-  /** In the dedicated history view, the collection is the page. */
-  initiallyOpen?: boolean
 }) {
-  const [open, setOpen] = useState(initiallyOpen || asked !== null)
-  const [openRev, setOpenRev] = useState<number | null>(asked)
-  // the address may name another one while this stays mounted
-  useEffect(() => {
-    if (asked !== null) {
-      setOpen(true)
-      setOpenRev(asked)
-    }
-  }, [asked])
+  const [open, setOpen] = useState(false)
+  const [openRev, setOpenRev] = useState<number | null>(null)
   // read ONCE when it opens (`intervalMs <= 0`), never on a poll: this
   // is history, and it changes when something happens, not every 15s
   const { data, error } = usePoll<{ revisions: RevisionRow[] }>(
@@ -221,7 +245,7 @@ export default function RevisionHistory({
   const rows = data?.revisions ?? []
   return (
     <div className="mb-5">
-      {!initiallyOpen && <button
+      <button
         className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
         onClick={() => setOpen((v) => !v)}
         title="every proposal this group decided, passed and discarded"
@@ -235,7 +259,7 @@ export default function RevisionHistory({
           ▸
         </span>
         revision history
-      </button>}
+      </button>
       {open && (
         <div className="mt-1 rounded-xl border border-edge">
           {error && !data ? (

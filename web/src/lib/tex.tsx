@@ -29,7 +29,23 @@ export function TeX({ math, display = false }: { math: string; display?: boolean
   return <span className="normal-case" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-const MATH_SPLIT_RE = /(\$\$[^$]+\$\$|\$[^$\n]+\$)/
+/** Why the typesetter would refuse this math, or null if it takes it.
+ *
+ * `throwOnError: false` is what the reading surfaces want — a bad
+ * formula degrades to its source rather than blanking the page — so the
+ * only way to ASK is to render once with the throw on. Used by the
+ * markdown pane's check, which is the console's answer to "does this
+ * read?" for prose (`lib/prose::proseIssues`). */
+export function mathError(math: string, display = false): string | null {
+  try {
+    katex.renderToString(math, { displayMode: display, throwOnError: true, output: 'html' })
+    return null
+  } catch (e) {
+    return e instanceof Error ? e.message : 'the typesetter refused it'
+  }
+}
+
+export const MATH_SPLIT_RE = /(\$\$[^$]+\$\$|\$[^$\n]+\$)/
 
 /** Split prose on $…$ / $$…$$ and typeset the math runs; `plain` is
  * called on everything else so callers keep their own emphasis/code

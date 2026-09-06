@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { goalMentions, renderProse } from './prose'
+import { goalMentions, proseIssues, renderProse } from './prose'
 
 /*
  * The block engine's one law under test: a heading is a heading
@@ -197,5 +197,81 @@ describe('renderProse preamble — provenance is not the document', () => {
     const out = withPreamble('# Title\n\n<!-- a note -->\n\nBody.')
     expect(out).toContain('&lt;!--')
     expect(out).toContain('Body.')
+  })
+})
+
+/*
+ * A document written on Windows arrives with CRLF line endings, and
+ * every block boundary in this engine is a bare `\n`: the paragraph
+ * split is `\n{2,}`, which `\r\n\r\n` does not match, and a heading is
+ * `^#{1,6}\s+(.*)$` whose `.` refuses `\r`. Live on 2026-09-06:
+ * `user/split_bricks.md` (CRLF on disk, 13 sections) rendered as ONE
+ * paragraph in the Documents render pane — every `---`, every
+ * `## Brick n` and every paragraph break run together as body text,
+ * while the source pane beside it showed them on their own lines.
+ */
+describe('renderProse line endings — CRLF is a line ending too', () => {
+  const CRLF = '# Title\r\n\r\n## Brick 1\r\n\r\nfirst.\r\n\r\nsecond.\r\n\r\nthird.\r\n'
+  const LF = CRLF.replace(/\r\n/g, '\n')
+
+  it('reads a CRLF document exactly as it reads the same LF document', () => {
+    expect(html(CRLF)).toBe(html(LF))
+  })
+
+  it('gives three paragraphs and a section heading, not one paragraph', () => {
+    const out = html(CRLF)
+    expect(out.match(/<p[ >]/g) ?? []).toHaveLength(3)
+    expect(out).toMatch(/<h4[^>]*>.*Brick 1/)
+    expect(out).not.toContain('## Brick 1')
+  })
+
+  it('a CRLF rule is a rule, not the three dashes of a paragraph', () => {
+    expect(html('one.\r\n\r\n---\r\n\r\ntwo.')).toContain('<hr')
+  })
+
+  it('a lone CR document still breaks into its blocks', () => {
+    const out = html('# Title\r\rfirst.\r\rsecond.')
+    expect(out.match(/<p[ >]/g) ?? []).toHaveLength(2)
+  })
+})
+
+/*
+ * The painter's own "check", the markdown half of what the TeX pane has
+ * always had (owner, 2026-09-06: the two formats must operate alike —
+ * `.tex` answers with the engine's log, `.md` answers with the
+ * painter's). It reports only what the painter genuinely CANNOT read,
+ * because a checker that fires on style is a checker a writer learns to
+ * ignore.
+ */
+describe('proseIssues — what the painter could not read', () => {
+  it('says nothing about a document that reads clean', () => {
+    expect(proseIssues('# Title\n\nBody with `code` and $x^2$.\n')).toEqual([])
+  })
+
+  it('names the line where a fence opened and never closed', () => {
+    const issues = proseIssues('before\n\n```lean\ntheorem x : True := trivial\n')
+    expect(issues).toHaveLength(1)
+    expect(issues[0].line).toBe(3)
+    expect(issues[0].detail).toContain('fence')
+  })
+
+  it('is quiet about a fence that does close', () => {
+    expect(proseIssues('```\nx\n```\n')).toEqual([])
+  })
+
+  it('names the line of math the typesetter refuses', () => {
+    const issues = proseIssues('fine.\n\nthen $\frac{1}{$ breaks.\n')
+    expect(issues).toHaveLength(1)
+    expect(issues[0].line).toBe(3)
+  })
+
+  it('does not read math inside a fence — that is code, not math', () => {
+    expect(proseIssues('```\n$\frac{1}{$\n```\n')).toEqual([])
+  })
+
+  it('counts the lines of a CRLF document the way the reader sees them', () => {
+    const issues = proseIssues('before\r\n\r\n```lean\r\nstill open\r\n')
+    expect(issues).toHaveLength(1)
+    expect(issues[0].line).toBe(3)
   })
 })

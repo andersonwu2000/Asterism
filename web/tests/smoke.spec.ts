@@ -640,6 +640,27 @@ test('timeline: the state label never paints over the objective', async ({
     expect(await detail.locator('[title]').first().getAttribute('title'))
       .toContain('Settle: DOES AN ANTICHAIN')
   }
+
+  // …and the verb itself is WHOLE. Fitting inside the track is not the
+  // same promise as being readable in it: the two theory rows that also
+  // print review rounds spent the PAGE mark and its gap out of the same
+  // 99.2px, so `theory 3 rounds` and `refused 3 rounds` ellipsised
+  // their count while every other verb had room. The mark hangs left
+  // into the dead space beside the clock now, and the vocabulary's
+  // widest column is the whole of what it says (owner, 2026-09-06).
+  for (const verb of await page.locator('[data-event-verb]').all()) {
+    const cut = await verb.evaluate(
+      (el) => el.scrollWidth - el.clientWidth,
+    )
+    expect(cut, `"${await verb.innerText()}" is cut off inside its track`)
+      .toBeLessThanOrEqual(1)
+  }
+
+  // the mark is OUTSIDE the track it used to be paid for out of
+  const marked = page.locator('[data-event-label]').filter({ has: page.locator('svg') })
+  const mark = (await marked.first().locator('svg').boundingBox())!
+  const track = (await marked.first().boundingBox())!
+  expect(Math.round(mark.x + mark.width)).toBeLessThanOrEqual(Math.round(track.x))
 })
 
 test('timeline: a row opens the object it names, not a list to find it in', async ({
@@ -679,11 +700,14 @@ test('timeline: a row opens the object it names, not a list to find it in', asyn
   await rows.nth(0).locator('[data-event-detail] [role="button"]').click()
   await expect.poll(() => page.url()).toContain('/rev/412')
   await expect.poll(() => page.url()).toContain('/groups/')
-  // and it lands on the revision's own reading, not on the argument as
-  // it stands with the history folded behind a second click
+  // and it lands on the revision's own READING — the same shape the
+  // argument as it stands is read in, with the chain folded under it
+  // (owner, 2026-09-06). It used to land on a list with the revision
+  // one click in and the ruling on it one click after that.
+  await expect(page.locator('[data-revision-reading]')).toHaveCount(1)
   await expect(
-    page.getByRole('button', { name: 'Revision history' }),
-  ).toHaveAttribute('aria-pressed', 'true')
+    page.getByRole('button', { name: 'revision history' }),
+  ).toBeVisible()
 
   await page.goBack()
   await expect(rows).toHaveCount(2)

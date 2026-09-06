@@ -236,9 +236,11 @@ export interface TimelineEvent {
   note: string | null
   /** the agent-facing brief — expansion only, never the headline */
   body: string | null
-  /** the artifact this event LANDED, workspace-relative. Filled only by
-   * an accepted theory document, whose whole point is a file the reader
-   * can open; a refusal landed nothing and carries null. */
+  /** the artifact this event LANDED, workspace-relative — the row's
+   * name opens it. Every theory row that produced a document carries
+   * it: the landing, the refusal (which lands its record too) and the
+   * WAKE's own return. Null where the run died before anything landed,
+   * because a link into a 404 is worse than no link. */
   path: string | null
   /** the engine stores goal STATUS, not goal HISTORY: a reconstructed
    * timestamp says so rather than pretending to be exact */

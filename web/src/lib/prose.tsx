@@ -2,10 +2,10 @@ import type { ReactNode } from 'react'
 import { apiGet } from './api'
 import { currentSegments, navigate } from './router'
 import { Lean } from './lean'
-import { withMath } from './tex'
+import { MATH_SPLIT_RE, mathError, withMath } from './tex'
 import { emitGoalHover, emitGoalOpen } from './goalFocus'
 import { parseProjectRoute, projectPath } from './projectRoute'
-import { frameClass } from './textFrame'
+import { frameClass, oneNewline } from './textFrame'
 
 /*
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
@@ -442,6 +442,9 @@ export function renderProse(
   }: { mode?: 'chat' | 'document'; frontmatter?: boolean } = {},
 ): ReactNode {
   const doc = mode === 'document'
+  // every boundary below is a bare `\n` — a CRLF document is one
+  // paragraph otherwise (textFrame.oneNewline)
+  text = oneNewline(text)
   let fmBlock: ReactNode = null
   const pre = frontmatter ? preamble(text) : null
   if (pre !== null) {
@@ -539,4 +542,57 @@ export function renderProse(
       })}
     </div>
   )
+}
+
+// -- the painter's own check --------------------------------------------------
+
+/** One thing the painter could not read, at the line it is on. */
+export interface ProseIssue {
+  /** 1-based, counted the way the reader's source pane counts */
+  line: number
+  detail: string
+}
+
+/**
+ * What this engine cannot read in a document — the markdown half of the
+ * "check" the TeX pane has always had (owner, 2026-09-06: the two
+ * formats must operate alike; `.tex` answers with the engine's log, so
+ * `.md` answers with the painter's).
+ *
+ * Only genuine unreadability, never style: a checker that fires on
+ * taste is one a writer learns to ignore, and the whole value of this
+ * one is that a silent bar means the render below it is the document.
+ *
+ * Two things qualify, and they are the two the block engine above
+ * actually swallows:
+ *
+ *   · a code fence that never closes — everything after it paints as
+ *     code, so the rest of the document silently leaves the reading;
+ *   · math the typesetter refuses — `withMath` degrades it to its own
+ *     source (right for a reading surface, invisible to the writer).
+ */
+export function proseIssues(text: string): ProseIssue[] {
+  const out: ProseIssue[] = []
+  const lines = oneNewline(text).split('\n')
+  let fenceAt: number | null = null
+  lines.forEach((line, i) => {
+    if (/^\s*```/.test(line)) {
+      fenceAt = fenceAt === null ? i + 1 : null
+      return
+    }
+    if (fenceAt !== null) return
+    for (const seg of line.split(MATH_SPLIT_RE)) {
+      const display = seg.startsWith('$$') && seg.endsWith('$$') && seg.length > 4
+      const inline = !display && seg.startsWith('$') && seg.endsWith('$') && seg.length > 2
+      if (!display && !inline) continue
+      const err = mathError(seg.slice(display ? 2 : 1, display ? -2 : -1), display)
+      if (err !== null) out.push({ line: i + 1, detail: err })
+    }
+  })
+  if (fenceAt !== null)
+    out.push({
+      line: fenceAt,
+      detail: 'a code fence opens here and never closes — everything below it paints as code',
+    })
+  return out.sort((a, b) => a.line - b.line)
 }

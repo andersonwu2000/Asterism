@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Lean } from './lean'
-import { EDITOR_METRICS as METRICS } from './textFrame'
+import { EDITOR_METRICS as METRICS, oneNewline } from './textFrame'
 
 /*
  * Markdown display colouring for intent prose — the same achromatic
@@ -39,7 +39,12 @@ function inline(text: string, key: number): ReactNode {
 }
 
 export function Markdown({ text }: { text: string }): ReactNode {
-  const lines = text.split('\n')
+  // the same law the prose engine reads by: a CRLF file's `#` line ends
+  // in a `\r`, which `(.*)$` refuses, so a Windows document lost every
+  // heading and every list marker out of the painted overlay. The
+  // textarea stacked under it normalises its own value to LF, so
+  // painting the raw bytes drifted the two apart line for line too.
+  const lines = oneNewline(text).split('\n')
   const out: ReactNode[] = []
   let fence: string[] | null = null
   lines.forEach((ln, i) => {

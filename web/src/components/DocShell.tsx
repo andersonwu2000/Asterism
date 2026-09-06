@@ -1,8 +1,8 @@
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { claimLeanSlot, releaseLeanSlot } from '../lib/leanSlot'
 import type { LeanCursor } from '../lib/leanSession'
-import { editable, editorFor, ownerOf, panelFor } from '../lib/docShell'
-import type { DocRef, DocView } from '../lib/docShell'
+import { editable, modeFor, ownerOf, syncedScrollTop } from '../lib/docShell'
+import type { DocPane, DocRef, DocView } from '../lib/docShell'
 import type { TheoryMeta } from '../lib/docShelf'
 import { requestAssistant } from '../lib/focus'
 import { EDITOR_METRICS, frameClass } from '../lib/textFrame'
@@ -44,6 +44,16 @@ export interface Conflict {
 }
 
 const lastSegment = (path: string): string => path.split('/').pop() ?? path
+
+/** The mode table's pane widths, spelt in the one place that draws
+ * them. `even` splits the room between writing and reading; the other
+ * two hold content with a width of its own (a compiled page, a column
+ * of diagnostics) that would only dilute the writing by taking half. */
+const PANE_WIDTH: Record<DocPane, string> = {
+  even: 'flex-1',
+  narrow: 'w-[30rem] shrink-0',
+  side: 'w-96 shrink-0',
+}
 
 /** Where the document sits, said once. The rail already highlights the
  * row, so this is the only place the path is spelt out. */
@@ -95,6 +105,18 @@ export default function DocShell({
   onKeepMine: () => void
 }) {
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  /* The render pane follows the writing. One direction only: a render
+   * that scrolled the source back would fight the reader's wheel, and
+   * the pane a person is IN is the one that decides where both are
+   * (`docShell::syncedScrollTop` owns the mapping and is tested there). */
+  const sourcePane = useRef<HTMLDivElement | null>(null)
+  const renderPane = useRef<HTMLDivElement | null>(null)
+  const followScroll = useCallback(() => {
+    const from = sourcePane.current
+    const to = renderPane.current
+    if (from === null || to === null) return
+    to.scrollTop = syncedScrollTop(from, to)
+  }, [])
   // one reserved Lean slot, browser-wide: this surface holds it only
   // while the reader is actually typing in it
   const slotId = useId()
@@ -115,14 +137,19 @@ export default function DocShell({
       </div>
     )
 
-  const panel = panelFor(open.path)
+  /* ONE table decides what the two panes do (`lib/docShell::modeFor`):
+   * the tab set, which painter the source wears, how wide the render
+   * sits, whether it follows the writing and what its check offers.
+   * `.md` and `.tex` are two rows of it — until 2026-09-06 they were
+   * four separate branches here, and had drifted apart in every one. */
+  const mode = modeFor(open.path)
+  const panel = mode.panel
   const writable = editable(open) && !isDir
   const owner = ownerOf(open, theory)
   const text = doc?.text ?? ''
   // the segmented control exists only where there are two halves to
   // choose between (§C2)
-  const thirdLabel = panel === 'info' ? 'info' : 'render'
-  const hasViews = !isDir && (panel === 'render' || panel === 'pdf-render' || panel === 'info')
+  const hasViews = !isDir && mode.third !== null
   const showLeft = view !== 'render'
   const showRight = view !== 'source'
 
@@ -147,7 +174,7 @@ export default function DocShell({
                 aria-pressed={view === v}
                 onClick={() => onView(v)}
               >
-                {v === 'render' ? thirdLabel : v}
+                {v === 'render' ? (mode.third ?? v) : v}
               </button>
             ))}
           </span>
@@ -228,8 +255,12 @@ export default function DocShell({
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1">
           {showLeft && (
-            <div className="flex min-w-0 flex-1 flex-col overflow-auto p-4">
-              {panel === 'info' ? (
+            <div
+              ref={sourcePane}
+              onScroll={mode.scrollSync && showRight ? followScroll : undefined}
+              className="flex min-w-0 flex-1 flex-col overflow-auto p-4"
+            >
+              {mode.editor === 'lean' ? (
                 <LeanEditor
                   key={key}
                   value={text}
@@ -240,7 +271,7 @@ export default function DocShell({
                   autoFocus={autoFocus}
                   heightClass="min-h-[24rem] h-auto field-sizing-content"
                 />
-              ) : writable && editorFor(open.path) === 'markdown' ? (
+              ) : writable && mode.editor === 'markdown' ? (
                 /* the console's own markdown painter, the one the task
                    page's goal and standing word have always worn
                    (`lib/markdown`). This tab used neither tokenizer:
@@ -276,20 +307,12 @@ export default function DocShell({
           )}
           {showRight && (
             <div
-              className={`flex min-h-0 min-w-0 flex-col overflow-auto ${
+              className={`flex min-h-0 min-w-0 flex-col ${
                 showLeft ? 'border-l border-edge' : ''
-              } ${
-                panel === 'pdf-render'
-                  ? 'w-[30rem] shrink-0'
-                  : panel === 'info'
-                    ? 'w-96 shrink-0'
-                    : 'flex-1'
-              }`}
+              } ${PANE_WIDTH[mode.pane]}`}
             >
               {panel === 'render' ? (
-                <div className="min-w-0 flex-1 overflow-auto p-4">
-                  <ProsePanel text={text} />
-                </div>
+                <ProsePanel text={text} scrollRef={renderPane} />
               ) : panel === 'pdf-render' ? (
                 <TexPanel
                   key={key}

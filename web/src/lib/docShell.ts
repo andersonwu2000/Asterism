@@ -109,32 +109,6 @@ export function docRefFromWorkspacePath(project: string, path: string): DocRef |
  * for. */
 export type DocPanel = 'render' | 'pdf-render' | 'info' | 'none' | 'viewer' | 'image'
 
-const PANEL: Record<string, DocPanel> = {
-  '.md': 'render',
-  '.tex': 'pdf-render',
-  '.lean': 'info',
-  '.txt': 'none',
-  '.pdf': 'viewer',
-  '.png': 'image',
-  '.jpg': 'image',
-  '.svg': 'image',
-}
-
-function ext(path: string): string {
-  const i = path.lastIndexOf('.')
-  return i < 0 ? '' : path.slice(i).toLowerCase()
-}
-
-export function panelFor(path: string): DocPanel {
-  return PANEL[ext(path)] ?? 'none'
-}
-
-/** The kinds the console can put in a box. A pdf and an image are
- * shown, not written. */
-export function isTextDoc(path: string): boolean {
-  return ['.md', '.tex', '.txt', '.lean'].includes(ext(path))
-}
-
 /** Which editor a writable document earns.
  *
  * The console has exactly two tokenizers — `lib/lean` and the markdown
@@ -147,13 +121,132 @@ export function isTextDoc(path: string): boolean {
  * painter reads as `plain` until it has one. */
 export type DocEditor = 'lean' | 'markdown' | 'plain'
 
-const EDITOR: Record<string, DocEditor> = {
-  '.lean': 'lean',
-  '.md': 'markdown',
+/** How wide the right pane sits when both are on screen. `even` splits
+ * the room; `narrow` and `side` are panes whose content has its own
+ * width (a compiled page, a column of diagnostics) and would only
+ * dilute the writing by taking half. */
+export type DocPane = 'even' | 'narrow' | 'side'
+
+/** What the render pane's bar offers — the thing you press to ask
+ * "does this read?". The TeX engine compiles and answers with a log;
+ * the painter answers with what it could not read. */
+export type DocCheck = 'tex' | 'prose' | 'none'
+
+/** ONE table for everything the two panes DO, per language.
+ *
+ * `.md` and `.tex` are two ROWS of this, not two branches of the shell
+ * (owner, 2026-09-06: "the two must operate alike"). Before it the
+ * shell decided the tab set, the editor, the pane width and whether
+ * there was anything to check in four separate places, and the two
+ * formats drifted apart in every one of them: markdown had no bar over
+ * its render at all, and TeX had no painter under its caret.
+ *
+ * The one row where they legitimately differ is `scrollSync`, and the
+ * reason is in the medium: a `.tex` render is a compiled pdf inside the
+ * browser's own viewer, which takes no instruction from the page. Where
+ * a pane is ours, the render follows the writing. */
+export interface DocMode {
+  panel: DocPanel
+  editor: DocEditor
+  /** the third tab's word, or null where there is no second pane and
+   * so no choice to offer */
+  third: 'render' | 'info' | null
+  /** the render pane follows the source pane's scroll, proportionally */
+  scrollSync: boolean
+  check: DocCheck
+  pane: DocPane
+}
+
+const PLAIN: DocMode = {
+  panel: 'none',
+  editor: 'plain',
+  third: null,
+  scrollSync: false,
+  check: 'none',
+  pane: 'even',
+}
+
+const MODES: Record<string, DocMode> = {
+  '.md': {
+    panel: 'render',
+    editor: 'markdown',
+    third: 'render',
+    scrollSync: true,
+    check: 'prose',
+    pane: 'even',
+  },
+  '.tex': {
+    panel: 'pdf-render',
+    editor: 'plain',
+    third: 'render',
+    // the pane is the browser's pdf viewer inside an <object>; nothing
+    // on this page can drive its scroll, and pretending to would be a
+    // control that does nothing
+    scrollSync: false,
+    check: 'tex',
+    pane: 'narrow',
+  },
+  '.lean': {
+    panel: 'info',
+    editor: 'lean',
+    third: 'info',
+    // the Info panel answers the CARET, not the scroll: it is already
+    // following the reader, one goal at a time
+    scrollSync: false,
+    check: 'none',
+    pane: 'side',
+  },
+  '.txt': PLAIN,
+  '.pdf': { ...PLAIN, panel: 'viewer' },
+  '.png': { ...PLAIN, panel: 'image' },
+  '.jpg': { ...PLAIN, panel: 'image' },
+  '.svg': { ...PLAIN, panel: 'image' },
+}
+
+function ext(path: string): string {
+  const i = path.lastIndexOf('.')
+  return i < 0 ? '' : path.slice(i).toLowerCase()
+}
+
+export function modeFor(path: string): DocMode {
+  return MODES[ext(path)] ?? PLAIN
+}
+
+export function panelFor(path: string): DocPanel {
+  return modeFor(path).panel
 }
 
 export function editorFor(path: string): DocEditor {
-  return EDITOR[ext(path)] ?? 'plain'
+  return modeFor(path).editor
+}
+
+/** Where the render pane sits when the source pane is HERE.
+ *
+ * Proportional on each pane's own SCROLLABLE range, not on its height:
+ * a rendered document is a different length from its source (a fence
+ * paints shorter, a heading taller), so mapping raw pixels drifts a
+ * page apart by the bottom. Ends therefore meet — top with top, bottom
+ * with bottom — which is the only mapping a reader can check at a
+ * glance. A source with nothing to scroll leaves the render where it
+ * is: 0/0 is not a position.
+ *
+ * The `.tex` viewer has no mapping of its own to copy (its pane is a
+ * pdf the browser owns), so this is the console's one answer for it. */
+export function syncedScrollTop(
+  source: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  target: { scrollHeight: number; clientHeight: number },
+): number {
+  const from = source.scrollHeight - source.clientHeight
+  const to = target.scrollHeight - target.clientHeight
+  if (from <= 0 || to <= 0) return 0
+  const ratio = Math.min(1, Math.max(0, source.scrollTop / from))
+  return Math.round(ratio * to)
+}
+
+/** The kinds the console can put in a box. A pdf and an image are
+ * shown, not written. */
+export function isTextDoc(path: string): boolean {
+  return ['.md', '.tex', '.txt', '.lean'].includes(ext(path))
 }
 
 /** This door writes `user/` and nothing else (§1.2-1: the areas'

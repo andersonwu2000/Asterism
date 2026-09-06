@@ -57,7 +57,13 @@ are exactly two frames and no sidebar.
   receipt polled until the engine's tick answers.
 - **Groups** — the discussion tree: each group by code and charter, its
   Programme, the round it is arguing right now, and the bricks it handed
-  back. One renderer, live or archived. A sub-group can be handed back
+  back. One renderer, live or archived. ONE reading, too: the claim it
+  was handed, the Programme body expanded, and the decided chain folded
+  into a `revision history` list under it. An address that names a
+  revision (`…/groups/<task>/rev/<id>`, which is where a Timeline row
+  sends you) reads THAT revision in the same place and the same shape —
+  the judge's ruling above the body it ruled on, and a way back to the
+  argument as it stands. A sub-group can be handed back
   to its parent from here, with a reason, through the same window. The
   task's OWN argument has no parent to hand back to, so what it offers
   instead is the bench — stop this task without stopping the run:
@@ -78,9 +84,13 @@ are exactly two frames and no sidebar.
   per-task run control both collapse to one line naming the action,
   rather than drawing instruments over a dial nobody turned.
 - **Timeline** — what happened, newest first; every row names an object,
-  and the name opens it on the Sky. With no task in the address it is
-  the whole shelf's history, each row stamped with its task and paged by
-  `load earlier`; naming a task scopes it to that one.
+  and the name OPENS that object: a goal on the Sky, a Programme row on
+  the revision it is about, and any theory row that landed a file on the
+  file — the accepted document, the refused one, and the wake's own
+  return alike. A row that landed nothing offers no link rather than one
+  into a 404. With no task in the address it is the whole shelf's
+  history, each row stamped with its task and paged by `load earlier`;
+  naming a task scopes it to that one.
 - **Documents** — one rail, one shell. The rail reads in five groups:
   `yours` (the Project's `_docs/user/`, primary, always open), then
   `papers`, `agent` (what the theory layer wrote, newest first — the
@@ -99,6 +109,22 @@ are exactly two frames and no sidebar.
   read-only in that same strip. "ask the Assistant" hands the open file
   to the panel. Dropping files anywhere — or `+ paper` — shelves papers
   under `user/papers/`, extraction and all.
+
+  **The two writing formats operate alike.** `.md` and `.tex` are two
+  rows of ONE mode table (`lib/docShell::modeFor`), not two branches of
+  the shell — the only differences left are differences in the medium,
+  and this is the whole list:
+
+  | | `.md` | `.tex` | `.lean` | `.txt` |
+  |---|---|---|---|---|
+  | tabs | `source · split · render` | `source · split · render` | `source · split · info` | source only |
+  | opens on | split (yours) / render | split (yours) / render | split | source |
+  | source painter | the markdown painter | plain (a `#` opens no heading in TeX) | the Lean tokenizer | plain |
+  | right pane | the console's render | the server's compiled pdf | goal at the caret + diagnostics | — |
+  | check | `Check` — what the painter could not read (an unclosed fence, math the typesetter refuses) | `Render` — the engine's compile, or its log tail | live, on the reserved slot | — |
+  | render follows the source's scroll | yes, proportional | no — the pane is the browser's own pdf viewer, which takes no instruction from the page | no — the Info panel follows the CARET instead | — |
+  | save | Ctrl+S, dirty mark, `base_etag` conflict line | same | same | same |
+  | undo | the textarea's own | same | same | same |
 
 ### Outside a Project
 

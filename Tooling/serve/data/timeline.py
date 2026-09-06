@@ -621,6 +621,11 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
     by_dec, by_group = _theory_requests(dec_rows)
     out: "list[dict]" = []
     # (1) the answers. Written INSIDE the pipeline, on both roads.
+    # Keyed by pipeline id and carrying the PATH as well, because the
+    # wake's own landing row (`theorized`) names the same document: the
+    # log's third field is a name the reader can act on, and without the
+    # path that click fell back to "follow this object" — the reader
+    # asked for the document and got the request's history (2026-09-06).
     by_pipeline: "dict[str, tuple]" = {}
     try:
         docs = conn.execute(
@@ -650,7 +655,8 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
             path=(str(r["path"]) if r["path"] else None),
             eid=f"td{int(r['id'])}", batch_id=batch, group_id=gid))
         if r["pipeline_id"]:
-            by_pipeline[str(r["pipeline_id"])] = (batch, label)
+            by_pipeline[str(r["pipeline_id"])] = (
+                batch, label, str(r["path"]) if r["path"] else None)
     # (2) the wakes. `pipelines` carries no problem, and a Theorist row
     # is Group-targeted (worker.py) — so the problem's groups are the
     # key, exactly as the dispatcher wrote them (`str(int(group_id))`).
@@ -673,7 +679,7 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
         except (TypeError, ValueError):
             gid = None
         answered = pid in by_pipeline
-        batch, label = by_pipeline.get(pid, (None, None))
+        batch, label, landed = by_pipeline.get(pid, (None, None, None))
         if label is None:
             # still in flight, or dead before review: the request it
             # answers is the last one filed before it started
@@ -698,6 +704,11 @@ def _theory_events(conn: sqlite3.Connection, problem: str,
             out.append(_ev(
                 str(r["finished_at"]), "theorized", object_kind="theory",
                 label=label, note=str(r["outcome"] or r["status"]),
+                # what the wake PRODUCED, where it produced one. A run
+                # that died before any ruling landed no file and offers
+                # no link, which is right: the reader must not be handed
+                # a link into a 404.
+                path=landed,
                 eid=f"tf{pid}", batch_id=batch, group_id=gid))
     return out
 

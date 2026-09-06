@@ -6,6 +6,7 @@ import {
   docRefFromWorkspacePath,
   editable,
   editorFor,
+  modeFor,
   isTextDoc,
   moveTargets,
   ownerOf,
@@ -13,6 +14,7 @@ import {
   parseDocAddress,
   railGroups,
   refKey,
+  syncedScrollTop,
 } from './docShell'
 import type { PaperRow, RailInput } from './docShell'
 import type { DocEntry, TheoryMeta } from './docShelf'
@@ -708,5 +710,86 @@ describe('which editor a document earns', () => {
     // `#` opens no heading in TeX, and a backtick opens no Lean span
     expect(editorFor('user/paper.tex')).toBe('plain')
     expect(editorFor('user/raw.txt')).toBe('plain')
+  })
+})
+
+/*
+ * `.md` and `.tex` must OPERATE alike (owner, 2026-09-06): the same tab
+ * set, the same save, the same check, the same following render. They
+ * had drifted into two branches of the shell — markdown had no bar over
+ * its render at all, TeX had no painter under its caret — so the table
+ * below is where the two now differ, and every difference in it has to
+ * be a difference in the medium rather than in the code that grew.
+ */
+describe('the document mode table', () => {
+  it('offers the same three tabs for prose and for TeX', () => {
+    expect(modeFor('user/a.md').third).toBe('render')
+    expect(modeFor('user/a.tex').third).toBe('render')
+  })
+
+  it('offers a check on both — the painter one side, the engine the other', () => {
+    expect(modeFor('user/a.md').check).toBe('prose')
+    expect(modeFor('user/a.tex').check).toBe('tex')
+  })
+
+  it('paints the source in the language`s own painter, or not at all', () => {
+    expect(modeFor('user/a.md').editor).toBe('markdown')
+    expect(modeFor('user/a.lean').editor).toBe('lean')
+    // `#` opens no heading in TeX — a painter that does not know the
+    // language paints it wrong
+    expect(modeFor('user/a.tex').editor).toBe('plain')
+  })
+
+  it('follows the writing wherever the render pane is ours to drive', () => {
+    expect(modeFor('user/a.md').scrollSync).toBe(true)
+    // a compiled pdf lives in the browser's own viewer, which takes no
+    // instruction from this page
+    expect(modeFor('user/a.tex').scrollSync).toBe(false)
+  })
+
+  it('is the one source panelFor and editorFor read', () => {
+    for (const path of ['a.md', 'a.tex', 'a.lean', 'a.txt', 'a.pdf', 'a.png', 'Makefile']) {
+      expect(panelFor(path)).toBe(modeFor(path).panel)
+      expect(editorFor(path)).toBe(modeFor(path).editor)
+    }
+  })
+
+  it('gives a language it does not know the plain row', () => {
+    expect(modeFor('user/a.json')).toEqual(modeFor('user/a.txt'))
+  })
+})
+
+/* The render pane follows the editor. A rendered document is a
+ * different LENGTH from its source, so the mapping is proportional on
+ * each pane's own scrollable range: the ends meet, which is the only
+ * part of it a reader can check at a glance. */
+describe('syncedScrollTop', () => {
+  const source = { scrollTop: 0, scrollHeight: 2000, clientHeight: 500 }
+  const target = { scrollHeight: 3000, clientHeight: 600 }
+
+  it('puts the top of the render at the top of the source', () => {
+    expect(syncedScrollTop({ ...source, scrollTop: 0 }, target)).toBe(0)
+  })
+
+  it('puts the bottom at the bottom, whatever the two lengths are', () => {
+    expect(syncedScrollTop({ ...source, scrollTop: 1500 }, target)).toBe(2400)
+  })
+
+  it('maps the middle proportionally, not by pixels', () => {
+    expect(syncedScrollTop({ ...source, scrollTop: 750 }, target)).toBe(1200)
+  })
+
+  it('leaves the render alone when the source has nothing to scroll', () => {
+    expect(
+      syncedScrollTop({ scrollTop: 0, scrollHeight: 400, clientHeight: 500 }, target),
+    ).toBe(0)
+    expect(
+      syncedScrollTop(source, { scrollHeight: 400, clientHeight: 600 }),
+    ).toBe(0)
+  })
+
+  it('never asks for a position outside the render (rubber-band scroll)', () => {
+    expect(syncedScrollTop({ ...source, scrollTop: -80 }, target)).toBe(0)
+    expect(syncedScrollTop({ ...source, scrollTop: 1800 }, target)).toBe(2400)
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { emitGoalOpen } from '../lib/goalFocus'
 import {
   charterTitle,
@@ -326,7 +326,8 @@ export default function ProgrammeView({
   brickHome,
   stale,
   history,
-  initialView = 'current',
+  revision = null,
+  onCurrent,
 }: {
   data: Programme
   group: number | null
@@ -339,16 +340,15 @@ export default function ProgrammeView({
    * while the chosen one loads — the tree stays put and only the
    * reading fades, instead of the whole panel blinking out */
   stale?: boolean
+  /** the group's decided chain, COLLAPSED — a list, under the reading,
+   * that opens when a reader asks for it */
   history?: React.ReactNode
-  /** which reading the ADDRESS asked for. A revision named in the
-   * address opens the history side; anything else opens on the
-   * argument as it stands. The reader may still switch — this seeds
-   * the choice, it does not hold it. */
-  initialView?: 'current' | 'history'
+  /** the revision the ADDRESS named, read in place of the argument as
+   * it stands. Null on the ordinary page. */
+  revision?: React.ReactNode
+  /** …and the way back from it */
+  onCurrent?: () => void
 }) {
-  const [view, setView] = useState<'current' | 'history'>(initialView)
-  // the address may name a different revision while this stays mounted
-  useEffect(() => setView(initialView), [initialView])
   const hasDelegation = (data.groups ?? []).some((g) => !g.is_top)
   const shownGroup =
     (data.groups ?? []).find((g) => g.id === data.group_id) ??
@@ -377,21 +377,38 @@ export default function ProgrammeView({
       {hasDelegation && <aside aria-label="Discussion groups" className="min-w-0 self-start lg:sticky lg:top-5 lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto lg:border-r lg:border-edge lg:pr-4">{picker}</aside>}
       <div className="min-w-0">
         {!hasDelegation && picker}
-        {history && <div role="group" aria-label="Argument view" className="mb-5 flex gap-1 border-b border-edge pb-3">
-          {(['current', 'history'] as const).map(value => <button key={value} aria-pressed={view === value}
-            className={`cursor-pointer rounded-lg px-3 py-2 text-xs ${view === value ? 'bg-ink text-bg' : 'text-ink-dim hover:bg-surface'}`}
-            onClick={() => setView(value)}>{value === 'current' ? 'Current argument' : 'Revision history'}</button>)}
-        </div>}
+        {/* ONE reading, and the chain folded under it (owner,
+            2026-09-06). It used to be two tabs, and a Timeline row
+            naming a revision landed on the OTHER one: a list, with the
+            argument the reader came for one more click in and the
+            ruling on it one click after that. The Programme body is
+            what this page is; a history is an index to it. */}
         <div className={reading} aria-busy={stale || undefined}>
           {stale && <p role="status" className="mb-3 text-xs text-ink-dim">Loading the selected group…</p>}
-          {view === 'history' && history ? history : <>
-            {extra}
-            <Around charter={data.charter} reservations={cur?.reservations ?? []} />
-            {cur ? <article aria-label="Current argument" className="text-sm leading-relaxed text-ink-dim">
+          {extra}
+          <Around charter={data.charter} reservations={revision ? [] : cur?.reservations ?? []} />
+          {revision ? (
+            <section aria-label="Revision reading" data-revision-reading>
+              {onCurrent && (
+                <button
+                  className="mb-3 cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink"
+                  onClick={onCurrent}
+                  title="leave this revision and read the argument as it stands"
+                >
+                  ← the argument as it stands
+                </button>
+              )}
+              {revision}
+            </section>
+          ) : cur ? (
+            <article aria-label="Current argument" className="text-sm leading-relaxed text-ink-dim">
               {renderProse(cur.body, { mode: 'document' })}
-            </article> : <p className="py-6 text-sm text-ink-faint">No programme yet — the first passed proposal will start the revision chain.</p>}
-            <ReturnedBricks data={data} group={group} brickHome={brickHome} />
-          </>}
+            </article>
+          ) : (
+            <p className="py-6 text-sm text-ink-faint">No programme yet — the first passed proposal will start the revision chain.</p>
+          )}
+          <ReturnedBricks data={data} group={group} brickHome={brickHome} />
+          {history && <div className="mt-6 border-t border-edge pt-4">{history}</div>}
         </div>
       </div>
     </div>

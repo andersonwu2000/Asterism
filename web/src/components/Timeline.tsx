@@ -10,6 +10,7 @@ import {
   failureLabel,
   isTheory,
 } from '../lib/vocab'
+import { rowTarget } from '../lib/timeline'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
 import { PAGE } from './glyphs'
@@ -135,18 +136,18 @@ function Row({
   onOpenDocument?: (path: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const revProblem = e.problem ?? problem
+  /* What this row's NAME opens — one decision, in `lib/timeline`, so
+   * that "which object" is a thing a test can hold rather than a
+   * ternary chain that grows a hole (the `theorized` row had one until
+   * 2026-09-06: the wake came back with a document and the row opened
+   * the request's own history instead). */
+  const target = rowTarget(e, problem ?? null)
   // a revision row opens onto the judge's ruling on it — criterion by
   // criterion, and for a killed proposal the reason it was killed
   // (readable only since 2026-08-29; see JudgeVerdict.tsx)
-  const revProblem = e.problem ?? problem
-  const verdictOf =
-    e.object_kind === 'programme' && typeof e.rev_id === 'number' && revProblem
-      ? { problem: revProblem, revId: e.rev_id }
-      : null
-  // a reviewed theory document is a FILE — accepted or refused, both
-  // land — and the row's whole point is that the reader can open it
-  // (serve fills `path` on no other row)
-  const docOf = e.path && onOpenDocument ? e.path : null
+  const verdictOf = target?.kind === 'revision' ? target : null
+  const docOf = target?.kind === 'document' && onOpenDocument ? target.path : null
   const expandable = Boolean(e.body || e.note || argument || verdictOf || docOf)
   /* DESIGN.md's log grammar: the third field is a NAME the reader can
    * act on, and its click OPENS that object — a star on the map, a
@@ -158,22 +159,28 @@ function Row({
    * down into the expansion when the name has a destination — the same
    * trade a goal row already made (owner, 2026-08-24). */
   const openName: (() => void) | null =
-    e.goal_id !== null && onOpenGoal
-      ? () => onOpenGoal(e.goal_id as number, e.problem ?? null)
-      : verdictOf && onOpenProgramme
-        ? () => onOpenProgramme(verdictOf.problem, verdictOf.revId)
-        : docOf && onOpenDocument
-          ? () => onOpenDocument(docOf)
+    target === null
+      ? null
+      : target.kind === 'goal'
+        ? onOpenGoal
+          ? () => onOpenGoal(target.id, target.problem)
           : null
+        : target.kind === 'revision'
+          ? onOpenProgramme
+            ? () => onOpenProgramme(target.problem, target.revId)
+            : null
+          : onOpenDocument
+            ? () => onOpenDocument(target.path)
+            : null
   const follow = () => onFollow(followFor(e))
   const nameTitle =
     e.object_kind === 'unbuilt'
       ? `${e.label} — asked for; no such brick exists yet. Click to follow it.`
       : openName === null
         ? `${e.label} — click to follow it through the log`
-        : e.goal_id !== null
+        : target?.kind === 'goal'
           ? `${e.label} — click to open it on the map`
-          : verdictOf
+          : target?.kind === 'revision'
             ? `${e.label} — click to read this revision`
             : `${e.label} — click to open the document it landed`
   const note = e.kind === 'failed' || e.kind === 'hiccup'
@@ -224,8 +231,20 @@ function Row({
           }`}
           title={`${eventColumn(e.kind, e.n)} — ${eventTitle(e.kind)}`}
         >
-          {isTheory(e.kind) && <span className="shrink-0">{PAGE}</span>}
-          <span className="truncate">
+          {isTheory(e.kind) && (
+            /* the mark HANGS LEFT, out of the track and into the dead
+               space at the end of the time column (owner, 2026-09-06).
+               It is identity, not vocabulary: paid for out of the label
+               column it cost the two rows that also print review rounds
+               their count (`theory 3 rounds` ellipsised at 6.2rem while
+               every other verb had room), and the column may not
+               stretch — it is what every row's objective is measured
+               against. `-ml-4` is the mark's own 10px plus the 6px gap,
+               so the VERB starts exactly where every other verb does
+               and the mark sits in the gap beside the clock. */
+            <span className="-ml-4 shrink-0">{PAGE}</span>
+          )}
+          <span data-event-verb className="truncate">
             {eventLabel(e.kind)}
             {e.n !== null && <span className="tnum"> {countWord(e.kind, e.n)}</span>}
           </span>
