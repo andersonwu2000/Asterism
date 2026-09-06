@@ -27,12 +27,56 @@ import hashlib
 import json
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..state import project_docs as _docs
 from ..state import projects as _projects
+
+#: The addresses that mean "the person at this keyboard". `serve --host`
+#: invites a tailnet bind, so this endpoint cannot assume the caller is
+#: sitting at the machine it would open a window on.
+LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"})
+
+REMOTE_DETAIL = (
+    "a file-manager window opens on the machine running the engine, so "
+    "it is offered only to a browser on this machine — here is the path "
+    "instead")
+
+
+def show_in_file_manager(path: Path) -> None:
+    """Open the platform's file manager with `path` selected.
+
+    A module-level seam, and the name is the point: a test replaces the
+    WHOLE handoff rather than a subprocess call (the `spawn_cli_login`
+    precedent). Raises OSError where the platform has no such thing.
+
+    `explorer.exe` exits non-zero on success, routinely — its return
+    code says nothing about whether the window opened, so it is not
+    read. Nothing here waits on the child either: the caller is an HTTP
+    request and a file manager outlives it.
+    """
+    import subprocess
+    import sys
+    if sys.platform == "win32":
+        # /select, takes the path glued to it, no space — a space makes
+        # explorer open the user's Documents folder instead
+        subprocess.Popen(["explorer.exe", f"/select,{path}"])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)])
+    else:
+        # no portable "select this file"; the folder is the honest best
+        subprocess.Popen(["xdg-open", str(path.parent)])
+
+
+class RevealBody(BaseModel):
+    """Which document to show. The path travels in the BODY for the
+    same reason `DocMove`'s does: a URL parser collapses `user/../x`
+    before the request is sent, and a path the fence never sees is a
+    path the fence never judged."""
+    project: str = ""
+    path: str = ""
 
 
 def _etag(data: bytes) -> str:
@@ -327,3 +371,39 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
             rel = _docs.delete(workspace, project, path,
                                area=_docs.AREA_USER)
             return {"path": rel, "action": "delete"}
+
+    @app.post("/api/docs/reveal")
+    def docs_reveal(body: RevealBody, request: Request) -> dict:
+        """Show one document in the machine's own file manager.
+
+        The only endpoint here that acts on the SERVER's desktop rather
+        than on its files, so it asks two questions no other one has to.
+
+        Is the caller at this keyboard? A window opens where the engine
+        runs, and `serve --host` exists precisely so a remote node's
+        cockpit can be read over a tailnet — a tab there must not be
+        able to pop a window on the operator's screen. A caller that is
+        not loopback gets the path and no window; the console offers it
+        to copy, which is the same answer for a platform with no file
+        manager.
+
+        Is the path a document? It goes through `project_docs`, the same
+        fence every other path in this module goes through, and it must
+        EXIST — a window onto a folder that does not hold the file would
+        be a worse answer than the refusal.
+        """
+        with _answers(body.project):
+            target = _docs.locate(workspace, body.project, body.path)
+            if not target.exists():
+                raise KeyError(body.path)
+        host = (request.client.host if request.client else "") or ""
+        if host not in LOOPBACK:
+            return {"path": str(target), "revealed": False,
+                    "detail": REMOTE_DETAIL}
+        try:
+            show_in_file_manager(target)
+        except OSError as e:
+            return {"path": str(target), "revealed": False,
+                    "detail": f"no file manager to open here ({e}) — "
+                              f"here is the path instead"}
+        return {"path": str(target), "revealed": True}

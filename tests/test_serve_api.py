@@ -3745,3 +3745,88 @@ def test_tex_render_renders_unsaved_text_and_fences_the_path(
                         "content": "x"}).status_code == 422
     assert c.post("/api/projects/Erdos/tex",
                   json={"path": "agent/theirs.tex"}).status_code == 404
+
+
+# ---------------------------------------------------------------------
+# "Show in Explorer" — the one endpoint that opens a window on the
+# machine serving, and therefore the one that has to know who is asking
+# ---------------------------------------------------------------------
+
+
+def _local(workspace: Path) -> TestClient:
+    """A client the server reads as loopback. The default TestClient
+    calls itself `testclient`, which is exactly the caller this
+    endpoint must refuse."""
+    return TestClient(create_app(workspace), client=("127.0.0.1", 51234))
+
+
+def test_reveal_opens_the_folder_for_a_caller_on_this_machine(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.serve import docs_api
+
+    opened: list = []
+    monkeypatch.setattr(docs_api, "show_in_file_manager",
+                        lambda p: opened.append(Path(p)))
+    _with_project(workspace)
+    c = _local(workspace)
+    c.put("/api/projects/Erdos/docs/user/notes.md", json={"content": "x"})
+    r = c.post("/api/docs/reveal",
+               json={"project": "Erdos", "path": "user/notes.md"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["revealed"] is True
+    # the absolute path rides back either way: it is what the console
+    # offers to copy when no window can be opened
+    assert body["path"].endswith("notes.md")
+    assert opened == [workspace / "Problems" / "Erdos" / "_docs" / "user"
+                      / "notes.md"]
+
+
+def test_reveal_refuses_a_caller_that_is_not_this_machine(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window opens on the SERVER's desktop. `serve --host` invites a
+    tailnet bind, so a remote tab must not be able to pop one there —
+    it gets the path to copy and nothing else happens."""
+    from Tooling.serve import docs_api
+
+    def _no_spawn(p):  # pragma: no cover — the assertion is that
+        raise AssertionError("a remote caller may not open a window here")
+
+    monkeypatch.setattr(docs_api, "show_in_file_manager", _no_spawn)
+    _with_project(workspace)
+    c = TestClient(create_app(workspace), client=("100.64.1.9", 51234))
+    c.put("/api/projects/Erdos/docs/user/notes.md", json={"content": "x"})
+    r = c.post("/api/docs/reveal",
+               json={"project": "Erdos", "path": "user/notes.md"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["revealed"] is False
+    assert "this machine" in body["detail"]
+    assert body["path"].endswith("notes.md")
+
+
+def test_reveal_refuses_a_path_outside_the_document_roots(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same fence every other document path goes through. A reveal
+    that joined the string itself would open a window on anything the
+    account can read."""
+    from Tooling.serve import docs_api
+
+    def _no_spawn(p):  # pragma: no cover
+        raise AssertionError("a refused path may not reach the shell")
+
+    monkeypatch.setattr(docs_api, "show_in_file_manager", _no_spawn)
+    _with_project(workspace)
+    c = _local(workspace)
+    out = c.post("/api/docs/reveal",
+                 json={"project": "Erdos", "path": "../../../secrets.md"})
+    assert out.status_code == 422, out.text
+    assert "user/" in out.json()["detail"] or "root" in out.json()["detail"]
+    # and one that is inside the root but is not there at all is a 404,
+    # not a window onto a folder that does not exist
+    assert c.post("/api/docs/reveal",
+                  json={"project": "Erdos", "path": "user/ghost.md"}
+                  ).status_code == 404

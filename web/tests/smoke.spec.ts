@@ -228,6 +228,39 @@ test('timeline and documents render inside the shell', async ({ page, request })
   await expect(page.getByRole('treeitem', { name: /yours/ })).toBeVisible()
 })
 
+test('documents: a row can be shown in the file manager, or say why not', async ({
+  page,
+  request,
+}) => {
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  // the rail's own rows, so the act strip is reachable whatever this
+  // workspace has written
+  await page.route('**/api/projects/*/docs', async (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          json: {
+            entries: [
+              { path: 'user', kind: 'dir' },
+              { path: 'user/notes.md', kind: 'file', size: 12 },
+            ],
+          },
+        })
+      : route.fallback(),
+  )
+  await page.goto(at(s.project, 'docs'))
+  await page.getByRole('treeitem', { name: /notes\.md/ }).click()
+  const reveal = page.getByRole('button', { name: 'show in Explorer' })
+  await expect(reveal).toBeVisible()
+
+  // the smoke suite refuses every write, so this exercises the path
+  // that matters most: a refusal renders AT the row it concerns
+  // (DESIGN.md 2026-09-04), never in a banner about something else
+  await reveal.click()
+  await expect(page.getByText(/Read-only smoke test/)).toBeVisible()
+})
+
 test('legacy problem address redirects into its Project', async ({ page, request }) => {
   // links minted before the shell (a chat citation, a bookmark) must
   // still open - and the shelf comes from the DB, never from splitting

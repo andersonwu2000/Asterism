@@ -151,6 +151,14 @@ export default function DocRail({
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameName, setRenameName] = useState('')
   const [rowNote, setRowNote] = useState<string | null>(null)
+  /* what "show in Explorer" came to, at the row it was asked from. A
+   * window that opened says nothing (the settled norm earns no ink);
+   * a caller the engine will not open a window for — a browser on
+   * another machine, a platform with no file manager — gets the
+   * absolute path to copy, which is the same answer either way. */
+  const [revealed, setRevealed] = useState<{ path: string; where: string } | null>(
+    null,
+  )
   const [moving, setMoving] = useState<string | null>(null)
   const [moveAt, setMoveAt] = useState(0)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -223,6 +231,27 @@ export default function DocRail({
       else onCreated({ kind: 'doc', path })
     } catch (e) {
       setCreateNote(refusal(e))
+    }
+  }
+
+  /* The one act offered on EVERY row, read-only ones included: asking
+   * where a file is is not writing to it, and "where is this pdf?" is
+   * asked most often about the rows the console will not let you edit.
+   * Only a docs-root row can be asked — the engine's own files are
+   * addressed through a different root and the endpoint does not take
+   * them (`Tooling/serve/docs_api.py`). */
+  const reveal = async (row: RailRow) => {
+    setRowNote(null)
+    setRevealed(null)
+    try {
+      const r = (await apiPost('/api/docs/reveal', {
+        project,
+        path: row.ref.path,
+      })) as { path: string; revealed: boolean; detail?: string }
+      if (!r.revealed)
+        setRevealed({ path: r.path, where: r.detail ?? 'here is the path instead' })
+    } catch (e) {
+      setRowNote(refusal(e))
     }
   }
 
@@ -343,6 +372,9 @@ export default function DocRail({
     } else if (e.key === 'Enter' && row !== null) {
       e.preventDefault()
       onOpen(row.ref)
+    } else if (row !== null && row.ref.kind === 'doc' && e.key === 'e') {
+      e.preventDefault()
+      void reveal(row)
     } else if (own && e.key === 'F2') {
       e.preventDefault()
       startRename(row!)
@@ -613,6 +645,10 @@ export default function DocRail({
                           group={g}
                           depth={row.depth}
                           note={rowNote}
+                          revealed={revealed}
+                          onReveal={
+                            row.ref.kind === 'doc' ? () => void reveal(row) : null
+                          }
                           onRename={() => startRename(row)}
                           onMove={() => startMove(row)}
                           onDelete={() => {
@@ -718,6 +754,8 @@ function ActionStrip({
   group,
   depth,
   note,
+  revealed,
+  onReveal,
   onRename,
   onMove,
   onDelete,
@@ -725,6 +763,12 @@ function ActionStrip({
   group: RailGroup
   depth: number
   note: string | null
+  /** where the file is, when no window could be opened onto it */
+  revealed: { path: string; where: string } | null
+  /** null where this row is not a docs-root file — the engine's own
+   * writing is addressed through another root, which this door does
+   * not take */
+  onReveal: (() => void) | null
   onRename: () => void
   onMove: () => void
   onDelete: () => void
@@ -736,9 +780,17 @@ function ActionStrip({
       style={{ paddingLeft: `${16 + depth * 12}px` }}
     >
       {refuse !== null ? (
-        <span>{refuse}</span>
+        <span className="flex flex-wrap gap-2">
+          <span>{refuse}</span>
+          {onReveal !== null && (
+            <>
+              <span aria-hidden>·</span>
+              <RevealButton onReveal={onReveal} />
+            </>
+          )}
+        </span>
       ) : (
-        <span className="flex gap-2">
+        <span className="flex flex-wrap gap-2">
           <button
             className="cursor-pointer transition-colors hover:text-ink"
             onClick={onRename}
@@ -762,9 +814,54 @@ function ActionStrip({
           >
             delete
           </button>
+          {onReveal !== null && (
+            <>
+              <span aria-hidden>·</span>
+              <RevealButton onReveal={onReveal} />
+            </>
+          )}
         </span>
       )}
+      {revealed !== null && <RevealedPath at={revealed} />}
       {note !== null && <div className="mt-1 leading-relaxed text-warn">{note}</div>}
+    </div>
+  )
+}
+
+function RevealButton({ onReveal }: { onReveal: () => void }) {
+  return (
+    <button
+      className="cursor-pointer transition-colors hover:text-ink"
+      onClick={onReveal}
+      title="e — open the folder it is in, with the file selected"
+    >
+      show in Explorer
+    </button>
+  )
+}
+
+/** No window opened, so the path is the answer — and a path a person
+ * has to retype is not one they were given (DESIGN.md: a refusal sits
+ * where the act would have been). */
+function RevealedPath({ at }: { at: { path: string; where: string } }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="mt-1 leading-relaxed">
+      <div>{at.where}</div>
+      <div className="mt-0.5 flex items-baseline gap-2">
+        <code className="min-w-0 truncate font-mono text-ink-dim" title={at.path}>
+          {at.path}
+        </code>
+        <button
+          className="shrink-0 cursor-pointer transition-colors hover:text-ink"
+          onClick={() => {
+            void navigator.clipboard?.writeText(at.path)
+            setCopied(true)
+          }}
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
+      </div>
     </div>
   )
 }
