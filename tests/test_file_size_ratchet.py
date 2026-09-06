@@ -298,7 +298,7 @@ _WATERMARKS = {
     # signal's sink over its own futures map, hands it to the command
     # applier, and substitutes a killed pipeline's ending with the
     # person's signal before the existing cascade — conscious bump.
-    "Tooling/core/dispatcher/loop.py": 1352,  # +7 2026-09-06 dispatch.pool is a hard in-flight ceiling in ledger mode too (owner: the subscription quota window, not RAM, is the binding resource) — conscious bump  # +5 2026-09-03 the pop door also drops a Strategist row with nothing left to deliver  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
+    "Tooling/core/dispatcher/loop.py": 1372,  # +20 2026-09-07 lake configuration preflight ahead of the gateway warm and the first build (fresh workspace, two front-ends compiling the lakefile at once) — conscious bump  # +7 2026-09-06 dispatch.pool is a hard in-flight ceiling in ledger mode too (owner: the subscription quota window, not RAM, is the binding resource) — conscious bump  # +5 2026-09-03 the pop door also drops a Strategist row with nothing left to deliver  # +5 2026-09-02 promotion_gate.json is per-run state: cleared at boot beside degraded.reset  # +16 2026-09-02 HID §3.3: the tick applies the human command queue (state/commands.apply_pending, guarded)
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

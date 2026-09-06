@@ -19,6 +19,7 @@ from Tooling import lab
 from Tooling.lab import build as build_mod
 from Tooling.lab import snapshot as snap_mod
 from Tooling.lab import spec as spec_mod
+from Tooling.pipeline import _lake
 from Tooling.state import db, groups as groups_mod
 
 BEFORE = "2026-08-25T12:00:00+00:00"
@@ -165,6 +166,21 @@ arms:
 # ---------------------------------------------------------------------
 # the workspace
 # ---------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def lake_configured(monkeypatch) -> list:
+    """Fake the one lake call a build makes (`lake -R env lean
+    --version`, `Tooling/lab/build._compile_lake_config`) and record it.
+    No real lake in a unit test — conftest's side-effect fence would
+    fail the spawn anyway."""
+    calls: list = []
+
+    def fake(ws, **kw):
+        calls.append(Path(ws))
+        return True, "Lean (version 4.24.0)"
+    monkeypatch.setattr(_lake, "lake_reconfigure", fake)
+    return calls
+
 
 def _workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "live"
@@ -335,6 +351,46 @@ def test_the_workspace_shares_the_dependency_tree_but_not_the_build_tree(
         "the build tree is never the live one"
     rec = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))
     assert rec["links"][".lake/packages"] in ("link", "copy")
+
+
+def test_build_compiles_the_lake_configuration_before_handing_it_over(
+        tmp_path, base, head, lake_configured):
+    """A workspace handed to a driver must never be the FIRST thing to
+    compile the lakefile.
+
+    2026-09-06: a fresh workspace's `.lake/` held only the `packages`
+    junction, so the driver's daemon launched the gateway and ran its
+    first `lake build` in the same second, both lake front-ends wrote
+    `.lake/config/`, and the loser read `compiled configuration is
+    invalid; run with '-R' to reconfigure` from then on — the smoke run
+    died on `[verify] FAILED` with an empty queue. `lake -R env lean
+    --version` builds nothing and settles it once, here, where nothing
+    else is running."""
+    live = _workspace(tmp_path)
+    sl = snap_mod.take(live, tmp_path / "lab", problem=PROBLEM)
+    exp = _exp(tmp_path / "lab", sl.id)
+    ws = build_mod.build(tmp_path / "lab", exp, "a", slice_=sl,
+                         base=base, commit=head, rep=1)
+    assert lake_configured == [ws], \
+        "exactly one reconfigure, in the run workspace itself"
+
+
+def test_build_fails_loudly_when_lake_cannot_configure_the_workspace(
+        tmp_path, base, head, monkeypatch):
+    """A workspace lake refuses to configure has no Lean in it at all.
+    Handing it to a driver spends the arm's budget discovering that;
+    the build refuses instead, with lake's own output."""
+    monkeypatch.setattr(
+        _lake, "lake_reconfigure",
+        lambda ws, **kw: (False, "error: no such file or directory "
+                                 "(lakefile.lean)"))
+    live = _workspace(tmp_path)
+    sl = snap_mod.take(live, tmp_path / "lab", problem=PROBLEM)
+    exp = _exp(tmp_path / "lab", sl.id)
+    with pytest.raises(lab.LabError) as exc:
+        build_mod.build(tmp_path / "lab", exp, "a", slice_=sl,
+                        base=base, commit=head, rep=1)
+    assert "lakefile.lean" in str(exc.value), "lake's own words survive"
 
 
 def test_clearing_a_workspace_unlinks_the_shared_tree_it_does_not_own(

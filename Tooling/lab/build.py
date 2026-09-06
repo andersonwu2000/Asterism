@@ -392,6 +392,35 @@ def _apply_seats(ws: Path, arm) -> None:
         encoding="utf-8")
 
 
+def _compile_lake_config(ws: Path) -> None:
+    """Establish the compiled lakefile configuration in the run
+    workspace — once, here, before any driver is handed the directory.
+
+    A fresh workspace's `.lake/` holds nothing but the `packages`
+    junction, so the FIRST lake front-end to run in it compiles
+    `lakefile.lean` into `.lake/config/`. A driver's daemon starts the
+    gateway and its first `lake build` in the same second: two front-
+    ends write that directory at once, the loser gets `compiled
+    configuration is invalid; run with '-R' to reconfigure`, and every
+    later invocation in the workspace reads the same thing — which is
+    how the 2026-09-06 even_sum smoke run died on `[verify] FAILED`
+    with an unbuilt problem and an empty queue.
+
+    A workspace handed to a driver must never be the first thing to
+    compile the lakefile. Refuses loudly with lake's output: a run
+    launched on a workspace lake cannot configure has no Lean in it at
+    all, and would spend its budget discovering that."""
+    from ..pipeline._lake import lake_reconfigure
+    ok, out = lake_reconfigure(ws)
+    if not ok:
+        raise LabError(
+            f"lake could not configure {ws} — the workspace is not "
+            f"runnable, and a driver started on it would fail every "
+            f"build with no way to tell why:\n{out}")
+    print(f"[lab] lake configuration compiled in {ws.name} "
+          f"({out.splitlines()[-1] if out else 'no output'})", flush=True)
+
+
 def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
           base: "Path | None" = None, commit: "str | None" = None,
           rep: "int | None" = None) -> Path:
@@ -439,6 +468,9 @@ def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
         else:
             links[rel] = "absent"
     _assert_no_forbidden(ws)
+    # After the junction, because the configuration lake compiles names
+    # the dependency tree it found.
+    _compile_lake_config(ws)
 
     (ws / WORKSPACE_STAMP).write_text(json.dumps({
         "experiment": exp.name,

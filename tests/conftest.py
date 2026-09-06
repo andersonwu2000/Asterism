@@ -340,6 +340,14 @@ def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
                         lambda names, workspace, **kw: {})
     monkeypatch.setattr(_lake, "lake_build_modules",
                         lambda workspace, modules: (True, ""))
+    # Fourth member: the daemon's start-up configuration preflight
+    # (2026-09-07) — a real `lake env lean --version` in every test that
+    # drives `dispatcher.run`. Its own behavior is pinned Lean-free in
+    # test_lake_config_preflight.py.
+    monkeypatch.setattr(_lake, "preflight_lake_config",
+                        lambda workspace, **kw: (True, ""))
+    monkeypatch.setattr(_lake, "lake_reconfigure",
+                        lambda workspace, **kw: (True, ""))
     # The dispatcher installs a process-wide GatewayBuildGate at boot
     # (2026-08-30); a test that runs the loop must not leave it behind
     # for a later test's real `lake_build_modules` to poll a gateway that

@@ -29,6 +29,94 @@ def lean_path_to_module(workspace: Path, lean_path: Path) -> str:
     return ".".join(rel.parts)
 
 
+# ─── The compiled lakefile configuration ────────────────────────────
+#
+# Lake compiles `lakefile.lean` into `.lake/config/<hash>/` before it
+# builds anything, and TWO lake front-ends doing that at the same
+# moment in the same workspace leave it half-written: the loser reads
+# `error: compiled configuration is invalid; run with '-R' to
+# reconfigure` and stays broken for every later invocation until
+# somebody reconfigures. 2026-09-06 a fresh lab workspace (`.lake/`
+# holding only the `packages` junction) hit exactly that — the daemon
+# launched the gateway and ran its first `lake build` in the same
+# second, `.lake/config/[anonymous]/` appeared at the gateway's warm,
+# the build died one second later, and `[verify] …: FAILED` sent an
+# `--once` run home with an empty queue.
+#
+# The fix is a PREFLIGHT, not a flag on every build: `-R` on the
+# routine `lake build` calls would reconfigure on every invocation
+# (paying the compile again and again, and re-opening the same race
+# between two concurrent builds). One workspace, one compile, before
+# anything else is allowed to touch it.
+
+#: Lake's own words for a configuration that is missing, stale or was
+#: written by two front-ends at once. Matched case-insensitively.
+STALE_CONFIG_ERROR = "compiled configuration is invalid"
+
+#: What a build failure that names it should say. The build site cannot
+#: repair the workspace (it may be one of several concurrent builds);
+#: it can say which single command does, and that the start-up
+#: preflight is where this should have been settled.
+STALE_CONFIG_HINT = (
+    "lake configuration is stale — the start-up preflight should have "
+    "reconfigured; run `lake -R env lean --version` in the workspace")
+
+#: `lake env lean --version` builds nothing: it compiles the lakefile
+#: configuration if that is not done yet and then execs `lean`. Sub-
+#: second on a valid configuration, ~4s on a cold one. The wall is
+#: generous because the cold case is the one that matters.
+LAKE_CONFIG_TIMEOUT_SEC = 180.0
+
+
+def _lake_env_version(workspace: Path, *, reconfigure: bool,
+                      timeout: float) -> "tuple[bool, str]":
+    """`lake [-R] env lean --version` in `workspace`. Returns
+    `(ok, output)` with lake's stdout and stderr joined — the caller
+    prints it, because the only useful thing to say about a lake that
+    refused is what lake said."""
+    argv = ["lake"] + (["-R"] if reconfigure else []) + [
+        "env", "lean", "--version"]
+    try:
+        r = subprocess.run(argv, cwd=str(workspace), capture_output=True,
+                           text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"`{' '.join(argv)}` did not run: {type(e).__name__}: {e}"
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    return r.returncode == 0, out
+
+
+def lake_reconfigure(workspace: Path, *,
+                     timeout: float = LAKE_CONFIG_TIMEOUT_SEC
+                     ) -> "tuple[bool, str]":
+    """Compile the lakefile configuration ONCE, alone, building nothing.
+
+    `-R` unconditionally: this is the call that ESTABLISHES the
+    configuration in a workspace nobody has built in yet, so there is
+    nothing to preserve and a stale half-written one must be replaced."""
+    return _lake_env_version(workspace, reconfigure=True, timeout=timeout)
+
+
+def preflight_lake_config(workspace: Path, *,
+                          timeout: float = LAKE_CONFIG_TIMEOUT_SEC
+                          ) -> "tuple[bool, str]":
+    """Make sure `workspace` has a valid compiled configuration before
+    anything is allowed to build or elaborate in it. `(ok, output)`.
+
+    Cheap when it is already valid — one `lake env lean --version`,
+    sub-second, no `-R`, so a warm workspace pays nothing and no
+    reconfigure races a concurrent build. Invalid, and only then, it
+    reconfigures once; if THAT fails the workspace is not startable and
+    the caller refuses with lake's own output."""
+    ok, out = _lake_env_version(workspace, reconfigure=False, timeout=timeout)
+    if ok:
+        return True, out
+    if STALE_CONFIG_ERROR not in out.lower():
+        # `-R` repairs a configuration; it does not conjure a toolchain.
+        return False, out
+    ok2, out2 = _lake_env_version(workspace, reconfigure=True, timeout=timeout)
+    return ok2, out2 if ok2 else f"{out}\n{out2}"
+
+
 #: Upper bound on the joined `lake build <modules...>` command line per
 #: subprocess call. Windows CreateProcess rejects command lines over
 #: 32,767 chars with WinError 206 ("filename or extension too long");
@@ -446,7 +534,14 @@ def _run_chunks(workspace: Path, chunks: "list[list[str]]",
                 if not (r.returncode == 0 and "error:" not in out.lower()):
                     ok_all = False
                 break
-    res = BuildOutcome(ok_all, "\n".join(outs))
+    detail = "\n".join(outs)
+    # A build is where a stale configuration SURFACES, never where it is
+    # repaired: this call may be one of several in flight, and a `-R`
+    # here would race the others exactly the way the breakage arose. Say
+    # what it is, so the failure is diagnosable at the site that shows it.
+    if not ok_all and STALE_CONFIG_ERROR in detail.lower():
+        detail = f"{STALE_CONFIG_HINT}\n{detail}"
+    res = BuildOutcome(ok_all, detail)
     res.peak_gb = peak_max
     return res
 

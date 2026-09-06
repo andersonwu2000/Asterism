@@ -353,6 +353,26 @@ def run(workspace: Path, *, once: bool = False,
               f"awaiting_human (unresolved RequestUserAmend); dispatch "
               f"suppressed until resolved: {_paused_startup}", flush=True)
 
+    # Lake configuration preflight — BEFORE the gateway warm and before
+    # the first build, because those two are the pair that broke it.
+    # Lake compiles `lakefile.lean` into `.lake/config/` on first use;
+    # in a FRESH workspace the background warm below and the first
+    # `lake build` of the tick reach that at the same moment, both
+    # front-ends write it, and the loser reads `compiled configuration
+    # is invalid` from then on (2026-09-06 lab smoke: gateway launched,
+    # build failed one second later, `[verify] FAILED`, `--once` exited
+    # on an empty queue). One workspace, one compile, here, alone.
+    # Sub-second when it is already valid.
+    from ...pipeline import _lake as _lake_cfg
+    _cfg_ok, _cfg_out = _lake_cfg.preflight_lake_config(workspace)
+    if not _cfg_ok:
+        print(f"[dispatcher] lake configuration preflight FAILED in "
+              f"{workspace}:\n{_cfg_out}", flush=True)
+        raise RuntimeError(
+            "lake cannot configure this workspace — every build and "
+            "every elaboration would fail; refusing to start (lake's "
+            "own output is above)")
+
     # Phase 1 gateway — NL-first background warm (core/warmup.py):
     # NL kinds dispatch immediately; Lean kinds gate on the ready
     # flip; warm/contract failure exits rc 2 after the NL drain. The
