@@ -96,7 +96,7 @@ Plans showing these traits are sent back:
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
 ## Rules
-- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
+- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof ride with every brick that uses it (the worker sees the whole `Uses:` closure) and reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 - A reshaped statement of a goal that already exists is that goal, not a new lemma (the framework aliases or links it).
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it is not a fact.

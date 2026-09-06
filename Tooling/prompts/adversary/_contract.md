@@ -33,7 +33,7 @@ Standing rules the batch itself must satisfy — same source, same words:
 
 - Every brick in the Proof is fully argued; an Inject names one of them.
 - A batch must not leave your group idle: after it commits, something of yours is in flight, dispatched, or delivered.
-- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
+- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof ride with every brick that uses it (the worker sees the whole `Uses:` closure) and reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 `ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children; `Delegate` only to the top group and its direct sub-groups — the group tree caps two levels below the top.
