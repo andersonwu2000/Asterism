@@ -32,6 +32,7 @@ from .maint import (
     cmd_repin,
     cmd_bench,
     cmd_revive,
+    cmd_theorize_freeze_adopt,
     cmd_unbench,
     cmd_word,
 )
@@ -360,6 +361,29 @@ def main(argv: list[str] | None = None) -> int:
     p_revive.add_argument("problem", type=str,
                           help="problem name in state 'revoked'")
     p_revive.set_defaults(func=cmd_revive)
+
+    p_tfa = sub.add_parser(
+        "theorize-freeze-adopt",
+        help="stamp a Theorist attempts dir frozen by hand with its "
+             "resume point, so the next dispatch of its Theorize "
+             "continues it instead of re-authoring the document")
+    p_tfa.add_argument(
+        "pipeline_id", type=str,
+        help="the run's pipeline id — a directory under "
+             ".asterism/theory_frozen/ or .attempts/")
+    p_tfa.add_argument(
+        "--decision", type=int, required=True,
+        help="the Theorize decision id this run answers (must be "
+             "unsettled)")
+    p_tfa.add_argument(
+        "--author-sid", type=str, default=None,
+        help="the author's session id, when the dir does not record it "
+             "(claude keeps its transcripts in "
+             "~/.claude/projects/<munged problem dir>/<sid>.jsonl — the "
+             "one naming this pipeline id is the author's). Without it "
+             "a resumed revision turn starts a fresh author seeded with "
+             "report.md, dialogue.md and the last ruling.")
+    p_tfa.set_defaults(func=cmd_theorize_freeze_adopt)
 
     p_bench = sub.add_parser(
         "bench",

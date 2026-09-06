@@ -39,6 +39,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import checkpoint as _checkpoint
 from . import landing as _landing
 from .review import projection_dir, review as review_round
 from .verdict import (REPORT_BASENAME, RIGOUR_DEFECTIVE, fired_criteria,
@@ -175,6 +176,8 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     came back."""
     from ... import agent
     from ...core import config
+    from ...llm import capabilities as _caps
+    from ...llm.base import SpawnRC
     from ...state import db, failures as _failures
     from .. import PipelineResult, PROMPT_DIR, write_tools_mcp_config
     from ...agent.phase2_context import compile_strategist_context
@@ -217,6 +220,13 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
                      "the Theorize decision carries no objective",
                      headline=NO_REQUEST_DETAIL)
 
+    # Stage 0 — a request that has been worked on before is picked up
+    # where it stopped, not started again. The dir this adopts is copied
+    # in first, so every stage below reads the standard layout.
+    resumed = _checkpoint.adopt(workspace, attempts_dir,
+                                decision_id=decision_id,
+                                pipeline_id=pipeline_id)
+
     # Stage 1 — the group's own Context, under the theory request.
     compile_strategist_context(
         conn, problem=problem, trigger_kind="theory",
@@ -236,6 +246,23 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     report_path = attempts_dir / REPORT_BASENAME
     sid = str(uuid.uuid4())
 
+    # The resume point, rewritten at every state change below. Its cost
+    # is one small file per transition; the cost of NOT having it was
+    # measured on 2026-09-06 as a 223k-token re-authoring of a document
+    # that was already written (see `checkpoint`).
+    started_at = resumed.started_at if resumed else db.now()
+
+    def _mark(phase: str, round_no: int, reviewed_body: str = "") -> None:
+        _checkpoint.write(
+            attempts_dir, decision_id=decision_id, group_id=group_id,
+            problem=problem, author_sid=sid,
+            provider=_caps.provider_for_kind("theorist", workspace),
+            model=_caps.model_for_kind("theorist", workspace),
+            phase=phase, round_no=round_no, started_at=started_at,
+            reviewed_sha=(_checkpoint.digest(reviewed_body)
+                          if reviewed_body else ""),
+            resumed_from=(resumed.source_pipeline_id if resumed else ""))
+
     # Quota-park budget for this run, on the Strategist wake's terms: the
     # queue row's lease is reclaimed on AGE ALONE at LEASE_TTL_SEC even
     # with this thread alive, and a reclaimed row means a second Theorist
@@ -254,7 +281,45 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     body = ""
     reviewed = ""   # the document the reviewer has already been handed
     turn = 0
-    for revision in range(0, rounds + 1):
+    # Where the loop starts, and what it may skip. The ROUND CAP is the
+    # request's, not each process's: a run resumed at round 3 has one
+    # author turn left, not four.
+    first_revision = 0
+    submitted = False      # the resumed round's document is already in
+    author_prompt = prompt_path
+    resume_cold = False    # a revision turn that cannot inherit a session
+
+    if resumed is not None:
+        print(f"[theorist] {problem} g{group_id}: resuming "
+              f"{resumed.source_pipeline_id} at {resumed.phase} "
+              f"round {resumed.round_no}", flush=True)
+        body = _checkpoint.report_body(attempts_dir)
+        dialogue = _checkpoint.dialogue_upto(attempts_dir, resumed.round_no)
+        # Set even when the loop below runs: a cap LOWERED since the
+        # frozen run leaves it with nothing to do, and the document
+        # still has to land under the round count it actually reached.
+        turn = resumed.round_no
+        if resumed.phase == _checkpoint.PHASE_LANDING:
+            verdict = _checkpoint.verdict_at(attempts_dir, turn)
+            first_revision = rounds + 1          # the rounds are over
+        elif resumed.phase == _checkpoint.PHASE_AWAITING_REVISION:
+            # The reviewer ruled and the author never answered: this run
+            # takes that revision turn.
+            first_revision = resumed.round_no
+            verdict = _checkpoint.verdict_at(attempts_dir, resumed.round_no)
+            reviewed = body
+            sid, author_prompt, resume_cold = _checkpoint.hand_to_author(
+                attempts_dir, resumed, base_prompt=prompt_path,
+                verdict=verdict, dialogue=dialogue, cold_sid=sid,
+                label=f"{problem} g{group_id}")
+        else:
+            # `awaiting_review`, and `authoring` with a document on disk
+            # resolved to it: round k's submission stands, so the next
+            # thing owed is its REVIEW. This is the incident's own road.
+            first_revision = resumed.round_no - 1
+            submitted = bool(body.strip())
+
+    for revision in range(first_revision, rounds + 1):
         turn = revision + 1
         # Round 0 is the cold wake; every later round RESUMES the same
         # session carrying the fired bullets verbatim — the exact path
@@ -263,40 +328,74 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         if revision:
             rebuttal = "\n".join(
                 f"- {c}" for c in (verdict or {}).get("criticisms", []))
-        rc = agent.spawn_llm(
-            kind="theorist", prompt_path=prompt_path,
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            session_id=sid, is_retry=bool(revision),
-            retry_context=rebuttal, timeout_sec=author_timeout,
-            mcp_config_path=tools_cfg)
-        body = (report_path.read_text(encoding="utf-8")
-                if report_path.is_file() else "")
-        if rc != 0:
-            # THE DOCUMENT OUTRANKS THE RC. codex's stream died on its
-            # idle timeout AFTER `write_file` had landed report.md
-            # (union_closed g691, 2026-09-05, twice): an rc says the
-            # TRANSPORT failed, and only the reviewer can say whether
-            # what is on disk is any good. So a dead spawn with a
-            # document goes to review exactly as if it had exited 0.
-            # Salvage only what is NEW: a revision turn that died before
-            # touching the file leaves the PREVIOUS round's document,
-            # and re-reviewing that spends a reviewer on a turn that
-            # never happened.
-            if not body.strip() or body == reviewed:
+        if submitted:
+            # The document for THIS round was written by the process
+            # that died; re-authoring it is what this whole mechanism
+            # exists to stop. Straight to the review it was waiting for.
+            submitted = False
+        else:
+            _mark(_checkpoint.PHASE_AUTHORING, turn, reviewed)
+            is_retry = bool(revision) and not resume_cold
+            rc = agent.spawn_llm(
+                kind="theorist", prompt_path=author_prompt,
+                problem_dir=problem_dir, attempts_dir=attempts_dir,
+                session_id=sid, is_retry=is_retry,
+                retry_context=rebuttal if is_retry else None,
+                timeout_sec=author_timeout, mcp_config_path=tools_cfg)
+            if (rc == SpawnRC.STALE_SESSION and is_retry
+                    and resumed is not None
+                    and revision == first_revision):
+                # The provider will not replay that id after all. The
+                # document and the ruling are both on disk, so this
+                # costs a worse turn, not the run — `author_prompt`
+                # already carries them (`checkpoint.resume_prompt`).
+                print(f"[theorist] {problem} g{group_id}: the author's "
+                      f"session {sid} is gone (rc={rc}) — retrying cold "
+                      f"with the document and the ruling in the prompt",
+                      flush=True)
+                sid = str(uuid.uuid4())
+                _mark(_checkpoint.PHASE_AUTHORING, turn, reviewed)
+                rc = agent.spawn_llm(
+                    kind="theorist", prompt_path=author_prompt,
+                    problem_dir=problem_dir, attempts_dir=attempts_dir,
+                    session_id=sid, is_retry=False, retry_context=None,
+                    timeout_sec=author_timeout, mcp_config_path=tools_cfg)
+            author_prompt = prompt_path  # only the resumed turn is briefed
+            resume_cold = False
+            body = (report_path.read_text(encoding="utf-8")
+                    if report_path.is_file() else "")
+            if rc != 0:
+                # THE DOCUMENT OUTRANKS THE RC. codex's stream died on
+                # its idle timeout AFTER `write_file` had landed
+                # report.md (union_closed g691, 2026-09-05, twice): an rc
+                # says the TRANSPORT failed, and only the reviewer can
+                # say whether what is on disk is any good. So a dead
+                # spawn with a document goes to review exactly as if it
+                # had exited 0. Salvage only what is NEW: a revision turn
+                # that died before touching the file leaves the PREVIOUS
+                # round's document, and re-reviewing that spends a
+                # reviewer on a turn that never happened.
+                if not body.strip() or body == reviewed:
+                    return _fail_spawn(
+                        _rc_reason(rc, "theorist", attempts_dir),
+                        f"the author's spawn returned rc={rc} on round "
+                        f"{turn}" + (" without rewriting the document"
+                                     if body.strip() else ""))
+                print(f"[theorist] {problem} g{group_id}: the author's "
+                      f"spawn died (rc={rc}) on round {turn} AFTER "
+                      f"writing {REPORT_BASENAME} — reviewing what it "
+                      f"wrote", flush=True)
+            if not body.strip():
                 return _fail_spawn(
-                    _rc_reason(rc, "theorist", attempts_dir),
-                    f"the author's spawn returned rc={rc} on round "
-                    f"{turn}" + (" without rewriting the document"
-                                 if body.strip() else ""))
-            print(f"[theorist] {problem} g{group_id}: the author's spawn "
-                  f"died (rc={rc}) on round {turn} AFTER writing "
-                  f"{REPORT_BASENAME} — reviewing what it wrote",
-                  flush=True)
-        if not body.strip():
-            return _fail_spawn(
-                "theory_no_report",
-                f"the author wrote no {REPORT_BASENAME} on round {turn}")
+                    "theory_no_report",
+                    f"the author wrote no {REPORT_BASENAME} on round "
+                    f"{turn}")
 
+        # The document is final for this round. Written BEFORE the
+        # reviewer runs, because the state a reviewer's death has to
+        # leave behind is exactly this one — the incident's whole cost
+        # was a re-dispatch that read `authoring` here.
+        _mark(_checkpoint.PHASE_AWAITING_REVIEW, turn, body)
         reviewed = body
         verdict, err, rrc = review_round(
             round_no=turn, attempts_dir=attempts_dir, conn=conn,
@@ -318,7 +417,18 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             break
         dialogue.append({"round": turn,
                          "criticisms": verdict["criticisms"]})
+        if revision < rounds:
+            # A revision is owed. Past the cap none is, and the phase
+            # there is `landing`, not a wait for a turn nobody will take.
+            _mark(_checkpoint.PHASE_AWAITING_REVISION, turn, body)
 
+    if not body.strip():
+        # Only reachable on a resume whose `report.md` did not survive
+        # with it: there is no document to land and nobody refused one.
+        return _fail_spawn(
+            "theory_no_report",
+            f"the resumed run carries no {REPORT_BASENAME}")
+    _mark(_checkpoint.PHASE_LANDING, turn, body)
     accepted = bool(verdict) and verdict.get("verdict") == "pass"
     verdict_json = json.dumps(verdict or {}, ensure_ascii=False)
     status = (_landing.STATUS_ACCEPTED if accepted
@@ -332,7 +442,8 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     path = _landing.land(
         workspace, conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, body=body, rounds=turn,
-        verdict=verdict, status=status)
+        verdict=verdict, status=status,
+        resumed_from=(resumed.source_pipeline_id if resumed else ""))
     _landing.record(
         conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, decision_id=decision_id,

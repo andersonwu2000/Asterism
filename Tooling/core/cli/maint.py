@@ -602,3 +602,75 @@ def cmd_kb_migrate(args: argparse.Namespace) -> int:
     print(f"OK: kb-migrate — {antis} antipattern(s) ingested; "
           f"{total} kb_entries total")
     return 0
+
+
+def cmd_theorize_freeze_adopt(args: argparse.Namespace) -> int:
+    """Stamp a frozen Theorist attempts dir with its resume point.
+
+    The road back for a run a PERSON stopped. `run_theorist` writes
+    `_theorize.json` at every state change from 2026-09-06 on, but a run
+    parked by hand before that has none, and without it a re-dispatch
+    starts a fresh author over a document that already exists.
+
+    It writes ONE file and reads everything else: the request comes from
+    the decision row, the phase and the round are read off the dir
+    (`checkpoint.probe`), so a mistyped state cannot be declared. A
+    request that is already settled is refused — stamping it would
+    resurrect a wall the Strategist has been answered on."""
+    from ...llm import capabilities as _caps
+    from ...pipeline.theorist import checkpoint as _checkpoint
+    workspace = Path.cwd()
+    pid = str(args.pipeline_id)
+    candidates = [workspace / ".asterism" / _checkpoint.FROZEN_DIRNAME / pid,
+                  workspace / ".attempts" / pid]
+    d = next((c for c in candidates if c.is_dir()), None)
+    if d is None:
+        print(f"[theorize-adopt] no directory {pid!r} under "
+              f".asterism/{_checkpoint.FROZEN_DIRNAME}/ or .attempts/")
+        return 1
+    if not _checkpoint.report_body(d).strip():
+        print(f"[theorize-adopt] {d} carries no report.md — there is no "
+              f"document to resume")
+        return 1
+
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        row = conn.execute(
+            "SELECT decision_kind, group_id, problem, outcome"
+            " FROM strategist_decisions WHERE id = ?",
+            (int(args.decision),)).fetchone()
+        if row is None:
+            print(f"[theorize-adopt] no decision d{args.decision}")
+            return 1
+        if str(row["decision_kind"]) != "Theorize":
+            print(f"[theorize-adopt] d{args.decision} is a "
+                  f"{row['decision_kind']}, not a Theorize")
+            return 1
+        if row["outcome"] is not None:
+            print(f"[theorize-adopt] d{args.decision} is already settled "
+                  f"({row['outcome']}) — nothing is waiting on this run")
+            return 1
+        phase, round_no = _checkpoint.probe(d)
+        sid = str(getattr(args, "author_sid", None)
+                  or _checkpoint.author_sid_in(d) or "")
+        _checkpoint.write(
+            d, decision_id=int(args.decision),
+            group_id=(None if row["group_id"] is None
+                      else int(row["group_id"])),
+            problem=str(row["problem"]), author_sid=sid,
+            provider=_caps.provider_for_kind("theorist", workspace),
+            model=_caps.model_for_kind("theorist", workspace),
+            phase=phase, round_no=round_no, started_at=db.now())
+    finally:
+        conn.close()
+    print(f"[theorize-adopt] {pid} -> d{args.decision} "
+          f"(group {row['group_id']}, {row['problem']}): {phase}, "
+          f"round {round_no}"
+          + (f", author session {sid}" if sid
+             else " — NO author session recorded; a revision turn will "
+                  "start a fresh author seeded with report.md, "
+                  "dialogue.md and the ruling"))
+    print(f"[theorize-adopt] the next dispatch of d{args.decision} "
+          f"resumes it; nothing else was written.")
+    return 0

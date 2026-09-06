@@ -135,7 +135,8 @@ _REJECTED_PROSE = (
 def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
            verdict_lines: "list[str]", status: str = STATUS_ACCEPTED,
            fired: "list[str] | None" = None,
-           rigour_defective: bool = False) -> str:
+           rigour_defective: bool = False,
+           resumed_from: str = "") -> str:
     """The provenance comment the landed file opens with.
 
     An HTML comment because the file is read as prose by the next
@@ -155,6 +156,12 @@ def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
              f"group: {'(none)' if group_id is None else int(group_id)}",
              f"pipeline: {pipeline_id}",
              f"rounds: {int(rounds)}"]
+    if resumed_from:
+        # The rounds above were not all argued in one process. Which one
+        # holds the earlier turns' transcripts is archaeology nothing
+        # else records — the `pipelines` row names only the run that
+        # landed it.
+        lines.append(f"resumed from: {resumed_from}")
     if fired:
         lines.append("criteria fired: " + ", ".join(str(k) for k in fired))
     if rigour_defective:
@@ -171,7 +178,7 @@ def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
 def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
          group_id: "int | None", pipeline_id: str, body: str,
          rounds: int, verdict: "dict | None",
-         status: str = STATUS_ACCEPTED) -> str:
+         status: str = STATUS_ACCEPTED, resumed_from: str = "") -> str:
     """Write the reviewed document into the Project's shelf; returns its
     workspace-relative path.
 
@@ -192,7 +199,8 @@ def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
         header(group_id=group_id, pipeline_id=pipeline_id, rounds=rounds,
                verdict_lines=_verdict_lines(verdict), status=status,
                fired=fired_criteria(verdict) if rejected else None,
-               rigour_defective=rejected and rigour_is_defective(verdict))
+               rigour_defective=rejected and rigour_is_defective(verdict),
+               resumed_from=resumed_from)
         + "\n\n" + body.rstrip("\n") + "\n",
         area=_project_docs.AREA_AGENT)
     return (_project_docs.root(Path(workspace), project) / rel

@@ -1062,3 +1062,508 @@ def test_carry_places_the_new_table(
     from Tooling.state import carry as _carry
     kinds = _carry.assert_classified(conn)
     assert kinds["theory_documents"] == _carry.PROBLEM_KEYED
+
+
+# ---------------------------------------------------------------------
+# the checkpoint, and resuming from it
+#
+# 2026-09-06, union_closed g694: a Theorist wrote a 228k-token document,
+# its reviewer died on the five-hour quota, and the (correct) infra
+# re-dispatch started a FRESH author that rewrote the whole thing from
+# scratch. The author's work was thrown away by a REVIEWER's transport
+# death. `_theorize.json` is the resume point that makes that
+# impossible: it names the phase the run is in, and a re-dispatch picks
+# the run up there instead of at the beginning.
+# ---------------------------------------------------------------------
+
+def _phases(monkeypatch: pytest.MonkeyPatch) -> "list[tuple[str, int]]":
+    """Record every phase the run checkpoints, in order. The phase
+    SEQUENCE is the contract — `awaiting_revision` in particular is
+    overwritten by the next round's `authoring` within milliseconds, so
+    nothing left on disk afterwards can witness that it was written."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    seen: "list[tuple[str, int]]" = []
+    real = _ck.write
+
+    def spy(attempts_dir, **kw):
+        seen.append((str(kw["phase"]), int(kw["round_no"])))
+        return real(attempts_dir, **kw)
+
+    monkeypatch.setattr(_ck, "write", spy)
+    return seen
+
+
+def _frozen(workspace: Path, pipeline_id: str, *, decision_id: int,
+            group_id: int, phase: str, round_no: int,
+            author_sid: str = "sid-old", verdicts=(),
+            report: str = _REPORT, reviewed_sha: str = "") -> Path:
+    """A frozen attempts dir in the shape `.asterism/theory_frozen/`
+    holds: the document, the rounds already argued, the checkpoint."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    d = workspace / ".asterism" / "theory_frozen" / pipeline_id
+    (d / "review").mkdir(parents=True, exist_ok=True)
+    (d / "report.md").write_text(report, encoding="utf-8")
+    for i, v in enumerate(verdicts, start=1):
+        r = d / "review" / f"r{i}"
+        r.mkdir(parents=True, exist_ok=True)
+        (r / "report.md").write_text(report, encoding="utf-8")
+        if v is not None:
+            (r / "verdict.json").write_text(json.dumps(v), encoding="utf-8")
+    _ck.write(d, decision_id=decision_id, group_id=group_id, problem="p",
+              author_sid=author_sid, provider="claude", model="m",
+              phase=phase, round_no=round_no, started_at="t0",
+              reviewed_sha=reviewed_sha)
+    return d
+
+
+def _seats(fake):
+    """Wrap a scripted spawn so the SEAT ORDER is observable — which
+    kind runs first is the whole question a resume answers."""
+    seen: "list[dict]" = []
+
+    def spy(**kw):
+        seen.append(dict(kw))
+        return fake(**kw)
+
+    return spy, seen
+
+
+def test_the_checkpoint_names_every_phase_the_run_passes_through(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One rebutted round, then a clear one. Every state change is
+    written down: the two author turns, the two reviews, the revision
+    the fired verdict bought, and the landing."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    did = _theorize(conn, workspace)
+    seen = _phases(monkeypatch)
+    fake, _ = _script(verdicts=[_fired("1"), _clear()])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    assert seen == [
+        (_ck.PHASE_AUTHORING, 1),
+        (_ck.PHASE_AWAITING_REVIEW, 1),
+        (_ck.PHASE_AWAITING_REVISION, 1),
+        (_ck.PHASE_AUTHORING, 2),
+        (_ck.PHASE_AWAITING_REVIEW, 2),
+        (_ck.PHASE_LANDING, 2),
+    ]
+
+
+def test_the_checkpoint_carries_what_a_resume_needs_to_find_the_author(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request it answers, the wall it is on, and the SESSION the
+    author is thinking in — a resume that cannot name the session can
+    only start a new one."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    fake, state = _script(verdicts=[_clear()])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    data = _ck.load(workspace / ".attempts" / "th-1")
+    assert data is not None
+    assert data["decision_id"] == did
+    assert data["group_id"] == gid
+    assert data["problem"] == "p"
+    assert data["author_sid"] == state["author_sids"][0]
+    assert data["provider"] == "claude"
+    assert "model" in data
+    assert data["started_at"] and data["updated_at"]
+
+
+def test_a_dead_reviewer_leaves_the_checkpoint_awaiting_its_review(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The incident, in one assertion. The reviewer's quota death is
+    non-terminal (`b4622245`) — the decision stays NULL and the request
+    is re-queued — and what the re-dispatch must find is a checkpoint
+    saying the DOCUMENT IS WRITTEN, not one telling it to write
+    another."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    did = _theorize(conn, workspace)
+    fake, _ = _dead_spawn("theory_reviewer", rc=126, report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.failure_reason == "quota_exhausted"
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()[0] is None
+    data = _ck.load(workspace / ".attempts" / "th-1")
+    assert data is not None
+    assert (data["phase"], data["round"]) == (_ck.PHASE_AWAITING_REVIEW, 1)
+
+
+def test_the_redispatch_after_a_dead_reviewer_spawns_a_reviewer_first(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And therefore: the next `run_theorist` for that decision does NOT
+    author. It reviews what is already written — the 223k tokens the
+    incident spent re-writing are the cost of getting this wrong."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    did = _theorize(conn, workspace)
+    dead, _ = _dead_spawn("theory_reviewer", rc=126, report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", dead)
+    _run(conn, workspace, pintent, did, pipeline_id="th-1")
+
+    fake, _ = _script(verdicts=[_clear()])
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    r = _run(conn, workspace, pintent, did, pipeline_id="th-2")
+
+    assert r.outcome == "success", r.failure_detail
+    assert [k["kind"] for k in seen] == ["theory_reviewer"]
+    # and it reviewed the document the FIRST run's author wrote
+    assert (workspace / ".attempts" / "th-2" / "report.md").read_text(
+        encoding="utf-8").strip() == _REPORT.strip()
+    row = conn.execute(
+        "SELECT rounds, pipeline_id FROM theory_documents").fetchone()
+    assert row["rounds"] == 1 and row["pipeline_id"] == "th-2"
+    landed = (workspace / conn.execute(
+        "SELECT path FROM theory_documents").fetchone()[0]).read_text(
+            encoding="utf-8")
+    assert "resumed from: th-1" in landed
+
+
+def test_a_rebutted_round_resumes_the_authors_own_session(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`awaiting_revision`: the reviewer ruled, the author had not
+    answered yet. The resumed run takes the author's revision turn on
+    the SAME session, with the fired bullets as its retry context."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-1", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVISION, round_no=1,
+            author_sid="sid-old",
+            verdicts=[_fired("3", "the wall is only named")])
+
+    fake, _ = _script(verdicts=[_clear()])
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    r = _run(conn, workspace, pintent, did, pipeline_id="th-9")
+
+    assert r.outcome == "success", r.failure_detail
+    assert [k["kind"] for k in seen] == ["theorist", "theory_reviewer"]
+    author = seen[0]
+    assert author["session_id"] == "sid-old"
+    assert author["is_retry"] is True
+    assert "the wall is only named" in (author["retry_context"] or "")
+    # the old run's files are the new run's files
+    att = workspace / ".attempts" / "th-9"
+    assert (att / "review" / "r1" / "verdict.json").is_file()
+    assert _ck.load(att)["resumed_from"] == "old-1"
+    # round 1 is spent: this is round 2, and its dialogue carries r1
+    assert (att / "review" / "r2" / "dialogue.md").is_file()
+    assert conn.execute(
+        "SELECT rounds FROM theory_documents").fetchone()[0] == 2
+
+
+def test_an_unresumable_author_session_falls_back_to_a_fresh_one(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session id the provider can no longer replay (rc=125) must not
+    end the run — the document and the ruling are both on disk, so a
+    fresh author can be handed them in its PROMPT instead."""
+    from Tooling.llm.base import SpawnRC
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-2", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVISION, round_no=1,
+            author_sid="sid-gone",
+            verdicts=[_fired("3", "the wall is only named")])
+
+    fake, _ = _script(verdicts=[_clear()])
+    calls = {"n": 0}
+
+    def flaky(**kw):
+        if kw.get("kind") == "theorist":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return int(SpawnRC.STALE_SESSION)
+        return fake(**kw)
+
+    spy, seen = _seats(flaky)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    r = _run(conn, workspace, pintent, did, pipeline_id="th-10")
+
+    assert r.outcome == "success", r.failure_detail
+    assert [k["kind"] for k in seen] == [
+        "theorist", "theorist", "theory_reviewer"]
+    assert seen[1]["session_id"] not in ("sid-gone", seen[0]["session_id"])
+    assert seen[1]["is_retry"] is False
+    # the fresh author is handed the run in its prompt, not in a session
+    brief = Path(seen[1]["prompt_path"]).read_text(encoding="utf-8")
+    assert "report.md" in brief and "the wall is only named" in brief
+
+
+def test_an_interrupted_authoring_turn_counts_as_a_submission(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompt tells the author to update `report.md` as it thinks,
+    so a draft caught mid-turn IS the submission — the resume reviews it
+    rather than asking for it again."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-3", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_AUTHORING, round_no=1)
+
+    fake, _ = _script(verdicts=[_clear()])
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    r = _run(conn, workspace, pintent, did, pipeline_id="th-11")
+    assert r.outcome == "success", r.failure_detail
+    assert [k["kind"] for k in seen] == ["theory_reviewer"]
+
+
+def test_an_interrupted_revision_that_wrote_nothing_new_resumes_the_author(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The other half of that rule. At round k+1 the stored phase is
+    `authoring` from the moment the spawn is launched, and `report.md`
+    still holds the document round k was JUDGED on — re-reviewing that
+    spends a reviewer on a turn that never happened. The checkpoint
+    carries the digest of what was already reviewed, so the two cases
+    are told apart."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    d = _frozen(workspace, "old-4", decision_id=1, group_id=gid,
+                phase=_ck.PHASE_AUTHORING, round_no=2,
+                reviewed_sha=_ck.digest(_REPORT),
+                verdicts=[_fired("1")])
+    assert _ck.resolve(d, _ck.load(d)) == (_ck.PHASE_AWAITING_REVISION, 1)
+
+    # a draft that IS new goes to review as round 2
+    (d / "report.md").write_text(_REPORT + "\n## More\n", encoding="utf-8")
+    assert _ck.resolve(d, _ck.load(d)) == (_ck.PHASE_AWAITING_REVIEW, 2)
+
+
+def test_a_verdict_on_disk_outranks_the_phase_field(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The checkpoint is written BEFORE the spawn it describes, so its
+    phase can be one state stale. The round's `verdict.json` is the
+    structural signal: it exists iff the reviewer ruled."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    d = _frozen(workspace, "old-5", decision_id=1, group_id=gid,
+                phase=_ck.PHASE_AWAITING_REVIEW, round_no=1,
+                verdicts=[_clear()])
+    assert _ck.resolve(d, _ck.load(d)) == (_ck.PHASE_LANDING, 1)
+
+    d2 = _frozen(workspace, "old-6", decision_id=1, group_id=gid,
+                 phase=_ck.PHASE_AWAITING_REVIEW, round_no=1,
+                 verdicts=[_fired("1")])
+    assert _ck.resolve(d2, _ck.load(d2)) == (_ck.PHASE_AWAITING_REVISION, 1)
+
+
+def test_a_landing_phase_lands_without_spawning_anything(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer passed it and the process died before the write.
+    There is nothing left to ask anyone."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-7", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_LANDING, round_no=1, verdicts=[_clear()])
+
+    fake, _ = _script(verdicts=[_clear()])
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    r = _run(conn, workspace, pintent, did, pipeline_id="th-12")
+    assert r.outcome == "success", r.failure_detail
+    assert seen == []
+    assert conn.execute(
+        "SELECT status FROM theory_documents").fetchone()[0] == "accepted"
+
+
+def test_the_round_cap_counts_the_rounds_already_taken(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three revisions is the budget for the REQUEST, not for each
+    process that answers it. A run resumed at round 3 has one author
+    turn left, not four."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-8", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVIEW, round_no=3,
+            verdicts=[_fired("1"), _fired("1"), None])
+
+    fake, _ = _script(verdicts=[_fired("1")] * 4)
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    _run(conn, workspace, pintent, did, pipeline_id="th-13")
+
+    assert [k["kind"] for k in seen] == [
+        "theory_reviewer", "theorist", "theory_reviewer"]
+    row = conn.execute(
+        "SELECT rounds, status FROM theory_documents").fetchone()
+    assert row["rounds"] == 4 and row["status"] == "rejected"
+
+
+def test_the_newest_checkpoint_for_the_decision_wins(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request can have been answered more than once. The resume takes
+    the run that got FURTHEST — the newest checkpoint — and never a
+    different decision's."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    other = _theorize(conn, workspace)
+    old = _frozen(workspace, "old-9", decision_id=did, group_id=gid,
+                  phase=_ck.PHASE_AUTHORING, round_no=1, report="stale\n")
+    _ck.write(old, decision_id=did, group_id=gid, problem="p",
+              author_sid="a", provider="claude", model="m",
+              phase=_ck.PHASE_AUTHORING, round_no=1, started_at="t0",
+              updated_at="2020-01-01T00:00:00Z")
+    new = _frozen(workspace, "old-10", decision_id=did, group_id=gid,
+                  phase=_ck.PHASE_AWAITING_REVIEW, round_no=1)
+    _ck.write(new, decision_id=did, group_id=gid, problem="p",
+              author_sid="b", provider="claude", model="m",
+              phase=_ck.PHASE_AWAITING_REVIEW, round_no=1,
+              started_at="t0", updated_at="2030-01-01T00:00:00Z")
+    _frozen(workspace, "old-11", decision_id=other, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVIEW, round_no=1, report="wrong\n")
+
+    fake, _ = _script(verdicts=[_clear()])
+    spy, seen = _seats(fake)
+    monkeypatch.setattr(agent, "spawn_llm", spy)
+    _run(conn, workspace, pintent, did, pipeline_id="th-14")
+    assert [k["kind"] for k in seen] == ["theory_reviewer"]
+    assert _ck.load(workspace / ".attempts" / "th-14")[
+        "resumed_from"] == "old-10"
+
+
+def test_the_attempts_dir_of_an_unanswered_request_survives_its_work_area(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """`WorkArea.__exit__` rmtrees the attempts dir unconditionally —
+    which is exactly what deletes the frozen document between the infra
+    death and the re-dispatch that is supposed to resume it."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    conn.close()
+
+    for pid, settle in (("keep-me", False), ("drop-me", True)):
+        with agent.WorkArea(workspace, pid) as wa:
+            _ck.write(wa.attempts, decision_id=did, group_id=gid,
+                      problem="p", author_sid="s", provider="claude",
+                      model="m", phase=_ck.PHASE_AWAITING_REVIEW,
+                      round_no=1, started_at="t0")
+            (wa.attempts / "report.md").write_text("doc\n", encoding="utf-8")
+            if settle:
+                c = db.connect()
+                c.execute("UPDATE strategist_decisions SET outcome ="
+                          " 'success' WHERE id = ?", (did,))
+                c.commit()
+                c.close()
+    assert (workspace / ".attempts" / "keep-me" / "report.md").is_file()
+    assert not (workspace / ".attempts" / "drop-me").exists()
+
+
+def test_the_checkpoint_basename_is_spelled_in_one_place() -> None:
+    """`WorkArea` cannot import the theory package at module level (the
+    pipeline package imports `agent`), so it carries the name inline.
+    A second spelling is a sweep that stops sparing the dirs."""
+    from Tooling.agent import runtime as _runtime
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    assert _runtime.THEORIZE_CHECKPOINT == _ck.CHECKPOINT_BASENAME
+
+
+# ---------------------------------------------------------------------
+# stamping the two runs frozen by hand on 2026-09-06
+# ---------------------------------------------------------------------
+
+def test_theorize_freeze_adopt_stamps_a_frozen_dir(
+    workspace: Path, conn: sqlite3.Connection, capsys,
+) -> None:
+    """`asterism theorize-freeze-adopt <pipeline_id> --decision <id>`:
+    the owner's road back for the two runs frozen by hand. It writes
+    `_theorize.json` into an existing dir and NOTHING else — the phase
+    and the round are READ OFF the dir, so a mistyped one cannot invent
+    a state the files do not have."""
+    import argparse
+    from Tooling.core.cli import maint
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+    did = _theorize(conn, workspace)
+    conn.close()
+
+    d = workspace / ".asterism" / "theory_frozen" / "07cb21a7"
+    (d / "review").mkdir(parents=True)
+    (d / "report.md").write_text(_REPORT, encoding="utf-8")
+    for i in (1, 2, 3):
+        r = d / "review" / f"r{i}"
+        r.mkdir(parents=True)
+        (r / "report.md").write_text(_REPORT, encoding="utf-8")
+        if i < 3:
+            (r / "verdict.json").write_text(
+                json.dumps(_fired("1")), encoding="utf-8")
+    (d / "_spawn.stderr").write_text(
+        'rc=1\n--- stdout ---\n{"type":"system","subtype":"init",'
+        '"session_id":"0c8b82fd-b296-4c32-adde-a7a226ec5451"}\n',
+        encoding="utf-8")
+
+    rc = maint.cmd_theorize_freeze_adopt(argparse.Namespace(
+        pipeline_id="07cb21a7", decision=did, author_sid=None))
+    assert rc == 0
+    data = _ck.load(d)
+    assert data["decision_id"] == did
+    assert data["group_id"] == gid
+    assert data["problem"] == "p"
+    assert (data["phase"], data["round"]) == (_ck.PHASE_AWAITING_REVIEW, 3)
+    assert data["author_sid"] == "0c8b82fd-b296-4c32-adde-a7a226ec5451"
+    out = capsys.readouterr().out
+    assert "awaiting_review" in out and "round 3" in out
+
+
+def test_theorize_freeze_adopt_refuses_a_decision_that_is_settled(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Stamping a settled request would resurrect a wall the Strategist
+    has already been answered on."""
+    import argparse
+    from Tooling.core.cli import maint
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    did = _theorize(conn, workspace)
+    conn.execute("UPDATE strategist_decisions SET outcome = 'success'"
+                 " WHERE id = ?", (did,))
+    conn.commit()
+    conn.close()
+    d = workspace / ".asterism" / "theory_frozen" / "zz"
+    d.mkdir(parents=True)
+    (d / "report.md").write_text(_REPORT, encoding="utf-8")
+
+    rc = maint.cmd_theorize_freeze_adopt(argparse.Namespace(
+        pipeline_id="zz", decision=did, author_sid=None))
+    assert rc == 1
+    assert _ck.load(d) is None
