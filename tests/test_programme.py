@@ -22,7 +22,9 @@ def _fresh(tmp_path):
     return c
 
 
-def _body(proof="The route holds because of X.",
+def _body(proof=("### close_gcd\n"
+                 "Theorem. The gcd gap closes.\n"
+                 "Proof. The route holds because of X."),
           argument="Brick A unblocks the named vector.",
           roadmap="1. Re-prove s23259 without the exists."):
     return ("# Close the gcd gap\n"
@@ -38,7 +40,7 @@ def test_parse_ok():
     assert err is None
     assert sections["title"] == "Close the gcd gap"
     assert "named vector" in sections["argument"]
-    assert sections["proof"].startswith("The route holds")
+    assert sections["proof"].startswith("### close_gcd")
 
 
 def test_parse_missing_section_teaches():
@@ -428,7 +430,7 @@ def test_roadmap_tag_content_is_never_string_matched(tmp_path):
     d = SimpleNamespace(kind="Inject", target_id=None,
                         brief="Roadmap: Genus-1 model — Brick 1, "
                               "the gluing word\n## Need\nx")
-    _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
+    _b, _s, _br, err = strategist.verify_proposal_package([d], tmp_path)
     assert err is None, f"phrase mismatch must not bounce a batch: {err}"
 
 
@@ -445,7 +447,7 @@ def test_the_roadmap_tag_line_is_no_longer_required(tmp_path):
     (tmp_path / "proposal.md").write_text(_body(), encoding="utf-8")
     d = SimpleNamespace(kind="Inject", target_id=None,
                         brief="## Need\nx")
-    _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
+    _b, _s, _br, err = strategist.verify_proposal_package([d], tmp_path)
     assert err is None
 
 

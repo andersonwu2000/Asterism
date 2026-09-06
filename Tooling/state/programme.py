@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from .assemble import SLUG_MAX_LEN, SLUG_RE
 from .db import now
 
 PROGRAMME_BASENAME = "PROGRAMME.md"
@@ -135,16 +137,36 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
     return sections, None
 
 
-#: The two-part brick (owner ruling 2026-08-30): an Inject's `proof` is
-#: `Theorem.` <its full statement> then `Proof.` <its argument> — the
-#: shape a mathematician writes. The statement thereby has a position
-#: of its own: the mint worker's `## Your assignment`, the judge's
-#: per-brick unit, a handle for dedupe and same-gap detection. A
+#: The named brick (owner ruling 2026-09-07): every brick of a `## Proof`
+#: opens with `### <name>` — the name IS the node's name, so a mint lands
+#: as `proofs/L_<name>.lean` with `theorem <name>` and a target-mode brick
+#: is named exactly as the target goal's slug. An optional `Uses:` line
+#: names the same-batch bricks this argument consumes; the body is the
+#: two-part brick (2026-08-30): `Theorem.` <statement> then `Proof.`
+#: <argument>, the shape a mathematician writes. The statement thereby has
+#: a position of its own: the mint worker's `## Your assignment`, the
+#: judge's per-brick unit, a handle for dedupe and same-gap detection. A
 #: definition brick writes `Definition.` and carries no `Proof.`.
-BRICK_SHAPE = ("`Theorem.` <its full statement>, then `Proof.` <its argument> "
-               "(a definition brick: `Definition.` <what it defines>, no `Proof.`)")
+BRICK_SHAPE = ("`### <name>` (snake_case — it becomes the node's name), an "
+               "optional `Uses: <name>, <name>` line naming the same-batch "
+               "bricks it consumes, `Theorem.` <its full statement>, then "
+               "`Proof.` <its argument> (a definition brick: `Definition.` "
+               "<what it defines>, no `Proof.`)")
 _BRICK_HEAD = re.compile(r"^\s*(?:\*\*)?(Theorem|Definition)\.(?:\*\*)?\s*(.*)$")
 _BRICK_PROOF = re.compile(r"^\s*(?:\*\*)?Proof\.(?:\*\*)?\s*(.*)$")
+
+#: `### <name>` at line start. `####` cannot match: the `\s+` after the
+#: three hashes refuses a fourth.
+_BRICK_NAME_HEAD = re.compile(r"^###\s+(.*?)\s*$")
+#: The dependency line, first non-blank line of a brick body. Bold
+#: markers and any case are accepted for the same reason `_BRICK_HEAD`
+#: takes `**Theorem.**` — the author writes markdown, not a schema.
+_BRICK_USES = re.compile(r"^\s*(?:\*\*)?Uses:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
+
+#: The whole `## Proof` when a batch argues nothing new. Kept verbatim
+#: from the prompt: the author is told to write this one line, so the
+#: parser recognises exactly it.
+NO_NEW_MATHEMATICS = "No new mathematics this batch."
 
 
 def parse_brick_proof(text: "str | None") -> tuple[str, str, str, str]:
@@ -176,6 +198,190 @@ def parse_brick_proof(text: "str | None") -> tuple[str, str, str, str]:
         pm = _BRICK_PROOF.match(lines[proof_i])
         argument = "\n".join([pm.group(1)] + lines[proof_i + 1:]).strip()
     return head, statement, argument, ""
+
+
+@dataclass(frozen=True)
+class Brick:
+    """One named brick of a `## Proof`.
+
+    `name` obeys the sub-goal slug rule (`state/assemble.SLUG_RE`), the
+    same one forward mints and backward sub-goals obey, because it IS the
+    node's name. `uses` names the same-batch bricks this argument
+    consumes — declared, never inferred from the prose. `head` is
+    'Theorem' or 'Definition'; a Definition brick's `argument` is ''."""
+    name: str
+    uses: tuple[str, ...]
+    head: str
+    statement: str
+    argument: str
+
+
+def _name_defect(name: str, what: str) -> str:
+    """'' when `name` is a legal node name, else the teaching sentence."""
+    if not name:
+        return (f"{what} is empty — a brick is named `### <name>`, "
+                f"snake_case, and that name becomes the node's name")
+    if not SLUG_RE.match(name):
+        return (f"{what} `{name}` is not a legal name: it must match "
+                f"{SLUG_RE.pattern} (snake_case, ASCII, starting with a "
+                f"letter) — the name becomes a Lean declaration and a "
+                f"file name, so it obeys the same rule as every sub-goal "
+                f"slug")
+    if len(name) > SLUG_MAX_LEN:
+        return (f"{what} `{name}` is {len(name)} characters; the limit is "
+                f"{SLUG_MAX_LEN} — shorten it")
+    return ""
+
+
+def parse_bricks(proof_section: "str | None") -> tuple[list[Brick], str]:
+    """Split a `## Proof` into its named bricks.
+
+    Returns `(bricks, '')` on the contract shape, or `([], teaching)` on
+    a violation. Purely textual: whether a `Uses:` name resolves to a
+    brick of another batch or to an existing goal is verify's question
+    (it has the DB), and only a cycle among THIS Proof's bricks is
+    decidable here.
+
+    The single line `No new mathematics this batch.` is zero bricks, not
+    a defect — a batch may move the route without arguing anything new.
+    """
+    text = (proof_section or "").strip()
+    if not text:
+        return [], ("the `## Proof` section is empty — write each brick as "
+                    f"{BRICK_SHAPE}, or the single line "
+                    f"`{NO_NEW_MATHEMATICS}`")
+    if " ".join(text.split()) == NO_NEW_MATHEMATICS:
+        return [], ""
+    lines = text.splitlines()
+    heads: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        m = _BRICK_NAME_HEAD.match(ln)
+        if m:
+            heads.append((i, m.group(1).strip().strip("`")))
+    if not heads:
+        return [], ("no `### <name>` header in the `## Proof` — every brick "
+                    f"is named, and the name becomes the node's name. "
+                    f"Write each brick as {BRICK_SHAPE}")
+    preamble = "\n".join(lines[:heads[0][0]]).strip()
+    if preamble:
+        return [], (f"the `## Proof` opens with text before the first "
+                    f"`### <name>` header ({preamble.splitlines()[0][:60]!r}) "
+                    f"— a brick body outside a named header reaches no "
+                    f"worker. Give it a `### <name>` header, or fold the "
+                    f"prose into the `## Argument`")
+    bounds = [i for i, _ in heads] + [len(lines)]
+    bricks: list[Brick] = []
+    seen: dict[str, int] = {}
+    for (start, name), end in zip(heads, bounds[1:]):
+        defect = _name_defect(name, "brick name")
+        if defect:
+            return [], defect
+        if name in seen:
+            return [], (f"duplicate brick name `{name}` in the `## Proof` "
+                        f"— a name is a node, so two bricks cannot share "
+                        f"one. Rename one of them")
+        seen[name] = start
+        body = lines[start + 1:end]
+        uses: list[str] = []
+        rest = body
+        for j, ln in enumerate(body):
+            if not ln.strip():
+                continue
+            m = _BRICK_USES.match(ln)
+            if m:
+                raw = [x.strip().strip("`") for x in
+                       re.split(r"[,\s]+", m.group(1).strip()) if x.strip()]
+                if not raw:
+                    return [], (f"brick `{name}` has an empty `Uses:` line — "
+                                f"name the same-batch bricks its argument "
+                                f"consumes, or drop the line")
+                for u in raw:
+                    d = _name_defect(u, f"brick `{name}`'s `Uses:` entry")
+                    if d:
+                        return [], d
+                uses = raw
+                rest = body[j + 1:]
+            break
+        head, statement, argument, err = parse_brick_proof("\n".join(rest))
+        if err:
+            return [], f"brick `{name}`: {err}"
+        bricks.append(Brick(name=name, uses=tuple(uses), head=head,
+                            statement=statement, argument=argument))
+    cycle = _uses_cycle({b.name: b.uses for b in bricks})
+    if cycle:
+        return [], (f"`Uses:` cycle in the `## Proof`: "
+                    + " → ".join(f"`{n}`" for n in cycle)
+                    + " — a brick cannot consume itself, directly or "
+                      "through a chain. Break the cycle by proving one of "
+                      "them without the others")
+    return bricks, ""
+
+
+def _uses_cycle(graph: "dict[str, tuple[str, ...]]") -> list[str]:
+    """One cycle of the `Uses:` graph as a name list (first name repeated
+    at the end), or [] when acyclic. Edges to names outside `graph` are
+    ignored — those resolve against the record, not this Proof."""
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour = {n: WHITE for n in graph}
+    stack: list[str] = []
+
+    def walk(n: str) -> list[str]:
+        colour[n] = GREY
+        stack.append(n)
+        for m in graph.get(n, ()):
+            if m not in colour:
+                continue
+            if colour[m] == GREY:
+                return stack[stack.index(m):] + [m]
+            if colour[m] == WHITE:
+                found = walk(m)
+                if found:
+                    return found
+        stack.pop()
+        colour[n] = BLACK
+        return []
+
+    for n in graph:
+        if colour[n] == WHITE:
+            found = walk(n)
+            if found:
+                return found
+    return []
+
+
+def uses_closure(bricks: "list[Brick]", name: str) -> list[str]:
+    """The transitive `Uses:` closure of `name` within one revision's
+    bricks, in breadth-first order and excluding `name` itself. Names
+    with no brick of their own are kept: the worker still has to be told
+    which lemma its argument leans on, even when this Proof does not
+    carry one."""
+    by_name = {b.name: b for b in bricks}
+    out: list[str] = []
+    seen = {name}
+    frontier = list(by_name[name].uses) if name in by_name else []
+    while frontier:
+        nxt: list[str] = []
+        for u in frontier:
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+            nxt += list(by_name[u].uses) if u in by_name else []
+        frontier = nxt
+    return out
+
+
+def render_brick(brick: Brick) -> str:
+    """A brick as its author wrote it — the `### <name>` header, its
+    `Uses:` line when it has one, then the two-part body. One renderer,
+    so the text a worker reads is the text the judge read."""
+    parts = [f"### {brick.name}"]
+    if brick.uses:
+        parts.append("Uses: " + ", ".join(brick.uses))
+    parts.append(f"{brick.head}. {brick.statement}".rstrip())
+    if brick.argument:
+        parts.append(f"Proof. {brick.argument}")
+    return "\n".join(parts)
 
 
 def extract_conventions(body: "str | None") -> str:
@@ -491,7 +697,159 @@ def record_pass(conn: sqlite3.Connection, problem: str, body: str,
         (problem, rev, body, json.dumps(verdict, ensure_ascii=False),
          json.dumps(dialogue, ensure_ascii=False), rounds, batch_id,
          now(), group_id, *j))
+    rev_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    store_bricks(conn, problem, rev_id, body)
     return rev
+
+
+def store_bricks(conn: sqlite3.Connection, problem: str, rev_id: int,
+                 body: "str | None") -> int:
+    """Record a passed revision's named bricks against its row id.
+
+    The bricks are the durable half of the pinning `rev_for_goal`
+    already does for the revision: an Inject names a brick, and the
+    worker must be handed THAT brick's Theorem and Proof, not whatever
+    the `## Proof` prose became by the time it spawned. Storing them by
+    name at record time also makes the second addressing route possible
+    — a Backward sub-goal declared as `<name>` finds the argument the
+    Strategist wrote for it without any decision of its own.
+
+    Best-effort by design: a body that no longer parses (a hand-repaired
+    row, a pre-2026-09-07 revision replayed) stores nothing rather than
+    refusing the pass the judge already granted. Returns the number of
+    rows written."""
+    sections, err = parse_proposal(str(body or ""))
+    if err or sections is None:
+        return 0
+    bricks, berr = parse_bricks(sections.get("proof"))
+    if berr or not bricks:
+        return 0
+    ts = now()
+    n = 0
+    for b in bricks:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO bricks"
+                " (problem, name, rev_id, head, statement, argument,"
+                "  uses_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (problem, b.name, int(rev_id), b.head, b.statement,
+                 b.argument, json.dumps(list(b.uses), ensure_ascii=False),
+                 ts))
+        except sqlite3.OperationalError:     # pre-v54 schema
+            return n
+        n += 1
+    return n
+
+
+def _row_to_brick(row: sqlite3.Row) -> Brick:
+    try:
+        uses = json.loads(str(row["uses_json"] or "[]"))
+    except (TypeError, ValueError):
+        uses = []
+    return Brick(name=str(row["name"]),
+                 uses=tuple(str(u) for u in uses if isinstance(u, str)),
+                 head=str(row["head"]), statement=str(row["statement"]),
+                 argument=str(row["argument"] or ""))
+
+
+def bricks_for_rev(conn: sqlite3.Connection, problem: str,
+                   rev_id: "int | None") -> "list[Brick]":
+    """Every brick of one passed revision, in the order it was stored."""
+    if rev_id is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT * FROM bricks WHERE problem = ? AND rev_id = ?"
+            " ORDER BY id", (problem, int(rev_id))).fetchall()
+    except sqlite3.OperationalError:         # pre-v54 schema
+        return []
+    return [_row_to_brick(r) for r in rows]
+
+
+def resolve_brick(conn: sqlite3.Connection, problem: str, name: str,
+                  rev_id: "int | None" = None
+                  ) -> "tuple[Brick | None, int | None]":
+    """`(brick, rev_id)` for the brick called `name` — of `rev_id` when
+    it holds one, else the newest revision that does.
+
+    The fallback is the second addressing route (owner ruling
+    2026-09-07): a sub-goal a worker declares by name has no decision
+    and therefore no revision of its own, and the ancestor walk resolves
+    to the revision that authorised its PARENT — which is usually, but
+    not always, the one carrying the name. The revision comes back with
+    the brick because the `Uses:` closure is read within it."""
+    if not name:
+        return None, None
+    try:
+        row = None
+        if rev_id is not None:
+            row = conn.execute(
+                "SELECT * FROM bricks WHERE problem = ? AND name = ?"
+                "   AND rev_id = ?",
+                (problem, name, int(rev_id))).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT * FROM bricks WHERE problem = ? AND name = ?"
+                " ORDER BY rev_id DESC, id DESC LIMIT 1",
+                (problem, name)).fetchone()
+    except sqlite3.OperationalError:         # pre-v54 schema
+        return None, None
+    if row is None:
+        return None, None
+    return _row_to_brick(row), int(row["rev_id"])
+
+
+def brick_by_name(conn: sqlite3.Connection, problem: str, name: str,
+                  rev_id: "int | None" = None) -> "Brick | None":
+    """`resolve_brick` without its revision — the common read."""
+    return resolve_brick(conn, problem, name, rev_id)[0]
+
+
+def brick_for_decision(conn: sqlite3.Connection,
+                       decision_id: "int | None") -> "Brick | None":
+    """The named brick an Inject dispatched, or None.
+
+    None is a real answer with two causes the callers must both handle:
+    a LEGACY row (`brick_name` NULL, its argument hand-copied into
+    `brief`), and a row whose revision predates the `bricks` table. One
+    resolver for every reader of an Inject's argument — the field it
+    reads changed once and must not change per call site."""
+    return brick_for_decision_with_rev(conn, decision_id)[0]
+
+
+def argument_for_decision(conn: sqlite3.Connection,
+                          decision_id: "int | None",
+                          fallback: "str | None" = None) -> str:
+    """The text a decision's argument reads as, for any surface that
+    used to print `strategist_decisions.brief`.
+
+    The named brick rendered, or the legacy prose when the row carries
+    no name. ONE conversion for every reader — a display that resolves
+    the field itself is a display that will still be printing the empty
+    column a year from now."""
+    brick = brick_for_decision(conn, decision_id)
+    return render_brick(brick) if brick is not None else str(fallback or "")
+
+
+def brick_for_decision_with_rev(conn: sqlite3.Connection,
+                                decision_id: "int | None"
+                                ) -> "tuple[Brick | None, int | None]":
+    """`brick_for_decision` plus the revision it was read from — the
+    handle the `Uses:` closure needs."""
+    if decision_id is None:
+        return None, None
+    try:
+        row = conn.execute(
+            "SELECT problem, brick_name FROM strategist_decisions"
+            " WHERE id = ?", (int(decision_id),)).fetchone()
+    except sqlite3.OperationalError:
+        return None, None
+    if row is None or not str(row["brick_name"] or "").strip():
+        return None, None
+    problem = str(row["problem"])
+    rev = rev_for_goal(conn, problem, decision_id=int(decision_id))
+    return resolve_brick(conn, problem, str(row["brick_name"]).strip(),
+                         int(rev["id"]) if rev is not None else None)
 
 
 def _judge_cols(verdict: "dict[str, Any] | None") -> tuple:

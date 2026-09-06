@@ -1107,6 +1107,24 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
                 raise
         conn.execute("PRAGMA user_version = 53")
         conn.commit()
+    if v < 54:
+        # v54 — named bricks (owner ruling 2026-09-07). An `Inject` names
+        # a brick of its batch's `## Proof` instead of carrying a hand
+        # copy of it; this column is that name, and the `bricks` table
+        # holding the brick itself arrives through the SCHEMA's own
+        # CREATE TABLE IF NOT EXISTS, which `init_schema` runs before
+        # this ladder. Additive, no backfill: NULL is what every legacy
+        # Inject means — its argument is in `brief`, and every reader
+        # falls back to it. Same duplicate-column tolerance as v50/v53,
+        # for a disk whose SCHEMA already minted the column.
+        try:
+            conn.execute("ALTER TABLE strategist_decisions ADD COLUMN"
+                         " brick_name TEXT NULL DEFAULT NULL")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+        conn.execute("PRAGMA user_version = 54")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the

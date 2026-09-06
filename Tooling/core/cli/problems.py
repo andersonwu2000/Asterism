@@ -767,6 +767,10 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
                  (problem,))
     conn.execute("DELETE FROM kb_entries WHERE problem = ?",
                  (problem,))
+    # `bricks` before `programme_revisions`: the brick rows hang off the
+    # revision that carried them (v54) and off the problems row like
+    # every other satellite.
+    conn.execute("DELETE FROM bricks WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM programme_revisions WHERE problem = ?",
                  (problem,))
     # Discussion groups (v35), and the polymorphic rows that TARGET them.

@@ -616,6 +616,16 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     -- `strategist.batch_ack`; NULL = "the ratchet decides" (legacy rows,
     -- and every batch a wake received normally).
     report_carried_at   TEXT NULL DEFAULT NULL,
+    -- brick_name (v54, named bricks): WHICH brick of this batch's
+    -- `## Proof` this Inject dispatched. The name is the node's name, so
+    -- this column is also the mint's required declaration head and the
+    -- key the worker's argument is looked up under (`bricks`).
+    -- NULL on every non-Inject kind and on every legacy Inject, whose
+    -- argument was hand-copied into `brief` instead; both readers
+    -- (`state/programme.brick_for_decision`, the Context sections) fall
+    -- back to `brief` when it is NULL, which is what makes the old rows
+    -- keep working unchanged.
+    brick_name          TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -734,6 +744,45 @@ CREATE TABLE IF NOT EXISTS routine_verdicts (
 );
 CREATE INDEX IF NOT EXISTS idx_rv_group_pending
     ON routine_verdicts(group_id, fired, acted_at);
+
+-- bricks (v54, named bricks) — one row per `### <name>` brick of a
+-- PASSED Programme revision's `## Proof`. The name is the node's name:
+-- a mint lands as `proofs/L_<name>.lean` with `theorem <name>`, a
+-- target-mode brick is named exactly as the target goal's slug.
+--
+-- Why a table rather than a re-parse of `programme_revisions.body`:
+-- the brick is addressed TWICE and by two different keys. An `Inject`
+-- names it (`strategist_decisions.brick_name`), and a sub-goal a worker
+-- declares later reaches it by SLUG, with no decision of its own. Both
+-- reads happen on every worker spawn, and the second one has no
+-- revision in hand until the ancestor walk has run — re-parsing the
+-- prose at each of them is how a renderer drifts from a verifier.
+--
+-- Rows are written at pass time (`state/programme.record_pass`), never
+-- updated: a revision is immutable once the judge has ruled on it, and
+-- the pinning `rev_for_goal` performs is only durable if what it pins
+-- to is. `rev_id` references `programme_revisions(id)`, which is born
+-- in the v30 migration rather than here — SQLite resolves a foreign
+-- key at DML time, and the ladder runs before any insert.
+CREATE TABLE IF NOT EXISTS bricks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem    TEXT NOT NULL REFERENCES problems(name),
+    name       TEXT NOT NULL,
+    rev_id     INTEGER NOT NULL,
+    -- 'Theorem' or 'Definition' (a Definition brick carries no argument).
+    head       TEXT NOT NULL,
+    statement  TEXT NOT NULL,
+    argument   TEXT NOT NULL DEFAULT '',
+    -- The declared `Uses:` line, a JSON list of brick names. Declared,
+    -- never inferred from the prose: a brick listed here is NOT
+    -- injected — it reaches the worker that declares a sub-goal of that
+    -- name, at any depth.
+    uses_json  TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    UNIQUE(problem, name, rev_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bricks_name
+    ON bricks(problem, name);
 
 CREATE TABLE IF NOT EXISTS librarian_fail_counts (
     target_id   TEXT PRIMARY KEY,
@@ -909,7 +958,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 53
+_CURRENT_USER_VERSION = 54
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
