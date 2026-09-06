@@ -67,6 +67,13 @@ INFRA_RETRY_BACKOFF_SEC = 15.0
 #: brick's name, so the name belongs on the heading beside the kind.
 _HEAD_FIELDS = ("pipeline", "brick")
 
+#: What a pre-2026-09-07 Inject's copied argument is called when the
+#: judge reads one. The label carries its own date because a replayed
+#: round is judged under TODAY's rubric: without it the judge sees a
+#: field the current contract does not have and can only read the row as
+#: malformed.
+_LEGACY_INJECT_LABEL = "proof (legacy row, before named bricks)"
+
 #: A single-line value no longer than this rides its label; anything
 #: longer, or anything containing a newline, gets its own fenced block.
 #: NOT a cap — nothing is ever truncated. The fence is a boundary: an
@@ -139,10 +146,11 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
         # Named bricks (2026-09-07): an Inject names a brick of the
         # `## Proof` the judge is reading, so the NAME is the whole
         # decision — the argument is in `proposal.md`, judged there,
-        # once. A `proof` body is never rendered here: a second copy of
-        # the same mathematics is the drift the ruling removed.
+        # once, and a second copy here is the drift the ruling removed.
         brick = payload.pop("brick", None) if kind == "Inject" else None
-        if kind == "Inject" and isinstance(brick, str) and brick.strip():
+        named = (kind == "Inject" and isinstance(brick, str)
+                 and bool(brick.strip()))
+        if named:
             head += f" brick={brick.strip()}"
         if target is not None:
             anno = ""
@@ -167,12 +175,24 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
         # The prose column first, under the contract name its kind uses
         # (a Delegate's is `charter` — one mapping, shared with the
         # parser that filled it), then the payload in the author's own
-        # key order, then `reason` last. An Inject is skipped: its
-        # brick is on the heading above and its argument is in
-        # `proposal.md`, read there once.
+        # key order, then `reason` last.
+        #
+        # A NAMED Inject writes no prose at all: its brick is on the
+        # heading above and its argument is in `proposal.md`. A LEGACY
+        # one — a row filed before 2026-09-07, or by a person through
+        # the human channel, which names no brick — still carries its
+        # copy, and that copy is the only account of what was injected.
+        # `timetravel` / `replay_judge` put exactly those rows in front
+        # of a judge, and a judge that cannot see the dispatch is blind:
+        # it would rule on a decision list of bare kind headings. So the
+        # prose rides, under a label that says what it is, rather than
+        # under the retired field name alone.
         fields: "list[tuple[str, Any]]" = []
         brief = getattr(d, "brief", None)
-        if brief and kind != "Inject":
+        if brief and kind == "Inject":
+            if not named:
+                fields.append((_LEGACY_INJECT_LABEL, brief))
+        elif brief:
             fields.append((_model.brief_field(kind), brief))
         # `.body` is the pre-2026 fixture shape of `payload['body']`
         # (the directive text); real Decision objects only ever carry

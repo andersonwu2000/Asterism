@@ -526,15 +526,125 @@ def test_decisions_md_renders_the_name_and_never_a_proof_body():
     assert "proof" not in text.lower()
 
 
-def test_decisions_md_does_not_echo_a_legacy_proof_body():
-    """The ruling is unconditional: the argument is read in the
-    `## Proof`, once. A legacy row's prose is not a second copy the
-    judge should be handed."""
+def test_decisions_md_still_shows_a_legacy_rows_copied_argument():
+    """A row filed before 2026-09-07 — or by a person through the human
+    channel — names no brick, and its copy is the only account of what
+    was injected. `timetravel` / `replay_judge` put exactly those rows
+    in front of a judge, and a judge that cannot see the dispatch would
+    be ruling on a list of bare kind headings.
+
+    The label says what it is: the retired field name alone would read
+    as a contract the current rubric does not have."""
     from Tooling.pipeline import adversary
     from Tooling.pipeline.strategist import Decision
     text = adversary._decisions_digest(
-        [Decision(kind="Inject", brief="Theorem. LEAKED.\nProof. x.")])
+        [Decision(kind="Inject", brief="Theorem. OLD.\nProof. copied.")])
+    assert "## 1. Inject" in text and "brick=" not in text
+    assert "proof (legacy row, before named bricks):" in text
+    assert "Theorem. OLD." in text and "Proof. copied." in text
+
+
+def test_a_named_inject_never_carries_prose_beside_its_name():
+    """The other half of the same rule: once a decision NAMES its brick,
+    a copy beside it is the drift the ruling removed. (Verify refuses
+    such a decision outright; the renderer must not print one either.)"""
+    from Tooling.pipeline import adversary
+    from Tooling.pipeline.strategist import Decision
+    text = adversary._decisions_digest([Decision(
+        kind="Inject", brief="Theorem. LEAKED.\nProof. x.",
+        payload={"brick": "even_sum_card"})])
+    assert "## 1. Inject brick=even_sum_card" in text
     assert "LEAKED" not in text
+
+
+def test_a_target_mode_inject_replays_with_its_name_and_its_target(tmp_path):
+    """The shape the lab's `honest_route` control uses since the owner
+    reworked it: the Inject TARGETS the frozen root and its brick is
+    named after that root's slug, because minting a twin of the root's
+    statement is what the contract forbids ("never mint an alive goal's
+    statement").
+
+    Pinned end to end because a trap is REPLAYED: the author-written
+    `decisions.json` and a committed row must both reach the judge as
+    the same heading, or a rubric measured on one is not the rubric the
+    field runs.
+    """
+    from Tooling.lab import driver as driver_mod
+    from Tooling.pipeline import adversary, strategist
+
+    conn, top = _fresh(tmp_path)
+    gid = db.insert_goal(conn, problem="p", slug="main",
+                         lean_path="Problems/p/Root.lean", statement="T",
+                         origin="root", depth=0)
+    db.update_goal_status(conn, gid, "frozen")
+    conn.commit()
+
+    # (a) straight from the trap's own decisions.json
+    ds, err = strategist.parse_decisions(json.dumps(
+        [{"kind": "Inject", "target_goal_id": "main", "brick": "main"}]))
+    assert err == ""
+    text = adversary._decisions_digest(ds, conn=conn, problem="p")
+    assert "## 1. Inject brick=main → main (`main`, frozen)" in text
+
+    # …and the batch it belongs to verifies: the brick's name IS the
+    # target's slug, and the lemma it uses is not injected.
+    bricks, berr = programme.parse_bricks(
+        "### even_odd_toggle_bijection\nTheorem. The toggle is a bijection."
+        "\nProof. Involution.\n\n### main\nUses: even_odd_toggle_bijection"
+        "\nTheorem. The count is 2 ^ (n - 1).\nProof. Halve.")
+    assert berr == ""
+    assert strategist.verify_injects(ds, bricks, conn, problem="p") == ""
+    assert strategist.verify_decision(ds[0], conn, problem="p",
+                                      group_id=top) == ""
+
+    # (b) the same decision recovered from a committed row (`rows:`)
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brick_name, batch_id,"
+        " payload, created_at, updated_at)"
+        " VALUES ('p', 1, 'inject_batch_done', 'Inject', ?, 'main', 'b1',"
+        " '{}', ?, ?)", (gid, ts, ts))
+    conn.commit()
+    rows = conn.execute(
+        "SELECT decision_kind, target_id, brief, brick_name, reason, payload"
+        " FROM strategist_decisions WHERE batch_id = 'b1'").fetchall()
+    assert driver_mod.reconstruct_decisions(rows) == [
+        {"kind": "Inject", "target_id": gid, "brick": "main"}]
+    ds2, err2 = strategist.parse_decisions(json.dumps(
+        driver_mod.reconstruct_decisions(rows)))
+    assert err2 == ""
+    replay = adversary._decisions_digest(ds2, conn=conn, problem="p")
+    assert f"## 1. Inject brick=main → {gid} (`main`, frozen)" in replay
+
+
+def test_a_legacy_row_replays_under_the_retired_field(tmp_path):
+    """A pre-2026-09-07 row names no brick, so the replay files its copy
+    under `proof` — where `_decisions_digest` labels it as the legacy
+    row it is."""
+    from Tooling.lab import driver as driver_mod
+    from Tooling.pipeline import adversary, strategist
+
+    conn, _top = _fresh(tmp_path)
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, batch_id, payload,"
+        " created_at, updated_at)"
+        " VALUES ('p', 1, 'routine', 'Inject', ?, 'b2', '{}', ?, ?)",
+        ("Theorem. OLD.\nProof. copied by hand.", ts, ts))
+    conn.commit()
+    rows = conn.execute(
+        "SELECT decision_kind, target_id, brief, brick_name, reason, payload"
+        " FROM strategist_decisions WHERE batch_id = 'b2'").fetchall()
+    back = driver_mod.reconstruct_decisions(rows)
+    assert back == [{"kind": "Inject",
+                     "proof": "Theorem. OLD.\nProof. copied by hand."}]
+    ds, err = strategist.parse_decisions(json.dumps(back))
+    assert err == ""
+    text = adversary._decisions_digest(ds, conn=conn, problem="p")
+    assert "proof (legacy row, before named bricks):" in text
+    assert "Theorem. OLD." in text
 
 
 def test_the_batch_judges_rubric_has_four_criteria():
