@@ -63,8 +63,9 @@ INFRA_RETRY_BACKOFF_SEC = 15.0
 #: the judge does not read the same value twice. This is the whole of
 #: the exclusion list, and it exists because the value is rendered
 #: ELSEWHERE, never because a field is judged unimportant: see
-#: `_decisions_digest`.
-_HEAD_FIELDS = ("pipeline",)
+#: `_decisions_digest`. `brick` joined 2026-09-07: an Inject IS its
+#: brick's name, so the name belongs on the heading beside the kind.
+_HEAD_FIELDS = ("pipeline", "brick")
 
 #: A single-line value no longer than this rides its label; anything
 #: longer, or anything containing a newline, gets its own fenced block.
@@ -135,6 +136,14 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
         head = f"## {i}. {kind}"
         if pipeline:
             head += f"({pipeline})"
+        # Named bricks (2026-09-07): an Inject names a brick of the
+        # `## Proof` the judge is reading, so the NAME is the whole
+        # decision — the argument is in `proposal.md`, judged there,
+        # once. A `proof` body is never rendered here: a second copy of
+        # the same mathematics is the drift the ruling removed.
+        brick = payload.pop("brick", None) if kind == "Inject" else None
+        if kind == "Inject" and isinstance(brick, str) and brick.strip():
+            head += f" brick={brick.strip()}"
         if target is not None:
             anno = ""
             if conn is not None:
@@ -161,7 +170,7 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
         # the author's own key order, then `reason` last.
         fields: "list[tuple[str, Any]]" = []
         brief = getattr(d, "brief", None)
-        if brief:
+        if brief and kind != "Inject":
             fields.append((_model.brief_field(kind), brief))
         # `.body` is the pre-2026 fixture shape of `payload['body']`
         # (the directive text); real Decision objects only ever carry
@@ -450,7 +459,19 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     return proj
 
 
-CRITERIA_KEYS = ("1", "2", "3", "4", "5")
+#: The batch judge's rubric, held level with
+#: `Tooling/prompts/adversary/adversary.md` by
+#: `tests/test_adversary_criteria_contract.py`.
+#:
+#: Criterion 5 ("every Inject is proven in the ## Proof") was RETIRED
+#: 2026-09-07 with the named-brick ruling. It existed because an Inject
+#: carried a hand COPY of its brick, so "does the copy match the Proof"
+#: was a real question a reader had to answer. An Inject now names a
+#: brick and the framework resolves the name — a decision that names
+#: nothing in the `## Proof` is refused at verify, before the judge ever
+#: reads it — so the criterion could only ever fire on a batch that
+#: cannot exist.
+CRITERIA_KEYS = ("1", "2", "3", "4")
 
 #: The criteria whose `clear` must carry its naming (see the check in
 #: `parse_verdict`). Held to `Tooling/prompts/adversary/adversary.md` by
@@ -592,7 +613,7 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     criteria = v.get("criteria")
     if not isinstance(criteria, dict):
         return None, ("verdict.json needs a `criteria` object "
-                      "adjudicating every criterion \"1\"..\"5\"")
+                      "adjudicating every criterion \"1\"..\"4\"")
     missing = [k for k in CRITERIA_KEYS if k not in criteria]
     if missing:
         return None, (f"verdict.json `criteria` missing criterion "

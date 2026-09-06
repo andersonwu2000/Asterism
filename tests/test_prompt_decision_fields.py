@@ -1,10 +1,12 @@
 """A worked example must use the field name the parser actually reads.
 
-`Inject` carries a PROOF — the part of the batch's `## Proof` that
-settles this brick. `Delegate` carries a BRIEF — a charter, a claim a
-new group must settle, which is not a proof of anything. `_parse_one`
-names them apart on purpose, and its comment says why: sharing a row is
-not sharing a meaning.
+`Inject` carries a BRICK NAME since 2026-09-07 — the `### <name>` of
+the brick in the batch's `## Proof` that this decision dispatches; the
+argument itself is never copied. `Delegate` carries a CHARTER, a claim
+a new group must settle. `_parse_one` names them apart on purpose, and
+its comment says why: sharing a row is not sharing a meaning. The
+`proof` mapping survives ONLY so a decision that still carries one
+lands where verify can refuse it by name.
 
 The spec paragraphs said `proof`. Ten worked examples underneath them
 said `brief`, and every one was a `"kind": "Inject"` — so a Strategist
@@ -71,10 +73,12 @@ def test_there_are_examples_to_check() -> None:
 @pytest.mark.parametrize("kind", ["Inject", "Delegate"])
 def test_the_two_prose_fields_are_still_distinct(kind: str) -> None:
     """If these ever collapse onto one name the rest of this file is
-    pointless, and the collapse itself would be the bug: an Inject's
-    prose is an argument, a Delegate's is a charter (2026-08-19: the
-    wire key says so — `charter`; `brief` became the optional guidance
-    hand-off, parked in payload, never the judged prose)."""
+    pointless, and the collapse itself would be the bug: a Delegate's
+    prose is a charter (2026-08-19: the wire key says so; `brief`
+    became the optional guidance hand-off, parked in payload, never
+    the judged prose), and an Inject's `proof` is a RETIRED field
+    (2026-09-07) whose only remaining job is to reach verify's
+    refusal."""
     assert _field_the_parser_reads("Inject") == "proof"
     assert _field_the_parser_reads("Delegate") == "charter"
 
@@ -89,6 +93,14 @@ def test_every_example_uses_the_field_its_kind_reads() -> None:
         # For a Delegate, `brief` is a LEGAL auxiliary key (the
         # guidance hand-off) — only a key that silently misreads as
         # the judged prose is wrong.
+        # An Inject example writes `brick`, which is a payload key —
+        # the parser reads no prose for it at all any more, so the
+        # retired `proof` is what must not appear.
+        if kind == "Inject":
+            if '"proof"' in block:
+                wrong.append(f"  {f.name}:{ln} — Inject example uses "
+                             f'the retired "proof" field')
+            continue
         legal_aux = {"brief"} if kind == "Delegate" else set()
         for other in {"proof", "brief", "charter"} - {want} - legal_aux:
             if f'"{other}"' in block:
@@ -191,9 +203,16 @@ def test_the_label_shown_back_follows_the_kind() -> None:
     """The third surface: what the framework CALLS a decision's prose
     when it echoes it back in Context. The DB column is `brief` for both
     kinds, and printing the column name taught `brief` for Injects on
-    every wake. `_prose_label` is the one place that answers it."""
+    every wake. `_prose_label` is the one place that answers it.
+
+    An Inject's label is `brick` since 2026-09-07 — the field it writes
+    on the wire, which is also what the Context is showing back: the
+    named brick, resolved out of `bricks`. The parser's `proof` mapping
+    is not a contract any more, it is the retired field's refusal
+    route, so the two are pinned apart here rather than to each other.
+    """
     from Tooling.agent.phase2_context import _prose_label
-    assert _prose_label("Inject") == _field_the_parser_reads("Inject")
+    assert _prose_label("Inject") == "brick"
     assert _prose_label("Delegate") == _field_the_parser_reads("Delegate")
     # An unknown kind must not silently claim to be a proof.
     assert _prose_label(None) == "brief"

@@ -209,12 +209,14 @@ def _audit_snapshot_here() -> "list[dict] | None":
 #: seated the judge — `{"criteria_keys": [...], "multi_clear": bool}`.
 #:
 #: Ownership again, one layer past `_audit_roots.json`. Shape cannot
-#: answer "is this rubric complete": criteria "1".."4" is a theory
-#: review's whole rubric AND a batch verdict missing criterion 5, and
-#: the generic branch below assumes the second — so a complete review
-#: verdict was told "`criteria` missing criterion 5", a framework fault
-#: worded as the judge's mistake, about a criterion its prompt does not
-#: have. The judge cannot act on that: it can only invent one.
+#: answer WHICH rubric a verdict was written against: since 2026-09-07
+#: the batch judge and the theory review both adjudicate criteria
+#: "1".."4", and before that a complete four-criterion review verdict
+#: was told "`criteria` missing criterion 5" — a framework fault worded
+#: as the judge's mistake, about a criterion its prompt does not have.
+#: The judge cannot act on that: it can only invent one. The rules
+#: still differ (multi-clear, bullet shape), so the declaration, not
+#: the key count, is what decides.
 _RUBRIC_FILE = "_verdict_rubric.json"
 
 
@@ -375,9 +377,11 @@ def validate_json(text: str = "", file: str = "") -> str:
         # `_audit_roots.json` into the attempts dir as the snapshot its
         # verdict is checked against. Its presence IS the signal.
         #
-        # The shape guess it replaces ("criterion 3 is a list and there
-        # is no criterion 5") also matched a theory-wake verdict, whose
-        # rubric is criteria "1".."3" or "1".."4" with string bullets:
+        # The shape guess it replaces ("criterion 3 is a list and
+        # there is no criterion 5") also matched a theory-wake verdict,
+        # whose rubric is criteria "1".."3" or "1".."4" with string
+        # bullets — and since 2026-09-07 the batch judge's own rubric is
+        # "1".."4" too, so no key count could tell them apart:
         # the tool told the arm3h_r2 judge twice to convert criterion 3
         # into `{goal_id, verdict, reason}` objects and add a criterion
         # 4 its rubric does not have, and both tries died on it (the
@@ -403,7 +407,7 @@ def validate_json(text: str = "", file: str = "") -> str:
             return (f"OK: audit-shaped, criteria 1-4 present, every line "
                     f"in flight ruled on ({len(snap)} line(s))")
         # Next ownership signal, same rule: a wake that seats a judge on
-        # a rubric OTHER than the batch judge's 1-5 declares it, and
+        # a rubric OTHER than the batch judge's declares it, and
         # the declaration — not the shape, and not this tool's default
         # — is the key set the verdict is checked against.
         rubric = _declared_rubric_here() if "criteria" in obj else None
@@ -422,8 +426,8 @@ def validate_json(text: str = "", file: str = "") -> str:
                     f"(keys {_render_keys(keys)})")
         if "criteria" in obj:
             # The judge's own parser, not a second implementation of its
-            # rules: key-presence answered "OK: verdict-shaped, criteria
-            # 1-5 all present" for verdicts `parse_verdict` refused on
+            # rules: key-presence answered "OK: verdict-shaped, every
+            # criterion present" for verdicts `parse_verdict` refused on
             # their BULLET shape, and six union_closed Strategist wakes
             # died on that green light (2026-09-05) — the judge
             # validated, finished, and the wake discarded the proposal.

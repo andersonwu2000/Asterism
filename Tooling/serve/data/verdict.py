@@ -24,8 +24,8 @@ def programme_verdict(conn: sqlite3.Connection, problem: str,
     survey, knives 0+1): a rejected row used to hard-code verdict=NULL,
     which destroyed 89 final verdicts and left the one row a reader most
     wants to open — the proposal that was killed — with nothing to open;
-    and a `clear` used to be allowed as the bare word on four of the
-    five criteria, so "why did this pass" had no answer on the record.
+    and a `clear` used to be allowed as the bare word on most of the
+    criteria, so "why did this pass" had no answer on the record.
 
     The criteria are read through `adversary.split_criterion`, the
     parser's own splitter — a criterion takes a LIST now, and a private

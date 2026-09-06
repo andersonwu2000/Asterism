@@ -52,8 +52,7 @@ PASS = {
         "1": ["clear: the batch is work the charter needs"],
         "2": ["clear - AHEAD 7 closes the MAIN claim"],
         "3": ["clear: every step is complete"],
-        "4": ["clear: every Inject is proven"],
-        "5": ["clear: the dead routes name their nodes"],
+        "4": ["clear: every step of the Proof is complete"],
     },
 }
 
@@ -70,7 +69,6 @@ REBUT = {
         "1": ["clear: the work is needed"],
         "2": ["clear: the entry is named"],
         "4": ["clear: backed"],
-        "5": ["clear: honest"],
     },
 }
 
@@ -118,7 +116,8 @@ def test_the_rubric_names_and_orders_the_criteria(conn: sqlite3.Connection):
     assert names, "the rubric's names no longer parse out of the prompt"
     rid = _row(conn, verdict=REBUT)
     v = data.programme_verdict(conn, "p", rid)
-    assert [c["key"] for c in v["criteria"]] == ["1", "2", "3", "4", "5"], (
+    assert ([c["key"] for c in v["criteria"]]
+            == list(adversary.CRITERIA_KEYS)), (
         "the JSON put 3 first; the page follows the rubric's order")
     assert [c["name"] for c in v["criteria"]] == [
         names[k] for k in adversary.CRITERIA_KEYS], (
@@ -143,8 +142,7 @@ def test_the_legacy_string_criterion_still_reads(conn: sqlite3.Connection):
     rid = _row(conn, verdict={
         "verdict": "rebut", "criticisms": [], "reservations": [],
         "criteria": {"1": "fired: the old shape", "2": "clear: fine",
-                     "3": "clear: fine", "4": "clear: fine",
-                     "5": "clear: fine"}})
+                     "3": "clear: fine", "4": "clear: fine"}})
     by = {c["key"]: c
           for c in data.programme_verdict(conn, "p", rid)["criteria"]}
     assert by["1"]["state"] == "fired"
@@ -157,10 +155,10 @@ def test_a_verdict_the_parser_would_refuse_is_still_readable(
     exactly the one a reader opens the row to look at."""
     rid = _row(conn, verdict={
         "verdict": "pass", "criteria": {"1": ["clear"], "2": ["clear"],
-                                        "3": ["clear"], "4": ["clear"],
-                                        "5": ["clear"]}})
+                                        "3": ["clear"],
+                                        "4": ["clear"]}})
     v = data.programme_verdict(conn, "p", rid)
-    assert [c["state"] for c in v["criteria"]] == ["clear"] * 5
+    assert [c["state"] for c in v["criteria"]] == ["clear"] * 4
     assert all(c["bullets"] == [] for c in v["criteria"]), (
         "a bare clear has nothing to say — the page shows the silence")
 

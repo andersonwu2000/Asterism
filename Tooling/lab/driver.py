@@ -198,9 +198,12 @@ def _new_pipeline(conn, *, kind: str, target_id: str,
 
 def reconstruct_decisions(rows) -> "list[dict]":
     """`strategist_decisions` rows -> the decision.json objects the
-    author filed. Inject prose lives under `proof` (the parser's key),
-    Delegate's under `charter`, every other kind's under `brief`;
-    structured params ride flat, the way the agent writes them."""
+    author filed. An Inject names its brick under `brick` (2026-09-07);
+    a Delegate's charter lives under `charter`, every other kind's prose
+    under `brief`; structured params ride flat, the way the agent writes
+    them. A legacy Inject row — one filed before the named-brick ruling,
+    or by a person — still carries its prose under `proof`, which is
+    what that row actually was."""
     from Tooling.pipeline.strategist.model import brief_field
     out: "list[dict]" = []
     for r in rows:
@@ -209,7 +212,9 @@ def reconstruct_decisions(rows) -> "list[dict]":
         obj: dict = {"kind": kind}
         if d.get("target_id") is not None:
             obj["target_id"] = int(d["target_id"])
-        if d.get("brief"):
+        if d.get("brick_name"):
+            obj["brick"] = str(d["brick_name"])
+        elif d.get("brief"):
             obj[brief_field(kind)] = str(d["brief"])
         if d.get("reason"):
             obj["reason"] = str(d["reason"])
@@ -263,8 +268,15 @@ def load_proposal(source_db: Path, rev_row: int) -> dict:
                              f"artifact of this replay, not of the "
                              f"rubric. Supply them with the arm's "
                              f"`decisions:` file.")}
+        # `brick_name` is v54. A source DB is a SNAPSHOT and may be
+        # older than the code replaying it — which is the whole point
+        # of a replay — so the column is asked for, not assumed.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(strategist_decisions)")}
+        namesel = ", brick_name" if "brick_name" in cols else ""
         rows = conn.execute(
             "SELECT decision_kind, target_id, brief, reason, payload"
+            + namesel +
             " FROM strategist_decisions WHERE batch_id = ? ORDER BY id",
             (rev["batch_id"],)).fetchall()
         return {"problem": str(rev["problem"]), "body": str(rev["body"]),

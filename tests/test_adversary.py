@@ -73,10 +73,12 @@ def _d(kind: str, **kw) -> SimpleNamespace:
 
 
 _PROPOSAL = ("# Step\n## Argument\nWhy this batch.\n"
-             "## Proof\nThe route holds.\n## Roadmap\n1. the brick\n")
+             "## Proof\n### the_brick\nTheorem. The route holds.\n"
+             "Proof. as argued.\n## Roadmap\n1. the brick\n")
 
-_INJECT_PROOF = ("Theorem. Roadmap: the brick\n## Need\nbrick\n"
-                 "Proof. as argued.")
+#: What an `Inject` carries since 2026-09-07 — the NAME of a brick
+#: in `_PROPOSAL`, never a copy of it.
+_INJECT_BRICK = "the_brick"
 
 
 # -------------------------------------------------------------- gate
@@ -105,7 +107,7 @@ def test_gate_shape():
 
 
 def test_package_requires_file_but_no_experiment_quota(tmp_path: Path):
-    body, sections, err = strategist.verify_proposal_package(
+    body, sections, bricks, err = strategist.verify_proposal_package(
         [_d("Inject", pipeline="Forward", brief="b")], tmp_path)
     assert body is None and "proposal.md" in err
 
@@ -116,13 +118,13 @@ def test_package_requires_file_but_no_experiment_quota(tmp_path: Path):
     # carried a companion Inject to feed it — while the dead-air
     # invariant is enforced by the STATE-based gates in
     # verify_decisions. A no-experiment package now passes here.
-    body, sections, err = strategist.verify_proposal_package(
+    body, sections, bricks, err = strategist.verify_proposal_package(
         [_d("ConfirmShelve", target_id="g1")], tmp_path)
     assert err is None and body == _PROPOSAL
-    body, sections, err = strategist.verify_proposal_package(
+    body, sections, bricks, err = strategist.verify_proposal_package(
         [_d("Ingest")], tmp_path)
     assert err is None and body == _PROPOSAL
-    body, sections, err = strategist.verify_proposal_package(
+    body, sections, bricks, err = strategist.verify_proposal_package(
         [_d("Delegate", brief="settle the sub-claim")], tmp_path)
     assert err is None
     # The brief is prose the verifier does not read at all (2026-08-11):
@@ -133,28 +135,40 @@ def test_package_requires_file_but_no_experiment_quota(tmp_path: Path):
     for brief in ("## Need\nx",
                   "Roadmap: no such entry\n## Need\nx",
                   "Roadmap: the brick\n## Need\nx"):
-        body, sections, err = strategist.verify_proposal_package(
+        body, sections, bricks, err = strategist.verify_proposal_package(
             [_d("Inject", brief=brief)], tmp_path)
         assert err is None, f"verifier read the brief: {brief!r} -> {err}"
 
 
-def test_the_verifier_no_longer_reads_the_brief_at_all(tmp_path: Path):
-    """The last mechanical reader of the Inject brief is gone
+def test_the_package_reads_the_proof_not_the_roadmaps_prose(tmp_path: Path):
+    """The last mechanical reader of the Inject PROSE is gone
     (2026-08-11). It began as a substring match of the cited phrase
     against the free-prose Roadmap — a gate detecting free text — and
     bounced whole batches five times over phrasing (2026-08-03 feedback
     #4). Narrowed to "some line begins `Roadmap:`", it could not fail a
-    wrong batch and could still fail a right one. The correspondence is
-    the Adversary's, under criteria 1/4."""
+    wrong batch and could still fail a right one. What the package DOES
+    read since 2026-09-07 is the `## Proof`: its bricks come back with
+    the sections, whatever the Roadmap chose to call them."""
     (tmp_path / "proposal.md").write_text(
-        "# Step\n## Argument\nWhy.\n## Proof\nHolds.\n"
+        "# Step\n## Argument\nWhy.\n"
+        "## Proof\n### the_brick\nTheorem. Holds.\nProof. as argued.\n"
         "## Roadmap\n1. **the brick** — brief-ready\n"
         "2. **the wall** — later\n", encoding="utf-8")
-    body, _s, err = strategist.verify_proposal_package(
-        [_d("Inject", brief="Roadmap: the brick, then some prose\n## Need\nx"),
-         _d("Inject", target_id="g7", brief="## Need\ny"),
-         _d("Inject", brief="## Need\nz")], tmp_path)
+    body, _s, bricks, err = strategist.verify_proposal_package(
+        [_d("Inject")], tmp_path)
     assert err is None and body is not None
+    assert [b.name for b in bricks] == ["the_brick"]
+
+
+def test_the_package_teaches_an_unnamed_brick(tmp_path: Path):
+    """A `## Proof` whose bricks carry no `### <name>` header cannot
+    be injected from — the decision would have nothing to name."""
+    (tmp_path / "proposal.md").write_text(
+        "# Step\n## Argument\nWhy.\n## Proof\nHolds.\n"
+        "## Roadmap\n1. the brick\n", encoding="utf-8")
+    body, _s, _b, err = strategist.verify_proposal_package(
+        [_d("Inject")], tmp_path)
+    assert body is None and "### <name>" in err
 
 
 # ------------------------------------------------- verdict contract
@@ -314,7 +328,7 @@ def _spawn_script(rebuttals_before_pass: int):
         n = state["strategist_calls"]
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "proof": f"Theorem. Roadmap: the brick\n## Need\nbrick v{n}\nProof. as argued."}),
+                        "brick": _INJECT_BRICK}),
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
             _PROPOSAL.replace("# Step", f"# Step v{n}"),
@@ -477,7 +491,7 @@ def test_native_decide_mention_bounces_once_before_the_judge(
             state["retry_contexts"].append(kw["retry_context"])
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "proof": _INJECT_PROOF}),
+                        "brick": _INJECT_BRICK}),
             encoding="utf-8")
         # Byte-identical resubmission: the author judged the mention
         # deliberate and confirms by resending.
@@ -528,7 +542,7 @@ def test_no_ruling_discard_names_what_the_parser_refused(
             return 0
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "proof": _INJECT_PROOF}),
+                        "brick": _INJECT_BRICK}),
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
             _PROPOSAL, encoding="utf-8")
@@ -1104,7 +1118,8 @@ def test_the_mark_deliverable_paper_ref_reaches_the_judge(
 #: someone adds next month cannot be flattened by an allowlist nobody
 #: remembered to update.
 _SYNTHETIC_FIELDS: "dict[str, dict[str, str]]" = {
-    "Inject": {"proof": "PROOF-SENTINEL"},
+    # An Inject names its brick; the name is the whole payload.
+    "Inject": {"brick": "brick_sentinel"},
     "Delegate": {"charter": "CHARTER-SENTINEL",
                  "brief": "GUIDANCE-SENTINEL"},
     "Ingest": {"report": "REPORT-SENTINEL"},
@@ -1677,8 +1692,7 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
             seen["rebuttal"] = str(kw.get("retry_context") or "")
         (ad / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "proof": "Theorem. b\n## Need\nb\n"
-                                 "Proof. as argued."}),
+                        "brick": _INJECT_BRICK}),
             encoding="utf-8")
         (ad / "proposal.md").write_text(
             _PROPOSAL.replace("# Step", f"# Step v{state['strategist']}"),

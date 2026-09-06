@@ -236,21 +236,26 @@ def test_no_declaration_leaves_the_batch_judge_check_exactly_as_it_was(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The channel is opt-in: a spawn with no declaration is the batch
-    judge, and its rubric is still 1-5. A malformed declaration counts
-    as absent — the judge did not write that file and cannot repair
-    it, so it must never become a refusal with no action behind it."""
-    batch = {"criteria": {str(k): ["clear: a concrete reason"]
-                          for k in range(1, 6)}, "reservations": []}
+    judge, and its rubric is whatever `adversary.CRITERIA_KEYS` says
+    (criteria 1-4 since 2026-09-07, when criterion 5 retired with the
+    named-brick ruling). A malformed declaration counts as absent —
+    the judge did not write that file and cannot repair it, so it must
+    never become a refusal with no action behind it."""
+    from Tooling.pipeline import adversary
+    keys = list(adversary.CRITERIA_KEYS)
+    batch = {"criteria": {k: ["clear: a concrete reason"] for k in keys},
+             "reservations": []}
     out = _seat(monkeypatch, tmp_path, batch)
-    # The batch branch previews with the judge's own parser (2026-09-05)
-    # — an undeclared seat still gets the 1-5 rubric, now for real.
+    # The batch branch previews with the judge's own parser
+    # (2026-09-05) — an undeclared seat gets the batch rubric for real.
     assert "the judge parser accepts it" in out, out
-    four = {"criteria": {str(k): ["clear: a concrete reason"]
-                         for k in range(1, 5)}, "reservations": []}
-    assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
+    short = {"criteria": {k: ["clear: a concrete reason"]
+                          for k in keys[:-1]}, "reservations": []}
+    want = f"missing criterion {keys[-1]}"
+    assert want in _seat(monkeypatch, tmp_path, short)
     (tmp_path / "_verdict_rubric.json").write_text("{ not json",
                                                    encoding="utf-8")
-    assert "missing criterion 5" in _seat(monkeypatch, tmp_path, four)
+    assert want in _seat(monkeypatch, tmp_path, short)
 
 
 def test_validate_json_runs_the_real_judge_parser() -> None:

@@ -4,11 +4,14 @@ happens to one the parser refuses.
 Ported from `Tooling/experiments/theory_wake.py` (arm 3/5F, 2026-09-04),
 which is where every rule below was paid for. It is deliberately NOT
 `pipeline.adversary.parse_verdict`: that parser's contract is the batch
-judge's criteria "1".."5" plus criterion 2's naming rule, held level
-with `prompts/adversary/adversary.md` by its own test. Bending it to
-admit a four-criterion review would move the batch judge's contract to
-serve another rubric — and the batch judge is the one gate on the
-argument layer that has no second opinion.
+judge's own criteria plus criterion 2's naming rule, held level with
+`prompts/adversary/adversary.md` by its own test. The two key sets
+happen to coincide since 2026-09-07 (the batch judge's criterion 5 was
+retired with the named-brick ruling) and the rules still do not — the
+multi-clear rule below is exactly the difference. Bending one parser to
+serve both rubrics would move the batch judge's contract to serve
+another — and the batch judge is the one gate on the argument layer
+that has no second opinion.
 
 THE RULE THAT COST TWO WHOLE RUNS. A criterion is clear iff EVERY
 bullet in it is a clear. "clear takes exactly one entry" is the batch
@@ -43,10 +46,11 @@ CRITERIA_KEYS: "tuple[str, ...]" = ("1", "2", "3", "4")
 
 #: The rubric DECLARATION dropped beside the reviewer's verdict, so
 #: `validate_json` checks the hand-in against the keys this rubric
-#: actually has. Without it the generic branch assumes the batch
-#: judge's 1-5 and tells a complete four-criterion verdict that it is
-#: "missing criterion 5" — a framework fault worded as the reviewer's
-#: mistake, on a criterion the rubric has no way to add.
+#: actually has AND against its multi-clear rule. Without it the generic
+#: branch falls through to the batch judge's parser, which refuses the
+#: several clears a review criterion is answered with — a framework
+#: fault worded as the reviewer's mistake, about a rule its prompt does
+#: not have.
 RUBRIC_BASENAME = "_verdict_rubric.json"
 
 #: Reviewer re-spawns on a missing or malformed verdict, per round.

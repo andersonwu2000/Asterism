@@ -57,10 +57,12 @@ def _sets(root: Path, *, body: str = "", seed: bool = True) -> Path:
             + "\nend Problems.Lab.tiny\n", encoding="utf-8")
     t = sets / "traps" / "cheap"
     t.mkdir(parents=True)
-    (t / "proposal.md").write_text("# The cheap route\n\nNOW: a table.\n",
-                                   encoding="utf-8")
+    (t / "proposal.md").write_text(
+        "# The cheap route\n\n## Proof\n### cheap_table\n"
+        "Theorem. decide it.\nProof. decide.\n\nNOW: a table.\n",
+        encoding="utf-8")
     (t / "decisions.json").write_text(json.dumps(
-        [{"kind": "Inject", "proof": "Theorem. decide it.\nProof. decide."}]),
+        [{"kind": "Inject", "brick": "cheap_table"}]),
         encoding="utf-8")
     (t / "expected.json").write_text(json.dumps(
         {"verdict": "rebut", "must_fire": ["1"], "must_not_fire": ["2"]}),
@@ -273,7 +275,10 @@ def test_the_projection_a_judge_item_gets_is_the_live_wakes_projection(
                                review=_review)
     p = proj[0]
     assert "NOW: a table." in (p / "proposal.md").read_text(encoding="utf-8")
-    assert "decide it." in (p / "decisions.md").read_text(encoding="utf-8")
+    # An Inject names its brick; the argument is read in the
+    # `## Proof`, once (2026-09-07).
+    assert "brick=cheap_table" in (
+        p / "decisions.md").read_text(encoding="utf-8")
     assert "Prove it." in (p / "charter.md").read_text(encoding="utf-8")
     for name in ("PROGRAMME.md", "TREE.md"):
         assert (p / name).is_file(), f"{name} is a live-wake companion"

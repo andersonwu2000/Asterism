@@ -353,10 +353,17 @@ def test_the_finalized_wording_keeps_its_new_anchors() -> None:
     """The owner's 2026-08-18 revision retired several prose clauses;
     these three are the replacements that carry their load, pinned so a
     later trim does not silently drop them too: the failure modes still
-    route through criterion 1, same-batch bricks stay independent, and
-    reservations cannot launder a fired criterion."""
+    route through criterion 1, a same-batch dependency travels only
+    through `Uses:`, and reservations cannot launder a fired criterion.
+
+    The dependency clause was "bricks of the same batch must not cite
+    each other" until 2026-09-07, when `Uses:` gave the dependency a
+    declared channel. The rule it replaces is the same rule — a brick
+    another brick consumes is not a second dispatch — so what is pinned
+    is that the clause still says which channel that is."""
     assert "rejected through criterion 1" in TEXT
-    assert "must not cite each other" in TEXT
+    assert "only through its `Uses:` line" in TEXT
+    assert "is not injected" in TEXT
     assert "patch over" in TEXT
 
 
