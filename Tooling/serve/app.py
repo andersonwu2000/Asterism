@@ -394,13 +394,17 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         if name == "antigravity":
             from ..llm.antigravity_cli import resolve_agy_executable
             return resolve_agy_executable()
-        import shutil
+        # `which_launchable`, not `shutil.which`: npm puts a POSIX shell
+        # script on PATH beside the `.cmd`, and which() returns the
+        # script — a path `CreateProcess` refuses. This row's answer is
+        # handed to the Check button below, which SPAWNS it.
+        from ..llm.base import which_launchable
         from ..llm import capabilities as _caps
         if cap.exe_name is not None:
-            return shutil.which(cap.exe_name)
+            return which_launchable(cap.exe_name)
         if cap.install_method == _caps.INSTALL_NOT_NEEDED:
             return ""
-        return shutil.which(name)
+        return which_launchable(name)
 
     def _provider_rows() -> "list[dict]":
         """One row per DECLARED backend: what it is, and what this
@@ -595,8 +599,12 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             from ..llm.antigravity_cli import resolve_agy_executable
             exe = resolve_agy_executable()
         else:
-            import shutil
-            exe = shutil.which(cap.exe_name or name)
+            # the launchable path, or the spawn below dies at
+            # CreateProcess on every npm-installed CLI ([WinError 193],
+            # reported to the reader as "could not run it" on a machine
+            # where it runs perfectly)
+            from ..llm.base import which_launchable
+            exe = which_launchable(cap.exe_name or name)
         if exe is None:
             raise HTTPException(status_code=409,
                                 detail=f"{name} is not installed here")
@@ -1253,13 +1261,19 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     def models_refresh() -> dict:
         """Ask every backend that can be asked what it currently runs.
 
-        An action, not a poll — it spawns (agy's listing is ~2.5s) and
-        the settings page reads it once on mount. Worth doing: agy's
-        live list was 14 models on gemini-3.7 while the list kept here
-        still said gemini-3.6, so a picker without this offers names
-        that have moved on.
+        An action, not a poll — it spawns (agy's listing is ~2.5s, and
+        codex's `debug models` is local) and a picker asks for it when
+        it opens. Worth doing: agy's live list was 14 models on
+        gemini-3.7 while the list kept here still said gemini-3.6, so a
+        picker without this offers names that have moved on.
+
+        `houses` rides the same answer on purpose. The settings page's
+        one default-model control seats a whole board by RANK, and
+        deriving that from the declared list while a live one sat
+        beside it would seat models the machine has moved past.
         """
-        return {"groups": _model_catalog.model_groups(workspace, probe=True)}
+        groups = _model_catalog.model_groups(workspace, probe=True)
+        return {"groups": groups, "houses": _model_catalog.houses(groups)}
 
     @app.get("/api/config")
     def config_get() -> dict:

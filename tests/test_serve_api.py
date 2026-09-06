@@ -1872,6 +1872,182 @@ def test_the_model_catalog_is_a_module_of_its_own(workspace: Path) -> None:
     assert rows["strategist.model"]["groups"] == groups
 
 
+def test_every_seated_model_is_in_its_own_backends_list() -> None:
+    """A seat the console cannot NAME is the catalog's whole failure.
+
+    On 2026-09-06 the picker offered `claude-fable-5 / claude-opus-4-8 /
+    claude-sonnet-5 / claude-haiku-4-5` while the yaml seated
+    `claude-opus-5` on the strategist and `claude-fable-5-1` on the
+    theory layer — the live board, unpickable. The list is DECLARED for
+    a backend with no listing of its own, so the declaration is what
+    has to keep up, and this is the alarm: the workspace's own
+    `Asterism.yaml` is read, and a seated model absent from its
+    provider's list fails here rather than at the next spawn."""
+    import yaml as _yaml
+
+    from Tooling.core import config
+
+    root = Path(__file__).resolve().parents[1]
+    data = _yaml.safe_load((root / "Asterism.yaml").read_text(
+        encoding="utf-8")) or {}
+    seated = [(seat, str(sec.get("provider") or "claude"),
+               str(sec.get("model")))
+              for seat, sec in data.items()
+              if isinstance(sec, dict) and sec.get("model")]
+    assert seated, "Asterism.yaml seats nothing — the guard reads nothing"
+    for seat, provider, model in seated:
+        assert model in config.models_for(provider), (
+            f"{seat} is seated on {provider}/{model}, which that "
+            f"backend's list does not offer: {config.models_for(provider)}")
+
+
+def test_a_backend_with_a_listing_is_asked_and_says_the_answer_is_live() -> None:
+    """Which backends can be ASKED is a declaration, not a table here.
+
+    codex was never probed at all — `_MODELS_ARGV` named only agy — and
+    its declared list was one model (`gpt-5.6-luna`) while the CLI's own
+    `codex debug models` answers with the whole ranked catalog. claude
+    has no listing of any kind (`claude models` runs a PROMPT, measured
+    2026-09-06), so it stays declared and the picker says so."""
+    from Tooling.llm import capabilities as caps
+    from Tooling.serve import model_catalog
+
+    assert caps.capabilities_for("codex").models_argv == ("debug", "models")
+    assert caps.capabilities_for("antigravity").models_argv == ("models",)
+    assert caps.capabilities_for("claude").models_argv == ()
+    # the parse is the provider's own shape, and the ORDER it returns is
+    # the ranking every layer below reads
+    live = model_catalog.parse_models("codex", json.dumps({"models": [
+        {"slug": "gpt-5.6-sol", "visibility": "list", "priority": 6},
+        {"slug": "gpt-reserve", "visibility": "hide", "priority": 3},
+        {"slug": "gpt-6-astra", "visibility": "list", "priority": 1},
+        {"slug": "gpt-5.6-terra", "visibility": "list", "priority": 7},
+    ]}))
+    assert live == ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"]
+    assert model_catalog.parse_models("antigravity",
+                                      "gemini-3.1-pro-high\tGemini Pro\n"
+                                      "gemini-3.6-flash-high\tFlash\n") == [
+        "gemini-3.1-pro-high", "gemini-3.6-flash-high"]
+
+
+def test_a_probe_launches_the_path_the_provider_resolves(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`shutil.which` is not how this machine finds a CLI.
+
+    An npm-installed one puts TWO files on PATH — `codex` (a POSIX
+    shell script) and `codex.cmd` — and `which` hands back the former,
+    which `CreateProcess` refuses with `[WinError 193]`. That cost
+    codex its first live spawn on 2026-08-12 and `base.which_launchable`
+    exists because of it; the catalog then reached for `shutil.which`
+    anyway, so the probe raised OSError, was swallowed by the
+    keep-the-declared-list guard, and codex reported `source:
+    declared` on a machine whose CLI answers perfectly (2026-09-06).
+    A silent fallback is exactly the shape that hides this, so the
+    resolver is what the test names."""
+    import subprocess as _sp
+
+    from Tooling.llm.codex_cli import resolve_codex_executable
+    from Tooling.serve import model_catalog
+
+    seen: "list[list[str]]" = []
+
+    def fake_run(argv, **kw):  # noqa: ANN001, ANN003
+        seen.append(list(argv))
+        return _sp.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    model_catalog._models_memo.update(at=0.0, value=None)
+    model_catalog.model_groups(workspace, probe=True)
+    model_catalog._models_memo.update(at=0.0, value=None)
+    want = resolve_codex_executable()
+    if want is None:
+        pytest.skip("codex is not installed on this machine")
+    assert [a for a in seen if a[1:] == ["debug", "models"]] == [
+        [want, "debug", "models"]]
+
+    # SAME BUG, one endpoint over: the accounts panel's Check button
+    # spawns the readiness argv, and it resolved the same unlaunchable
+    # shim — so pressing Check on codex answered "could not run it:
+    # [WinError 193]" on a machine where the CLI works.
+    seen.clear()
+    c = _client(workspace)
+    c.post("/api/providers/codex/check", json={})
+    assert seen and seen[0][0] == want, seen
+
+
+def test_the_three_layers_follow_the_ranking_not_the_names() -> None:
+    """The default seating is derived by RANK, so a new top series moves
+    every layer down one without a name being written anywhere.
+
+    Theory (theorist + reviewer) takes the top series, planning
+    (strategist + adversary) the second, and everything left — the
+    formal layer — the third. The depth rides the layer, and only where
+    the backend reads one at all."""
+    from Tooling.serve import model_catalog as mc
+
+    claude = [{"provider": "claude", "source": "declared", "installed": True,
+               "models": ["claude-fable-5-1", "claude-fable-5",
+                          "claude-opus-5", "claude-opus-4-8",
+                          "claude-sonnet-5", "claude-haiku-4-5"]}]
+    seats = mc.default_seats(claude, "claude")
+    assert seats["theorist"]["model"] == "claude-fable-5-1"
+    assert seats["theory_reviewer"]["model"] == "claude-fable-5-1"
+    assert seats["strategist"]["model"] == "claude-opus-5"
+    assert seats["adversary"]["model"] == "claude-opus-5"
+    assert seats["formalizer"]["model"] == "claude-sonnet-5"
+    assert seats["presearch"]["model"] == "claude-sonnet-5"
+    assert seats["librarian"]["model"] == "claude-sonnet-5"
+    # claude reads no depth of its own, so none is written for it
+    assert "effort" not in seats["theorist"]
+
+    # THE POINT: the ranking is data. A series above `fable` shifts all
+    # three layers down one, and nothing here knows its name.
+    shifted = [{**claude[0],
+                "models": ["claude-zenith-1", *claude[0]["models"]]}]
+    moved = mc.default_seats(shifted, "claude")
+    assert moved["theorist"]["model"] == "claude-zenith-1"
+    assert moved["strategist"]["model"] == "claude-fable-5-1"
+    assert moved["formalizer"]["model"] == "claude-opus-5"
+
+    codex = [{"provider": "codex", "source": "probe", "installed": True,
+              "models": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
+                         "gpt-5.6-luna", "gpt-5.5"]}]
+    gpt = mc.default_seats(codex, "codex")
+    assert gpt["theorist"] == {"provider": "codex", "model": "gpt-6-astra",
+                               "effort": "xhigh"}
+    assert gpt["strategist"] == {"provider": "codex", "model": "gpt-5.6-sol",
+                                 "effort": "high"}
+    assert gpt["formalizer"] == {"provider": "codex",
+                                 "model": "gpt-5.6-terra",
+                                 "effort": "medium"}
+    # a house nobody offers derives nothing rather than inventing a seat
+    assert mc.default_seats(claude, "codex") == {}
+
+
+def test_the_houses_ride_the_list_that_answered(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/api/models/refresh` is where the console learns what exists, so
+    it is where the derived seating belongs: deriving from the stale
+    declared list beside a live one would seat a board the machine no
+    longer runs. The probe itself is the endpoint's business — here it
+    is replaced, so the shape is what is under test."""
+    from Tooling.serve import model_catalog
+
+    fake = [{"provider": "claude", "source": "probe", "installed": True,
+             "models": ["claude-zenith-1", "claude-fable-5-1",
+                        "claude-opus-5", "claude-sonnet-5"]}]
+    monkeypatch.setattr(model_catalog, "model_groups",
+                        lambda *a, **k: fake)
+    body = _client(workspace).post("/api/models/refresh", json={}).json()
+    assert body["groups"] == fake
+    assert set(body["houses"]) == {"claude", "codex"}
+    # derived from the answer that came back, not from the declaration
+    assert body["houses"]["claude"]["theorist"]["model"] == "claude-zenith-1"
+    assert body["houses"]["codex"] == {}
+
+
 # ---------------------------------------------------------------------
 # POST /api/lean/eval — the reader's Lean scratch pipeline
 # ---------------------------------------------------------------------

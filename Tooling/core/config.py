@@ -395,28 +395,24 @@ for _seat in UI_SEATS:
         f"derives its thinking budget per spawn from the wall clock")
 del _seat
 
-#: dropdown choices for `.model` keys — what the UI offers (free text
-#: stays possible via yaml/.env; the UI's job is killing typos). Keep
-#: in sync with the model tiers the pipelines actually target.
-MODEL_CHOICES_BY_PROVIDER: "dict[str, list[str]]" = {
-    "claude": [
-        "claude-fable-5",
-        "claude-opus-4-8",
-        "claude-sonnet-5",
-        "claude-haiku-4-5",
-    ],
-    # `agy models` is the live list (11 as of 2026-08-09) and the UI asks
-    # the CLI for it; these are the tiers we actually seat, so the picker
-    # is useful before the probe returns.
-    "antigravity": [
-        "gemini-3.1-pro-high",
-        "gemini-3.6-flash-high",
-        "gemini-3.6-flash-medium",
-    ],
-    "codex": [
-        "gpt-5.6-luna",
-    ],
-}
+def _declared_models() -> "dict[str, list[str]]":
+    """Dropdown choices for `.model` keys, read off each provider's own
+    declaration (`llm/capabilities.models`).
+
+    It used to be a hand-kept table here, and it rotted exactly the way
+    a second copy always does: on 2026-09-06 it offered four retired
+    claude tiers while the running board sat on `claude-opus-5` and
+    `claude-fable-5-1`, and named ONE codex model out of seven. A list
+    of what a backend can run is a fact about the BACKEND, so it is
+    declared beside install, auth and the rc contract, and this is the
+    read. Free text stays possible via yaml/.env; the UI's job here is
+    killing typos, not narrowing the machine."""
+    from ..llm import capabilities as _caps
+    return {name: list(cap.models)
+            for name, cap in _caps.CAPABILITIES.items() if cap.models}
+
+
+MODEL_CHOICES_BY_PROVIDER: "dict[str, list[str]]" = _declared_models()
 
 #: claude's list under its old name — the one place that still wants a
 #: bare list is a caller that has not asked which provider it means.

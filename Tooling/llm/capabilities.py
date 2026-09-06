@@ -382,6 +382,48 @@ class ProviderCapabilities:
     #: or the quota. `()` = no free version probe.
     version_argv: "tuple[str, ...]" = ("--version",)
 
+    # ------------------------------------------------- the model list
+    # WHICH MODELS this backend can be pointed at. The console has had
+    # to keep this on its own side since the first picker, and it was
+    # the third such fact after install and auth — so it is declared
+    # here with them (`serve/model_catalog` said it wanted this, and
+    # 2026-09-06 is when the bill arrived: the picker offered four
+    # retired claude tiers while the live board ran `claude-opus-5` and
+    # `claude-fable-5-1`, and codex — seven models deep — showed one).
+    #: argv tail that makes the CLI LIST what it can run, free of
+    #: tokens. `()` = this backend has no listing at all, and the list
+    #: below is the whole truth (the picker says "list not live" for
+    #: exactly this). MEASURED, never assumed: `claude models` is not a
+    #: subcommand — it runs a PROMPT — so claude's stays empty.
+    models_argv: "tuple[str, ...]" = ()
+    #: What this backend can run, STRONGEST FIRST. The order is the
+    #: ranking: `serve/model_catalog.default_seats` walks it to seat the
+    #: three layers, so a series that appears above today's top moves
+    #: every layer down one without a name being written anywhere. The
+    #: live listing replaces it where `models_argv` answers; where
+    #: nothing answers, this IS the catalog and a seat the yaml names
+    #: must appear in it (pinned by a test against `Asterism.yaml`).
+    models: "tuple[str, ...]" = ()
+    #: Which dash-separated token of a model slug names its SERIES —
+    #: negative counts from the end. A series is the thing that ranks
+    #: (`claude-`**`opus`**`-5` and `claude-`**`opus`**`-4-8` are one
+    #: rung of the ladder, two builds of it), and only the vendor knows
+    #: where in its own naming that token sits: claude leads with it,
+    #: codex trails with it (`gpt-6-`**`astra`**). A slug too short to
+    #: carry one is its own series.
+    model_series_token: int = 1
+    #: Can this backend seat the WHOLE pipeline on its own ladder? The
+    #: console's default-model control is one choice between HOUSES, and
+    #: a house is a vendor whose series ladder runs deep enough to give
+    #: the theory, planning and formal layers a distinct rung each.
+    #: Declared rather than counted off the live list: agy's probe
+    #: returns fourteen names across four accidental "series" (a resold
+    #: `claude-sonnet-4-6`, a `gpt-oss-120b`), which a depth count would
+    #: read as a third house — and a name list on the console's side
+    #: would be the private copy of this table that `test_single_home`
+    #: exists to forbid.
+    seats_the_board: bool = False
+
     # ------------------------------------------------- provisioning
     # How this backend gets onto a machine and proves it can be used.
     # Same rule as everything above: these are FACTS ABOUT THE PROVIDER,
@@ -499,6 +541,25 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         marker_tables=("Tooling.llm.claude_cli._QUOTA_PROSE_RE",
                        "Tooling.llm.claude_cli._STALE_SESSION_MARKER"),
         single_instance_lock=False,
+        # NO listing exists, and this was measured rather than assumed:
+        # `claude --help` carries no models subcommand, and `claude
+        # models` is not one either — it starts a session on the prompt
+        # "models" and answers it (2026-09-06, one real spawn spent
+        # finding out). `--model` documents aliases in prose and takes
+        # any name. So this list is the whole catalog, and the picker
+        # says "list not live" over it.
+        models_argv=(),
+        # Strongest first — the ladder the default seating walks:
+        # fable > opus > sonnet > haiku. Two builds of one series stay
+        # adjacent (the newer first); the seating takes the first model
+        # of each series, so `-5-1` is what a fable seat gets.
+        models=("claude-fable-5-1", "claude-fable-5",
+                "claude-opus-5", "claude-opus-4-8",
+                "claude-sonnet-5", "claude-haiku-4-5"),
+        # `claude-`**`opus`**`-5`
+        model_series_token=1,
+        # fable > opus > sonnet > haiku — four rungs for three layers
+        seats_the_board=True,
         install_method=INSTALL_BY_COMMAND,
         # The one-liner `installer/setup-orchestrator.ps1` already runs.
         install_command="irm https://claude.ai/install.ps1 | iex",
@@ -608,6 +669,17 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # "reached the service and listed N models at HH:MM" — not
         # "logged in".
         readiness_argv=("models",),
+        # the same call, read for its content rather than for the fact
+        # that it returned: "<slug>\t<pretty name>" per line
+        models_argv=("models",),
+        # the tiers this workspace actually seats, so the picker is
+        # useful before the probe returns; the live list is longer (11
+        # on 2026-08-09) and replaces this one when it answers
+        models=("gemini-3.1-pro-high", "gemini-3.6-flash-high",
+                "gemini-3.6-flash-medium"),
+        # `gemini-3.1-`**`pro`**`-high` — the tail is a depth, not a
+        # series
+        model_series_token=2,
         notes=("capability surface is a per-spawn HOME (no config "
                "flag); `status: SUCCESS` is not proof of work — the "
                "artifact on disk is"),
@@ -749,6 +821,25 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
                        "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
         single_instance_lock=False,
+        # `codex debug models` — "Render the raw model catalog as JSON",
+        # free and offline. It carries what the console had been
+        # guessing at: `visibility` (the CLI's own "may a person pick
+        # this") and `priority` (the vendor's own ranking, 1 = top).
+        # Nothing was probing codex at all before 2026-09-06, and the
+        # declared list beside it named a single model.
+        models_argv=("debug", "models"),
+        # `visibility: list` on 0.151.0, in priority order (2026-09-06).
+        # The live probe replaces this the moment the console asks; it
+        # is here so the picker is right before it does — and so the
+        # seat guard has something to check the yaml against.
+        models=("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
+                "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini",
+                "gpt-5.3-codex-spark"),
+        # `gpt-6-`**`astra`** — the vendor leads with the generation and
+        # trails with the series, the opposite of claude
+        model_series_token=-1,
+        # astra > sol > terra > … — seven rungs for three layers
+        seats_the_board=True,
         install_method=INSTALL_BY_COMMAND,
         install_command="npm install -g @openai/codex",
         auth_flow=AUTH_OWN_OAUTH,
@@ -810,7 +901,21 @@ CAPABILITIES["zen"] = _dc_replace(
     # the standing hazard of `_dc_replace`: every field not overridden
     # is a claim this provider is making about itself.
     login_argv=(),
-    credentials_file=None)
+    credentials_file=None,
+    # The catalog is the SHIM's, not codex's: `codex debug models`
+    # renders the ChatGPT account's own list, which this seat cannot
+    # run at all — inheriting it would offer `gpt-6-astra` on a leg
+    # whose endpoint refuses the name (the standing `_dc_replace`
+    # hazard above, one field further). Nothing lists the zen side, so
+    # this is declared, and it is what the workspace has seated.
+    models_argv=(),
+    models=("x-preview-f-free",),
+    model_series_token=-1,
+    # …and one model is not a ladder: this leg cannot give three layers
+    # three rungs, so it is not a house the default control offers.
+    # (The `_dc_replace` hazard again: inherited True, it would have
+    # been offered as one.)
+    seats_the_board=False)
 
 
 #: config spellings -> canonical name (mirrors `llm.get_provider`).
