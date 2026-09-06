@@ -181,17 +181,19 @@ function Row({
     : e.note
   return (
     <div>
-      {/* three tracks, and the middle one is FIXED: the verb column was
-          sized at ~15 characters while the vocabulary runs to 18
-          ("theorist came back"), and a grid item wider than its track
-          does not shrink — it paints over the next one ("theorist at
-          workSettle: DOES AN A…", owner 2026-09-06). The width is
-          `TIMELINE_LABEL_MAX` characters plus the theory rows' PAGE
-          mark; every label fits it, and the count that may follow one
-          ellipsises inside the column rather than out of it. */}
+      {/* three tracks, and the middle one is FIXED: a verb that reflowed
+          would make every row's objective start somewhere else. 6.2rem
+          is `TIMELINE_LABEL_MAX` characters of the UI sans at this size
+          — the width every other row on the page is measured against —
+          and the vocabulary is held to it rather than the other way
+          round (owner, 2026-09-06: the verbs came back to one word, the
+          column did not stretch). A grid item wider than its track does
+          not shrink, it paints over the next one, so the label
+          ellipsises inside its own track with the whole column text on
+          the row's title. */}
       <div
         data-event-row={e.kind}
-        className={`grid grid-cols-[3.1rem_8.6rem_1fr] items-baseline gap-2 rounded-md px-2 py-[3px] ${
+        className={`grid grid-cols-[3.1rem_6.2rem_1fr] items-baseline gap-2 rounded-md px-2 py-[3px] ${
           expandable ? 'cursor-pointer hover:bg-surface' : ''
         }`}
         onClick={expandable ? () => setOpen((v) => !v) : undefined}
@@ -288,8 +290,8 @@ function Row({
       {open && (
         /* the expansion starts where the objective does, so the indent
            is the two fixed tracks and their gaps and moves with them:
-           3.1 + 0.5 + 8.6 − 0.4 for the row's own px-2 */
-        <div className="mx-2 mt-1 mb-2 ml-[11.8rem] rounded-lg border border-edge bg-surface px-3 py-2">
+           3.1 + 0.5 + 6.2 − 0.4 for the row's own px-2 */
+        <div className="mx-2 mt-1 mb-2 ml-[9.4rem] rounded-lg border border-edge bg-surface px-3 py-2">
           {argument && argument !== e.label && (
             /* which argument this brick serves. A column would cost
                width on every problem to answer a question only

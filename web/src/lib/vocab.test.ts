@@ -27,12 +27,12 @@ describe('the theory layer', () => {
   ]
 
   it('names the request row in the reader words', () => {
-    expect(eventLabel('asked_theory')).toBe('asked for theory')
+    expect(eventLabel('asked_theory')).toBe('theorize')
   })
 
   it('names a Theorize decision in the same words as the row it mints', () => {
     // one fact must not have two names across two surfaces
-    expect(decisionKindLabel('Theorize')).toBe('asked for theory')
+    expect(decisionKindLabel('Theorize')).toBe('theorize')
     expect(decisionKindLabel('Theorize')).toBe(eventLabel('asked_theory'))
   })
 
@@ -42,28 +42,31 @@ describe('the theory layer', () => {
   })
 
   it('names the wake at both ends', () => {
-    expect(eventLabel('theorizing')).toBe('theorist at work')
-    expect(eventLabel('theorized')).toBe('theorist came back')
+    expect(eventLabel('theorizing')).toBe('theorizing')
+    expect(eventLabel('theorized')).toBe('theorized')
   })
 
   it('names the three ways an answer arrives', () => {
     // REQUIREMENT CHANGED 2026-09-05: a wake can also die before
     // anything is reviewed, and that is an answer of its own — reading
     // it as a refusal is what union_closed g691 did twice.
-    expect(eventLabel('theory')).toBe('theory landed')
-    expect(eventLabel('theory_refused')).toBe('theory refused')
-    expect(eventLabel('theory_died')).toBe('theorist died')
+    expect(eventLabel('theory')).toBe('theory')
+    expect(eventLabel('theory_refused')).toBe('refused')
+    expect(eventLabel('theory_died')).toBe('died')
+  })
+
+  it('says it in the plain verb the rest of the log speaks in', () => {
+    // the PAGE mark is what says "theory" on these rows, so the verb
+    // does not have to say it again — and a verb that repeats the mark
+    // is what made this column wider than every other row on the page
+    // (owner, 2026-09-06). One word each, as `proved` and `shelved`
+    // are one word.
+    for (const kind of KINDS) expect(eventLabel(kind).split(' ')).toHaveLength(1)
   })
 
   it('says a death was never read, so nobody refused it', () => {
     expect(eventTitle('theory_died')).toContain('Not a refusal')
     expect(eventTitle('theory_died')).not.toContain('reviewer refused')
-  })
-
-  it('keeps every one of its verbs inside three words', () => {
-    // the verb column is 6.2rem — a verb that wraps costs every row
-    for (const kind of KINDS)
-      expect(eventLabel(kind).split(' ').length).toBeLessThanOrEqual(3)
   })
 
   it('says in both Theorize tooltips what a theorist answers with', () => {
@@ -109,7 +112,7 @@ describe('the theory layer', () => {
 
 /* The count beside the verb. It is an attempt number on most rows and
  * reads as one; on a theory row it is what the REVIEW cost, and a bare
- * `2` beside "theory landed" reads as the second document. */
+ * `2` beside "theory" reads as the second document. */
 describe('countWord', () => {
   it('counts a document`s review rounds in words', () => {
     expect(countWord('theory', 3)).toBe('3 rounds')
@@ -172,19 +175,38 @@ describe('cycleLine', () => {
 })
 
 describe("the Timeline's label column", () => {
+  /* The widest count each kind can print. Two digits wherever the
+   * number is an attempt or a revision — `rev 12` is an ordinary row —
+   * and the review rounds on the two theory rows, which
+   * `theorist.rounds` caps (default 3, `Tooling/pipeline/theorist`). */
+  const widestCount = (kind: string) =>
+    kind === 'theory' || kind === 'theory_refused' ? 3 : 12
+
+  it('is spent to the character — MAX is the widest column it can print', () => {
+    // "do not leave slack" (owner, 2026-09-06): the column is the app's
+    // narrow one, and MAX is what the VOCABULARY costs, not a number
+    // picked to be comfortable. Whichever way the vocabulary moves —
+    // a longer verb, or a shorter one that frees width back to the
+    // objective — this is the line that has to move with it.
+    const widths = EVENT_KINDS.map((k) => eventColumn(k, widestCount(k)).length)
+    expect(Math.max(...widths)).toBe(TIMELINE_LABEL_MAX)
+  })
+
   it('fits every verb the vocabulary can print', () => {
     // The column is FIXED — a state label that reflowed would make
     // every row's objective start somewhere else — so its width is a
     // promise about this table. It was sized at ~15 characters for a
     // vocabulary that had grown to 18, and the overflow painted over
     // the objective beside it ("theorist at workSettle: DOES AN A…").
+    // The truncation in the track is the safety net; no verb here may
+    // actually reach for it.
     const over = EVENT_KINDS.filter((k) => eventLabel(k).length > TIMELINE_LABEL_MAX)
     expect(over, `${over.map((k) => `${k} → ${eventLabel(k)}`).join(', ')}`).toEqual([])
   })
 
   it('says the count in the same breath as the verb', () => {
     expect(eventColumn('failed', 3)).toBe('failed 3')
-    expect(eventColumn('theory', 2)).toBe('theory landed 2 rounds')
+    expect(eventColumn('theory', 2)).toBe('theory 2 rounds')
     // a row with nothing to count says only the verb — a trailing
     // separator with no number is ink for a fact that is not there
     expect(eventColumn('proved', null)).toBe('proved')

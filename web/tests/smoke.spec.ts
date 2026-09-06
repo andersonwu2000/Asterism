@@ -614,11 +614,13 @@ test('timeline: the state label never paints over the objective', async ({
   // "theorist at workSettle: DOES AN A…" — the verb column was fixed at
   // a width narrower than the longest verb in the vocabulary, and a
   // grid item wider than its track simply overflows it (owner,
-  // 2026-09-06). Every kind that can overflow is on screen here.
+  // 2026-09-06). The widest the vocabulary can now print is on screen
+  // here — `refused 3 rounds` is TIMELINE_LABEL_MAX to the character,
+  // and it says it beside the PAGE mark, which the column pays for too.
   await stubEvents(page, [
     EVENT({ id: 'a', kind: 'theorizing' }),
-    EVENT({ id: 'b', kind: 'theorized', n: 12 }),
-    EVENT({ id: 'c', kind: 'theory_refused', n: 12 }),
+    EVENT({ id: 'b', kind: 'theory', n: 3 }),
+    EVENT({ id: 'c', kind: 'theory_refused', n: 3 }),
     EVENT({ id: 'd', kind: 'asked_theory' }),
     EVENT({ id: 'e', kind: 'deliverable', object_kind: 'goal', n: 12 }),
   ])

@@ -71,7 +71,9 @@ const DECISION_KIND_LABEL: Record<string, string> = {
   // the theory layer. Not a dispatch of proof work: what comes back is
   // prose about the wall, so the words say what was ASKED FOR, not who
   // was sent.
-  Theorize: 'asked for theory',
+  // the same word the row it mints wears (`asked_theory`) — one fact
+  // must not have two names across two surfaces
+  Theorize: 'theorize',
 }
 
 export function decisionKindLabel(kind: string): string {
@@ -161,12 +163,18 @@ const EVENT_LABEL: Record<string, string> = {
   // shapes. The verb says what was asked for and what came back; the
   // PAGE mark beside it says a DOCUMENT is the product, which is
   // neither a star nor a brick.
-  asked_theory: 'asked for theory',
-  theorizing: 'theorist at work',
-  theorized: 'theorist came back',
-  theory: 'theory landed',
-  theory_refused: 'theory refused',
-  theory_died: 'theorist died',
+  // ONE WORD EACH (owner, 2026-09-06). The mark is what says "theory"
+  // on these rows, so the verb saying it again bought nothing and cost
+  // the whole table: at "theorist came back" the column no longer fit
+  // any row's width, and widening it made the Timeline the one place
+  // in the app whose rows start somewhere else. The full sentence is
+  // one hover away on every row (EVENT_TITLE).
+  asked_theory: 'theorize',
+  theorizing: 'theorizing',
+  theorized: 'theorized',
+  theory: 'theory',
+  theory_refused: 'refused',
+  theory_died: 'died',
 }
 
 export function eventLabel(kind: string): string {
@@ -184,12 +192,20 @@ export const EVENT_KINDS: readonly string[] = Object.freeze(
  *
  * The column is FIXED — a state label that reflows would make every
  * row's objective start somewhere else — so its width is a promise
- * about the vocabulary: no verb is longer than this. It was ~15 for a
- * vocabulary that had grown to 18, and a grid item wider than its
- * track paints over the next one rather than shrinking (owner,
- * 2026-09-06). `vocab.test.ts` holds the promise; `Timeline.tsx`
+ * about the vocabulary: no verb is longer than this, and the widest
+ * thing the column can print is exactly this. A grid item wider than
+ * its track paints over the next one rather than shrinking, which is
+ * how a vocabulary that had grown to 18 characters came to be read as
+ * "theorist at workSettle: DOES AN A…".
+ *
+ * The answer was the VOCABULARY, not the track (owner, 2026-09-06):
+ * widening it made the Timeline the one table in the app whose rows
+ * start somewhere else, so the theory verbs came back to one word each
+ * and the column back to the 6.2rem every other row is measured
+ * against. What is left at the top is `refused 3 rounds`.
+ * `vocab.test.ts` holds both halves of the promise; `Timeline.tsx`
  * spends it. */
-export const TIMELINE_LABEL_MAX = 18
+export const TIMELINE_LABEL_MAX = 16
 
 /** The whole of what that column says for one row: the verb, and the
  * count where the row has one. What the column must FIT — and what the
@@ -330,7 +346,7 @@ export function isTheory(kind: string): boolean {
  *
  * It is an attempt number nearly everywhere and reads as one bare. A
  * theory row counts what the REVIEW cost instead, and a bare `2` beside
- * "theory landed" reads as the second document. */
+ * "theory" reads as the second document. */
 export function countWord(kind: string, n: number): string {
   if (kind !== 'theory' && kind !== 'theory_refused') return String(n)
   return n === 1 ? '1 round' : `${n} rounds`
