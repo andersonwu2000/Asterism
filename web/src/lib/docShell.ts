@@ -135,6 +135,27 @@ export function isTextDoc(path: string): boolean {
   return ['.md', '.tex', '.txt', '.lean'].includes(ext(path))
 }
 
+/** Which editor a writable document earns.
+ *
+ * The console has exactly two tokenizers — `lib/lean` and the markdown
+ * painter in `lib/markdown` — and the Documents tab used neither: every
+ * file the person could edit got a bare textarea, while the task page's
+ * own markdown was coloured all along (owner, 2026-09-06). The mapping
+ * is by LANGUAGE, not by "colour everything": a painter that does not
+ * know the language paints it wrong, and `#` opens no heading in TeX
+ * any more than a backtick opens a Lean span. A language with no
+ * painter reads as `plain` until it has one. */
+export type DocEditor = 'lean' | 'markdown' | 'plain'
+
+const EDITOR: Record<string, DocEditor> = {
+  '.lean': 'lean',
+  '.md': 'markdown',
+}
+
+export function editorFor(path: string): DocEditor {
+  return EDITOR[ext(path)] ?? 'plain'
+}
+
 /** This door writes `user/` and nothing else (§1.2-1: the areas'
  * separation is the point, and the engine refuses the rest anyway). */
 export function editable(ref: DocRef): boolean {

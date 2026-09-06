@@ -105,13 +105,23 @@ export function MarkdownEditor({
   value,
   onChange,
   heightClass = 'h-96',
+  label,
+  autoFocus,
+  className = '',
 }: {
   value: string
   onChange: (v: string) => void
   heightClass?: string
+  label?: string
+  /** a document the reader just created opens with the caret in it */
+  autoFocus?: boolean
+  /** the host's own frame, where it has one of its own */
+  className?: string
 }) {
   return (
-    <div className="relative rounded-xl border border-edge bg-surface focus-within:border-ink-faint has-[textarea:disabled]:opacity-60">
+    <div
+      className={`relative rounded-xl border border-edge bg-surface focus-within:border-ink-faint has-[textarea:disabled]:opacity-60 ${className}`}
+    >
       <pre
         aria-hidden
         className={'pointer-events-none absolute inset-0 overflow-hidden text-ink ' + METRICS}
@@ -119,6 +129,8 @@ export function MarkdownEditor({
         <Markdown text={value + '\n'} />
       </pre>
       <textarea
+        aria-label={label}
+        autoFocus={autoFocus}
         className={
           'relative block w-full resize-y bg-transparent text-transparent focus:outline-none ' +
           heightClass +

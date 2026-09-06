@@ -1,12 +1,13 @@
 import { useEffect, useId, useState } from 'react'
 import { claimLeanSlot, releaseLeanSlot } from '../lib/leanSlot'
 import type { LeanCursor } from '../lib/leanSession'
-import { editable, ownerOf, panelFor } from '../lib/docShell'
+import { editable, editorFor, ownerOf, panelFor } from '../lib/docShell'
 import type { DocRef, DocView } from '../lib/docShell'
 import type { TheoryMeta } from '../lib/docShelf'
 import { requestAssistant } from '../lib/focus'
 import { EDITOR_METRICS, frameClass } from '../lib/textFrame'
 import { ImagePanel, LeanInfoPanel, PdfPanel, ProsePanel, TexPanel } from './DocPanels'
+import { MarkdownEditor } from '../lib/markdown'
 import { LeanEditor } from './LeanEditor'
 import { Button } from './ui'
 
@@ -237,6 +238,24 @@ export default function DocShell({
                   onCaret={(pos) => setCursor({ part: 'doc', ...pos })}
                   onFocus={() => claimLeanSlot(slotId)}
                   autoFocus={autoFocus}
+                  heightClass="min-h-[24rem] h-auto field-sizing-content"
+                />
+              ) : writable && editorFor(open.path) === 'markdown' ? (
+                /* the console's own markdown painter, the one the task
+                   page's goal and standing word have always worn
+                   (`lib/markdown`). This tab used neither tokenizer:
+                   every file a person could edit got a bare box while
+                   the same prose was coloured one section over (owner,
+                   2026-09-06). A language with no painter keeps the
+                   plain box below — colouring TeX with a markdown
+                   painter would paint it wrong. */
+                <MarkdownEditor
+                  key={key}
+                  value={text}
+                  onChange={onChange}
+                  autoFocus={autoFocus}
+                  label="document source"
+                  className="bg-wash"
                   heightClass="min-h-[24rem] h-auto field-sizing-content"
                 />
               ) : writable ? (

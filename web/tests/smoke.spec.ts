@@ -261,6 +261,49 @@ test('documents: a row can be shown in the file manager, or say why not', async 
   await expect(page.getByText(/Read-only smoke test/)).toBeVisible()
 })
 
+test('documents: an editable markdown file wears the shared painter', async ({
+  page,
+  request,
+}) => {
+  // The console has two tokenizers and this tab used neither: a person
+  // editing `yours` got a bare box while the same prose was coloured
+  // one section over, on the task page (owner, 2026-09-06).
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  await page.route('**/api/projects/*/docs', async (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          json: {
+            entries: [
+              { path: 'user', kind: 'dir' },
+              { path: 'user/notes.md', kind: 'file', size: 40 },
+            ],
+          },
+        })
+      : route.fallback(),
+  )
+  await page.route('**/api/projects/*/docs/user/notes.md*', async (route) =>
+    route.fulfill({
+      json: {
+        path: 'user/notes.md',
+        encoding: 'utf-8',
+        etag: 'deadbeef',
+        content: '# A heading\n\n- a bullet\n\n`Nat.succ`\n',
+      },
+    }),
+  )
+  await page.goto(at(s.project, 'docs'))
+  await page.getByRole('treeitem', { name: /notes\.md/ }).click()
+  const box = page.getByLabel('document source')
+  await expect(box).toBeVisible()
+  // the painted layer under the transparent textarea — the same trick
+  // the Lean editor uses, and the same tokenizer for its code spans
+  const painted = page.locator('pre[aria-hidden="true"]').first()
+  await expect(painted).toContainText('A heading')
+  expect(await painted.locator('span').count()).toBeGreaterThan(0)
+})
+
 test('legacy problem address redirects into its Project', async ({ page, request }) => {
   // links minted before the shell (a chat citation, a bookmark) must
   // still open - and the shelf comes from the DB, never from splitting

@@ -5,6 +5,7 @@ import {
   docAddress,
   docRefFromWorkspacePath,
   editable,
+  editorFor,
   isTextDoc,
   moveTargets,
   ownerOf,
@@ -692,5 +693,20 @@ describe('moveTargets', () => {
         'file',
       ),
     ).toEqual(['user', 'user/m'])
+  })
+})
+
+describe('which editor a document earns', () => {
+  it('paints what it has a painter for, and nothing it does not', () => {
+    // The console has exactly two tokenizers — the Lean one and the
+    // markdown one — and until now the Documents tab used neither:
+    // every file the person could edit got a bare textarea, while the
+    // task page's own markdown was coloured (owner, 2026-09-06).
+    expect(editorFor('user/notes.md')).toBe('markdown')
+    expect(editorFor('user/Root.lean')).toBe('lean')
+    // a painter that does not know the language would paint it WRONG —
+    // `#` opens no heading in TeX, and a backtick opens no Lean span
+    expect(editorFor('user/paper.tex')).toBe('plain')
+    expect(editorFor('user/raw.txt')).toBe('plain')
   })
 })
