@@ -7,7 +7,7 @@ those four has exactly one implementation here.
 |---|---|---|
 | **slice** | one problem's state, taken out of a live workspace (a `carry` bundle), optionally rewound to a historical instant | `snapshot.py`, `rewind.py` |
 | **workspace** | a throwaway place to wake the framework in: the base skeleton, the slice, `Tooling/` at a named commit, the arm's overlay | `build.py` |
-| **driver** | what is actually woken in it — one of six | `driver.py`, `gauntlet.py` |
+| **driver** | what is actually woken in it — one of eight | `driver.py`, `gauntlet.py`, `continuity.py` |
 | **record** | `run_record.json` + `_out/`, the only things that survive the workspace | `run.py` |
 
 ## The root is never defaulted
@@ -141,7 +141,58 @@ arms:
     #   push_wake        group, trigger, prompt, prompt2
     #   daemon           scope, once, stop: {proved: N | revisions: N | wall_sec: S}
     #   gauntlet         items_dir (a directory of one-decl .lean bricks)
+    #   theory_review_round | judge_review_round
+    #                    group, round_no, chain, sessions_root,
+    #                    resume_sid, [author_resume_sid,
+    #                    author_resume_turns, from_arm, resume_note],
+    #                    plus the round's frozen inputs — a theory
+    #                    round's `request`/`report`/`dialogue`, a judge
+    #                    round's `proposal`/`decisions`/`dialogue`
 ```
+
+## The continuity kinds — one round, run twice
+
+`theory_review_round` and `judge_review_round` (`continuity.py`) answer
+one question the other kinds cannot ask: today every review round mints
+a FRESH judge, so round 2 pays to re-read everything round 1 already
+read. Each of these runs the same round twice against an identical
+dossier — `resumed`, on the round-1 judge's own provider session, and
+`fresh`, which is exactly today's production path — and writes both
+rulings, both wall times and both `spawn_usage` rows.
+
+* The resumed leg works by rewriting the round's COLD spawn
+  (`Tooling.agent.spawn_llm`, the one seam `adversary.review` and
+  `theorist/review.review` both go through) rather than by a second
+  code path through those functions: the variable is session memory,
+  and a reimplemented round would be measuring the reimplementation.
+  The round's own `is_retry` re-spawn and the tail feedback turn are
+  left alone.
+* A codex session is resumable only with its ROLLOUT in place —
+  `stage_resume` puts the archived
+  `.asterism/codex_sessions/<pid>/[review|adversary]/r<n>/rollout-*.jsonl`
+  back under the spawn's `CODEX_HOME`, writes the `_codex_sessions.json`
+  the adapter looks the thread up in, and seeds `_codex_usage.json` so
+  the resumed turn is billed for ITS tokens and not for the whole
+  conversation. A slice carries none of that (`snapshot.py` takes the
+  DB, the proofs and `_docs/`), so the arm names `sessions_root:`.
+* `chain:` says what the arm runs: `pair` (one round, both legs),
+  `revise_then_pair` (the author answers the verdict `from_arm:`'s
+  resumed leg produced, then a round), `pair_revise_pair` (a round, the
+  author answers ITS resumed verdict, then the next round).
+  `author_resume_turns:` cuts a long author session back to the turns it
+  had taken at the round under test — the Theorist's author holds one
+  thread across a whole episode.
+* Inputs are FROZEN FILES beside the lab.yaml, not DB rows: a mid-debate
+  proposal body and the round-1 criticisms are not what
+  `programme_revisions.body` holds, and a run whose inputs live only in
+  a query cannot be read back against its verdicts.
+* Only a seat on codex can run a resumed leg, and it is refused up front
+  rather than after the dossier is built.
+
+`_out/` gets `verdict_r<n>_<leg>.json` (+ a `.md` rendering) per leg,
+`verdict_resumed.json` / `verdict_fresh.json` for the arm's headline
+round, the revision's `draft_r<n>.md` / `proposal_r<n>.md`,
+`timing.json`, and `inputs/`.
 
 Every key is checked and an unknown one is a refusal that names the keys
 that level takes. The failure a hand-written `lab.yaml` is exposed to is

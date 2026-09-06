@@ -961,6 +961,13 @@ KINDS = {
     "gauntlet": run_gauntlet,
 }
 
+# Registered, not written here (`lab/continuity.py`): the continuity
+# kinds call the SAME round functions the kinds above do, differing only
+# in whose provider session the round's cold spawn lands on.
+from .continuity import KINDS as _CONTINUITY_KINDS  # noqa: E402
+
+KINDS.update(_CONTINUITY_KINDS)
+
 RESULT_BASENAME = "driver_result.json"
 
 

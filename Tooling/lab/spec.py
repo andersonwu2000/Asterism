@@ -67,6 +67,15 @@ DRIVER_KINDS: "dict[str, tuple[str, ...]]" = {
     "gauntlet": ("items_dir",),
 }
 
+# The continuity kinds declare their own arm keys beside the code that
+# reads them (`lab/continuity.py`), and are merged in here rather than
+# spelled twice: a key added to a kind and forgotten in this table is an
+# arm that validates against the wrong list and is refused for using the
+# option it was written for.
+from .continuity import ARM_KEYS as _CONTINUITY_ARM_KEYS  # noqa: E402
+
+DRIVER_KINDS.update(_CONTINUITY_ARM_KEYS)
+
 #: Arm keys every kind takes.
 _COMMON_ARM_KEYS = ("kind", "prompts", "seats", "notes")
 
@@ -221,6 +230,9 @@ def _check_options(name: str, kind: str, opts: dict, base: Path) -> None:
     elif kind == "gauntlet":
         _need("items_dir")
         opts["items_dir"] = str((base / str(opts["items_dir"])).resolve())
+    elif kind in _CONTINUITY_ARM_KEYS:
+        from .continuity import check_options as _continuity_check
+        _continuity_check(name, kind, opts, base)
 
 
 def check_judge_source(name: str, opts: dict, base: Path) -> None:
