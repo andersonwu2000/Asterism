@@ -241,6 +241,15 @@ class _FakeProc:
     def wait(self, timeout=None): return 0
 
 
+def _touch_server_exe(ws: Path) -> None:
+    """The launch path builds an ABSENT lean-asterism-server, not just a
+    stale one (2026-09-07) — a bare tmp workspace would spawn real lake.
+    These tests are about kill/relaunch, so hand them a built exe."""
+    exe = gateway_lifecycle.server_exe_path(ws)
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"exe")
+
+
 def test_start_gateway_reuses_when_workers_match(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -290,6 +299,7 @@ def test_start_gateway_relaunches_on_worker_mismatch(
                         lambda *a, **k: _FakeProc())
     monkeypatch.setattr(gateway_lifecycle.time, "sleep", lambda s: None)
 
+    _touch_server_exe(tmp_path)
     proc = gateway_lifecycle.start_gateway(tmp_path)
     assert killed["pid"] == 777          # killed the stale gateway by pid
     assert isinstance(proc, _FakeProc)   # relaunched a fresh one
@@ -396,6 +406,7 @@ def test_start_gateway_relaunches_on_version_skew(
                             lambda *a, **k: _FakeProc())
         monkeypatch.setattr(gateway_lifecycle.time, "sleep", lambda s: None)
 
+        _touch_server_exe(tmp_path)
         proc = gateway_lifecycle.start_gateway(tmp_path)
         assert killed["pid"] == 777, f"stale_fp={stale_fp!r}"
         assert isinstance(proc, _FakeProc)

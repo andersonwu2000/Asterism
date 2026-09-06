@@ -107,20 +107,24 @@ def server_exe_path(workspace: Path) -> Path:
 
 def server_exe_staleness(exe_mtime: "float | None",
                          input_mtimes: "list[float]") -> bool:
-    """PURE predicate: any input newer than the exe → stale. An absent
-    exe (None) is NOT stale — absence falls back to stock workers by
-    design (`client.start`), which is a visible degradation, unlike a
-    stale exe's silent one."""
-    if exe_mtime is None or not input_mtimes:
+    """PURE predicate: does the exe need a (re)build? Any input newer
+    than the exe → yes; an ABSENT exe (None) → yes too. Absence is NOT
+    the "visible degradation to stock workers" it was documented as
+    (`client.start` has the post-mortem): stock workers fail the lean
+    interface-contract gate, so a missing exe was a hard refusal ~40 s
+    of warm-up later. Build it like a stale one (2026-09-07)."""
+    if exe_mtime is None:
+        return True
+    if not input_mtimes:
         return False
     return max(input_mtimes) > exe_mtime
 
 
 def check_server_exe_freshness(workspace: Path) -> "tuple[bool, str]":
-    """(stale, why). Inputs = `Asterism/*.lean` + `lakefile.lean` +
-    `lean-toolchain` — the same set real-lean.yml's path triggers pin
-    (keep the two aligned). mtime is deliberately coarser than a
-    content fingerprint: a comment-only touch reads stale, which is
+    """(needs_build, why) — stale OR absent. Inputs = `Asterism/*.lean`
+    + `lakefile.lean` + `lean-toolchain`, the set real-lean.yml's path
+    triggers pin (keep the two aligned). mtime is deliberately coarser
+    than a content fingerprint: a comment-only touch reads stale, which is
     fine on the build-before-launch path (lake cache makes the rebuild
     seconds) and is exactly why the REUSE path only warns instead of
     killing a warm gateway. If the warn path ever bites for real, the
@@ -139,6 +143,8 @@ def check_server_exe_freshness(workspace: Path) -> "tuple[bool, str]":
             if m > newest:
                 newest, newest_name = m, p.name
     if server_exe_staleness(exe_m, mtimes):
+        if exe_m is None:
+            return True, f"{exe.name} is not built"
         return True, f"{newest_name} is newer than lean-asterism-server"
     return False, ""
 
@@ -153,7 +159,8 @@ def _lake_build_server_exe(workspace: Path) -> "tuple[bool, str]":
 
 
 def ensure_server_exe_fresh(workspace: Path, *, _build=None) -> None:
-    """Rebuild the custom server exe when stale; RAISE on build failure.
+    """Build the custom server exe when it is stale OR ABSENT; RAISE on
+    build failure, and RAISE again if the build left no exe behind.
 
     Policy (teammate review 2026-07-10): the exe feeds soundness-adjacent
     data (declInfo / anchorClosure) and its failure mode is silently
@@ -162,20 +169,25 @@ def ensure_server_exe_fresh(workspace: Path, *, _build=None) -> None:
     不可默錯). At launch time no workers exist yet, so the exe is never
     file-locked here. `_build` is injectable for tests (the side-effect
     fence blocks real lake spawns)."""
-    stale, why = check_server_exe_freshness(workspace)
-    if not stale:
+    needs_build, why = check_server_exe_freshness(workspace)
+    if not needs_build:
         return
-    print(f"[gateway] lean-asterism-server is STALE ({why}) — "
-          f"rebuilding before launch", flush=True)
+    print(f"[gateway] lean-asterism-server needs a build ({why}) — "
+          f"building before launch", flush=True)
     ok, detail = (_build or _lake_build_server_exe)(workspace)
     if not ok:
         raise RuntimeError(
-            "lean-asterism-server rebuild FAILED while its sources are "
-            "newer than the exe — refusing to launch a gateway on a "
-            "stale binary (new RPC fields would be silently absent).\n"
+            f"lean-asterism-server build FAILED ({why}) — refusing to "
+            "launch a gateway whose workers would lack the current "
+            "Asterism RPCs (the interface-contract gate refuses them).\n"
             f"{detail}\n"
             "Fix the build (`lake build lean-asterism-server`) and retry.")
-    print("[gateway] lean-asterism-server rebuilt", flush=True)
+    if not server_exe_path(workspace).exists():
+        raise RuntimeError(
+            "lean-asterism-server build reported success but the exe is "
+            f"still missing ({server_exe_path(workspace)}) — refusing to "
+            f"launch on stock workers, which have none of its RPCs.\n{detail}")
+    print("[gateway] lean-asterism-server built", flush=True)
 
 
 def code_fingerprint() -> str:
@@ -748,13 +760,13 @@ def start_gateway(workspace: Path,
                 # for nothing. The launch path below rebuilds; upgrade
                 # path if this warn ever bites: compare the `.exe.hash`
                 # lake writes next to the binary.
-                _stale, _why = check_server_exe_freshness(workspace)
-                if _stale:
+                _needs_build, _why = check_server_exe_freshness(workspace)
+                if _needs_build:
                     print(f"[gateway] WARNING: reused gateway may be "
-                          f"running a STALE lean-asterism-server "
-                          f"({_why}); new Lean RPC fields will be "
-                          f"silently absent until a gateway restart "
-                          f"rebuilds it", flush=True)
+                          f"running without a current "
+                          f"lean-asterism-server ({_why}); new Lean RPC "
+                          f"fields will be silently absent until a "
+                          f"gateway restart builds it", flush=True)
                 print(f"[gateway] reusing existing gateway on port "
                       f"{_gateway_port()} (already healthy, "
                       f"workers={have})", flush=True)
@@ -769,8 +781,8 @@ def start_gateway(workspace: Path,
                 f"port {_gateway_port()} occupied by an unhealthy server: "
                 f"{pre}; kill it and retry")
 
-    # Launch path: no workers hold the exe yet — rebuild if stale,
-    # refuse on build failure (see ensure_server_exe_fresh policy).
+    # Launch path: no workers hold the exe yet — build it if stale or
+    # absent, refuse on build failure (see ensure_server_exe_fresh).
     ensure_server_exe_fresh(workspace)
 
     env = dict(os.environ)

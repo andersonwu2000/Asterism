@@ -107,30 +107,44 @@ class LspClient:
         # env `LEAN_WORKER_PATH` (falling back to its own argv[0] —
         # i.e. stock `lean.exe`). See `Lean/Server/Watchdog.lean :: findWorkerPath`.
         #
-        # If our custom `lean-asterism-server` binary is built, point
-        # the watchdog at it instead. Workers then load
-        # `Asterism.GatewayRpc`'s `builtin_initialize` and surface the
-        # custom RPCs (`$/lean/rpc/call` with method `Asterism.writeOlean`
-        # / `Asterism.printAxioms`). If the binary isn't built, fall
-        # back silently to stock workers — verify_unification features
-        # are then unavailable but the rest of the gateway still works.
+        # Our custom `lean-asterism-server` binary is REQUIRED, not an
+        # optimisation: the watchdog points workers at it, they load
+        # `Asterism.GatewayRpc`'s `builtin_initialize`, and only then do
+        # the custom RPCs exist (`$/lean/rpc/call` with method
+        # `Asterism.writeOlean` / `Asterism.printAxioms` /
+        # `Asterism.declInfo`). This used to fall back SILENTLY to stock
+        # workers when the binary was absent; that fallback was a lie —
+        # the lean interface-contract suite then fails three contracts
+        # ("No RPC method 'Asterism.declInfo' found") and the gateway
+        # refuses to start ~40 s into warm-up (fresh lab workspace,
+        # 2026-09-07). So build it here, on the same refuse-on-failure
+        # policy as the daemon's launch gate, and hard-fail if the build
+        # left nothing behind. Imported locally: `lifecycle` is the
+        # daemon-side module and this keeps the import graph one-way.
         # cwd must be the workspace root regardless.
+        from .lifecycle import ensure_server_exe_fresh, server_exe_path
+        ensure_server_exe_fresh(self.workspace)
+        custom = server_exe_path(self.workspace)
+        if not custom.exists():
+            raise RuntimeError(
+                f"lean-asterism-server is missing ({custom}) after the "
+                "build gate — refusing to start workers: stock workers "
+                "have no Asterism RPCs, so the lean interface-contract "
+                "gate would refuse this gateway anyway. Build it with "
+                "`lake build lean-asterism-server` in the workspace.")
         env = dict(os.environ)
-        suffix = ".exe" if os.name == "nt" else ""
-        custom = self.workspace / ".lake" / "build" / "bin" / f"lean-asterism-server{suffix}"
-        if custom.exists():
-            env["LEAN_WORKER_PATH"] = str(custom)
-            # `Lean.determineLakePath` (used by `setupFile` to spawn
-            # `lake setup-file` for module setup) falls back to
-            # `IO.appDir / "lake"` if neither LAKE nor LEAN_SYSROOT is
-            # set. For our custom binary, IO.appDir is `.lake/build/bin/`
-            # which doesn't contain `lake` → setup fails → header
-            # processing reports `result?=none`. Set LAKE explicitly to
-            # the toolchain's lake binary so setup-file works.
-            if "LAKE" not in env:
-                lake_path = shutil.which("lake")
-                if lake_path:
-                    env["LAKE"] = lake_path
+        env["LEAN_WORKER_PATH"] = str(custom)
+        # `Lean.determineLakePath` (used by `setupFile` to spawn
+        # `lake setup-file` for module setup) falls back to
+        # `IO.appDir / "lake"` if neither LAKE nor LEAN_SYSROOT is
+        # set. For our custom binary, IO.appDir is `.lake/build/bin/`
+        # which doesn't contain `lake` → setup fails → header
+        # processing reports `result?=none`. Set LAKE explicitly to
+        # the toolchain's lake binary so setup-file works.
+        if "LAKE" not in env:
+            lake_path = shutil.which("lake")
+            if lake_path:
+                env["LAKE"] = lake_path
         # POSIX: own session/process group so `_kill_tree` can `killpg`
         # the whole `lake serve → lean --server → lean --worker` tree.
         # Windows: `taskkill /T` walks the tree by PID, no flag needed.
