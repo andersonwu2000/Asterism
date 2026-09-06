@@ -390,6 +390,12 @@ _RETRY_PROMPTS: dict[str, str] = {
         "Revise {attempts_dir}/report.md to answer every fired bullet — "
         "where a bullet names a way out, take it or say why not; keep "
         "what was clear."),
+    # Pass-through: `theorist/review.py` authors the whole refusal (the
+    # parser's message, the file to rewrite, and where the refused one
+    # was kept — none of which this adapter can see), so re-framing it
+    # here would either bury the kept file or, without an entry at all,
+    # hand a reviewer that never ran a build a lake error to hunt.
+    "theory_reviewer": "{err}",
     # No `{err}`: that turn's "combined rc=0" describes nothing to act on.
     "reason:agent_stuck_thinking": (
         "Your previous attempt ran out of time mid-thinking and shipped "

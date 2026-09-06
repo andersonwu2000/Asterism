@@ -791,6 +791,85 @@ def test_a_refused_verdict_is_kept_beside_the_one_that_replaces_it(
     assert not (proj / "verdict.json").exists()
 
 
+def test_a_refused_verdict_goes_back_to_the_reviewer_that_wrote_it(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry used to mint a BLIND fresh reviewer: the parser's
+    message was printed and nothing else, so the same shape error came
+    back for every try (the judge's `479fd579`, one seat over). A
+    reviewer cannot fix a refusal it was never shown — resume the SAME
+    session, carrying the message and where its file went."""
+    did = _theorize(conn, workspace)
+    mixed = _clear(**{"1": ["clear: it answers the request",
+                            "fired: it does not"]})
+    calls: list = []
+
+    def fake_spawn(**kw):
+        if kw.get("kind") != "theory_reviewer":
+            (kw["attempts_dir"] / "report.md").write_text(
+                _REPORT, encoding="utf-8")
+            return 0
+        calls.append(kw)
+        (kw["attempts_dir"] / "verdict.json").write_text(
+            json.dumps(mixed if len(calls) == 1 else _clear()),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    assert len(calls) == 2
+    assert calls[1]["session_id"] == calls[0]["session_id"], (
+        "the retry must resume the reviewer that wrote the refused file")
+    assert calls[1]["is_retry"] is True
+    ctx = calls[1]["retry_context"] or ""
+    assert 'criterion 1 mixes "clear" and "fired"' in ctx, ctx
+    assert "verdict.json" in ctx
+    assert "verdict_r1_raw.json" in ctx, (
+        "the retry must say where the refused file went")
+
+
+def test_a_resume_that_dies_on_the_provider_falls_back_to_a_cold_reviewer(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resume is worth having only while the session is. A provider
+    death on the retry turn (rc=125: that conversation is gone) means
+    there is nothing to go back to, so the next spawn is cold — and the
+    round still ends on a ruling rather than costing the document."""
+    from Tooling.core import quota_wait as _qw
+    from Tooling.pipeline.theorist import review as _review
+    monkeypatch.setattr(_review, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    monkeypatch.setattr(_qw, "park_in_pipeline", lambda *a, **k: False)
+    did = _theorize(conn, workspace)
+    mixed = _clear(**{"1": ["clear: it answers the request",
+                            "fired: it does not"]})
+    calls: list = []
+
+    def fake_spawn(**kw):
+        if kw.get("kind") != "theory_reviewer":
+            (kw["attempts_dir"] / "report.md").write_text(
+                _REPORT, encoding="utf-8")
+            return 0
+        calls.append(kw)
+        if len(calls) == 2:
+            return 125
+        (kw["attempts_dir"] / "verdict.json").write_text(
+            json.dumps(mixed if len(calls) == 1 else _clear()),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    assert len(calls) == 3
+    assert calls[1]["is_retry"] is True
+    assert calls[2]["is_retry"] is False
+    assert calls[2]["retry_context"] is None
+    assert calls[2]["session_id"] != calls[1]["session_id"]
+
+
 # ---------------------------------------------------------------------
 # the reviewer's dossier
 # ---------------------------------------------------------------------

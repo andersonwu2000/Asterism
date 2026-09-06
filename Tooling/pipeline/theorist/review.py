@@ -204,6 +204,14 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
                                        problem=problem)
     last_err = ""
     infra_tries = 0
+    # A refused verdict goes back to the SAME reviewer, carrying the
+    # parser's message (2026-09-06, the judge's `479fd579` one seat
+    # over): the retry used to mint a blind fresh reviewer and `last_err`
+    # was only printed, so one shape error could burn every try. A
+    # non-empty `retry_ctx` IS the resume; the sid is re-minted only for
+    # a cold spawn.
+    sid = ""
+    retry_ctx = ""
     spawn_kw = dict(
         kind="theory_reviewer", prompt_path=prompt_path,
         problem_dir=proj, attempts_dir=proj, timeout_sec=timeout_sec,
@@ -227,14 +235,22 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         cold. Same budget and the same park the batch judge gets
         (`adversary.review`) — a confirmed quota window is slept to, a
         blind one buys two re-spawns."""
-        nonlocal infra_tries
+        nonlocal infra_tries, sid, retry_ctx
         from ...state import failures as _failures
         from . import _rc_reason
         while True:
-            rc = agent.spawn_llm(session_id=str(uuid.uuid4()), **spawn_kw)
+            if not retry_ctx:
+                sid = str(uuid.uuid4())
+            rc = agent.spawn_llm(
+                session_id=sid, is_retry=bool(retry_ctx),
+                retry_context=retry_ctx or None, **spawn_kw)
             if rc == 0 or not _failures.is_infra(
                     _rc_reason(rc, "theory_reviewer", proj)):
                 return rc
+            # The resume itself died on the provider side, so that
+            # session is not a thing to go back to: the next spawn is
+            # cold (the refused file stays on disk either way).
+            retry_ctx = ""
             if quota_park is not None and quota_park(
                     f"theory review r{round_no}"):
                 continue
@@ -254,6 +270,7 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         vpath = proj / VERDICT_BASENAME
         if not vpath.is_file():
             last_err = "the reviewer produced no verdict.json"
+            retry_ctx = ""   # no file, so no refusal to hand back
         else:
             raw = vpath.read_text(encoding="utf-8")
             verdict, perr = parse_theory_verdict(raw)
@@ -264,6 +281,14 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
             kept = keep_rejected_verdict(vpath, round_no=round_no)
             last_err = (f"{perr} [wrote: {describe_verdict_shape(raw)}; "
                         f"kept {kept.name}]")
+            # The whole refusal, authored here — no provider knows the
+            # parser's message or where the file went, so each renders
+            # this as written (`_RETRY_PROMPTS["theory_reviewer"]`).
+            retry_ctx = (
+                f"The framework refused your {VERDICT_BASENAME}: {perr}"
+                f"\n\nRewrite {proj}/{VERDICT_BASENAME} — your reading "
+                f"of the document is unchanged; this is its shape. The "
+                f"refused file was kept as {kept.name}.")
         print(f"[theorist] review r{round_no} try {attempt + 1}: "
               f"{last_err}", flush=True)
     return None, last_err, 0

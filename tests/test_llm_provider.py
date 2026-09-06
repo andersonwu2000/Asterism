@@ -603,6 +603,42 @@ def test_claude_spawn_theorist_retry_is_the_reviewers_rebuttal(
     assert "report.md" in payload
 
 
+def test_claude_spawn_theory_reviewer_retry_is_the_frameworks_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The theory reviewer's retry (2026-09-06) carries the message the
+    framework's parser wrote when it refused the verdict — the seat
+    never ran a build, so the lake-build fallback would send it hunting
+    a phantom error (the judge's class, `479fd579`). The review round
+    authors the whole refusal, down to where the refused file went, so
+    the turn renders it as written."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    msg = ('The framework refused your verdict.json: criterion 1 mixes '
+           '"clear" and "fired" bullets — a criterion is one or the '
+           'other\n\nRewrite /x/att/verdict.json — your reading of the '
+           'document is unchanged; this is its shape. The refused file '
+           'was kept as verdict_r1_raw.json.')
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="theory_reviewer",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context=msg,
+    ))
+    payload = captured[0][captured[0].index("-p") + 1]
+    assert "failed lake build" not in payload
+    assert "patch.lean" not in payload
+    assert msg in payload
+
+
 def test_claude_spawn_retry_handles_missing_retry_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
