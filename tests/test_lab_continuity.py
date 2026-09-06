@@ -376,6 +376,68 @@ def test_a_leg_that_produced_no_ruling_still_leaves_its_file(tmp_path):
 
 
 # ---------------------------------------------------------------------
+# continuing the arm before this one
+# ---------------------------------------------------------------------
+
+def _run_dir(root: Path, exp: str, arm: str, rep: int,
+             record: "dict | None" = None) -> Path:
+    d = root / "runs" / exp / f"{arm}_r{rep}"
+    (d / "_out").mkdir(parents=True)
+    if record is not None:
+        (d / "_out" / "run_record.json").write_text(
+            json.dumps(record), encoding="utf-8")
+    (d / "workspace.json").write_text(
+        json.dumps({"experiment": exp, "arm": arm, "rep": rep}),
+        encoding="utf-8")
+    return d
+
+
+def test_a_chained_arm_finds_its_predecessor_from_where_it_stands(
+        tmp_path):
+    """The driver is handed a spec, not a lab root — the root lives in
+    the operator's development area and nothing may compile a default
+    for it. It is derived from `<root>/runs/<exp>/<arm>_r<n>` instead,
+    which names no path and invents no default."""
+    root = tmp_path / "lab"
+    _run_dir(root, "jc", "theorist_a", 1, {"outcome": "success"})
+    ws = _run_dir(root, "jc", "theorist_b", 1)
+
+    got_root, exp, arm = cont.locate_lab(ws)
+
+    assert got_root == root.resolve() and exp == "jc" and arm == "theorist_b"
+    assert cont.find_prior_run(root, "jc", "theorist_a").name ==         "theorist_a_r1"
+
+
+def test_an_unfinished_predecessor_is_not_a_predecessor(tmp_path):
+    """Finished means the pair that survives a run is there. A workspace
+    still standing has no record to answer with."""
+    root = tmp_path / "lab"
+    _run_dir(root, "jc", "theorist_a", 1)          # no run_record.json
+    with pytest.raises(SystemExit, match="no finished run of arm"):
+        cont.find_prior_run(root, "jc", "theorist_a")
+    with pytest.raises(SystemExit, match="no runs of"):
+        cont.find_prior_run(root, "other", "theorist_a")
+
+
+def test_the_verdict_a_chained_arm_answers_is_the_resumed_one(tmp_path):
+    prior = _run_dir(tmp_path, "jc", "theorist_a", 1, {"outcome": "ok"})
+    (prior / "_out" / "verdict_resumed.json").write_text(
+        json.dumps(_verdict("r2")), encoding="utf-8")
+    assert cont.incoming_verdict(prior) == _verdict("r2")
+
+
+def test_a_predecessor_that_passed_gives_the_author_nothing_to_answer(
+        tmp_path):
+    """The revision step would spend a turn on an empty rebuttal and the
+    arm would report a round it never argued."""
+    prior = _run_dir(tmp_path, "jc", "theorist_a", 1, {"outcome": "ok"})
+    (prior / "_out" / "verdict_resumed.json").write_text(
+        json.dumps({"verdict": "pass", "criticisms": []}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="carries no criticisms"):
+        cont.incoming_verdict(prior)
+
+
+# ---------------------------------------------------------------------
 # the lab.yaml these arms are written in
 # ---------------------------------------------------------------------
 
