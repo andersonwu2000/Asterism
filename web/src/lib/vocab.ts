@@ -173,6 +173,32 @@ export function eventLabel(kind: string): string {
   return EVENT_LABEL[kind] ?? kind.replace(/_/g, ' ')
 }
 
+/** Every kind this vocabulary names — the list the Timeline's column
+ * has to fit, so that "it fits" is checked against the vocabulary and
+ * not against whatever the workspace happened to log this week. */
+export const EVENT_KINDS: readonly string[] = Object.freeze(
+  Object.keys(EVENT_LABEL),
+)
+
+/** The Timeline's label column, in characters.
+ *
+ * The column is FIXED — a state label that reflows would make every
+ * row's objective start somewhere else — so its width is a promise
+ * about the vocabulary: no verb is longer than this. It was ~15 for a
+ * vocabulary that had grown to 18, and a grid item wider than its
+ * track paints over the next one rather than shrinking (owner,
+ * 2026-09-06). `vocab.test.ts` holds the promise; `Timeline.tsx`
+ * spends it. */
+export const TIMELINE_LABEL_MAX = 18
+
+/** The whole of what that column says for one row: the verb, and the
+ * count where the row has one. What the column must FIT — and what the
+ * row's title says in full when it does not. */
+export function eventColumn(kind: string, n: number | null): string {
+  const label = eventLabel(kind)
+  return n === null ? label : `${label} ${countWord(kind, n)}`
+}
+
 const EVENT_TITLE: Record<string, string> = {
   asked:
     'engine term: Inject \u2014 the strategist asked a worker for this brick:'

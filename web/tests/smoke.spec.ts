@@ -482,6 +482,67 @@ test('new-task: Defs and Root wear the shared Lean block', async ({ page }) => {
   await expect(page.getByText('goal at cursor')).toHaveCount(0)
 })
 
+/** A timeline whose rows are ours, so the widest label in the
+ * vocabulary is on screen whatever the workspace happens to hold. */
+async function stubEvents(page: Page, events: unknown[]): Promise<void> {
+  await page.route('**/api/**/events*', async (route) =>
+    route.fulfill({ json: { events, has_more: false } }),
+  )
+}
+
+const EVENT = (over: Record<string, unknown>) => ({
+  at: '2026-09-06T04:00:00Z',
+  kind: 'theorizing',
+  object_kind: 'theory',
+  label:
+    'Settle: DOES AN ANTICHAIN OF THIS SHAPE FORCE THE UNION-CLOSED BOUND, ' +
+    'and if so by which route',
+  goal_id: null,
+  n: null,
+  note: null,
+  body: null,
+  path: null,
+  approx: false,
+  id: 'e1',
+  batch_id: null,
+  group_id: null,
+  object_group_id: null,
+  ...over,
+})
+
+test('timeline: the state label never paints over the objective', async ({
+  page,
+  request,
+}) => {
+  // "theorist at workSettle: DOES AN A…" — the verb column was fixed at
+  // a width narrower than the longest verb in the vocabulary, and a
+  // grid item wider than its track simply overflows it (owner,
+  // 2026-09-06). Every kind that can overflow is on screen here.
+  await stubEvents(page, [
+    EVENT({ id: 'a', kind: 'theorizing' }),
+    EVENT({ id: 'b', kind: 'theorized', n: 12 }),
+    EVENT({ id: 'c', kind: 'theory_refused', n: 12 }),
+    EVENT({ id: 'd', kind: 'asked_theory' }),
+    EVENT({ id: 'e', kind: 'deliverable', object_kind: 'goal', n: 12 }),
+  ])
+  await openShelf(page, request, 'timeline')
+  const rows = page.locator('[data-event-row]')
+  await expect(rows).toHaveCount(5)
+  for (const row of await rows.all()) {
+    const label = row.locator('[data-event-label]')
+    const detail = row.locator('[data-event-detail]')
+    const l = (await label.boundingBox())!
+    const d = (await detail.boundingBox())!
+    expect(
+      Math.round(l.x + l.width),
+      `${await label.innerText()} runs into the objective`,
+    ).toBeLessThanOrEqual(Math.round(d.x))
+    // and the objective is readable in full without leaving the row
+    expect(await detail.locator('[title]').first().getAttribute('title'))
+      .toContain('Settle: DOES AN ANTICHAIN')
+  }
+})
+
 test('timeline: a revision row opens onto the judge that ruled on it', async ({
   page,
   request,

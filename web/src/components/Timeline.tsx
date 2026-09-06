@@ -4,6 +4,7 @@ import { goalCode, goalLabel, groupCode, groupLabel } from '../lib/format'
 import {
   EVENT_CLS,
   countWord,
+  eventColumn,
   eventLabel,
   eventTitle,
   failureLabel,
@@ -152,8 +153,17 @@ function Row({
     : e.note
   return (
     <div>
+      {/* three tracks, and the middle one is FIXED: the verb column was
+          sized at ~15 characters while the vocabulary runs to 18
+          ("theorist came back"), and a grid item wider than its track
+          does not shrink — it paints over the next one ("theorist at
+          workSettle: DOES AN A…", owner 2026-09-06). The width is
+          `TIMELINE_LABEL_MAX` characters plus the theory rows' PAGE
+          mark; every label fits it, and the count that may follow one
+          ellipsises inside the column rather than out of it. */}
       <div
-        className={`grid grid-cols-[3.1rem_6.2rem_1fr] items-baseline gap-2 rounded-md px-2 py-[3px] ${
+        data-event-row={e.kind}
+        className={`grid grid-cols-[3.1rem_8.6rem_1fr] items-baseline gap-2 rounded-md px-2 py-[3px] ${
           expandable ? 'cursor-pointer hover:bg-surface' : ''
         }`}
         onClick={expandable ? () => setOpen((v) => !v) : undefined}
@@ -174,20 +184,23 @@ function Row({
           {TIME_FMT.format(new Date(e.at))}
         </span>
         <span
+          data-event-label={e.kind}
           /* the theory layer's rows carry the PAGE mark: the verb says
              what was asked, the mark says what comes back — a document,
              which is neither a star nor a brick. Identity is shape, so
              the ink stays the quiet default (DESIGN.md). */
-          className={`text-xs whitespace-nowrap ${
-            isTheory(e.kind) ? 'flex items-baseline gap-1.5 ' : ''
-          }${EVENT_CLS[e.kind] ?? 'text-ink-dim'}`}
-          title={eventTitle(e.kind)}
+          className={`flex min-w-0 items-baseline gap-1.5 text-xs ${
+            EVENT_CLS[e.kind] ?? 'text-ink-dim'
+          }`}
+          title={`${eventColumn(e.kind, e.n)} — ${eventTitle(e.kind)}`}
         >
-          {isTheory(e.kind) && PAGE}
-          {eventLabel(e.kind)}
-          {e.n !== null && <span className="tnum"> {countWord(e.kind, e.n)}</span>}
+          {isTheory(e.kind) && <span className="shrink-0">{PAGE}</span>}
+          <span className="truncate">
+            {eventLabel(e.kind)}
+            {e.n !== null && <span className="tnum"> {countWord(e.kind, e.n)}</span>}
+          </span>
         </span>
-        <span className="flex min-w-0 items-baseline gap-2">
+        <span data-event-detail className="flex min-w-0 items-baseline gap-2">
           {!following && (
           <span
             role="button"
@@ -256,7 +269,10 @@ function Row({
         </span>
       </div>
       {open && (
-        <div className="mx-2 mt-1 mb-2 ml-[9.4rem] rounded-lg border border-edge bg-surface px-3 py-2">
+        /* the expansion starts where the objective does, so the indent
+           is the two fixed tracks and their gaps and moves with them:
+           3.1 + 0.5 + 8.6 − 0.4 for the row's own px-2 */
+        <div className="mx-2 mt-1 mb-2 ml-[11.8rem] rounded-lg border border-edge bg-surface px-3 py-2">
           {argument && argument !== e.label && (
             /* which argument this brick serves. A column would cost
                width on every problem to answer a question only

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   EVENT_CLS,
+  EVENT_KINDS,
+  TIMELINE_LABEL_MAX,
   countWord,
   cycleLine,
   decisionKindLabel,
   decisionKindTitle,
+  eventColumn,
   eventLabel,
   eventTitle,
   isTheory,
@@ -165,5 +168,25 @@ describe('cycleLine', () => {
     expect(
       cycleLine({ phase: 'judging', round: 1, objections: [], since_sec: 90 }, 'document'),
     ).toBe('round 1 — the reviewer is examining the document (1m 30s)')
+  })
+})
+
+describe("the Timeline's label column", () => {
+  it('fits every verb the vocabulary can print', () => {
+    // The column is FIXED — a state label that reflowed would make
+    // every row's objective start somewhere else — so its width is a
+    // promise about this table. It was sized at ~15 characters for a
+    // vocabulary that had grown to 18, and the overflow painted over
+    // the objective beside it ("theorist at workSettle: DOES AN A…").
+    const over = EVENT_KINDS.filter((k) => eventLabel(k).length > TIMELINE_LABEL_MAX)
+    expect(over, `${over.map((k) => `${k} → ${eventLabel(k)}`).join(', ')}`).toEqual([])
+  })
+
+  it('says the count in the same breath as the verb', () => {
+    expect(eventColumn('failed', 3)).toBe('failed 3')
+    expect(eventColumn('theory', 2)).toBe('theory landed 2 rounds')
+    // a row with nothing to count says only the verb — a trailing
+    // separator with no number is ink for a fact that is not there
+    expect(eventColumn('proved', null)).toBe('proved')
   })
 })
