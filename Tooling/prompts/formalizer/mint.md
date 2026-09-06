@@ -1,4 +1,4 @@
-Produce **one** new brick that settles `## The argument for this brick` — keep the claim, the Lean shape is yours.
+Produce **one** new brick that settles `## The argument for this brick` — keep the claim and its name, the Lean shape is yours.
 
 Before minting, grep Mathlib + Library + siblings to confirm the brick does not already exist.
 
@@ -36,7 +36,7 @@ end Problems.<problem>
 ```
 
 - Edit only `new_forward.lean`, one declaration per invocation — do NOT create other `new_*.lean` files.
-- `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive. Read from the declaration head, not the filename. A slug colliding with an existing `proofs/L_*.lean` hard-fails the commit — pick a fresh name (Grep `proofs/` if unsure).
+- `<slug>` is the brick's name (`### <name>` in `## The argument for this brick`); the declaration head MUST carry it — another name fails the commit.
 - When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT take a name `Defs.lean` already defines — that vocabulary is user-owned.
 - Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
 - If the proof is easy, prove it directly — it must then be sorry-free and `validate_file`-clean.

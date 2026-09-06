@@ -2,10 +2,10 @@
 
 The decision-kind rules the Strategist operates under — check quoted contract clauses against THESE, not the proposal's paraphrase:
 
-- `Inject` — `proof`. This brick's `Theorem.` statement and `Proof.` argument, copied from this batch's `## Proof` with the vocabulary it uses. The worker formalizes the Theorem against the Proof. Three shapes:
-  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
-  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
-  - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
+- `Inject` — `brick`: the name of a brick in this batch's `## Proof`. The worker formalizes its Theorem against its Proof. Three shapes:
+  - With `target_goal_id`: work that goal; the brick's name is that goal's slug. The worker chooses prove-directly vs decompose itself.
+  - Without `target_goal_id`: mint ONE new def/theorem `<name>` into `proofs/L_<name>.lean`; a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
+  - With `target_goal_id` and a counterexample as the brick's Proof: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Theorize` — `objective`, `situation`. Hands one load-bearing unknown to the theory layer (the Theorist); it answers with a document — theorems, attempts on the open statement, leads — that comes back to you as this batch's outcome.
     `objective` — a statement whose proof or refutation would move the claim, or the open statement to be settled, with why the charter needs it.
@@ -31,10 +31,9 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 
 Standing rules the batch itself must satisfy — same source, same words:
 
-- Once complete, copy each brick's `Theorem.` + `Proof.` into its Inject's `proof`.
-- Every Inject is rigorously proven in the Proof — inject only what is fully argued.
+- Every brick in the Proof is fully argued; an Inject names one of them.
 - A batch must not leave your group idle: after it commits, something of yours is in flight, dispatched, or delivered.
-- Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
+- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 `ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children; `Delegate` only to the top group and its direct sub-groups — the group tree caps two levels below the top.

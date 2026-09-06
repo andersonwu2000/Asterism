@@ -48,6 +48,7 @@ To outsource:
   end Problems.<problem>
   ```
   `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive; the theorem name MUST equal the slug in the filename. Delete any file you change your mind about.
+  `## Lemmas named by the strategist` (Context.md) lists bricks whose argument is already written: a stub under that exact name hands its worker that argument. Prove one inline or decompose differently when the route calls for it — the name is guidance. One marked alive or landed is cited, not re-declared.
 - **Re-declare binders**: each sub-goal is a stand-alone Lean theorem — re-declare every parent binder its type uses or its own sub-goals will thread; when unsure, keep.
 - **Link**: one final apply_edit on `patch.lean` — once a stub is on disk, reference `<slug> <args>` directly, replacing every sorry placeholder:
   ```

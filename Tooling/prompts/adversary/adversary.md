@@ -12,7 +12,7 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 - `charter.md` — this group's charter: the claim this judgment settles. The fixed reference point — every "charter" and "MAIN claim" in the criteria mean it. Below it, the charters above this one (ancestral context) and those this chain already handed back; returned charters are context, not verdicts.
 - `user_word.md` (if present) — the user's standing directives, verbatim, binding for every group at every depth. Not part of the claim under judgment; a batch that plainly contradicts them fires criterion 1.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / shelved with anchoring) since it passed. **Check the candidate Argument's account against those results.**
-- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why the requirement needs this plan), `## Proof` (every brick as `Theorem.` statement then `Proof.` argument — no gaps), `## Roadmap` (first line `Relation:`; then PAST closures, each collapsed to its conclusion with citations and restart condition / NOW this batch's decisions, each Inject with its consumption chain and endpoint / AHEAD drawn only to the known boundary, each item one sentence of push and prerequisites; handling an open statement = a brick whose endpoint is the open statement, an argument or counterexample on it in the Proof, or a `Theorize`).
+- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why the requirement needs this plan), `## Proof` (every brick: `### <name>`, optional `Uses: <names>`, `Theorem.` statement, `Proof.` argument — no gaps), `## Roadmap` (first line `Relation:`; then PAST closures, each collapsed to its conclusion with citations and restart condition / NOW this batch's decisions, each Inject with its consumption chain and endpoint / AHEAD drawn only to the known boundary, each item one sentence of push and prerequisites; handling an open statement = a brick whose endpoint is the open statement, an argument or counterexample on it in the Proof, or a `Theorize`).
 - `decisions.md` — this batch's decisions; goal targets are annotated `(slug, status)`.
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the charter's prose.**
@@ -30,13 +30,12 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 2. **Direction**: `proposal.md`'s ## Roadmap must open with an argued `Relation:` — how the route's endpoint stands to the charter (equivalent or stronger is fine) — and its ### AHEAD is drawn only to the known boundary (the exit or a named open statement), with the open statement handled this batch. Items beyond the open statement, a Relation without argument, or a route that contradicts the record or re-walks it in the same shape, are not allowed.
 3. **Honesty**: every assertion in `proposal.md`'s ### PAST carries a citation — a node or a framework message — and every closure names its dead instance and restart condition. A mathematical claim rests on a complete argument or the kernel's record, and a claim about framework behaviour anywhere in the proposal cites its source. Conjecture treated as fact, or reliance on external circumstances, is not allowed.
 4. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed; a `compute` evaluation (counts, distributions, exhaustive checks) is not an argument.
-5. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 
 Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. A fired criterion = rebut; a reservation must not be used to patch over one.
 
 Notes:
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unverified speculation about framework behaviour is rebutted and corrected.
-- Bricks of the same batch must not cite each other; plan the downstream of a dependency chain in the Roadmap's AHEAD.
+- A brick consumes a same-batch brick only through its `Uses:` line; a brick listed under `Uses:` is not injected — it reaches the worker that declares a sub-goal of that name.
 - A decision that carries no proof is judged against its `contract.md` clause.
 - A `Delegate` is judged on its `reason`: it must show why the charter can be neither proven in-house nor paced through the Roadmap's AHEAD. A parent's own next step wearing a new group — however phrased — is rejected.
 - A `Theorize` is judged on its `objective` and `situation`: the objective must be an open statement the record, the literature and the author's own derivation cannot settle, and say why the charter needs it; the situation must carry pointers. A step the author could derive, or a question the record already answers, is rejected through criterion 1; a load-bearing open statement named exactly passes — that is what the theory layer is for.
@@ -57,7 +56,7 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
    "1": ["clear: <each NOW Inject's consumption chain and its endpoint>"],
    "2": ["clear: <the Relation's argument — which item is the open statement, how this batch handles it>"],
    "3": ["clear: <one concrete reason this holds for THIS proposal>"],
-   "4": ["clear: <one concrete reason>"], "5": ["clear: <one concrete reason>"]},
+   "4": ["clear: <one concrete reason>"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 

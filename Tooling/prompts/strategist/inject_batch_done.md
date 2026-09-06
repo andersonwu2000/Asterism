@@ -35,8 +35,11 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
 
     # <Title>       one line: this batch's goal
     ## Argument     why achieving the charter's requirement needs this plan — grounded in the latest outcomes
-    ## Proof        every brick this batch dispatches, each as `Theorem.` its full
-                    statement, then `Proof.` a complete argument — no logical gaps.
+    ## Proof        the bricks this batch injects and the bricks they use. Each brick:
+                    `### <name>` (snake_case; it becomes the node's name), an optional
+                    `Uses: <name>, <name>` line naming the same-batch bricks its argument
+                    consumes, `Theorem.` its full statement, then `Proof.` a complete
+                    argument — no logical gaps.
                     Nothing to argue → the single line "No new mathematics this batch."
     ## Roadmap      the research roadmap. First line `Relation:` — the statement the
                     route ends at and how it stands to the charter (implies / equivalent /
@@ -58,15 +61,14 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Theorize / Ing
                     in the Proof, or a `Theorize`.
     ## Conventions  standing notes every Formalizer sees on every spawn — short and general
 
-- Once complete, copy each brick's `Theorem.` + `Proof.` into its Inject's `proof`.
-- Every Inject is rigorously proven in the Proof — inject only what is fully argued.
+- Every brick in the Proof is fully argued; an Inject names one of them.
 - A batch must not leave your group idle: after it commits, something of yours is in flight, dispatched, or delivered.
 
 ## Decision kinds
-- `Inject` — `proof`. This brick's `Theorem.` statement and `Proof.` argument, copied from this batch's `## Proof` with the vocabulary it uses. The worker formalizes the Theorem against the Proof. Three shapes:
-  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
-  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
-  - With `target_goal_id` and a counterexample in `proof`: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
+- `Inject` — `brick`: the name of a brick in this batch's `## Proof`. The worker formalizes its Theorem against its Proof. Three shapes:
+  - With `target_goal_id`: work that goal; the brick's name is that goal's slug. The worker chooses prove-directly vs decompose itself.
+  - Without `target_goal_id`: mint ONE new def/theorem `<name>` into `proofs/L_<name>.lean`; a definition brick writes `Definition.` in place of `Theorem.`, no `Proof.`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
+  - With `target_goal_id` and a counterexample as the brick's Proof: refute that goal. The worker proves the negation, the kernel certifies it, the goal becomes `disproved` and the negation lands as `<slug>_disproof`. Never mint `¬claim` by hand.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Theorize` — `objective`, `situation`. Hands one load-bearing unknown to the theory layer (the Theorist); it answers with a document — theorems, attempts on the open statement, leads — that comes back to you as this batch's outcome.
     `objective` — a statement whose proof or refutation would move the claim, or the open statement to be settled, with why the charter needs it.
@@ -94,7 +96,7 @@ Plans showing these traits are sent back:
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
 ## Rules
-- Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
+- Same-batch Injects are independent (concurrent dispatch). A brick another brick lists under `Uses:` is not injected: its Theorem and Proof reach the worker that declares a sub-goal of that name, at any depth. A brick that waits on a parked goal stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 - A reshaped statement of a goal that already exists is that goal, not a new lemma (the framework aliases or links it).
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it is not a fact.
@@ -102,14 +104,13 @@ Plans showing these traits are sent back:
 ## Examples
 
 ```json
-// need remains → brick(s) + keep parked (N mints allowed per batch)
-[{"kind": "Inject",
-  "proof": "## Need
-Follow-up brick Y for the remaining step..."},
- {"kind": "Inject", "target_goal_id": "succ_glue",
-  "proof": "Brick `block_enum_consecutive` (batch 8027877c) landed — provides the Fin-index layout that previously blocked. Cite `block_enum_consecutive` directly; don't reconstruct the enumeration."},
+// need remains → brick(s) + keep parked (N mints allowed per batch).
+// The Proof has `### glue_step` with `Uses: block_index_bound`, and `### block_index_bound`;
+// only `glue_step` is injected — `block_index_bound` reaches whichever worker declares it.
+[{"kind": "Inject", "brick": "glue_step"},
+ {"kind": "Inject", "target_goal_id": "succ_glue", "brick": "succ_glue"},
  {"kind": "ConfirmShelve", "target_goal_id": 2950,
-  "reason": "Still parked; awaits bricks Y + Z"}]
+  "reason": "Still parked; awaits glue_step"}]
 ```
 
 ```json
@@ -117,7 +118,7 @@ Follow-up brick Y for the remaining step..."},
 [{"kind": "Theorize",
   "objective": "<a statement P: proving it makes AHEAD item k provable, refuting it closes this route — or why neither can be done>",
   "situation": "<attempts on it s<id>, s<id> died at the same step <step>; the landed <lemma_slug> gives <what>; <goal_slug> (g<id>) is parked for it>"},
- {"kind": "Inject", "proof": "<Theorem. a special case or prerequisite of P, with a complete Proof and the argument that every proof of P needs it … Proof. …>"},
+ {"kind": "Inject", "brick": "<name of the Proof brick: a special case or prerequisite of P, argued with why every proof of P needs it>"},
  {"kind": "ConfirmShelve", "target_goal_id": <root_id>,
   "reason": "Still parked; awaiting P or its refutation"}]
 ```

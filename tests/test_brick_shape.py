@@ -1,21 +1,23 @@
-"""The two-part brick (owner ruling 2026-08-30).
+"""The named two-part brick (owner rulings 2026-08-30, 2026-09-07).
 
-Every brick a batch dispatches is written the way a mathematician
-writes it — `Theorem.` its full statement, then `Proof.` its argument
-— and the Inject's `proof` carries exactly that. The statement thereby
-gets a structural position of its own: the mint worker's
-`## Your assignment` (p406, 2026-08-30: with the claim buried in prose
-the intake measured a lemma brick against the charter's root and
-bounced it back to the Strategist), a per-brick unit for the judge, a
-handle for dedupe and for same-gap detection across revisions. A
-definition brick writes `Definition.` and carries no `Proof.`.
+Every brick a batch argues is written the way a mathematician writes it
+— `### <name>`, an optional `Uses:` line, `Theorem.` its full statement,
+then `Proof.` its argument. The statement thereby gets a structural
+position of its own: the mint worker's `## Your assignment` (p406,
+2026-08-30: with the claim buried in prose the intake measured a lemma
+brick against the charter's root and bounced it back to the Strategist),
+a per-brick unit for the judge, a handle for dedupe and for same-gap
+detection across revisions. A definition brick writes `Definition.` and
+carries no `Proof.`.
+
+The NAME is the second half (2026-09-07): an `Inject` names a brick
+instead of carrying a copy of it, so the name is the node's name and
+the only thing that has to travel.
 """
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-
-import pytest
 
 from Tooling.state import db, groups, programme
 from Tooling.state import intent as intent_mod
@@ -29,8 +31,10 @@ DEF = ("Definition. `w F` is the number of members of `F` containing "
        "the point of largest degree.\n")
 PROSE = "Prove simultaneously that f n ≤ n; this follows by induction.\n"
 
+NAMED = "### monotone_bound\n" + BRICK
 
-# ─── the parser ──────────────────────────────────────────────────────
+
+# ─── the body parser ─────────────────────────────────────────────────
 
 def test_parse_splits_statement_from_argument():
     head, stmt, arg, err = programme.parse_brick_proof(BRICK)
@@ -77,50 +81,67 @@ def _S():
     return s
 
 
-def test_verify_rejects_an_inject_without_the_two_parts(tmp_path):
+def test_verify_rejects_an_inject_that_still_carries_proof(tmp_path):
+    """The copy is gone (2026-09-07): a decision that still carries one
+    is refused by name, never quietly accepted — silent acceptance is
+    exactly how the copy and the `## Proof` drift apart."""
     conn, top = _conn(tmp_path)
     S = _S()
-    err = S.verify_decision(S.Decision(kind="Inject", brief=PROSE), conn,
+    err = S.verify_decision(S.Decision(kind="Inject", brief=BRICK), conn,
                             problem="Test.bs", group_id=top)
-    assert "`Theorem.`" in err and "`Proof.`" in err
+    assert "`proof`" in err and "brick" in err and "### <name>" in err
 
 
-def test_verify_accepts_the_shape(tmp_path):
+def test_verify_accepts_a_named_brick(tmp_path):
     conn, top = _conn(tmp_path)
     S = _S()
-    for brief in (BRICK, BOLD, DEF):
-        assert S.verify_decision(S.Decision(kind="Inject", brief=brief), conn,
-                                 problem="Test.bs", group_id=top) == "", brief
+    d = S.Decision(kind="Inject", payload={"brick": "monotone_bound"})
+    assert S.verify_decision(d, conn, problem="Test.bs", group_id=top) == ""
 
 
 # ─── the mint worker's assignment ────────────────────────────────────
 
-def test_mint_worker_gets_the_statement_as_its_assignment(tmp_path, monkeypatch):
-    from Tooling.agent.phase2_context.forward import compile_forward_context
-    monkeypatch.chdir(tmp_path)
+def _mint_fixture(tmp_path):
+    """A problem with one passed revision carrying `NAMED`, and one
+    Inject naming that brick. Returns (conn, decision_id)."""
     (tmp_path / "Problems" / "p" / "proofs").mkdir(parents=True)
     c = db.connect(tmp_path / "asterism.db")
     db.init_schema(c)
     c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
               " VALUES ('p', ?, 1)", (db.now(),))
-    groups.ensure_top_group(c, "p")
+    top = groups.ensure_top_group(c, "p")
     ts = db.now()
     did = int(c.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, brief, payload, created_at, updated_at)"
-        " VALUES ('p', 1, 'routine', 'Inject', ?, '{}', ?, ?)",
-        (BRICK, ts, ts)).lastrowid)
+        " trigger_kind, decision_kind, group_id, brick_name, batch_id,"
+        " payload, created_at, updated_at)"
+        " VALUES ('p', 1, 'routine', 'Inject', ?, 'monotone_bound', 'b1',"
+        " '{}', ?, ?)", (top, ts, ts)).lastrowid)
+    programme.record_pass(
+        c, "p",
+        "# T\n## Argument\na\n## Proof\n" + NAMED + "\n## Roadmap\nr\n",
+        {}, [], 1, "b1", group_id=top)
     c.commit()
+    return c, did
+
+
+def test_mint_worker_gets_the_statement_and_the_name(tmp_path, monkeypatch):
+    from Tooling.agent.phase2_context.forward import compile_forward_context
+    monkeypatch.chdir(tmp_path)
+    c, did = _mint_fixture(tmp_path)
     attempts = tmp_path / ".attempts" / "pid-1"
     attempts.mkdir(parents=True)
-    compile_forward_context(c, problem="p", decision_id=did,
-                            attempts_dir=attempts, workspace=tmp_path,
-                            intent=intent_mod.ProblemIntent(problem="p", charter="T"))
+    compile_forward_context(
+        c, problem="p", decision_id=did, attempts_dir=attempts,
+        workspace=tmp_path,
+        intent=intent_mod.ProblemIntent(problem="p", charter="T"))
     text = (attempts / "Context.md").read_text(encoding="utf-8")
     i_asg = text.index("## Your assignment")
     i_arg = text.index("## The argument for this brick")
     assert i_asg < i_arg, "the statement comes first — it is what the worker mints"
     assert "For every n, f n ≤ n." in text[i_asg:i_arg]
+    assert "`monotone_bound`" in text[i_asg:i_arg], "the name is the assignment too"
+    assert "### monotone_bound" in text[i_arg:]
 
 
 # ─── the prompts name the shape ──────────────────────────────────────
@@ -128,19 +149,20 @@ def test_mint_worker_gets_the_statement_as_its_assignment(tmp_path, monkeypatch)
 _PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 
 
-def test_strategist_prompts_ask_for_the_two_part_brick():
+def test_strategist_prompts_ask_for_the_named_two_part_brick():
     for name in ("inject_batch_done.md",):
         text = (_PROMPTS / "strategist" / name).read_text(encoding="utf-8")
         proof_line = text[text.index("## Proof"):text.index("## Roadmap")]
         assert "`Theorem.`" in proof_line and "`Proof.`" in proof_line, name
+        assert "### <name>" in proof_line and "Uses:" in proof_line, name
         inject = text[text.index("- `Inject`"):text.index("- `ConfirmShelve`")]
-        assert "This brick's `Theorem.` statement and `Proof.` argument" in inject, name
+        assert "`brick`: the name of a brick" in inject, name
         assert "`Definition.`" in inject, name
 
 
 def test_judge_and_worker_prompts_name_the_shape():
     adv = (_PROMPTS / "adversary" / "adversary.md").read_text(encoding="utf-8")
-    assert "`Theorem.` statement then `Proof.` argument" in adv
+    assert "`### <name>`" in adv and "`Uses: <names>`" in adv
     intake = (_PROMPTS / "formalizer" / "intake.md").read_text(encoding="utf-8")
     assert "`## Your assignment`" in intake and "settles this assignment" in intake
     formalize = (_PROMPTS / "formalizer" / "formalize.md").read_text(encoding="utf-8")
