@@ -916,3 +916,103 @@ def test_tex_check_says_precisely_that_there_is_no_toolchain(
     out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
     for engine in ("latexmk", "pdflatex", "tectonic"):
         assert engine in out, engine
+
+
+# ---------------------------------------------------------------------
+# the time box (incident 2026-09-06 13:44–13:48Z: a `tex_check` that
+# ran 228 s under a 120 s box and never answered at all)
+# ---------------------------------------------------------------------
+
+
+def _alive(pid: int) -> bool:
+    """Native check — Git Bash `kill -0` cannot see a Windows process."""
+    import os
+    import subprocess as sp
+
+    if os.name == "nt":
+        out = sp.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                     capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+#: An "engine" that does what TinyTeX's `latexmk.EXE` does: the work is
+#: a GRANDCHILD, and it inherits the pipe the parent was given.
+_SPAWNS_A_GRANDCHILD = (
+    "import pathlib, subprocess, sys, time\n"
+    "kid = subprocess.Popen([sys.executable, '-c',"
+    " 'import time; time.sleep(20)'])\n"
+    "pathlib.Path('kid.pid').write_text(str(kid.pid))\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(20)\n"
+)
+
+
+def test_the_time_box_reaps_the_whole_build_tree(tmp_path: Path) -> None:
+    """`latexmk` on TinyTeX is a runscript `.EXE` whose real work is a
+    `perl` GRANDCHILD, and `pdflatex` is that one's child.
+
+    `subprocess.run(..., timeout=)` reaps the DIRECT child only, and its
+    Windows branch then calls `communicate()` with no timeout at all —
+    which blocks until every holder of the inherited stdout handle
+    exits, i.e. until the survivors finish anyway. On 2026-09-06 that
+    turned a 120 s box into 228 s of wall clock (`main.tex` written
+    21:44:24.678, pdfTeX's own log header `6 SEP 2026 21:48`).
+
+    A time box that does not end the work is not a time box.
+    """
+    import sys
+    import time
+
+    from Tooling.core import tex_engine
+
+    build = tmp_path / "build"
+    t0 = time.monotonic()
+    # `tectonic`'s command shape is `[exe, main.tex]` — one run, one
+    # argument — so python IS the engine and the source IS the script
+    res = tex_engine.compile_into(build, _SPAWNS_A_GRANDCHILD, tmp_path,
+                                  "tectonic", sys.executable, timeout_sec=2)
+    took = time.monotonic() - t0
+    assert res.status == "timeout", res.status
+    assert took < 10, f"the box fired at 2 s but the call took {took:.1f}s"
+    kid = int((build / "kid.pid").read_text())
+    for _ in range(50):
+        if not _alive(kid):
+            break
+        time.sleep(0.1)
+    assert not _alive(kid), f"grandchild {kid} outlived the time box"
+
+
+def test_tex_check_hands_back_what_the_log_already_said_on_timeout(
+    assistant_ws: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The box firing is not a reason to throw away the diagnosis.
+
+    On 2026-09-06 the compile that overran had ALREADY written
+    `./main.tex:110: LaTeX Error: Environment definition* undefined.`;
+    the timeout branch answered with the clock and nothing else, so the
+    one line that would have let the Assistant fix the document was
+    dropped on the floor."""
+    import shutil
+
+    from Tooling.core import tex_engine
+    from Tooling.knowledge import mcp_tools
+    from Tooling.state import project_docs
+
+    monkeypatch.setattr(shutil, "which",
+                        lambda n: "/usr/bin/latexmk" if n == "latexmk"
+                        else None)
+    monkeypatch.setattr(
+        tex_engine, "compile_into",
+        lambda *a, **k: tex_engine.Result(
+            "timeout", "latexmk",
+            detail="latexmk did not finish in 300s", log=_BAD_LOG))
+    project_docs.write(assistant_ws, "Erdos", "user/paper.tex", "slow")
+    out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
+    assert "user/paper.tex:12: Undefined control sequence." in out
+    assert "300s" in out
+    assert "main.tex" not in out

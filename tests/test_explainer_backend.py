@@ -293,3 +293,17 @@ def test_the_agy_explainer_gets_the_same_server_and_may_call_it(
     # …and the act channels stay shut.
     assert "command(*)" in perms["deny"]
     assert "write_file(*)" in perms["deny"]
+
+
+def test_the_explainer_spawn_carries_an_mcp_tool_timeout(
+    tmp_path: Path,
+) -> None:
+    """The Assistant's tools are the workers' tools, and two of them —
+    `compute` and `tex_check` — hold an MCP call for minutes. Pipeline
+    spawns say so (`llm/claude_cli.py`, `MCP_TOOL_TIMEOUT`); this seat
+    did not, so the Assistant's tool clock was whatever the CLI ships
+    with, and on 2026-09-06 a `tex_check` result never came back."""
+    from Tooling.llm.base import MCP_TOOL_TIMEOUT_SEC
+
+    env = explainer.CLAUDE.env(tmp_path)
+    assert env["MCP_TOOL_TIMEOUT"] == str(MCP_TOOL_TIMEOUT_SEC * 1000)

@@ -1172,3 +1172,97 @@ def test_a_conversation_cannot_change_backends_midway(
     # …but a fresh session may be seated anywhere
     _ask(c, session=_session(c), model="gemini-3.6-flash-high")
     assert spawned[-1].argv[0] == "C:/agy.exe"
+
+
+# -- a turn that ends without ending (incident 2026-09-06 13:44–13:48Z) ---
+
+
+#: The stream as it stopped that afternoon: a sentence, a tool call,
+#: and then nothing — no `tool_result`, no `result`. Built from the
+#: captured one so the shape is the CLI's, not a guess.
+_CUT_MID_TOOL = [
+    _REAL_STREAM[0],
+    json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "text_delta",
+                  "text": "I will compile it and read the errors."}}}),
+    *_REAL_STREAM[3:9],
+]
+
+
+def test_a_stream_that_stops_mid_tool_reaches_the_panel_as_an_error(
+    workspace: Path, spawned: "list[_FakePopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-06 13:48:12Z: the CLI went away while `tex_check` was
+    still running. The loop broke on the reader's EOF without a `done`,
+    the `rc != 0 and not got_any` guard did not fire (prose HAD
+    streamed), and so the turn ended with no `done` and no `error` at
+    all — the panel kept a `tex_check ▸` row pulsing under an answer
+    that never came, and the record read `ok: False, note: None`.
+
+    Silence is not an ending. A turn that stops without `done` is a
+    failure that has to SAY so: on the wire, on the record, and on the
+    row it stopped inside."""
+    monkeypatch.setitem(_ACTIVE_STREAM, "lines", _CUT_MID_TOOL)
+    c = TestClient(create_app(workspace))
+    sid = _session(c)
+    frames = _ask(c, "compile it", session=sid)
+    assert [f["type"] for f in frames].count("done") == 0, frames
+    assert frames[-1]["type"] == "error", frames
+    # the reason names the row it died inside — "it stopped" is not a
+    # reason, and the tool is the only thing the reader can act on
+    assert "Glob" in frames[-1]["detail"], frames[-1]
+    rec = _sessions.get(workspace, sid)
+    turn = rec["turns"][-1]
+    assert turn["role"] == "assistant" and turn["ok"] is False
+    assert turn["note"], turn
+    assert turn["tools"][-1]["ok"] is False, turn["tools"]
+
+
+def test_a_reader_that_walks_away_leaves_the_reason_on_the_record(
+    workspace: Path, slow_spawn: "list[_SlowPopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The partial answer is kept (that is already pinned above); what
+    was missing is WHY it is partial. A turn read back a week later with
+    `ok: False` and nothing else cannot be told from a turn the engine
+    failed."""
+    def _reader(proc, out) -> None:
+        out.put({"type": "tool_start", "id": "t1", "name": "tex_check",
+                 "input": {"path": "user/paper.tex"}})
+        out.put({"type": "delta", "text": "compiling"})
+        time.sleep(3)
+        out.put(None)
+
+    monkeypatch.setattr(explainer.CLAUDE, "reader", _reader)
+    app = create_app(workspace)
+    c = TestClient(app)
+    sid = _session(c)
+    with c.stream("POST", "/api/chat",
+                  json={"message": "why?", "session_id": sid}) as r:
+        for line in r.iter_lines():
+            if "\"delta\"" in line:
+                break                      # closed tab / stop button
+    for _ in range(500):
+        if not app.state.chat.lock.locked():
+            break
+        time.sleep(0.01)
+    turn = _sessions.get(workspace, sid)["turns"][-1]
+    assert turn["ok"] is False
+    assert turn["note"], turn
+    assert turn["tools"][-1]["ok"] is False, turn["tools"]
+
+
+def test_the_tex_box_fits_inside_the_turn_that_waits_for_it() -> None:
+    """A tool call is SILENCE on this stream: nothing crosses it while
+    `tex_check` compiles, so the turn's idle deadline is the real
+    ceiling on the tex time box — and the CLI's own MCP tool timeout
+    has to sit above both, or the answer is discarded before it is
+    handed back. Three clocks, one order, pinned here so raising any of
+    them alone fails."""
+    from Tooling.core import tex_engine
+    from Tooling.llm.base import MCP_TOOL_TIMEOUT_SEC
+
+    assert tex_engine.TIMEOUT_SEC + 120 <= _chat._IDLE_SEC_DEFAULT
+    assert tex_engine.TIMEOUT_SEC + 300 <= MCP_TOOL_TIMEOUT_SEC

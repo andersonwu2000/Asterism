@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   emptyTurn,
+  endStream,
   bareToolName,
   parseSseFrames,
   reduceEvent,
@@ -137,6 +138,37 @@ describe('reducing a turn', () => {
     u = reduceEvent(u, { type: 'done', ok: false, subtype: 'error_max_turns' }, 1)
     expect(u.ok).toBe(false)
     expect(u.note).toContain('error_max_turns')
+  })
+
+  /*
+   * 2026-09-06: the CLI went away while `tex_check` was compiling. The
+   * body simply ended — no `done`, no `error` — and the panel kept the
+   * row pulsing forever under an answer that never came. A stream that
+   * stops is an ending, and an ending has to reach both the turn and
+   * the row it stopped inside.
+   */
+  it('closes a row the stream died inside as failed, with the reason', () => {
+    let t = emptyTurn()
+    t = reduceEvent(t, { type: 'delta', text: 'I will compile it.' }, 1)
+    t = reduceEvent(
+      t,
+      { type: 'tool_start', id: 'a', name: 'mcp__asterism_tools__tex_check', input: { path: 'user/paper.tex' } },
+      2,
+    )
+    t = endStream(t, 'the claude explainer stopped without finishing the answer')
+    expect(t.done).toBe(true)
+    expect(t.ok).toBe(false)
+    expect(t.note).toBe('the claude explainer stopped without finishing the answer')
+    expect(t.rows[0]).toMatchObject({ running: false, ok: false })
+    expect(t.text).toBe('I will compile it.')
+  })
+
+  it('an error fails the row it interrupted, and says there what it says above', () => {
+    let t = emptyTurn()
+    t = reduceEvent(t, { type: 'tool_start', id: 'a', name: 'tex_check', input: {} }, 1)
+    t = reduceEvent(t, { type: 'error', detail: 'no word from the explainer for 600 s' }, 2)
+    expect(t.rows[0]).toMatchObject({ running: false, ok: false })
+    expect(t.rows[0].result).toBe('no word from the explainer for 600 s')
   })
 })
 
