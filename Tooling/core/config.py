@@ -376,10 +376,17 @@ del _seat
 EFFORT_CHOICES: "tuple[str, ...]" = ("low", "medium", "high", "xhigh",
                                      "max")
 
-#: Which backends actually read it. Not a refusal — a seat may be moved
-#: to codex a moment after its effort is set — but the row is marked so
-#: the reader is never turning a dial nobody reads.
-EFFORT_PROVIDERS: "frozenset[str]" = frozenset({"codex", "zen"})
+def reads_effort(provider: "str | None") -> bool:
+    """Does this backend read the knob at all?
+
+    Asked of the DECLARATION (`capabilities.reasoning_effort`), never of
+    a list of provider names kept here: a name-keyed copy of a declared
+    table is the copy that goes stale, and `capabilities.py` exists to
+    abolish exactly that. Not a refusal either — a seat may move to
+    codex a moment after its effort is set — but the row is marked, so
+    the reader is never turning a dial nobody reads."""
+    from ..llm import capabilities as _caps
+    return _caps.capabilities_for(provider).reasoning_effort
 
 for _seat in UI_SEATS:
     UI_EDITABLE_KEYS[f"{_seat}.reasoning_effort"] = (
@@ -588,7 +595,7 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             row["resolved"] = resolved
             row["choices"] = list(EFFORT_CHOICES)
             row["provider"] = prov
-            row["applies"] = str(prov) in EFFORT_PROVIDERS
+            row["applies"] = reads_effort(prov)
         elif typ is bool:
             # booleans render as a two-way select, never a free-text box.
             # Unset resolves to the ENGINE's default (mirrored below) —

@@ -309,6 +309,15 @@ class ProviderCapabilities:
     #: Meaningless when `stream_events` is False; `liveness_clock` reads
     #: the pair.
     stream_text_deltas: bool = False
+    #: Does this backend take a REASONING DEPTH as a setting of its own?
+    #: codex writes `model_reasoning_effort` into the spawn's TOML and
+    #: honours the ladder; claude has no such knob at all — it derives a
+    #: thinking budget per spawn from the wall clock — so a seat on it
+    #: reading `<kind>.reasoning_effort` reads a value nothing applies.
+    #: Declared rather than listed at the call site: a console control
+    #: that does nothing is a promise the page must not make, and the
+    #: page has to be able to ASK (owner, 2026-09-06).
+    reasoning_effort: bool = False
     #: How a second turn reaches the first turn's memory.
     session_resume: str = RESUME_UNDECLARED
     #: What the process exit code means. TRI-STATE — see the RC_*
@@ -640,6 +649,10 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
     ),
     "codex": ProviderCapabilities(
         name="codex",
+        # `model_reasoning_effort` in the spawn's TOML (`codex_cli.py`
+        # `_resolve_effort`), on codex's own ladder. The only backend
+        # here that takes a thinking depth as a setting.
+        reasoning_effort=True,
         # Nothing to ask. See `usage_from_session_log` below for the
         # shape the answer actually takes.
         usage_endpoint=False,
