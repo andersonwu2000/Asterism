@@ -972,12 +972,17 @@ def test_the_status_surfaces_read_a_theory_run_without_crashing(
 
 def test_the_tree_render_is_unmoved_by_a_theory_run(
     workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Theorize produces no goal, so TREE has nothing new to say — and
     saying nothing is the correct answer, not an omission: the document
     is listed under `## Notes on this problem`, which is where a reader
     looking for prose goes."""
     from Tooling.state import tree as _tree
+    # The render's header carries a UTC stamp to the SECOND, so two
+    # renders taken across a tick differ on the clock alone (full-suite
+    # red, 2026-09-06). Freeze it: the claim is about the body.
+    monkeypatch.setattr(_tree, "_stamp", lambda: "2026-09-06T00:00:00Z")
     db.insert_goal(conn, problem="p", slug="main",
                    lean_path="Problems/p/Root.lean", statement="T",
                    origin="root", depth=0)
