@@ -571,6 +571,38 @@ def test_claude_spawn_adversary_retry_is_not_framed_as_a_lake_build(
     assert "verdict.json" in payload
 
 
+def test_claude_spawn_theorist_retry_is_the_reviewers_rebuttal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The author's revision turn (2026-09-06) resumes on the
+    REVIEWER'S fired bullets — `checkpoint.hand_to_author` passes them
+    as retry_context. Fenced as build stderr with "produce a fresh
+    patch.lean" they read as a phantom Lean failure, which is what
+    every revision round in production got. Name the refusal and the
+    document to revise."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="theorist",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context="- criterion 3: the bound is asserted, not derived",
+    ))
+    payload = captured[0][captured[0].index("-p") + 1]
+    assert "failed lake build" not in payload
+    assert "patch.lean" not in payload
+    assert "- criterion 3: the bound is asserted, not derived" in payload
+    assert "report.md" in payload
+
+
 def test_claude_spawn_retry_handles_missing_retry_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

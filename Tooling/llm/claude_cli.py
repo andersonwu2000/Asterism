@@ -363,6 +363,64 @@ def _retry_hint_for_patterns(stderr: str) -> str:
     return "\n\nRetry hints based on the lake error above:\n" + "\n".join(out)
 
 
+# A retry is NOT always a failed lake build, and naming the wrong
+# rejection sends the agent hunting a phantom: the strategist's refused
+# decision.json, the judge's refused verdict.json (2026-09-05), a
+# watchdog kill that never reached a build (P13 4284 spin, 2026-06-15),
+# and the author's REVIEW rebuttal, fenced as build stderr under
+# "produce a fresh patch.lean" for every revision round in production
+# until 2026-09-06. Keys: LLMRequest.kind, then `reason:<retry_reason>`
+# when the kind has no entry. `{err}` (the retry_context) and
+# `{attempts_dir}` are the only interpolations — no bare braces.
+_RETRY_PROMPTS: dict[str, str] = {
+    "strategist": (
+        "Your previous decision.json failed verification:\n\n"
+        "```\n{err}\n```\n\n"
+        "Produce a fresh decision.json fixing this. The schema and rules "
+        "from your initial Context.md are unchanged. Write to "
+        "{attempts_dir}/decision.json."),
+    "adversary": (
+        "The framework refused your previous verdict.json:\n\n"
+        "```\n{err}\n```\n\n"
+        "Write the corrected file to {attempts_dir}/verdict.json — your "
+        "reading of the proposal is unchanged; this is its shape."),
+    "theorist": (
+        "The reviewer refused your document. Their fired bullets, "
+        "verbatim:\n\n```\n{err}\n```\n\n"
+        "Revise {attempts_dir}/report.md to answer every fired bullet — "
+        "where a bullet names a way out, take it or say why not; keep "
+        "what was clear."),
+    # No `{err}`: that turn's "combined rc=0" describes nothing to act on.
+    "reason:agent_stuck_thinking": (
+        "Your previous attempt ran out of time mid-thinking and shipped "
+        "no usable patch — there was no lake error (it never reached a "
+        "build). Write patch.lean directly this time; don't re-derive the "
+        "whole plan. Reuse the prior PROPOSAL.md. Write outputs into "
+        "{attempts_dir}/."),
+}
+
+
+def _retry_prompt(req: LLMRequest) -> str:
+    """The short inline prompt for an in-session retry: the framing
+    `_RETRY_PROMPTS` gives this kind, else a lake build with hints."""
+    tmpl = (_RETRY_PROMPTS.get(req.kind or "")
+            or _RETRY_PROMPTS.get(f"reason:{req.retry_reason}"))
+    if tmpl is not None:
+        err = (req.retry_context or "(prior rejection not captured)").strip()
+        return tmpl.format(err=err, attempts_dir=req.attempts_dir)
+    err = (req.retry_context or "(lake error not captured)").strip()
+    # Unknown constants cited → verify names via Loogle/Grep instead of
+    # repeating the guess; the pattern table catches the expected-token /
+    # typeclass-stuck / no-progress shapes it misses ('' when neither).
+    hints = (_retry_hint_for_unknowns(_extract_unknown_constants(err))
+             + _retry_hint_for_patterns(err))
+    return (f"Previous attempt failed lake build with:\n\n"
+            f"```\n{err}\n```{hints}\n\n"
+            f"Produce a fresh patch.lean (same scope) addressing this "
+            f"error. Reuse the prior PROPOSAL.md unless the strategy "
+            f"needs to change. Write outputs into {req.attempts_dir}/.")
+
+
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Anthropic API floor for `thinking.budget_tokens`: a request with a smaller
@@ -1361,73 +1419,14 @@ class ClaudeCliProvider:
             session_lifetime_flag = []
             prompt = _load_prompt(req)
         # In-pipeline retry path uses `--resume`, a short inline prompt
-        # with the lake error embedded directly (no separate
+        # with the rejection embedded directly (no separate
         # RETRY_NOTE.md file → agent doesn't need a Read tool round-
         # trip), and skips the file-based prompt fetch (prior turn's
         # context lives in claude's session memory).
         elif req.is_retry and req.session_id:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag = []  # session persists
-            if req.kind == "strategist":
-                # Strategist retries on `verify_decisions` failure, not
-                # lake build. The prior turn already produced
-                # decision.json in this attempts_dir; the framework
-                # rejected it for the reason below. Same output target,
-                # different content.
-                err = (req.retry_context
-                       or "(verify error not captured)").strip()
-                prompt = (
-                    f"Your previous decision.json failed verification:"
-                    f"\n\n```\n{err}\n```\n\n"
-                    f"Produce a fresh decision.json fixing this. The "
-                    f"schema and rules from your initial Context.md are "
-                    f"unchanged. Write to "
-                    f"{req.attempts_dir}/decision.json."
-                )
-            elif req.kind == "adversary":
-                # A REFUSED verdict.json, not a lake build — "produce a
-                # fresh patch.lean" would send the judge after a phantom.
-                err = (req.retry_context or "(refusal not captured)").strip()
-                prompt = (f"The framework refused your previous verdict.json:"
-                          f"\n\n```\n{err}\n```\n\nWrite the corrected file to "
-                          f"{req.attempts_dir}/verdict.json — your reading of "
-                          f"the proposal is unchanged; this is its shape.")
-            elif req.retry_reason == "agent_stuck_thinking":
-                # Prior attempt died mid-thinking (watchdog / subprocess-
-                # timeout trap), NOT a lake error — rc=0, no build ran.
-                # Framing it as "failed lake build" with the `combined
-                # rc=0` detail sent agents hunting a phantom error and
-                # burning the next budget re-deriving the plan (P13 4284
-                # spin, 2026-06-15). Frame it honestly and steer toward
-                # shipping a tactic.
-                prompt = (
-                    f"Your previous attempt ran out of time mid-thinking "
-                    f"and shipped no usable patch — there was no lake error "
-                    f"(it never reached a build). Write patch.lean directly "
-                    f"this time; don't re-derive the whole plan. Reuse the "
-                    f"prior PROPOSAL.md. Write outputs into "
-                    f"{req.attempts_dir}/."
-                )
-            else:
-                err = (req.retry_context
-                       or "(lake error not captured)").strip()
-                # When the prior failure cites unknown constants, nudge
-                # the agent to verify names via Loogle/Grep instead of
-                # repeating the same guess. Empty hint when no match.
-                unknown_hint = _retry_hint_for_unknowns(
-                    _extract_unknown_constants(err))
-                # Generic stderr → diagnostic hint table. Catches
-                # expected-token / typeclass-stuck / tactic-no-progress
-                # patterns the unknown-constant matcher misses.
-                pattern_hint = _retry_hint_for_patterns(err)
-                prompt = (
-                    f"Previous attempt failed lake build with:\n\n"
-                    f"```\n{err}\n```{unknown_hint}{pattern_hint}\n\n"
-                    f"Produce a fresh patch.lean (same scope) addressing "
-                    f"this error. Reuse the prior PROPOSAL.md unless the "
-                    f"strategy needs to change. Write outputs into "
-                    f"{req.attempts_dir}/."
-                )
+            prompt = _retry_prompt(req)
         elif req.session_id:
             # Cold path with a caller-pinned session id (so a future
             # retry can resume).
