@@ -88,7 +88,7 @@ def plan_chain(chain: str, round_no: int) -> "list[dict]":
 
 
 def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
-              incoming_verdict: "dict | None" = None,
+              after_pair=None, incoming_verdict: "dict | None" = None,
               revision_basename: str = "draft.md",
               notes: "dict | None" = None) -> dict:
     """Walk a chain, writing the record as it goes.
@@ -98,6 +98,15 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
     answer and returns a dict with at least `body`. Both are injected so
     the chain can be exercised without a provider — the kinds below wire
     the real ones in.
+
+    `after_pair(round_no, verdict)` fires ONCE per pair, after both legs
+    have run, carrying the RESUMED leg's ruling. That is where the
+    debate advances, and it is here rather than inside `judge` because
+    the two legs must be handed the SAME dossier: a leg that appended
+    its own ruling as it finished gave the second leg a `dialogue.md`
+    one round longer than the first's, which is a second variable
+    (measured on the first dry smoke, 2026-09-07 — 1,925 bytes against
+    1,850).
 
     Everything is written UNDER `out` as it completes, not at the end: a
     chain that dies on its third leg still has to leave the first two
@@ -138,6 +147,7 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
                     break
             continue
 
+        pair_verdict = None
         for leg in LEGS:
             t0 = time.monotonic()
             rec = judge(n, leg, leg == "resumed")
@@ -161,8 +171,11 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
             _write_json(out, f"verdict_{leg}.json",
                         verdict if verdict is not None else {})
             if leg == "resumed" and verdict is not None:
-                carried = verdict
+                carried = pair_verdict = verdict
             _write_json(out, "rounds.json", rounds)
+        # The round is over for BOTH legs — now the debate may move.
+        if after_pair is not None and pair_verdict is not None:
+            after_pair(n, pair_verdict)
 
     timing = {
         "legs": [{k: r.get(k) for k in
@@ -521,15 +534,22 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
                     _review.projection_dir(attempts, round_no), thread)
                 if grown is not None:
                     state["reviewer_rollout"] = grown
-            if verdict is not None:
-                state["dialogue"] = list(state["dialogue"]) + [
-                    {"round": round_no,
-                     "criticisms": verdict.get("criticisms") or []}]
             return {"verdict": verdict, "err": err, "rc": rc,
                     "pipeline_id": pid, "resumed_thread": thread,
                     "usage": _driver.usage_for(conn, [pid]),
                     "projection": str(
                         _review.projection_dir(attempts, round_no))}
+
+        def _advance(round_no: int, verdict: dict) -> dict:
+            """The debate moves — once the round is over for both legs.
+
+            The same append `run_theorist` makes between rounds; it is
+            not inside `_leg` because both legs must read the SAME
+            `dialogue.md`."""
+            state["dialogue"] = list(state["dialogue"]) + [
+                {"round": round_no,
+                 "criticisms": verdict.get("criticisms") or []}]
+            return {}
 
         def _revise(round_no: int, verdict: dict) -> dict:
             """The author's answer, on the author's OWN session.
@@ -588,7 +608,7 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
 
         result = run_chain(
             chain=chain, round_no=int(opts.get("round_no") or 1), out=out,
-            judge=_leg, revise=_revise,
+            judge=_leg, revise=_revise, after_pair=_advance,
             incoming_verdict=incoming,
             revision_basename=f"draft_r{int(opts.get('round_no') or 1)}.md",
             notes=_notes(opts, spec, reviewer_seen, author_seen,
@@ -720,17 +740,25 @@ def run_judge_review_round(spec: dict, ws: Path, out: Path, *,
                     / f"r{round_no}", thread)
                 if grown is not None:
                     state["judge_rollout"] = grown
-            if verdict is not None:
-                state["dialogue"] = list(state["dialogue"]) + [
-                    {"round": round_no, "role": "adversary",
-                     "criticisms": verdict.get("criticisms") or [],
-                     "verdict": verdict, "proposal": state["body"]}]
             return {"verdict": verdict, "err": jerr, "rc": rc,
                     "pipeline_id": pid, "resumed_thread": thread,
                     "usage": _driver.usage_for(conn, [pid]),
                     "projection": str(attempts
                                       / adversary.PROJECTION_DIRNAME
                                       / f"r{round_no}")}
+
+        def _advance(round_no: int, verdict: dict) -> dict:
+            """The debate moves — once the round is over for both legs.
+
+            The dialogue entry keeps the BODY the round ruled on beside
+            the ruling, the way `wake.py` files it, so the next judge
+            reads the round as documents. Not inside `_leg`: both legs
+            must read the SAME `dialogue.md`."""
+            state["dialogue"] = list(state["dialogue"]) + [
+                {"round": round_no, "role": "adversary",
+                 "criticisms": verdict.get("criticisms") or [],
+                 "verdict": verdict, "proposal": state["body"]}]
+            return {}
 
         def _revise(round_no: int, verdict: dict) -> dict:
             """The Strategist's rebuttal turn, on its own session — the
@@ -793,7 +821,7 @@ def run_judge_review_round(spec: dict, ws: Path, out: Path, *,
         first = int(opts.get("round_no") or 1)
         result = run_chain(
             chain=chain, round_no=first, out=out, judge=_leg,
-            revise=_revise, incoming_verdict=incoming,
+            revise=_revise, after_pair=_advance, incoming_verdict=incoming,
             revision_basename=f"proposal_r{first + 1}.md",
             notes=_notes(opts, spec, judge_seen, author_seen,
                          author_cut))

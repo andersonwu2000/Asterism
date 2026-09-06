@@ -350,6 +350,49 @@ def test_a_chain_runs_resumed_first_and_feeds_the_revision_from_it(
     assert "r3_wall_delta_sec" in timing
 
 
+def test_both_legs_of_a_pair_see_the_same_scene(tmp_path):
+    """The debate advances ONCE per pair, after both legs, on the
+    RESUMED ruling. A leg that appended its own ruling as it finished
+    handed the second leg a `dialogue.md` one round longer than the
+    first's — a second variable in an experiment with one (measured on
+    the first dry smoke, 2026-09-07: 1,925 bytes against 1,850)."""
+    seen: "list[tuple]" = []
+    dialogue: "list[dict]" = []
+
+    def judge(round_no, leg, resumed):
+        seen.append(("judge", round_no, leg, len(dialogue)))
+        return {"verdict": _verdict(f"r{round_no}-{leg}")}
+
+    def after_pair(round_no, verdict):
+        seen.append(("advance", round_no, verdict["criticisms"][0], None))
+        dialogue.append({"round": round_no})
+
+    cont.run_chain(chain="pair_revise_pair", round_no=2,
+                   out=tmp_path / "_out", judge=judge, after_pair=after_pair,
+                   revise=lambda n, v: {"rc": 0, "body": "x"})
+
+    assert seen == [
+        ("judge", 2, "resumed", 0),
+        ("judge", 2, "fresh", 0),            # SAME scene as the resumed leg
+        ("advance", 2, "fired: r2-resumed", None),
+        ("judge", 3, "resumed", 1),
+        ("judge", 3, "fresh", 1),
+        ("advance", 3, "fired: r3-resumed", None),
+    ]
+
+
+def test_a_pair_whose_resumed_leg_ruled_on_nothing_advances_nothing(
+        tmp_path):
+    """`after_pair` carries the resumed ruling; there being none is not
+    an empty one."""
+    fired = []
+    cont.run_chain(chain="pair", round_no=1, out=tmp_path / "_out",
+                   judge=lambda n, leg, r: {"verdict": None, "rc": 1},
+                   after_pair=lambda n, v: fired.append(n),
+                   revise=lambda *a: {})
+    assert fired == []
+
+
 def test_a_chain_that_owes_a_revision_with_no_verdict_is_refused(tmp_path):
     """`revise_then_pair` answers the verdict its PREDECESSOR produced.
     Started without one, the author would spend a turn on an empty
