@@ -80,11 +80,23 @@ RESUME_PROMPT_BASENAME = "_theory_resume_prompt.md"
 #: `_codex_sessions.json` is deliberately NOT here — it is the map from
 #: the framework's session id to codex's thread, i.e. the only thing
 #: that makes `exec resume` possible on that provider.
+#: NOR do the record files, and for the reason `round_materials.refresh`
+#: already states: they are rendered from the DB for the run that reads
+#: them, and a copy carried from another day describes another moment.
+#: Absent is safer than stale here — a stale `CATALOG.md` would show an
+#: author landed statements the record no longer has. Every one of these
+#: is rewritten by `compile_strategist_context` below the carry.
 _CARRY_SKIP_FILES = frozenset({
     CHECKPOINT_BASENAME, "Context.md", "_spawn.stderr",
     "_parser_state.json", "_gateway_session.token", "_mcp_tools.json",
     "_context_stats.json",
+    "TREE.md", "CATALOG.md", "BATCHES.md", "ADJUDICATIONS.md",
+    "PROGRAMME.md", "REJECTED.md", "LESSONS.md", "charter.md",
 })
+#: `review/` DOES travel — it is the argument itself. Each round's
+#: dossier is rebuilt from scratch when that round is (re-)reviewed
+#: (`build_review_projection` rmtrees it first), so what survives the
+#: carry is the earlier rounds' verdicts, which is the whole dialogue.
 _CARRY_SKIP_DIRS = frozenset({"sandbox"})
 
 
