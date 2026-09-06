@@ -92,6 +92,14 @@ def _workspace(tmp_path: Path) -> Path:
     conn.execute("INSERT INTO problems (name, created_at, project,"
                  " bootstrap_done) VALUES ('Erdos.p2', ?, 'Erdos', 1)", (ts,))
     gid = groups_mod.ensure_top_group(conn, PROBLEM, charter="c")
+    # Back-dated on purpose. `ensure_top_group` stamps `now()`, which in
+    # a test is later than the cutoff — so the rewind deleted the group
+    # and left the revision below pointing at nothing. In a real
+    # workspace a group always predates the revisions that name it; the
+    # unrealistic fixture only became visible once the snapshot started
+    # checking foreign keys AFTER the rewind (2026-09-07).
+    conn.execute("UPDATE groups SET created_at = ?, updated_at = ?"
+                 " WHERE id = ?", (BEFORE, BEFORE, gid))
     pdir = db.problem_dir(ws, PROBLEM)
     (pdir / "proofs").mkdir(parents=True)
     root = db.insert_goal(conn, problem=PROBLEM, slug="main",
@@ -276,6 +284,84 @@ def test_a_slice_id_is_derivable_from_the_problem_and_the_cutoff(tmp_path):
     sl = snap_mod.take(ws, tmp_path / "lab", problem=PROBLEM, cutoff=CUT)
     assert sl.id == want
     assert sl.path == lab.snapshots_dir(tmp_path / "lab") / want
+
+
+def _fk_db(path: Path, *, parent_rows, child_rows) -> Path:
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+    c.execute("CREATE TABLE child (id INTEGER PRIMARY KEY,"
+              " pid INTEGER REFERENCES parent(id))")
+    c.execute("CREATE TABLE library_decls (id INTEGER PRIMARY KEY,"
+              " pid INTEGER REFERENCES parent(id))")
+    c.executemany("INSERT INTO parent (id) VALUES (?)",
+                  [(i,) for i in parent_rows])
+    c.executemany("INSERT INTO child (id, pid) VALUES (?, ?)", child_rows)
+    c.execute("INSERT INTO library_decls (id, pid) VALUES (99, 404)")
+    c.commit()
+    c.close()
+    return path
+
+
+def test_a_rewind_that_leaves_a_dangling_key_refuses_the_slice(tmp_path):
+    """`take` checks foreign keys on the PRUNED copy — BEFORE the
+    rewind — so for as long as that was the only check, a table missing
+    from `rewind.DATED_PROBLEM_TABLES` produced a slice that passed
+    every check the snapshot makes and failed hours later inside `lab
+    build`, where `carry import` reported a bare rowid and stopped with
+    a workspace half-made (2026-09-07, `human_commands`). The refusal
+    names the TABLE and where the sweep lives."""
+    before = _fk_db(tmp_path / "before.db", parent_rows=[1, 2],
+                    child_rows=[(10, 1), (11, 2)])
+    after = _fk_db(tmp_path / "after.db", parent_rows=[1],
+                   child_rows=[(10, 1), (11, 2)])   # 2 swept, 11 dangles
+    conn = sqlite3.connect(after)
+    with pytest.raises(lab.LabError, match=r"\['child'\]"):
+        snap_mod._assert_rewind_kept_the_keys(conn, before)
+    conn.close()
+
+
+def test_the_guard_indicts_only_what_the_rewind_ITSELF_broke(tmp_path):
+    """A DELTA against the pre-rewind copy. A bundle legitimately
+    carries cross-problem `library_decls` rows against a pruned
+    `problems` table, and an auditor that indicts those is one nobody
+    reads — the 1,063-row lesson `carry.foreign_key_findings` was
+    written for."""
+    before = _fk_db(tmp_path / "before.db", parent_rows=[1],
+                    child_rows=[(10, 1), (11, 404)])
+    after = _fk_db(tmp_path / "after.db", parent_rows=[1],
+                   child_rows=[(10, 1), (11, 404)])
+    conn = sqlite3.connect(after)
+    snap_mod._assert_rewind_kept_the_keys(conn, before)   # no raise
+    conn.close()
+
+
+def test_the_same_slice_is_clean_with_the_sweep_whole(tmp_path):
+    """The other half of the test above: with `human_commands` in the
+    sweep the row goes with its decision and the slice is taken."""
+    ws = _workspace(tmp_path)
+    conn = db.connect(ws / "asterism.db")
+    conn.execute("INSERT INTO strategist_decisions (problem,"
+                 " triggered_at_tick, trigger_kind, decision_kind,"
+                 " created_at, updated_at) VALUES (?,0,'routine','Noop',"
+                 " ?, ?)", (PROBLEM, AFTER, AFTER))
+    dec = int(conn.execute("SELECT MAX(id) FROM strategist_decisions"
+                           ).fetchone()[0])
+    conn.execute("INSERT INTO human_commands (problem, kind, payload,"
+                 " idempotency_key, status, outcome, decision_id,"
+                 " created_at, applied_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (PROBLEM, "Signal", "{}", "k", "applied", "committed",
+                  dec, AFTER, AFTER))
+    conn.commit()
+    conn.close()
+
+    sl = snap_mod.take(ws, tmp_path / "lab", problem=PROBLEM, cutoff=CUT)
+
+    got = sqlite3.connect(sl.path / "carry.db")
+    try:
+        assert got.execute("SELECT COUNT(*) FROM human_commands"
+                           ).fetchone()[0] == 0
+    finally:
+        got.close()
 
 
 def test_taking_a_slice_twice_over_the_same_id_refuses(tmp_path):

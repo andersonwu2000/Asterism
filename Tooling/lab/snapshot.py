@@ -379,6 +379,42 @@ def _drift_counts(bundle_db: Path, tree: Path, problem: str) -> dict:
         conn.close()
 
 
+def _assert_rewind_kept_the_keys(conn: sqlite3.Connection,
+                                 before_db: Path) -> None:
+    """The rewound copy gained no dangling foreign key.
+
+    CHECKED HERE BECAUSE NOTHING ELSE CHECKS IT IN TIME. `take` runs
+    `carry.foreign_key_findings` over the PRUNED copy — before the
+    rewind — so a table missing from `rewind.DATED_PROBLEM_TABLES`
+    produced a slice that passed every check the snapshot makes and
+    failed hours later inside `lab build`, where `carry import` reported
+    it as `('human_commands', 5, 'strategist_decisions', 0)` and the
+    build stopped with a workspace half-made (2026-09-07, the first
+    slice a continuity arm asked for).
+
+    A DELTA against the pre-rewind copy, not an absolute count: a
+    legitimately carried cross-problem row is none of the rewind's
+    business, and an auditor that indicts one is an auditor nobody
+    reads. Same rule `carry import`'s own post-check follows."""
+    baseline = _open(before_db)
+    try:
+        before = set(_carry.foreign_key_findings(baseline))
+    finally:
+        baseline.close()
+    gained = sorted(set(_carry.foreign_key_findings(conn)) - before)
+    if not gained:
+        return
+    tables = sorted({str(row[0]) for row in gained})
+    raise LabError(
+        f"the rewind left {len(gained)} dangling foreign key(s) in "
+        f"{tables}: {gained[:5]}. A row that survived the cutoff still "
+        f"points at one that did not — which means those tables are not "
+        f"in `lab/rewind.DATED_PROBLEM_TABLES`, or the rewind owes them "
+        f"a repair beside it. Fix the sweep; do not hand this slice on, "
+        f"because `carry import` refuses it and `lab build` stops with a "
+        f"half-made workspace.")
+
+
 def _rewind_in_place(dest: Path, *, workspace: Path, problem: str,
                      cutoff: str) -> dict:
     """Move the slice — both planes — back to `cutoff`.
@@ -403,6 +439,7 @@ def _rewind_in_place(dest: Path, *, workspace: Path, problem: str,
         conn = _rewind.open_copy_for_rewind(dest / CARRY_DB)
         try:
             rep = _rewind.rewind(conn, problem=problem, cutoff=cutoff)
+            _assert_rewind_kept_the_keys(conn, dest / SOURCE_DB)
             ledger = _rewind.rewind_files(
                 conn, snapshot_db=dest / SOURCE_DB, workspace=stage,
                 problem=problem, cutoff=cutoff, git_root=workspace)

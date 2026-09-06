@@ -73,6 +73,84 @@ def test_rewind_deletes_post_cutoff_rows_and_rewinds_statuses(conn):
     assert rep["goals_deleted"] == 1 and rep["strategies_deleted"] == 1 and rep["goals_rewound"] == 1
 
 
+def test_rewind_takes_the_owners_commands_back_with_the_decisions(conn):
+    """A `human_commands` row is problem-keyed history like any other,
+    and it POINTS at the decision it minted. Missing from the sweep, an
+    owner command from the future survived holding a `decision_id` the
+    rewind had deleted — a dangling key `carry import` refused two
+    tools later, as a bare rowid, with `lab build` already half done
+    (2026-09-07, the first slice a continuity arm asked for)."""
+    _seed(conn)
+    old_dec, new_dec = [int(r[0]) for r in conn.execute(
+        "SELECT id FROM strategist_decisions ORDER BY created_at")]
+    for key, at, dec in (("before-cut", BEFORE, old_dec),
+                         ("after-cut", AFTER, new_dec)):
+        conn.execute(
+            "INSERT INTO human_commands (problem, kind, payload,"
+            " idempotency_key, status, outcome, decision_id, created_at,"
+            " applied_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("p", "Signal", "{}", key, "applied", "committed", dec, at, at))
+    # ...and one ISSUED before the cutoff but APPLIED after it: it
+    # survives, and what it minted does not.
+    conn.execute(
+        "INSERT INTO human_commands (problem, kind, payload,"
+        " idempotency_key, status, outcome, decision_id, created_at,"
+        " applied_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("p", "Signal", "{}", "straddles", "applied", "committed",
+         new_dec, BEFORE, AFTER))
+    conn.commit()
+
+    rep = tt.rewind(conn, problem="p", cutoff=CUT)
+
+    assert rep["human_commands_deleted"] == 1
+    assert rep["human_commands_requeued"] == 1
+    rows = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+        "SELECT idempotency_key, status, outcome, decision_id"
+        " FROM human_commands")}
+    assert set(rows) == {"before-cut", "straddles"}
+    assert rows["before-cut"] == ("applied", "committed", old_dec)
+    # back to what it was at the cutoff: issued, not yet applied
+    assert rows["straddles"] == ("queued", None, None)
+    assert not [tuple(r) for r in conn.execute("PRAGMA foreign_key_check")]
+
+
+def test_rewind_drops_a_brick_whose_revision_it_deleted(conn):
+    """`bricks.rev_id` carries no FOREIGN KEY, so nothing complains
+    about a brick belonging to a revision that no longer exists — a
+    worker would simply be handed one, BY NAME, as if the record still
+    proposed it."""
+    _seed(conn)
+    old_rev, new_rev = [int(r[0]) for r in conn.execute(
+        "SELECT id FROM programme_revisions ORDER BY created_at")]
+    for name, rev, at in (("keep", old_rev, BEFORE),
+                          ("late", new_rev, AFTER),
+                          ("orphan", new_rev, BEFORE)):
+        conn.execute(
+            "INSERT INTO bricks (problem, name, rev_id, head, statement,"
+            " created_at) VALUES (?,?,?,?,?,?)",
+            ("p", name, rev, "Theorem", "T", at))
+    conn.commit()
+
+    rep = tt.rewind(conn, problem="p", cutoff=CUT)
+
+    assert rep["bricks_deleted"] == 1 and rep["bricks_orphaned"] == 1
+    assert [r[0] for r in conn.execute(
+        "SELECT name FROM bricks ORDER BY name")] == ["keep"]
+
+
+def test_every_dated_problem_table_is_one_the_schema_still_has(conn):
+    """The sweep is a hand-maintained list against a moving schema. It
+    may not name a table that is gone — a `DELETE` that raises is
+    swallowed as `None` and reads exactly like a table with nothing to
+    delete."""
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table, col in tt.DATED_PROBLEM_TABLES:
+        assert table in have, table
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        assert col in cols and "problem" in cols, (table, col)
+
+
 def test_rewind_refuses_the_live_database(tmp_path, monkeypatch):
     """The rewind mutates: only a copy may be opened."""
     import pytest

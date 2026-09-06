@@ -123,6 +123,40 @@ def open_copy_for_rewind(path: Path) -> sqlite3.Connection:
     return conn
 
 
+#: Problem-keyed history the rewind deletes wholesale, and the column
+#: that dates each one.
+#:
+#: HAND-MAINTAINED, WHICH IS THE HAZARD. A table added to the schema and
+#: forgotten here is not a crash: the rewind runs, reports its counts,
+#: and leaves rows from the future in a slice that looks rewound. The
+#: two that were missing (found 2026-09-07, on the first slice a
+#: continuity arm asked for) show both shapes of the damage — an owner's
+#: `human_commands` row kept a `decision_id` the sweep had deleted,
+#: which `carry import` refused two tools later as a bare rowid, and
+#: `bricks` (v54) has no foreign key at all, so a brick from a deleted
+#: revision would have reached a worker BY NAME with nothing complaining.
+#: `snapshot._rewind_in_place` now re-runs `foreign_key_findings` over
+#: the rewound copy and points here, which turns the first shape into a
+#: refusal that names the table.
+#:
+#: NOT here on purpose: `library_decls` and its siblings are global by
+#: design (an export carries them whole against a pruned `problems`), and
+#: `problem_settings` is configuration rather than history — its
+#: `updated_at` dates the last edit, so a date sweep would delete a
+#: setting that existed all along.
+DATED_PROBLEM_TABLES: "tuple[tuple[str, str], ...]" = (
+    ("strategist_decisions", "created_at"),
+    ("programme_revisions", "created_at"),
+    ("routine_verdicts", "created_at"),
+    ("kb_entries", "created_at"),
+    ("theory_documents", "created_at"),
+    ("problem_papers", "created_at"),
+    ("human_commands", "created_at"),
+    ("bricks", "created_at"),
+    ("spawn_usage", "ts"),
+)
+
+
 def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
     """Rewind `problem` to `cutoff` (ISO-8601 UTC, compared as text the
     way the tables store it). Returns counts."""
@@ -159,19 +193,39 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
     # `_docs/<area>/papers/<id>/`. Deleting the row is what lets
     # `prune_project_docs` date the file off the record instead of off
     # an mtime `copytree` rewrites.
-    for table, col in (("strategist_decisions", "created_at"),
-                       ("programme_revisions", "created_at"),
-                       ("routine_verdicts", "created_at"),
-                       ("kb_entries", "created_at"),
-                       ("theory_documents", "created_at"),
-                       ("problem_papers", "created_at"),
-                       ("spawn_usage", "ts")):
+    for table, col in DATED_PROBLEM_TABLES:
         try:
             cur = conn.execute(f"DELETE FROM {table} WHERE problem = ? AND {col} > ?",
                                (problem, cutoff))
             rep[f"{table}_deleted"] = cur.rowcount
         except sqlite3.OperationalError:
             rep[f"{table}_deleted"] = None
+    # A command ISSUED before the cutoff and APPLIED after it survives
+    # the sweep above, but the decision it minted does not — so it goes
+    # back to the state it was actually in at the cutoff: queued,
+    # unapplied, pointing at nothing. Left alone it is a dangling
+    # foreign key that nothing here would notice: `carry import` refuses
+    # it minutes later, in another tool, naming a rowid.
+    try:
+        rep["human_commands_requeued"] = conn.execute(
+            "UPDATE human_commands SET status = 'queued', outcome = NULL,"
+            " decision_id = NULL, applied_at = NULL WHERE problem = ?"
+            " AND decision_id IS NOT NULL AND decision_id NOT IN"
+            " (SELECT id FROM strategist_decisions)", (problem,)).rowcount
+    except sqlite3.OperationalError:
+        rep["human_commands_requeued"] = None
+    # `bricks.rev_id` carries no FOREIGN KEY, so nothing would ever
+    # complain about a brick belonging to a revision the rewind deleted
+    # — a worker would simply be handed one, by name, as if the record
+    # still proposed it. The date sweep catches the common case; this
+    # catches a brick parsed before the cutoff out of a revision that
+    # only committed after it.
+    try:
+        rep["bricks_orphaned"] = conn.execute(
+            "DELETE FROM bricks WHERE problem = ? AND rev_id NOT IN"
+            " (SELECT id FROM programme_revisions)", (problem,)).rowcount
+    except sqlite3.OperationalError:
+        rep["bricks_orphaned"] = None
     cur = conn.execute("DELETE FROM groups WHERE problem = ? AND created_at > ?", (problem, cutoff))
     rep["groups_deleted"] = cur.rowcount
     conn.execute("DELETE FROM queue WHERE problem = ?", (problem,))
