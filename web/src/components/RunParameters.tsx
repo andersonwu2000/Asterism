@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { draftForPick } from '../lib/models'
 import { duration } from '../lib/format'
+import ModelPicker from './ModelPicker'
 import { Button, Select } from './ui'
 import type { ConfigSetting, ModelGroup } from '../lib/types'
 
@@ -30,23 +31,35 @@ const RUN_KEYS = (key: string): boolean =>
   key === 'dispatch.quota_wait' ||
   key === 'dispatch.blocked_kinds'
 
+/** A SEAT's own keys — the model, the backend it implies, and the depth
+ * it thinks at. They belong to the control that seats a chair, and to
+ * nothing else: the settings page carried `<seat>.reasoning_effort` as
+ * a loose row in Machine while the Seats section beside it drew the
+ * same dial per chair, which is one setting with two controls and no
+ * way to tell which the reader had last touched (owner, 2026-09-06 —
+ * "effort lives only inside the model-selection area"). */
+const SEAT_KEYS = (key: string): boolean =>
+  key.endsWith('.model') ||
+  key.endsWith('.provider') ||
+  key.endsWith('.reasoning_effort')
+
 function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
   const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   // The polled read carries the DECLARED lists and never spawns. Asking
-  // the backends what they actually run is an action, taken once when
-  // this panel opens — a kept list goes stale the day a vendor ships a
-  // tier (agy's live list was 14 while the file still said 3).
+  // the backends what they actually run is an ACTION — it spawns one
+  // subprocess per backend — so it waits for a picker to open rather
+  // than riding a mount: a panel that probes when it appears makes
+  // merely looking at a page spend a spawn (2026-09-06).
   const [live, setLive] = useState<ModelGroup[] | null>(null)
-  useEffect(() => {
-    let gone = false
+  const asked = useRef(false)
+  const askLive = useCallback(() => {
+    if (asked.current) return
+    asked.current = true
     apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
-      .then((r) => !gone && setLive(r.groups))
+      .then((r) => setLive(r.groups))
       .catch(() => {
         /* keep the declared lists — never blank the picker */
       })
-    return () => {
-      gone = true
-    }
   }, [])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
@@ -85,7 +98,7 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
   // ONE control per seat: a seat's backend is implied by the model, so
   // a separate provider field would draw the same fact twice and let
   // the two disagree (`provider: codex` with `claude-sonnet-5` dies at
-  // its first spawn). Vendors become optgroups; picking writes both.
+  // its first spawn). The vendor is a header in the menu, not a field.
   const models = settings.filter((s) => s.key.endsWith('.model'))
   const providerOf = new Map(
     settings.filter((s) => s.key.endsWith('.provider')).map((s) => [s.key.split('.')[0], s]),
@@ -93,50 +106,31 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
   const knobs = settings.filter(
     (s) => !s.key.endsWith('.model') && !s.key.endsWith('.provider'),
   )
+  // ONE picker component, here as everywhere: the Assistant's header,
+  // the settings page's Advanced fold and this panel all seat a model,
+  // and this one used to draw a native grouped select of its own beside
+  // their `ModelPicker` — so the grouping the owner could not see
+  // (2026-09-06) existed in only one of the three. `lib/models.test`
+  // ("one picker template") is what keeps that from happening twice.
   const modelPicker = (s: ConfigSetting) => {
     const seat = s.key.split('.')[0]
     const prov = providerOf.get(seat)
     const current = String(drafts[s.key] ?? s.resolved ?? '')
     const groups = live ?? s.groups ?? []
-    const known = groups.some((g) => g.models.includes(current))
     return (
-      <Select
+      <ModelPicker
         className="w-56 shrink-0"
+        label={`${seat} model`}
+        groups={groups}
         value={current}
-        onChange={(e) =>
+        onOpen={askLive}
+        onChange={(m) =>
           setDrafts((d) => ({
             ...d,
-            ...draftForPick(groups, s.key, prov?.key ?? null, e.target.value),
+            ...draftForPick(groups, s.key, prov?.key ?? null, m),
           }))
         }
-      >
-        {current === '' && (
-          <option value="" disabled>
-            not set — the provider's default
-          </option>
-        )}
-        {!known && current !== '' && (
-          <optgroup label="set outside this page">
-            <option value={current}>{current}</option>
-          </optgroup>
-        )}
-        {groups.map((g) => (
-          <optgroup
-            key={g.provider}
-            label={
-              g.provider +
-              (g.installed ? '' : ' (not installed)') +
-              (g.source === 'declared' ? ' — list not live' : '')
-            }
-          >
-            {g.models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </Select>
+      />
     )
   }
   const row = (s: ConfigSetting) => {
@@ -275,9 +269,13 @@ export function RunParameters({ running }: { running: boolean }) {
 }
 
 /** On the settings page: what this installation is. Not folded — the
- * page exists to be read. */
+ * page exists to be read.
+ *
+ * A seat's keys are NOT installation numbers, whatever is left after
+ * `RUN_KEYS`: they belong to the control that seats a chair, one
+ * section up. */
 export function MachineParameters() {
-  return <ConfigPanel owns={(key) => !RUN_KEYS(key)} />
+  return <ConfigPanel owns={(key) => !RUN_KEYS(key) && !SEAT_KEYS(key)} />
 }
 
 export default RunParameters

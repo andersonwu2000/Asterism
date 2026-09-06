@@ -85,6 +85,84 @@ export function offCatalog(groups: ModelGroup[], model: string): boolean {
   return model !== '' && providerForModel(groups, model) === null
 }
 
+// -- one choice seats a whole board ------------------------------------------
+
+/** What one seat is set to, as a house derives it. */
+export interface SeatChoice {
+  provider: string
+  model: string
+  /** only where the backend reads a depth at all (codex writes
+   * `model_reasoning_effort`; claude has no such knob) */
+  effort?: string
+}
+
+/** A house's whole board: seat -> what it sits on.
+ *
+ * Derived engine-side by RANK, never by name (`serve/model_catalog`):
+ * the theory layer takes the provider's top series, the planning layer
+ * the second, the formal layer the third. Which is why nothing on this
+ * side knows a model name — a series above today's top shifts all three
+ * layers and no code here changes. */
+export type HouseBoard = Record<string, SeatChoice>
+
+/** What the page hands the existing seat-write path, one key at a time.
+ *
+ * ONLY seat keys. The default control seats a board; it is not a licence
+ * to rewrite the file, and `Asterism.yaml` is mostly the owner's own
+ * reasoning in comments. */
+export function boardDrafts(board: HouseBoard): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [seat, s] of Object.entries(board)) {
+    out[`${seat}.model`] = s.model
+    out[`${seat}.provider`] = s.provider
+    if (s.effort !== undefined) out[`${seat}.reasoning_effort`] = s.effort
+  }
+  return out
+}
+
+const seatIsOn = (row: SeatRow, s: SeatChoice): boolean => {
+  const at = (c: ConfigSetting | null) => String(c?.resolved ?? '')
+  if (at(row.model) !== s.model) return false
+  if (at(row.provider) !== s.provider) return false
+  return s.effort === undefined || at(row.effort) === s.effort
+}
+
+/** The seats sitting somewhere other than where the house would put
+ * them — PINNED, in the default control's word for it.
+ *
+ * A seat the board says nothing about is not pinned: silence is not an
+ * override, and marking it would tell the reader they had made a choice
+ * they did not make. */
+export function pinnedSeats(rows: SeatRow[], board: HouseBoard): string[] {
+  return rows
+    .filter((r) => board[r.seat] !== undefined && !seatIsOn(r, board[r.seat]))
+    .map((r) => r.seat)
+}
+
+/** Which house this machine is on — the one whose board it departs from
+ * least.
+ *
+ * There is no stored answer to this and there must not be: the truth is
+ * the yaml, and a remembered "you chose claude" that the seats no longer
+ * agree with is a second answer to one question. A house that derives
+ * nothing (its backend offers no models) cannot be the one in effect. */
+export function houseInEffect(
+  rows: SeatRow[],
+  houses: Record<string, HouseBoard>,
+): string | null {
+  let best: string | null = null
+  let fewest = Infinity
+  for (const [name, board] of Object.entries(houses)) {
+    if (Object.keys(board).length === 0) continue
+    const off = pinnedSeats(rows, board).length
+    if (off < fewest) {
+      fewest = off
+      best = name
+    }
+  }
+  return best
+}
+
 // -- the picker's own shape --------------------------------------------------
 
 /** A provider, and what is true of the WHOLE of it. */

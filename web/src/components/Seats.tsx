@@ -1,21 +1,22 @@
-import { useEffect, useState } from 'react'
-import { apiPost, usePoll } from '../lib/api'
+import { useState } from 'react'
+import { apiPost } from '../lib/api'
 import { draftForPick, offCatalog, seatRows } from '../lib/models'
 import type { ConfigSetting, ModelGroup } from '../lib/types'
 import ModelPicker from './ModelPicker'
 import { Button, Select } from './ui'
 
 /*
- * Seats — who the engine sends, and how hard they think.
+ * Advanced — one chair at a time.
  *
- * The Tasks page's run parameters already set a seat's model, one row
- * per key. This section reads the same `/api/config` and the same
- * catalog the Assistant's picker reads, and draws a SEAT: the model,
- * the backend implied by it, and — where the backend has one — the
- * depth it thinks at. Three keys describing one chair were three rows
- * on a flat list; the reader is setting a chair.
+ * The section above seats the whole board from one choice, which is
+ * what almost every reader wants and the only thing they should have to
+ * decide. This is the exception surface underneath it: the model a
+ * single seat sits on, the backend that model implies, and — where the
+ * backend has one — the depth it thinks at. It is folded because
+ * reaching for it means departing from the board, and a departure
+ * should be a decision rather than the first thing on the page.
  *
- * Two things this says that the flat list did not:
+ * Two things this says that a flat key list did not:
  *
  *   · whether the seated model is IN the machine's catalog. The yaml
  *     routinely seats a tier the declared list has not caught up with,
@@ -24,58 +25,69 @@ import { Button, Select } from './ui'
  *   · when it takes effect. A write lands in `Asterism.yaml`; the
  *     daemon re-fingerprints the file on its own clock and hands off
  *     to a fresh process — nothing here reaches into a running one.
+ *
+ * The catalog arrives as a prop. Both halves of this section read the
+ * same list, and two probes for one page would spend two subprocesses
+ * to answer one question.
  */
 
 /** Said once, here: the write is to a FILE, and the engine picks it up
  * on its own schedule. A settings page that implied otherwise would be
  * describing a mechanism the daemon does not have. */
-const WHEN = 'takes effect on the daemon’s next config check (about a minute)'
+export const WHEN =
+  'takes effect on the daemon’s next config check (about a minute)'
 
 function Row({
   label,
+  pinned,
   children,
 }: {
   label: string
+  pinned: boolean
   children: React.ReactNode
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 py-1">
-      <span className="w-32 shrink-0 font-mono text-[11px] text-ink-dim">{label}</span>
+      <span className="w-32 shrink-0 font-mono text-[11px] text-ink-dim">
+        {label}
+        {/* the settled norm earns no ink: only a seat that has LEFT the
+            board is marked, and in the same word the control above
+            uses for it */}
+        {pinned && (
+          <span className="ml-1.5 text-ink-faint" title="set here, not by the default">
+            pinned
+          </span>
+        )}
+      </span>
       {children}
     </div>
   )
 }
 
-export default function Seats() {
-  const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>(
-    '/api/config',
-    60000,
-  )
-  // which models exist is a question only the machine can answer, and a
-  // kept list goes stale the day a vendor ships a tier — one probe per
-  // mount, exactly as the Assistant's picker and RunParameters do it
-  const [live, setLive] = useState<ModelGroup[] | null>(null)
+export default function Seats({
+  settings,
+  groups,
+  onAskCatalog,
+  pinned,
+  onSaved,
+}: {
+  settings: ConfigSetting[]
+  groups: ModelGroup[]
+  /** the catalog is asked for when a picker opens, never on mount */
+  onAskCatalog: () => void
+  /** seats the house's board does not explain — named by the control
+   * above, so the two sections cannot disagree about which they are */
+  pinned: string[]
+  onSaved: () => void
+}) {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
-  useEffect(() => {
-    let gone = false
-    apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
-      .then((r) => !gone && setLive(r.groups))
-      .catch(() => {
-        /* keep the declared lists — never blank the picker */
-      })
-    return () => {
-      gone = true
-    }
-  }, [])
-
-  if (!data) return <div className="text-[11px] text-ink-faint">…</div>
-  const rows = seatRows(data.settings)
+  const rows = seatRows(settings)
   const value = (s: ConfigSetting | null): string =>
     s === null ? '' : (drafts[s.key] ?? String(s.resolved ?? ''))
-  const dirty = data.settings.filter(
+  const dirty = settings.filter(
     (s) => drafts[s.key] !== undefined && drafts[s.key] !== String(s.resolved ?? ''),
   )
 
@@ -86,7 +98,7 @@ export default function Seats() {
       for (const s of dirty)
         await apiPost('/api/config', { key: s.key, value: drafts[s.key] })
       setDrafts({})
-      refresh()
+      onSaved()
       setNote(WHEN)
     } catch (e) {
       setNote(String((e as Error).message))
@@ -98,16 +110,16 @@ export default function Seats() {
   return (
     <div data-seats>
       {rows.map((r) => {
-        const groups = live ?? r.model?.groups ?? []
         const picked = value(r.model)
         const stray = offCatalog(groups, picked)
         return (
-          <Row key={r.seat} label={r.seat}>
+          <Row key={r.seat} label={r.seat} pinned={pinned.includes(r.seat)}>
             <ModelPicker
               className="w-56"
               label={`${r.seat} model`}
               groups={groups}
               value={picked}
+              onOpen={onAskCatalog}
               onChange={(m) =>
                 setDrafts((d) => ({
                   ...d,

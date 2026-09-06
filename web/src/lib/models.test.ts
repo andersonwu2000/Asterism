@@ -1,13 +1,17 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
+  boardDrafts,
   draftForPick,
   explainerGroups,
+  houseInEffect,
   offCatalog,
   pickerRows,
+  pinnedSeats,
   providerForModel,
   seatRows,
 } from './models'
-import type { PickerHeader } from './models'
+import type { HouseBoard, PickerHeader } from './models'
 import type { ConfigSetting, ModelGroup } from './types'
 
 const GROUPS: ModelGroup[] = [
@@ -176,5 +180,89 @@ describe('a seat, read out of the flat settings list', () => {
     expect(offCatalog(GROUPS, 'claude-opus-5')).toBe(false)
     expect(offCatalog(GROUPS, 'claude-fable-5-1')).toBe(true)
     expect(offCatalog(GROUPS, '')).toBe(false)
+  })
+})
+
+describe('one choice seats a whole board', () => {
+  // the derivation itself is the engine's (`serve/model_catalog`,
+  // pinned by pytest); these are the readings the page makes of it
+  const CLAUDE: HouseBoard = {
+    theorist: { provider: 'claude', model: 'claude-fable-5-1' },
+    theory_reviewer: { provider: 'claude', model: 'claude-fable-5-1' },
+    strategist: { provider: 'claude', model: 'claude-opus-5' },
+    adversary: { provider: 'claude', model: 'claude-opus-5' },
+    formalizer: { provider: 'claude', model: 'claude-sonnet-5' },
+  }
+  const GPT: HouseBoard = {
+    theorist: { provider: 'codex', model: 'gpt-6-astra', effort: 'xhigh' },
+    theory_reviewer: { provider: 'codex', model: 'gpt-6-astra', effort: 'xhigh' },
+    strategist: { provider: 'codex', model: 'gpt-5.6-sol', effort: 'high' },
+    adversary: { provider: 'codex', model: 'gpt-5.6-sol', effort: 'high' },
+    formalizer: { provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium' },
+  }
+  const S = (key: string, resolved: string, over: Partial<ConfigSetting> = {}) =>
+    ({ key, yaml: null, resolved, type: 'str', description: '', ...over }) as ConfigSetting
+  const seats = (over: Record<string, string> = {}): ConfigSetting[] =>
+    Object.entries(CLAUDE).flatMap(([seat, s]) => [
+      S(`${seat}.model`, over[seat] ?? s.model),
+      S(`${seat}.provider`, over[seat] ? 'codex' : s.provider),
+    ])
+
+  it('writes a seat key per derived seat, and a depth only where one is derived', () => {
+    // the existing seat-write path takes one key at a time; this is
+    // what the page hands it, and nothing outside the seats
+    expect(boardDrafts({ strategist: CLAUDE.strategist })).toEqual({
+      'strategist.model': 'claude-opus-5',
+      'strategist.provider': 'claude',
+    })
+    expect(boardDrafts({ strategist: GPT.strategist })).toEqual({
+      'strategist.model': 'gpt-5.6-sol',
+      'strategist.provider': 'codex',
+      'strategist.reasoning_effort': 'high',
+    })
+  })
+
+  it('names the seats that sit off the board — an override is a pin', () => {
+    expect(pinnedSeats(seatRows(seats()), CLAUDE)).toEqual([])
+    expect(pinnedSeats(seatRows(seats({ formalizer: 'gpt-5.6-luna' })), CLAUDE))
+      .toEqual(['formalizer'])
+    // a seat the board says nothing about is not pinned by silence
+    expect(pinnedSeats(seatRows(seats()), { strategist: CLAUDE.strategist }))
+      .toEqual([])
+  })
+
+  it('reads which house the machine is on, and refuses to guess a tie', () => {
+    const houses = { claude: CLAUDE, codex: GPT }
+    expect(houseInEffect(seatRows(seats()), houses)).toBe('claude')
+    // one pinned seat does not move the house
+    expect(houseInEffect(seatRows(seats({ formalizer: 'gpt-5.6-luna' })), houses))
+      .toBe('claude')
+    // nothing derived = nothing to be on
+    expect(houseInEffect(seatRows(seats()), { claude: {}, codex: {} })).toBeNull()
+  })
+})
+
+describe('one picker template, on every surface that seats a model', () => {
+  /* The Assistant, the run parameters and the settings page all ask the
+   * same question, and each used to draw its own control: a hand-rolled
+   * `<optgroup>` select in two of them, `ModelPicker` in the third, and
+   * the grouping the owner could not see (2026-09-06) existed in only
+   * one. A second drawing of one control is the drift this pins — the
+   * import is the observable, since none of these render in this
+   * environment. */
+  const surfaces = ['AssistantPanel', 'RunParameters', 'Seats', 'DefaultModel']
+
+  it('draws every model choice with the one component', () => {
+    for (const name of surfaces) {
+      const src = readFileSync(new URL(`../components/${name}.tsx`, import.meta.url), 'utf8')
+      expect(src, `${name} builds its own model list`).not.toContain('<optgroup')
+    }
+  })
+
+  it('reaches that component by importing it, not by copying it', () => {
+    for (const name of surfaces.filter((n) => n !== 'DefaultModel')) {
+      const src = readFileSync(new URL(`../components/${name}.tsx`, import.meta.url), 'utf8')
+      expect(src, `${name} has no picker`).toMatch(/from '\.\/ModelPicker'/)
+    }
   })
 })

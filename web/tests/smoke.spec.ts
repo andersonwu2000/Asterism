@@ -304,6 +304,66 @@ test('documents: an editable markdown file wears the shared painter', async ({
   expect(await painted.locator('span').count()).toBeGreaterThan(0)
 })
 
+test('documents: the reader owns the line between writing and reading', async ({
+  page,
+  request,
+}) => {
+  // The split is not two fixed halves: a `.tex` source is long lines
+  // and a render is a column of prose, and which wants the room is the
+  // reader's answer. One implementation for every split, so `.md` and
+  // `.tex` cannot drift apart again (owner, 2026-09-06).
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with at least one task')
+  const s = shelf as Shelf
+  await page.route('**/api/projects/*/docs', async (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          json: {
+            entries: [
+              { path: 'user', kind: 'dir' },
+              { path: 'user/split.md', kind: 'file', size: 20 },
+            ],
+          },
+        })
+      : route.fallback(),
+  )
+  await page.route('**/api/projects/*/docs/user/split.md*', async (route) =>
+    route.fulfill({
+      json: {
+        path: 'user/split.md',
+        encoding: 'utf-8',
+        etag: 'feedface',
+        content: '# Split\n\nprose.\n',
+      },
+    }),
+  )
+  await page.goto(at(s.project, 'docs'))
+  await page.getByRole('treeitem', { name: /split\.md/ }).click()
+  const handle = page.locator('[data-split-handle]')
+  await expect(handle).toBeVisible()
+  const source = page.locator('[data-source-pane]')
+  const before = (await source.boundingBox())!.width
+  const grip = (await handle.boundingBox())!
+
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(grip.x - 160, grip.y + grip.height / 2, { steps: 8 })
+  await page.mouse.up()
+  const dragged = (await source.boundingBox())!.width
+  expect(dragged).toBeLessThan(before - 100)
+
+  // keys walk the same grammar as the pointer (DESIGN.md)
+  await handle.focus()
+  await page.keyboard.press('End')
+  expect((await source.boundingBox())!.width).toBeGreaterThan(dragged)
+  await page.keyboard.press('Home')
+  const home = (await source.boundingBox())!.width
+  await page.keyboard.press('ArrowRight')
+  expect((await source.boundingBox())!.width).toBeGreaterThan(home)
+  // …and neither pane may be squeezed out of existence
+  expect(home).toBeGreaterThan(0)
+})
+
 test('legacy problem address redirects into its Project', async ({ page, request }) => {
   // links minted before the shell (a chat citation, a bookmark) must
   // still open - and the shelf comes from the DB, never from splitting
@@ -333,23 +393,66 @@ test('settings: a window over the page, not a page of its own', async ({ page })
   await expect(page.getByText('formalizer.model')).toHaveCount(0)
 })
 
-test('settings: the seats, read one chair at a time', async ({ page }) => {
+test('settings: one default control, three layers, and no second effort dial', async ({
+  page,
+}) => {
+  // The default model is ONE choice — which house — and the three
+  // layers follow it by rank (owner, 2026-09-06). The per-chair
+  // exceptions fold away underneath, and the thinking depth lives in
+  // the model area and NOWHERE else: it used to be a loose key row in
+  // Machine as well, which is one setting with two controls.
+  await page.goto('/#/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const box = page.locator('[data-default-model]')
+  await expect(box).toBeVisible()
+  await expect(box.getByText('Default model')).toBeVisible()
+  for (const layer of ['theory', 'planning', 'formal'])
+    await expect(box.getByText(layer, { exact: true })).toBeVisible()
+  for (const house of ['claude', 'codex'])
+    await expect(box.locator(`[data-house="${house}"]`)).toBeVisible()
+  // the second dial is gone: no `reasoning_effort` key row anywhere on
+  // the page
+  await expect(page.getByText(/\.reasoning_effort/)).toHaveCount(0)
+  // and the machine's own numbers are still here, beside it
+  await expect(page.getByText('dispatch.pool')).toBeVisible()
+})
+
+test('settings: the seats, read one chair at a time, behind Advanced', async ({
+  page,
+}) => {
   // Three keys describing one chair were three rows on a flat list;
-  // what the reader is setting is a SEAT (owner, 2026-09-06). This is
-  // also the only place `reasoning_effort` can be reached at all.
+  // what the reader is setting is a SEAT (owner, 2026-09-06). It is
+  // FOLDED now: departing from the derived board is a decision, not the
+  // first thing on the page.
   await page.goto('/#/')
   await page.getByRole('button', { name: 'Settings' }).click()
   const seats = page.locator('[data-seats]')
+  await expect(seats).toHaveCount(0)
+  await page.getByRole('button', { name: /Advanced/ }).click()
   await expect(seats).toBeVisible()
   for (const seat of ['formalizer', 'strategist', 'theorist']) {
     await expect(seats.getByText(seat, { exact: true })).toBeVisible()
-    // one picker per chair, and it is the same hierarchy the Assistant
+    // one picker per chair, and it is the same COMPONENT the Assistant
     // reads — the model implies the backend, so there is no second
     // control for it
     await expect(
       seats.getByRole('button', { name: `${seat} model` }),
     ).toBeVisible()
   }
+  // the same two-level menu the Assistant's header opens, from the same
+  // component — one template, drawn once (`lib/models.test`)
+  await seats.getByRole('button', { name: 'strategist model' }).click()
+  const menu = seats.locator('[data-model-menu]')
+  await expect(menu).toBeVisible()
+  await expect(menu.locator('[data-provider-header]').first()).toBeVisible()
+  // Escape belongs to the INNERMOST surface: it closes the menu and
+  // leaves the window it opened inside standing. The window's own
+  // listener is a capture-phase one on `window`, so before this was
+  // pinned it took the key first and the whole page vanished under an
+  // open menu.
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+  await expect(seats).toBeVisible()
   // a write lands in a FILE; nothing here reaches a running daemon
   await expect(seats.getByText(/next config check/)).toBeVisible()
 })
