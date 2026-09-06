@@ -51,6 +51,18 @@ _PINNED = {
     # gear's machine parameters. Both were env-only levers.
     "dispatch.blocked_kinds",
     "dispatch.ram_budget",
+    # 2026-09-06 (owner ruling): the Seats section sets a seat's whole
+    # posture, and on a codex seat the depth of its thinking IS part of
+    # that posture. It was env/yaml-only, which meant the one axis that
+    # changes what a wake costs could not be reached from the console.
+    # claude carries no such knob; the row says so rather than hiding.
+    "formalizer.reasoning_effort",
+    "strategist.reasoning_effort",
+    "presearch.reasoning_effort",
+    "librarian.reasoning_effort",
+    "adversary.reasoning_effort",
+    "theorist.reasoning_effort",
+    "theory_reviewer.reasoning_effort",
 }
 
 

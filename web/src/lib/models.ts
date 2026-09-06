@@ -1,4 +1,4 @@
-import type { ModelGroup } from './types'
+import type { ConfigSetting, ModelGroup } from './types'
 
 /*
  * One picker decides two settings.
@@ -38,6 +38,51 @@ export function draftForPick(
   const out: Record<string, string> = { [modelKey]: picked }
   if (owner && providerKey) out[providerKey] = owner
   return out
+}
+
+// -- a seat, out of the flat settings list ------------------------------------
+
+/** One pipeline seat's whole posture: which backend, which model, and
+ * how deep it thinks. */
+export interface SeatRow {
+  seat: string
+  model: ConfigSetting | null
+  provider: ConfigSetting | null
+  /** codex's own ladder; `applies` says whether THIS seat's backend
+   * reads it at all */
+  effort: ConfigSetting | null
+}
+
+/** The seats `/api/config` describes, in the order it describes them.
+ *
+ * The wire is flat because `set_ui_setting` writes one key at a time,
+ * and it must stay that way — but a SEAT is what the reader is setting,
+ * and three rows saying `formalizer` is three readings of one thing.
+ * A `.model` key is what makes a seat: `dispatch.pool` is a knob, not a
+ * chair. */
+export function seatRows(settings: ConfigSetting[]): SeatRow[] {
+  const at = (suffix: string, seat: string) =>
+    settings.find((s) => s.key === `${seat}.${suffix}`) ?? null
+  return settings
+    .filter((s) => s.key.endsWith('.model'))
+    .map((s) => s.key.split('.')[0])
+    .map((seat) => ({
+      seat,
+      model: at('model', seat),
+      provider: at('provider', seat),
+      effort: at('reasoning_effort', seat),
+    }))
+}
+
+/** Is the seated model absent from the machine's own catalog?
+ *
+ * The yaml routinely seats a tier the declared list has not caught up
+ * with (`claude-opus-5`, `claude-fable-5-1` on 2026-09-06). That is not
+ * an error — it is the truth about the seat — so the row shows it and
+ * SAYS it is off-list, rather than redrawing it as something else or
+ * dropping it. Empty is not off-list: nothing is seated. */
+export function offCatalog(groups: ModelGroup[], model: string): boolean {
+  return model !== '' && providerForModel(groups, model) === null
 }
 
 // -- the picker's own shape --------------------------------------------------

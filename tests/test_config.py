@@ -585,3 +585,54 @@ def test_ui_rows_resolve_the_way_a_run_resolves(
     assert rows["dispatch.pool"]["resolved"] == 9
     assert rows["dispatch.blocked_kinds"]["yaml"] == "Strategist"
     assert rows["dispatch.blocked_kinds"]["resolved"] == "Formalizer"
+
+
+def test_a_seats_reasoning_effort_is_settable_from_the_console(
+    tmp_path: Path,
+) -> None:
+    """The one axis that changes what a codex wake COSTS was env/yaml
+    only, so the Seats section could show a seat's model and not the
+    depth it thinks at (owner, 2026-09-06). It writes like every other
+    knob — one line, the file's comments untouched — and it refuses a
+    value the provider does not have."""
+    (tmp_path / "Asterism.yaml").write_text(
+        "strategist:\n"
+        "  provider: codex   # the seat's backend\n"
+        "  model: gpt-5.6-luna\n"
+        "\n"
+        "# a comment nothing may eat\n"
+        "dispatch:\n"
+        "  pool: 2\n",
+        encoding="utf-8")
+    rc, msg = config.set_ui_setting(tmp_path, "strategist.reasoning_effort",
+                                    "high")
+    assert rc == 0, msg
+    text = (tmp_path / "Asterism.yaml").read_text(encoding="utf-8")
+    assert "# a comment nothing may eat" in text
+    assert "# the seat's backend" in text
+    assert config.get("strategist.reasoning_effort", workspace=tmp_path,
+                      default="") == "high"
+    assert config.get("dispatch.pool", workspace=tmp_path, cast=int) == 2
+
+    rc, msg = config.set_ui_setting(tmp_path, "strategist.reasoning_effort",
+                                    "ludicrous")
+    assert rc != 0
+    assert "xhigh" in msg
+
+
+def test_the_effort_row_says_which_backends_have_the_knob(
+    tmp_path: Path,
+) -> None:
+    """A control is a promise that turning it does something. claude
+    derives its thinking budget per spawn from the wall clock, so the
+    row has to name the backends the knob is real on rather than sit
+    there looking live on a seat that ignores it."""
+    (tmp_path / "Asterism.yaml").write_text(
+        "strategist:\n  provider: claude\n  model: claude-opus-5\n",
+        encoding="utf-8")
+    rows = {str(r["key"]): r for r in config.ui_settings(tmp_path)}
+    row = rows["strategist.reasoning_effort"]
+    assert row["choices"] == list(config.EFFORT_CHOICES)
+    assert row["provider"] == "claude"
+    assert row["applies"] is False
+    assert "claude" in str(row["description"])

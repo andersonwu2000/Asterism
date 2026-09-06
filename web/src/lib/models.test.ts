@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { draftForPick, explainerGroups, pickerRows, providerForModel } from './models'
+import {
+  draftForPick,
+  explainerGroups,
+  offCatalog,
+  pickerRows,
+  providerForModel,
+  seatRows,
+} from './models'
 import type { PickerHeader } from './models'
-import type { ModelGroup } from './types'
+import type { ConfigSetting, ModelGroup } from './types'
 
 const GROUPS: ModelGroup[] = [
   { provider: 'claude', models: ['claude-opus-5', 'claude-sonnet-5'], source: 'declared', installed: true },
@@ -126,5 +133,48 @@ describe('the picker is a hierarchy, not a flat list', () => {
     expect(pickerRows(GROUPS, 'claude-opus-5')[0]).toEqual({
       kind: 'header', provider: 'claude', note: ' — list not live',
     })
+  })
+})
+
+describe('a seat, read out of the flat settings list', () => {
+  const S = (key: string, resolved: string, over: Partial<ConfigSetting> = {}) =>
+    ({
+      key,
+      yaml: null,
+      resolved,
+      type: 'str',
+      description: '',
+      ...over,
+    }) as ConfigSetting
+
+  const SETTINGS: ConfigSetting[] = [
+    S('formalizer.model', 'claude-sonnet-5'),
+    S('strategist.model', 'gpt-5.6-luna'),
+    S('dispatch.pool', '2', { type: 'int' }),
+    S('formalizer.provider', 'claude'),
+    S('strategist.provider', 'codex'),
+    S('formalizer.reasoning_effort', 'xhigh', { applies: false }),
+    S('strategist.reasoning_effort', 'high', { applies: true }),
+  ]
+
+  it('gathers a seat\'s three keys into the one thing they describe', () => {
+    // the wire is flat because `set_ui_setting` writes one key at a
+    // time; a SEAT is what the reader is actually setting
+    const rows = seatRows(SETTINGS)
+    expect(rows.map((r) => r.seat)).toEqual(['formalizer', 'strategist'])
+    expect(rows[0].model?.resolved).toBe('claude-sonnet-5')
+    expect(rows[0].provider?.resolved).toBe('claude')
+    expect(rows[0].effort?.resolved).toBe('xhigh')
+    // and a knob that belongs to no seat is not one
+    expect(rows.some((r) => r.seat === 'dispatch')).toBe(false)
+  })
+
+  it('says when the seated model is not in the offer', () => {
+    // the yaml routinely seats a tier the declared list has not caught
+    // up with; the row must show what IS seated and say it is off-list
+    // rather than silently redrawing it as something else
+    expect(offCatalog(GROUPS, 'claude-opus-5')).toBe(false)
+    expect(offCatalog(GROUPS, 'claude-fable-5-1')).toBe(true)
+    expect(offCatalog(GROUPS, '')).toBe(false)
   })
 })

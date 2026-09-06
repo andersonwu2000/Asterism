@@ -1800,6 +1800,14 @@ def test_config_get_and_set(workspace: Path) -> None:
             # it, because a seat's backend is implied by its model
             assert "claude" in row["choices"] and "codex" in row["choices"], k
             assert row["resolved"] in row["choices"], k
+        elif k.endswith(".reasoning_effort"):
+            # codex's own ladder, plus whether the seat's CURRENT
+            # backend reads it — a control that does nothing is a
+            # promise the page must not make silently (2026-09-06)
+            assert row["choices"] == ["low", "medium", "high", "xhigh",
+                                      "max"], k
+            assert row["resolved"] in row["choices"], k
+            assert isinstance(row["applies"], bool), k
         else:
             assert "choices" not in row, k
     # a model picker offers ITS OWN SEAT's backend's names. A flat

@@ -771,7 +771,7 @@ export interface ConfigSetting {
   key: string
   yaml: string | number | null
   resolved: string | number | null
-  type: 'str' | 'int'
+  type: 'str' | 'int' | 'bool'
   description: string
   /** present on .model keys: the UI offers these (typo-proof select);
    * the resolved value is always included */
@@ -781,6 +781,11 @@ export interface ConfigSetting {
    * implied by its model, so a second control would draw the fact
    * twice and let the two disagree. */
   groups?: ModelGroup[]
+  /** `<seat>.reasoning_effort` only: does THIS seat's backend read the
+   * knob at all? claude derives its thinking budget per spawn from the
+   * wall clock, so the control is shown and SAID to be inert rather
+   * than quietly doing nothing. */
+  applies?: boolean
 }
 
 /** One backend, as `/api/meta` reports it: what it DECLARES about

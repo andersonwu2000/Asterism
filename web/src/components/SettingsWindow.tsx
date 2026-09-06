@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import Seats from './Seats'
 import { apiPost, usePoll } from '../lib/api'
 import { signOut, switchAccount } from '../lib/providerAuth'
 import { relTime } from '../lib/format'
@@ -454,6 +455,23 @@ function Machine() {
   )
 }
 
+/** Which agent sits in each pipeline chair — the model, the backend it
+ * implies, and the depth it thinks at where the backend has one.
+ *
+ * The Tasks page's run parameters set a seat's model too, and that is
+ * deliberate: they are what a person changes BEFORE a run, beside Run.
+ * This is the machine's standing roster, read the way the machine is
+ * seated — one row per chair rather than one per key — and it is the
+ * only place `reasoning_effort` can be reached at all. */
+function SeatsSection() {
+  return (
+    <Row>
+      <Label>Seats</Label>
+      <Seats />
+    </Row>
+  )
+}
+
 /** The body, in the console's one floating window. Open state lives in
  * `App`, not in the address: the reader stays where they were, and
  * `#/settings` survives only as a legal old link that opens this and
@@ -467,6 +485,7 @@ export default function SettingsWindow({ onClose }: { onClose: () => void }) {
           <Account key={p.name} p={p} onChanged={refresh} />
         ))}
         <Allowance />
+        <SeatsSection />
         <Machine />
         <Appearance />
         <ShutDown />

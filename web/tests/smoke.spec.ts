@@ -333,6 +333,27 @@ test('settings: a window over the page, not a page of its own', async ({ page })
   await expect(page.getByText('formalizer.model')).toHaveCount(0)
 })
 
+test('settings: the seats, read one chair at a time', async ({ page }) => {
+  // Three keys describing one chair were three rows on a flat list;
+  // what the reader is setting is a SEAT (owner, 2026-09-06). This is
+  // also the only place `reasoning_effort` can be reached at all.
+  await page.goto('/#/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const seats = page.locator('[data-seats]')
+  await expect(seats).toBeVisible()
+  for (const seat of ['formalizer', 'strategist', 'theorist']) {
+    await expect(seats.getByText(seat, { exact: true })).toBeVisible()
+    // one picker per chair, and it is the same hierarchy the Assistant
+    // reads — the model implies the backend, so there is no second
+    // control for it
+    await expect(
+      seats.getByRole('button', { name: `${seat} model` }),
+    ).toBeVisible()
+  }
+  // a write lands in a FILE; nothing here reaches a running daemon
+  await expect(seats.getByText(/next config check/)).toBeVisible()
+})
+
 test('the old settings address opens the window and steps out of the way', async ({
   page,
 }) => {

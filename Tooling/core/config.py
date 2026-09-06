@@ -368,6 +368,26 @@ for _seat in UI_SEATS:
         str, f"which backend runs the {_seat} seat")
 del _seat
 
+#: How deep a codex seat thinks. The one axis that changes what a wake
+#: COSTS, and it was env/yaml-only until 2026-09-06 — the console could
+#: show a seat's model and not its depth. The values are codex's own
+#: ladder (`llm/codex_cli.py`); every other backend ignores the key, and
+#: the row says so rather than sitting there looking live.
+EFFORT_CHOICES: "tuple[str, ...]" = ("low", "medium", "high", "xhigh",
+                                     "max")
+
+#: Which backends actually read it. Not a refusal — a seat may be moved
+#: to codex a moment after its effort is set — but the row is marked so
+#: the reader is never turning a dial nobody reads.
+EFFORT_PROVIDERS: "frozenset[str]" = frozenset({"codex", "zen"})
+
+for _seat in UI_SEATS:
+    UI_EDITABLE_KEYS[f"{_seat}.reasoning_effort"] = (
+        str,
+        f"how deep the {_seat} seat thinks — codex seats only; claude "
+        f"derives its thinking budget per spawn from the wall clock")
+del _seat
+
 #: dropdown choices for `.model` keys — what the UI offers (free text
 #: stays possible via yaml/.env; the UI's job is killing typos). Keep
 #: in sync with the model tiers the pipelines actually target.
@@ -447,12 +467,24 @@ def _check_ram_budget(value: str) -> "tuple[str, str | None]":
     return value, None
 
 
+def _check_effort(value: str) -> "tuple[str, str | None]":
+    """One rung of codex's own ladder. The generic guard would take
+    `ludicrous` — a value the CLI refuses at spawn, which is a run that
+    dies for a reason nothing before the spawn said out loud."""
+    v = value.strip().lower()
+    if v in EFFORT_CHOICES:
+        return v, None
+    return "", (f"{value!r} is not a reasoning effort — pick one of "
+                + ", ".join(EFFORT_CHOICES))
+
+
 #: per-key grammar for str knobs whose legal values the generic
-#: `[A-Za-z0-9._-]+` guard would reject (a comma list, a percentage).
-#: Each returns (canonical value, error) — one of the two is empty.
+#: `[A-Za-z0-9._-]+` guard would reject (a comma list, a percentage) or
+#: would wrongly accept (a made-up effort rung).
 _STR_VALIDATORS: "dict[str, Callable[[str], tuple[str, str | None]]]" = {
     "dispatch.blocked_kinds": _check_blocked_kinds,
     "dispatch.ram_budget": _check_ram_budget,
+    **{f"{_s}.reasoning_effort": _check_effort for _s in UI_SEATS},
 }
 
 #: the env var the ENGINE reads for a key. `resolved` claims to be
@@ -538,6 +570,25 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             # take free text rather than offer another backend's names
             row["choices"] = choices
             row["provider"] = prov
+        elif key.endswith(".reasoning_effort"):
+            # resolved the way the ENGINE resolves it (llm/codex_cli
+            # `_resolve_effort`), and marked with whether the seat's
+            # CURRENT backend reads it at all — a control that does
+            # nothing is a promise the page must not make silently
+            seat = key.split(".", 1)[0]
+            from ..llm.codex_cli import DEFAULT_REASONING_EFFORT
+            resolved = get(key,
+                           env_var=f"ASTERISM_{seat.upper()}_REASONING_EFFORT",
+                           default=DEFAULT_REASONING_EFFORT,
+                           workspace=workspace)
+            prov = get(f"{seat}.provider",
+                       env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
+                       legacy_env=("ASTERISM_LLM_PROVIDER",),
+                       default="claude", workspace=workspace)
+            row["resolved"] = resolved
+            row["choices"] = list(EFFORT_CHOICES)
+            row["provider"] = prov
+            row["applies"] = str(prov) in EFFORT_PROVIDERS
         elif typ is bool:
             # booleans render as a two-way select, never a free-text box.
             # Unset resolves to the ENGINE's default (mirrored below) —
