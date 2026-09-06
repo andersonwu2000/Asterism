@@ -775,3 +775,56 @@ def test_revive_shelved_alias_rejected_when_build_verify_fails(
     assert "sorry" in s_path.read_text(encoding="utf-8")
 
 
+# ---------------------------------------------------------------------
+# the promotion announces its own write to a USER file (2026-09-07)
+# ---------------------------------------------------------------------
+
+
+def test_promoting_a_root_records_the_write_as_the_frameworks_own(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A root goal's `lean_path` IS Root.lean, so promoting it rewrites a
+    file the user owns. `IntentCache`'s sweep watches those bytes for a
+    human edit and can only see bytes — it filed the promotion as an
+    observed user change and warned that the review/root gate would
+    surface it (Lab.even_sum_subsets). The promotion now says it was the
+    one who wrote, which is what makes the sweep's last-sha dedup keep
+    quiet."""
+    gid = _seed_goal(conn, lean_path="Problems/p/Root.lean")
+    sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean")
+    root = tmp_path / "Problems" / "p" / "Root.lean"
+    root.parent.mkdir(parents=True)
+    root.write_text("import Mathlib\n\ntheorem main : True := by sorry\n",
+                    encoding="utf-8")
+    scratch = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch.parent.mkdir(parents=True)
+    scratch.write_text("theorem s : True := trivial\n", encoding="utf-8")
+
+    assert verify.verify_strategy(
+        conn, workspace=tmp_path, strategy_id=sid) == "proved"
+    row = conn.execute(
+        "SELECT sha, source, body FROM user_file_history"
+        " WHERE problem = 'p' AND file = 'Root.lean'"
+        " ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None and str(row["source"]) == "framework"
+    assert str(row["body"]) == root.read_text(encoding="utf-8")
+    assert "def main := @Problems.p.s" in str(row["body"])
+
+
+def test_promoting_a_non_user_file_records_nothing(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Only Root.lean / Defs.lean are the user's. A sub-goal proof file
+    is framework-owned end to end and has no history to keep."""
+    gid = _seed_goal(conn, slug="lemma")
+    sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=gid, lean_path="Problems/p/proofs/L_lemma.lean")
+    target = tmp_path / "Problems/p/proofs/L_lemma.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem lemma : True := by sorry\n", encoding="utf-8")
+    scratch = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch.write_text("theorem s : True := trivial\n", encoding="utf-8")
+    verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM user_file_history").fetchone()["n"] == 0

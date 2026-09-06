@@ -227,11 +227,20 @@ def test_backward_deadlocked_proposed_strategy_resolved_stalled(
     assert _n_strategist_queued(conn) == 0
 
 
-def test_backward_all_proved_proposed_strategy_resolved_success(
+def test_backward_all_proved_proposed_strategy_is_left_to_verify(
     conn: sqlite3.Connection,
 ) -> None:
-    """Edge: a 'proposed' strategy whose subgoals all proved (a missed
-    verify) resolves the decision 'success', not failed."""
+    """A 'proposed' strategy whose subgoals all proved is VERIFY's, and
+    this backstop must not touch it (2026-09-07).
+
+    It used to read the shape as "a missed verify" and flip the row
+    'succeeded' — true while verify ran inline. The async promotion gate
+    gave the same shape a second meaning: housekeeping wrote the alias,
+    submitted the cold build, and left the row 'proposed' until the build
+    answers. Flipping it here settled the Inject 'success' under a goal
+    that was still 'attempting' and made `_settle_promotion` drop the
+    gate's own answer, so the root never flipped
+    (Lab.even_sum_subsets, 2026-09-07)."""
     _goal(conn, slug="main", origin="root", status="attempting")
     tgt = _goal(conn, slug="target", status="attempting")
     s = _strategy(conn, goal_id=tgt, status="proposed")
@@ -240,8 +249,10 @@ def test_backward_all_proved_proposed_strategy_resolved_success(
     _link(conn, s, [sg1, sg2])
     did = _inject(conn, batch_id="b1", produced_goal_id=tgt,
                   produced_strategy_id=s)
-    assert db.reconcile_settled_inject_outcomes(conn) == 1
-    assert _outcome(conn, did) == "success"
+    assert db.reconcile_settled_inject_outcomes(conn) == 0
+    assert _outcome(conn, did) is None
+    assert _status(conn, "strategies", s) == "proposed"
+    assert _n_strategist_queued(conn) == 0
 
 
 def test_backward_proposed_with_alive_subgoal_left_alone(

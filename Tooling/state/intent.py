@@ -126,8 +126,14 @@ def user_file_baseline_row(conn, problem: str, file: str):
     to: the latest `repin`-source row if any (sanctioned change acks —
     operator `asterism repin`, accepted amendments, and charter/word
     writes through the intent writers, which all record the same
-    source; the CHECK constraint only admits 'observed'/'repin'), else
-    the first-load observation. None = never recorded."""
+    source), else the first-load observation. None = never recorded.
+
+    A `framework` row can never be the baseline: it records what the
+    FRAMEWORK wrote into a user file (the proof landing — see
+    `record_framework_write`), and pinning the contract to the machine's
+    own output is exactly the circularity `root_integrity_gate` exists to
+    prevent. The fallback therefore reads the first row the framework did
+    NOT write."""
     row = conn.execute(
         "SELECT sha, body FROM user_file_history"
         " WHERE problem = ? AND file = ? AND source = 'repin'"
@@ -136,8 +142,59 @@ def user_file_baseline_row(conn, problem: str, file: str):
         return row
     return conn.execute(
         "SELECT sha, body FROM user_file_history"
-        " WHERE problem = ? AND file = ?"
+        " WHERE problem = ? AND file = ? AND source != 'framework'"
         " ORDER BY id ASC LIMIT 1", (problem, file)).fetchone()
+
+
+def record_framework_write(conn, problem: str, file: str,
+                           body: str) -> bool:
+    """Record that the FRAMEWORK — not a person — just wrote `file`.
+
+    Root.lean is a user file AND the root goal's proof target, so the
+    framework legitimately rewrites it: `verify_strategy` promotes it to
+    the `def main := @Problems.<p>.s<N>` alias, `rollback_promote` puts
+    the stub back. `IntentCache._record_history` sweeps the same two
+    files to catch a human edit through ANY channel, and it can only see
+    bytes — so the promotion read as "content changed … review/root gate
+    will surface it" and the sweep filed the machine's own write as an
+    observation of a user edit (Lab.even_sum_subsets, 2026-09-07).
+
+    Announcing the write closes that: the row is stored under
+    `source='framework'`, and because the sweep dedups on the LAST
+    recorded sha it then stays quiet — while a human edit ON TOP of a
+    promotion still differs from this row and is still caught. The
+    history stays complete (every change to a user file is a row), the
+    baseline is unaffected (`user_file_baseline_row` skips these rows),
+    and `root_integrity_gate` keeps judging the CURRENT bytes against the
+    pin, which for Root.lean is the statement-level test the framework's
+    own alias shape is meant to pass.
+
+    Returns True when a row was written (False = same content already
+    recorded). Best-effort by contract: the caller is mid-promotion and a
+    history row must never be the thing that fails one.
+    """
+    try:
+        sha = _content_sha(body)
+        last = conn.execute(
+            "SELECT sha FROM user_file_history"
+            " WHERE problem = ? AND file = ?"
+            " ORDER BY id DESC LIMIT 1", (problem, file)).fetchone()
+        if last is not None and str(last["sha"]) == sha:
+            return False
+        conn.execute(
+            "INSERT INTO user_file_history"
+            " (problem, file, sha, body, seen_at, source)"
+            " VALUES (?, ?, ?, ?, ?, 'framework')",
+            (problem, file, sha, body, _now()))
+        conn.commit()
+        print(f"[user-file-history] {problem}/{file}: framework write "
+              f"(sha {sha}) — the proof landing, not a human edit",
+              flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001 — never blocks a promotion
+        print(f"[user-file-history] {problem}/{file}: framework write "
+              f"not recorded ({type(e).__name__}: {e})", flush=True)
+        return False
 
 
 def user_file_baseline(conn, problem: str, file: str) -> "str | None":
@@ -359,7 +416,14 @@ class IntentCache:
         """Append current content of the problem's user-intent FILES
         (Root.lean / Defs.lean, whichever exist) to `user_file_history`
         when it differs from the last recorded sha. Best-effort:
-        history must never break intent loading."""
+        history must never break intent loading.
+
+        "Differs from the last recorded sha" is what keeps the
+        framework's own writes out of this: a promotion announces itself
+        through `record_framework_write` before this sweep can see the
+        bytes, so the last row already carries them and nothing is filed
+        or warned about. A human edit landing on top of a promotion has a
+        different sha again and is caught exactly as before."""
         try:
             from . import db as _db
             conn = None

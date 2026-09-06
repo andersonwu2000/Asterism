@@ -557,6 +557,38 @@ def test_gate_statement_pin_def_alias_own_strategy_passes(
     assert row["integrity_verified"] == 1
 
 
+def test_gate_is_not_blocked_by_the_frameworks_own_recorded_write(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """The promotion now RECORDS the alias it wrote
+    (`intent.record_framework_write`, 2026-09-07). That row must not
+    become the pin: the baseline is what a PERSON put there, and pinning
+    the contract to the machine's own output would make the gate certify
+    itself. The proved root still verifies, and the human stub is still
+    the baseline."""
+    gid, root = _seed_pinned_root_stub(conn, tmp_path)
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, created_by, created_at)"
+        " VALUES (?, 'Problems/p/Root.lean',"
+        " 'Problems/p/proofs/_strategy_s1.lean', 'succeeded',"
+        " 'test', ?)", (gid, db.now()))
+    sid = cur.lastrowid
+    alias = ("import Mathlib\nimport Problems.p.proofs._strategy_s1\n\n"
+             "namespace Problems.p\n\n"
+             "def main := @Problems.p.s%d\n\nend Problems.p\n" % sid)
+    root.write_text(alias, encoding="utf-8")
+    assert intent.record_framework_write(conn, "p", "Root.lean", alias)
+
+    base = intent.user_file_baseline_row(conn, "p", "Root.lean")
+    assert "by sorry" in str(base["body"]), "the pin is the human's stub"
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
+    assert conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()["integrity_verified"] == 1
+
+
 def test_gate_statement_pin_def_alias_foreign_strategy_blocked(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

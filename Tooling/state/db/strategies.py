@@ -196,31 +196,33 @@ def reconcile_settled_inject_outcomes(
         bypassed it) → re-run `propagate_inject_outcome_from_goal`.
       * Backward / Builder: `produced_strategy_id` reached a terminal
         strategy status → re-run `propagate_inject_outcome_from_strategy`;
-        OR the strategy is still 'proposed' yet has ≥1 subgoal and ZERO
-        alive ones (all proved / shelved — the canonical DEADLOCK: a
+        OR the strategy is still 'proposed', has ≥1 subgoal, ZERO alive
+        ones, and NOT every one of them proved (the canonical DEADLOCK: a
         SOFT-shelved subgoal kept the strategy 'proposed', but
         `produced_goal_id`=target only terminates at problem end, so the
-        NULL outcome suppressed T4 → permanent wedge).
+        NULL outcome suppressed T4 → permanent wedge). All-proved is
+        verify's, not this backstop's — see the branch below.
 
         BACKSTOP role (Phase 11): the PRIMARY path now flips such a parent
         strategy to its terminal status at shelve-time
         (`_maybe_stall_parent_strategies`), so this branch rarely fires.
-        When it does (a soft-shelve site that bypassed the hook), drive the
-        strategy terminal via `update_strategy_status`: 'succeeded' iff every
-        subgoal proved (a missed verify) → wakes to assemble; else 'stalled'
-        (≥1 soft-shelved, reopenable) → fills the outcome WITHOUT waking.
-        A parked-collapse wake is T4's call (`is_problem_stalled`), NOT an
-        unconditional `inject_batch_done` — waking here re-plans work a prior
-        Strategist run already pivoted on (the duplicate-wake the 'stalled'
-        status was introduced to kill). The strategy stays reopenable: a
-        subgoal Reopen flips 'stalled' → 'proposed'.
+        When it does (a soft-shelve site that bypassed the hook), park the
+        strategy 'stalled' via `update_strategy_status` — the outcome is
+        filled WITHOUT waking. A parked-collapse wake is T4's call
+        (`is_problem_stalled`), NOT an unconditional `inject_batch_done` —
+        waking here re-plans work a prior Strategist run already pivoted on
+        (the duplicate-wake the 'stalled' status was introduced to kill).
+        The strategy stays reopenable: a subgoal Reopen flips 'stalled' →
+        'proposed'.
+
+        This backstop NEVER writes 'succeeded' (2026-09-07). See the
+        all-proved branch below.
 
     Fires `maybe_enqueue_inject_batch_done` only via `update_strategy_status`
-    for genuine completions ('succeeded'/'superseded'/'dead'); 'stalled'
-    fills the outcome silently. Returns the count resolved. Idempotent
-    (every fill is `outcome IS NULL`-guarded). In-flight safe: a 'proposed'
-    strategy with any alive subgoal is genuinely in flight and left
-    untouched."""
+    for genuine completions ('superseded'/'dead'); 'stalled' fills the
+    outcome silently. Returns the count resolved. Idempotent (every fill is
+    `outcome IS NULL`-guarded). In-flight safe: a 'proposed' strategy with
+    any alive subgoal is genuinely in flight and left untouched."""
     sql = (
         "SELECT sd.id, sd.produced_goal_id, sd.produced_strategy_id,"
         "       sd.produced_group_id, g.status AS goal_status,"
@@ -261,21 +263,53 @@ def reconcile_settled_inject_outcomes(
                 alive = (comp.get("open", 0) + comp.get("attempting", 0)
                          + comp.get("pending_strategist_review", 0))
                 if total > 0 and alive == 0:
-                    # BACKSTOP only: the primary path flips the parent
-                    # strategy to its terminal status at shelve-time
+                    if comp.get("proved", 0) == total:
+                        # ALL PROVED is VERIFY's case and only verify's
+                        # (2026-09-07). While verify ran INLINE, "still
+                        # 'proposed' with every sub-goal proved" could
+                        # only mean a MISSED verify, so flipping the row
+                        # 'succeeded' here was the repair. The async
+                        # promotion gate (owner ruling 2026-08-30) gave
+                        # the same shape a second, far more common
+                        # meaning: the promotion is IN FLIGHT —
+                        # housekeeping wrote the alias, submitted the
+                        # cold build and left the row 'proposed' for
+                        # `verify._settle_promotion` to flip when the
+                        # build answers. Writing 'succeeded' from here
+                        # settled the producing Inject 'success' and woke
+                        # a Strategist on a batch whose GOAL was still
+                        # 'attempting', and then the gate's own answer
+                        # was dropped because the row it came back to was
+                        # no longer 'proposed' — the root never flipped
+                        # and the alias stayed substituted
+                        # (Lab.even_sum_subsets, 2026-09-07).
+                        #
+                        # Leaving the row alone IS driving it into
+                        # verify's queue: readiness is DERIVED
+                        # (`strategies_ready_for_verify`), so the next
+                        # `verify_housekeeping` tick either drains the
+                        # gate result or submits the promotion. Only when
+                        # verify demonstrably CANNOT take the row is
+                        # there anything to say — then the NULL outcome
+                        # is a real wedge and wants a person, not a
+                        # status this backstop invented.
+                        if not any(int(r["id"]) == int(sid)
+                                   for r in strategies_ready_for_verify(conn)):
+                            print(f"[reconcile] s{sid}: every sub-goal is "
+                                  f"proved but verify cannot take it (parent "
+                                  f"goal settled, or the strategy has no "
+                                  f"patch file) — the Inject outcome stays "
+                                  f"NULL", flush=True)
+                        continue
+                    # BACKSTOP only: the primary path parks the parent
+                    # strategy at shelve-time
                     # (`_maybe_stall_parent_strategies`). If a soft-shelve
-                    # site was missed, drive the strategy terminal here so
-                    # status + inject outcome stay consistent. 'succeeded'
-                    # (all proved — a missed verify) wakes to assemble;
-                    # 'stalled' (>=1 soft-shelved, reopenable) fills the
-                    # outcome WITHOUT waking — the parked-collapse wake is
-                    # T4's call, not an unconditional inject_batch_done.
-                    # update_strategy_status performs both the propagation
-                    # and the (success-only) batch-done enqueue.
-                    new_status = ("succeeded"
-                                  if comp.get("proved", 0) == total
-                                  else "stalled")
-                    update_strategy_status(conn, int(sid), new_status)
+                    # site was missed, park it here so status + inject
+                    # outcome stay consistent — 'stalled' (>=1 soft-
+                    # shelved, reopenable) fills the outcome WITHOUT
+                    # waking: the parked-collapse wake is T4's call, not
+                    # an unconditional inject_batch_done.
+                    update_strategy_status(conn, int(sid), "stalled")
                     resolved += 1
                     continue
         elif r["produced_goal_id"] is not None and \

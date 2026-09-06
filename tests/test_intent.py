@@ -208,6 +208,66 @@ def test_intent_cache_sweeps_user_files_into_history(
     conn.close()
 
 
+def test_the_frameworks_own_promote_write_is_not_flagged_as_a_user_edit(
+        tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """Root.lean is a user file AND the root goal's proof target, so
+    Verify's promotion to `def main := @s<N>` rewrites it. The sweep
+    reads bytes and called that "content changed … review/root gate will
+    surface it" (Lab.even_sum_subsets, 2026-09-07). Announced through
+    `record_framework_write`, the sweep's own last-sha dedup keeps it
+    quiet — and the row says who wrote it."""
+    conn = _file_workspace(tmp_path, "P")
+    root = tmp_path / "Problems" / "P" / "Root.lean"
+    root.write_text("theorem main : True := by sorry\n", encoding="utf-8")
+    cache = intent.IntentCache(tmp_path)
+    cache.load("P")                      # baseline observation
+
+    alias = "import X\n\ndef main := @Problems.P.s1\n"
+    root.write_text(alias, encoding="utf-8")
+    assert intent.record_framework_write(conn, "P", "Root.lean", alias)
+    capsys.readouterr()
+    cache["P"]                           # the sweep runs again
+
+    rows = conn.execute(
+        "SELECT sha, source FROM user_file_history"
+        " WHERE problem = 'P' AND file = 'Root.lean' ORDER BY id"
+    ).fetchall()
+    assert [str(r["source"]) for r in rows] == ["observed", "framework"]
+    assert "content changed" not in capsys.readouterr().out
+    # and the baseline is still the HUMAN row — never the machine's
+    base = intent.user_file_baseline_row(conn, "P", "Root.lean")
+    assert "by sorry" in str(base["body"])
+    conn.close()
+
+
+def test_a_human_edit_on_top_of_a_promotion_is_still_caught(
+        tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    conn = _file_workspace(tmp_path, "P")
+    root = tmp_path / "Problems" / "P" / "Root.lean"
+    root.write_text("theorem main : True := by sorry\n", encoding="utf-8")
+    cache = intent.IntentCache(tmp_path)
+    cache.load("P")
+    alias = "import X\n\ndef main := @Problems.P.s1\n"
+    root.write_text(alias, encoding="utf-8")
+    intent.record_framework_write(conn, "P", "Root.lean", alias)
+    root.write_text(alias + "-- a person was here\n", encoding="utf-8")
+    capsys.readouterr()
+    cache["P"]
+    assert "content changed" in capsys.readouterr().out
+    assert conn.execute(
+        "SELECT source FROM user_file_history WHERE problem = 'P'"
+        " AND file = 'Root.lean' ORDER BY id DESC LIMIT 1"
+    ).fetchone()["source"] == "observed"
+    conn.close()
+
+
+def test_record_framework_write_is_idempotent(tmp_path: Path) -> None:
+    conn = _file_workspace(tmp_path, "P")
+    assert intent.record_framework_write(conn, "P", "Root.lean", "body")
+    assert not intent.record_framework_write(conn, "P", "Root.lean", "body")
+    conn.close()
+
+
 # ---------------------------------------------------------------------
 # effective_axioms — semantics unchanged from the manifest era
 # ---------------------------------------------------------------------

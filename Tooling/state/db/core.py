@@ -457,7 +457,11 @@ CREATE TABLE IF NOT EXISTS problem_settings (
 -- pin is statement-level — the framework's own proof-landing rewrites
 -- the proof body, task #120). source='repin' rows are the sanctioned
 -- change acks: operator re-baselines (`asterism repin`), accepted
--- amendments, and charter/word writes.
+-- amendments, and charter/word writes. source='framework' (v55) is the
+-- machine ANNOUNCING its own write to a user file — the Verify promotion
+-- to `def main := @s<N>` and its rollback: without it the sweep read the
+-- promotion as a human edit and warned that the root gate would surface
+-- it. Such a row is never a baseline (`intent.user_file_baseline_row`).
 CREATE TABLE IF NOT EXISTS user_file_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     problem TEXT NOT NULL REFERENCES problems(name),
@@ -466,7 +470,7 @@ CREATE TABLE IF NOT EXISTS user_file_history (
     body    TEXT NOT NULL,
     seen_at TEXT NOT NULL,
     source  TEXT NOT NULL DEFAULT 'observed'
-            CHECK (source IN ('observed', 'repin'))
+            CHECK (source IN ('observed', 'repin', 'framework'))
 );
 
 -- Phase 2 — Strategist decision audit log + awaiting_human gate.
@@ -958,7 +962,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 54
+_CURRENT_USER_VERSION = 55
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

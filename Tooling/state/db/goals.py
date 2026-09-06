@@ -632,6 +632,18 @@ def propagate_inject_outcome_from_strategy(
 
     Idempotent: re-running on an already-propagated strategy is a
     no-op via the `outcome IS NULL` guard.
+
+    'succeeded' additionally requires the strategy's GOAL to be terminal
+    (2026-09-07). What an Inject(Backward) asked for is a PROVED goal, so
+    'success' is a claim about the goal, not about the strategy row — and
+    the two are written a few statements apart (`verify._flip_proved`
+    flips the strategy, then the goal), with an async cold-build gate
+    between the alias write and both. Reporting 'success' from the
+    strategy alone woke a Strategist on a batch whose root goal was still
+    'attempting' (Lab.even_sum_subsets, 2026-09-07) and cost a full wake
+    plus a RequestUserAmend about the transient alias. `_flip_proved`
+    re-runs this function once the goal IS proved, which is where the
+    fill now lands.
     """
     row = conn.execute(
         "SELECT id FROM strategist_decisions"
@@ -641,12 +653,16 @@ def propagate_inject_outcome_from_strategy(
     if row is None:
         return None
     s = conn.execute(
-        "SELECT status FROM strategies WHERE id = ?", (strategy_id,)
+        "SELECT s.status, g.status AS goal_status FROM strategies s"
+        " JOIN goals g ON g.id = s.goal_id WHERE s.id = ?", (strategy_id,)
     ).fetchone()
     if s is None:
         return None
     status = str(s["status"])
     if status == "succeeded":
+        from .. import transitions
+        if str(s["goal_status"]) not in transitions.GOAL_TERMINALS:
+            return None  # promotion still landing; `_flip_proved` re-runs us
         outcome = "success"
     elif status == "superseded":
         # #3(a): the briefed decomposition did NOT run to completion —

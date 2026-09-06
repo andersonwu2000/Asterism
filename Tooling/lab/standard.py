@@ -77,8 +77,8 @@ _ITEM_KEYS = ("kind", "expected", "notes") + _INHERITED
 #: that silently never ran, on a scorecard that says the item passed.
 EXPECTED_KEYS: "dict[str, tuple[str, ...]]" = {
     "judge_round": ("verdict", "parsed", "must_fire", "must_not_fire"),
-    "daemon": ("outcome", "proved_at_least", "revisions_at_least",
-               "wall_sec_at_most", "tools_touched"),
+    "daemon": ("outcome", "proved_at_least", "root_proved",
+               "revisions_at_least", "wall_sec_at_most", "tools_touched"),
     "theory_wake": ("outcome", "document", "rounds_at_most"),
     "strategist_wake": ("outcome",),
     "push_wake": ("outcome",),
@@ -412,6 +412,16 @@ def _score_daemon(expected: dict, record: dict, result: dict) -> dict:
             got = int(produced.get(col) or 0)
             checks[key] = _check(got >= int(expected[key]), got=got,
                                  want=int(expected[key]))
+    if "root_proved" in expected:
+        # The END STATE of the scope problem's root, not a delta: an
+        # end-to-end item is about landing the root, and every sub-goal
+        # proving is not that. Absent from a record older than the key
+        # (`driver_result` has no `root_proved`) reads as False, which is
+        # the honest answer for a run that could not report it.
+        got = bool(result.get("root_proved"))
+        checks["root_proved"] = _check(got == bool(expected["root_proved"]),
+                                       got=got,
+                                       want=bool(expected["root_proved"]))
     if "wall_sec_at_most" in expected:
         got = float(record.get("wall_sec") or 0.0)
         checks["wall_sec_at_most"] = _check(got <= float(

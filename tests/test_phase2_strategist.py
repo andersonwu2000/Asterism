@@ -1546,9 +1546,17 @@ def test_propagate_inject_outcome_from_strategy_succeeded(
     conn: sqlite3.Connection,
 ) -> None:
     """Inject(Backward) commits to track the produced strategy: when
-    that strategy reaches 'succeeded' (verify proved it), the
+    that strategy reaches 'succeeded' AND its goal is proved, the
     decision's outcome becomes 'success' and the batch can wake
-    Strategist. Mirrors the goal-side 'proved' path for Forward."""
+    Strategist. Mirrors the goal-side 'proved' path for Forward.
+
+    The goal is half the condition (2026-09-07): what the Inject asked
+    for is a PROVED goal, and the two writes are seconds apart with an
+    async cold-build gate between them. Reporting success off the
+    strategy row alone woke a Strategist on a batch whose root was still
+    'attempting' (Lab.even_sum_subsets); `verify._flip_proved` re-runs
+    the propagation once the goal lands, which is where the fill
+    belongs."""
     _insert_root(conn)
     gid = db.insert_goal(
         conn, problem="p", slug="tgt",
@@ -1568,6 +1576,11 @@ def test_propagate_inject_outcome_from_strategy_succeeded(
     db.set_inject_decision_produced_strategy(conn, decision_id, sid)
 
     db.update_strategy_status(conn, sid, "succeeded")
+    assert _decision_outcome(conn, decision_id) is None, \
+        "the goal has not been proved yet — the promotion is still landing"
+
+    db.update_goal_status(conn, gid, "proved")
+    assert db.propagate_inject_outcome_from_strategy(conn, sid) == decision_id
     assert _decision_outcome(conn, decision_id) == "success"
 
 

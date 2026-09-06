@@ -210,6 +210,11 @@ GOAL_EDGES: frozenset[tuple[str, str]] = frozenset({
 
 STRATEGY_EDGES: frozenset[tuple[str, str]] = frozenset({
     # --- strategy proved out (verify success) ---
+    # `verify._flip_proved` is the SOLE writer of this edge (2026-09-07):
+    # the reconcile backstop used to emit it too, off "still proposed and
+    # every sub-goal proved" — a shape the async promotion gate turned
+    # into "promotion in flight", so the backstop settled the batch under
+    # a goal that had not been proved yet.
     ("proposed", "succeeded"),
     # --- strategy killed (skeleton fail / agent fail / cascade inward+upward) ---
     ("proposed", "dead"),
@@ -217,13 +222,13 @@ STRATEGY_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("proposed", "superseded"),
     # --- soft-park: all sub-goals settled, no hard-terminal sibling ---
     ("proposed", "stalled"),
-    ("proposed", "succeeded"),  # batch reconcile resolve (db.reconcile_inject_outcomes)
     # --- revival: stalled/superseded strategy reactivated ---
     ("stalled", "proposed"),       # _commit_inject_redispatch un-stall parent
     ("superseded", "proposed"),    # rollback un-supersede sibling
     # --- axiom-probe rollback of a wrongly-promoted alias chain ---
     ("succeeded", "dead"),         # culprit strategy that leaked sorryAx
-    ("succeeded", "proposed"),     # upstream strategy reverted for re-verify
+    ("succeeded", "proposed"),     # upstream strategy reverted for re-verify,
+                                   # and recovery's un-settled promotion
 })
 
 GROUP_EDGES: frozenset[tuple[str, str]] = frozenset({
@@ -295,6 +300,12 @@ EVENTS: frozenset[str] = frozenset({
     # and left no goal_events row to say which restart did it).
     "recovery_reopen", "recovery_attempting_fixup",
     "recovery_anchor_repark",
+    # startup recovery — a promotion whose settle never landed: the
+    # alias was on disk with its backup, the strategy already read
+    # 'succeeded', and the goal never flipped. The file goes back to its
+    # stub and the strategy back to 'proposed', so verify re-promotes
+    # and re-gates it (2026-09-07).
+    "recovery_unsettled_promotion",
     # operator verbs (`asterism reject`) — a person retiring a
     # framework-generated node. Not a kernel verdict, so it is a park;
     # the event is what says a PERSON wanted this one gone.

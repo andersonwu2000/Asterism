@@ -141,7 +141,34 @@ def verify_strategy(
         # a cold-broken alias (sphere suspension iso, 2026-07-04).
         scratch_text=scratch_text,
     )
+    _announce_framework_write(conn, workspace, s["lean_path"],
+                              str(s["goal_problem"]))
     return "proved"
+
+
+def _announce_framework_write(conn: sqlite3.Connection, workspace: Path,
+                              lean_path: str, problem: str) -> None:
+    """The framework just rewrote `lean_path` — say so if it is one of
+    the problem's USER files.
+
+    A root goal's `lean_path` IS Root.lean, so every promotion and every
+    rollback of a root strategy rewrites a file the user owns. The
+    `IntentCache` sweep that watches those two files for a human edit
+    reads bytes and nothing else, so it filed the promotion as an
+    observed user change and warned that the review/root gate would
+    surface it (Lab.even_sum_subsets, 2026-09-07) — one line of pure
+    noise, on the one file whose noise the operator must never learn to
+    ignore. Recording the write here makes the sweep's own last-sha dedup
+    do the rest; an edit a PERSON lands on top of the alias still differs
+    and is still caught."""
+    name = Path(lean_path).name
+    if name not in intent_mod.USER_INTENT_FILES:
+        return
+    try:
+        body = (workspace / lean_path).read_text(encoding="utf-8")
+    except OSError:
+        return
+    intent_mod.record_framework_write(conn, problem, name, body)
 
 
 # ── the promotion cold-build gate (owner ruling 2026-08-30, task #231) ──
@@ -211,6 +238,16 @@ def _flip_proved(conn: sqlite3.Connection, *, sid: int, goal_id: int,
         receipt=transitions.ProvedReceipt(
             "verify_collapse", f"strategy s{sid} all-subs-proved"))
     db.mark_other_strategies_superseded(conn, goal_id=goal_id, winner_id=sid)
+    # The strategy-terminal hook above fired while the goal was still
+    # 'attempting' — this function's order is forced (the goal flip
+    # cascades off an already-succeeded strategy), and
+    # `propagate_inject_outcome_from_strategy` refuses a 'succeeded'
+    # whose goal is not terminal, because what an Inject(Backward) asked
+    # for is a PROVED goal. So the producing Inject is settled HERE, once
+    # the goal it asked for actually is (2026-09-07).
+    did = db.propagate_inject_outcome_from_strategy(conn, sid)
+    if did is not None:
+        db.maybe_enqueue_inject_batch_done(conn, did)
     conn.commit()
     counts["proved"] += 1
     touched_goals.add(goal_id)
@@ -249,15 +286,47 @@ def _strategy_dead(conn: sqlite3.Connection, *, sid: int, goal_id: int,
 
 def _settle_promotion(conn: sqlite3.Connection, workspace: Path, res,
                       *, counts: dict, touched_goals: set) -> None:
-    """Consume one gate result on the main thread."""
+    """Consume one gate result on the main thread.
+
+    A result is never dropped in silence (2026-09-07). The gate is the
+    only thing that knows whether a promotion may stand, and its answer
+    arrives ticks after the submission — long enough for another path to
+    have settled the row. When that happened the old code returned
+    without a word, so `s1` sat 'succeeded' under an 'attempting' root
+    with the alias substituted and nothing in the log said why
+    (Lab.even_sum_subsets). Every non-standard status is now named, and
+    the one that is this bug's own residue — 'succeeded' while the goal
+    is NOT terminal — is COMPLETED rather than ignored: that pair is not
+    a legal resting state, and the gate's answer is exactly what settles
+    it.
+    """
     s = conn.execute(
-        "SELECT s.id, s.goal_id, s.lean_path, s.status FROM strategies s"
-        " WHERE s.id = ?", (int(res.strategy_id),)).fetchone()
+        "SELECT s.id, s.goal_id, s.lean_path, s.status,"
+        "       g.status AS goal_status, g.problem AS goal_problem"
+        " FROM strategies s"
+        " JOIN goals g ON g.id = s.goal_id WHERE s.id = ?",
+        (int(res.strategy_id),)).fetchone()
+    if s is None:
+        print(f"[verify] promotion gate result for s{res.strategy_id} "
+              f"ignored: the strategy row is gone", flush=True)
+        return
+    sid, goal_id = int(s["id"]), int(s["goal_id"])
+    status, goal_status = str(s["status"]), str(s["goal_status"])
     # Readiness is DERIVED (`db.strategies_ready_for_verify`: all subs
     # proved, parent alive) — the row itself still says 'proposed'.
-    if s is None or s["status"] not in ("proposed", "ready_for_verify"):
-        return  # settled by another path meanwhile (superseded / rolled back)
-    sid, goal_id = int(s["id"]), int(s["goal_id"])
+    if status not in ("proposed", "ready_for_verify"):
+        if (status == "succeeded"
+                and goal_status not in transitions.GOAL_TERMINALS):
+            print(f"[verify] promotion gate result for s{sid}: status="
+                  f"'succeeded' while goal g{goal_id} is '{goal_status}' "
+                  f"— a settled strategy under an unproved goal is not a "
+                  f"resting state; completing the promotion from the "
+                  f"gate's answer (ok={bool(res.ok)})", flush=True)
+        else:
+            # settled by another path meanwhile (superseded / rolled back)
+            print(f"[verify] promotion gate result for s{sid} ignored: "
+                  f"status={status}, goal={goal_status}", flush=True)
+            return
     if res.ok:
         _flip_proved(conn, sid=sid, goal_id=goal_id, counts=counts,
                      touched_goals=touched_goals)
@@ -277,6 +346,8 @@ def _settle_promotion(conn: sqlite3.Connection, workspace: Path, res,
         backup = verify_backup_path(parent_abs, f"s{sid}")
         if backup.exists():
             rollback_promote(parent_abs, backup)
+            _announce_framework_write(conn, workspace, str(s["lean_path"]),
+                                      str(s["goal_problem"]))
         print(f"[verify] Strategy={sid} → dead (promotion gate: "
               f"{alias_mod} does not build)", flush=True)
         _strategy_dead(conn, sid=sid, goal_id=goal_id, counts=counts,
@@ -644,6 +715,8 @@ def rollback_cascade_chain(
         backup = verify_backup_path(parent_abs, sid_token)
         if backup.exists():
             rollback_promote(parent_abs, backup)
+            _announce_framework_write(conn, workspace, str(s["lean_path"]),
+                                      str(s["problem"]))
         # Revert state. Culprit goes dead; upstream goes back to
         # ready-for-verify (status='proposed' with sub-goals reverted
         # to attempting/open).

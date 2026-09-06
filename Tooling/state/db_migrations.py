@@ -1125,6 +1125,21 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
                 raise
         conn.execute("PRAGMA user_version = 54")
         conn.commit()
+    if v < 55:
+        # v55 — `user_file_history.source` gains 'framework'. The
+        # framework writes Root.lean itself (Verify's promotion to the
+        # `def main := @s<N>` alias, and its rollback), and the
+        # IntentCache sweep that watches the two hand-authored files for
+        # a human edit can only see bytes — so it filed the machine's own
+        # write as an observation and warned that the review/root gate
+        # would surface it (Lab.even_sum_subsets, 2026-09-07). This value
+        # is the framework ANNOUNCING the write, which both keeps the
+        # history complete and lets every reader tell the proof landing
+        # from a person. One CHECK widening = one table rebuild, rows
+        # carried (the history IS the record).
+        _migrate_to_v55(conn)
+        conn.execute("PRAGMA user_version = 55")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -3274,7 +3289,18 @@ def _migrate_to_v52(conn: sqlite3.Connection) -> None:
     own `CREATE TABLE IF NOT EXISTS` (run by `init_schema` before this
     ladder) covers the fresh disk and the old one alike.
     """
-    for table, column, pattern, repl in _V52_WIDENINGS:
+    _widen_checks(conn, _V52_WIDENINGS, tag="v52")
+
+
+def _widen_checks(conn: sqlite3.Connection,
+                  widenings: "tuple[tuple[str, str, str, str], ...]",
+                  *, tag: str) -> None:
+    """Add a value to each named CHECK by rebuilding the table off its
+    OWN sqlite_master text. Born as v52's loop body and shared from v55,
+    so the next widening is a table entry rather than a fifty-line copy.
+    `tag` names the version in the temp table, the FK-disarm reason and
+    the log line."""
+    for table, column, pattern, repl in widenings:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table'"
             " AND name = ?", (table,)).fetchone()
@@ -3301,16 +3327,16 @@ def _migrate_to_v52(conn: sqlite3.Connection) -> None:
                 # nobody asked for would be this step inventing one.
                 continue
             raise RuntimeError(
-                f"v52: {table}.{column} has a CHECK this edit cannot "
+                f"{tag}: {table}.{column} has a CHECK this edit cannot "
                 f"end ({pattern}) — refusing to guess at its shape")
-        tmp = f"_{table}_v52"
+        tmp = f"_{table}_{tag}"
         new_sql = re.sub(rf'CREATE TABLE\s+"?{table}"?',
                          f"CREATE TABLE {tmp}", new_sql, count=1)
         indexes = [r["sql"] for r in conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'index'"
             " AND tbl_name = ? AND sql IS NOT NULL", (table,))]
         conn.execute(f"DROP TABLE IF EXISTS {tmp}")
-        _disarm_foreign_keys(conn, f"v52 {table} rebuild")
+        _disarm_foreign_keys(conn, f"{tag} {table} rebuild")
         try:
             conn.execute(new_sql)
             n_rows = conn.execute(
@@ -3320,10 +3346,32 @@ def _migrate_to_v52(conn: sqlite3.Connection) -> None:
             for stmt in indexes:
                 conn.execute(stmt)
             if n_rows:
-                print(f"[v52] {table} rebuilt with {repl} in its CHECK"
+                print(f"[{tag}] {table} rebuilt with {repl} in its CHECK"
                       f" ({n_rows} row(s) carried)", flush=True)
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
+
+
+#: v55 — `user_file_history.source` gains 'framework': the machine
+#: ANNOUNCING its own write to a user file (the Verify promotion of
+#: Root.lean to `def main := @s<N>`, and its rollback). Without the
+#: value there is no way to tell the proof landing from a human edit,
+#: so the IntentCache sweep filed the framework's own bytes as an
+#: observation and warned that the root gate would surface them
+#: (Lab.even_sum_subsets, 2026-09-07). Rows are carried: the history IS
+#: the record.
+_V55_WIDENINGS: "tuple[tuple[str, str, str, str], ...]" = (
+    ("user_file_history", "source",
+     r"'repin'\s*\)", "'repin', 'framework')"),
+)
+
+
+def _migrate_to_v55(conn: sqlite3.Connection) -> None:
+    """`user_file_history.source` gains 'framework' (see
+    _V55_WIDENINGS). Same live-DDL channel as v52, and the same refusal
+    to guess: a table whose CHECK this edit cannot find stops the
+    step."""
+    _widen_checks(conn, _V55_WIDENINGS, tag="v55")
 
 
 def _migrate_to_v51(conn: sqlite3.Connection) -> None:

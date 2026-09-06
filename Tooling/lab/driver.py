@@ -782,6 +782,21 @@ def baseline_counts(conn, problem: str) -> dict:
     }
 
 
+def root_proved(conn, problem: str) -> bool:
+    """Did the scope problem's ROOT goal end 'proved'?
+
+    An absolute end-state, not a delta like `baseline_counts`: the root
+    is the one goal a run either lands or does not, and counting sub-goals
+    cannot answer it. An end-to-end smoke item scored on `proved_at_least`
+    alone passed a run whose two sub-goals proved and whose root never
+    flipped, because the promotion gate's answer was dropped
+    (Lab.even_sum_subsets, 2026-09-07)."""
+    row = conn.execute(
+        "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
+        " ORDER BY id LIMIT 1", (problem,)).fetchone()
+    return row is not None and str(row[0]) == "proved"
+
+
 def stop_reached(conn, problem: str, stop: dict, *, baseline: dict,
                  elapsed: float) -> "str | None":
     """Which declared condition has fired, or None.
@@ -856,6 +871,7 @@ def run_daemon(spec: dict, ws: Path, out: Path) -> dict:
                 proc.kill()
     try:
         after = baseline_counts(conn, problem)
+        rooted = root_proved(conn, problem)
         usage = _usage_since(conn, t0_iso=started_at)
     finally:
         conn.close()
@@ -863,6 +879,7 @@ def run_daemon(spec: dict, ws: Path, out: Path) -> dict:
             "gateway_port": port, "scope": scope, "once": once,
             "stop_fired": fired, "baseline": base, "after": after,
             "produced": {k: after[k] - base[k] for k in base},
+            "root_proved": rooted,
             "usage": usage, "pipeline_ids": [],
             "artefacts": ["daemon.log"]}
 

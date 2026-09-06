@@ -370,3 +370,140 @@ def test_crash_residue_is_cleared_at_boot(tmp_path) -> None:
     warm.reset_state(tmp_path)
     assert warm.inflight_builds(tmp_path) == []
     warm.reset_state(tmp_path)      # idempotent: no file is not an error
+
+
+# ────────── the settle must land: the 2026-09-07 dropped-result bug ──────────
+#
+# Lab.even_sum_subsets' first end-to-end run: s1 went to the gate, the
+# reconcile backstop read "proposed, every sub-goal proved, none alive"
+# as a missed verify and flipped it 'succeeded', the Inject settled
+# 'success' and woke a Strategist while the root was still 'attempting'
+# — and when the gate answered OK, `_settle_promotion` found a status it
+# did not expect and returned in silence. Root never proved, alias left
+# substituted, backup never cleaned.
+
+
+def _pending_gate(sid, verdict=(True, ())):
+    """A gate that holds `sid` in flight until `answer()` is called."""
+
+    class _Held(_SyncGate):
+        def __init__(self):
+            super().__init__({sid: (verdict[0], list(verdict[1]))})
+            self._held = True
+
+        def submit(self, s, modules, **kw):
+            self.submitted.append((s, list(modules)))
+
+        def pending(self, s):
+            if self._held:
+                return any(x[0] == s for x in self.submitted)
+            return super().pending(s)
+
+        def answer(self):
+            ok, failing = self.verdicts[sid]
+            self._results[sid] = warm.BuildResult(sid, ok, list(failing), "d")
+            self._held = False
+
+    return _Held()
+
+
+def _inject_for(conn, sid, gid, *, batch="b1"):
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, payload, batch_id,"
+        " produced_goal_id, produced_strategy_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', NULL, 'b', '{}', ?, ?, ?,"
+        "         ?, ?)", (batch, gid, sid, ts, ts))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _outcome_of(conn, did):
+    return conn.execute("SELECT outcome FROM strategist_decisions"
+                        " WHERE id = ?", (did,)).fetchone()["outcome"]
+
+
+def test_reconcile_does_not_settle_a_promotion_the_gate_still_holds(
+        conn, tmp_path, monkeypatch):
+    """Exactly today's sequence. While the cold build is in flight the
+    strategy is 'proposed' with every sub-goal proved — the shape the
+    backstop used to call a missed verify. It must stay untouched: no
+    'succeeded', no Inject outcome, no Strategist wake."""
+    gid, sid, _parent, _ = _promotable(conn, tmp_path, monkeypatch)
+    did = _inject_for(conn, sid, gid)
+    gate = _pending_gate(sid)
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    assert gate.submitted and gate.submitted[0][0] == sid
+
+    assert db.reconcile_settled_inject_outcomes(conn) == 0
+    assert conn.execute("SELECT status FROM strategies WHERE id=?",
+                        (sid,)).fetchone()["status"] == "proposed"
+    assert _outcome_of(conn, did) is None
+    assert conn.execute("SELECT COUNT(*) AS n FROM queue WHERE kind="
+                        "'Strategist'").fetchone()["n"] == 0
+
+    # …and when the build answers, the flip and the outcome both land.
+    gate.answer()
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    assert db.get_goal(conn, gid)["status"] == "proved"
+    assert conn.execute("SELECT status FROM strategies WHERE id=?",
+                        (sid,)).fetchone()["status"] == "succeeded"
+    assert _outcome_of(conn, did) == "success"
+
+
+def test_the_inject_outcome_waits_for_the_goal_not_the_strategy(conn):
+    """'succeeded' means the Inject got what it asked for — a PROVED
+    goal. A strategy row that says so while its goal is still
+    'attempting' is mid-promotion, and reporting success off it is what
+    woke a Strategist onto a batch that had not landed."""
+    _seed_problem(conn)
+    gid = _seed_goal(conn, "main", depth=0, origin="root")
+    db.update_goal_status(conn, gid, "attempting")
+    sid = _seed_strategy(conn, goal_id=gid, sid_slug="s",
+                         lean_path="Problems/p/proofs/L_main.lean")
+    did = _inject_for(conn, sid, gid)
+    conn.execute("UPDATE strategies SET status='succeeded' WHERE id=?", (sid,))
+    conn.commit()
+    assert db.propagate_inject_outcome_from_strategy(conn, sid) is None
+    assert _outcome_of(conn, did) is None
+    db.update_goal_status(conn, gid, "proved")
+    assert db.propagate_inject_outcome_from_strategy(conn, sid) == did
+    assert _outcome_of(conn, did) == "success"
+
+
+def test_a_gate_result_for_a_settled_strategy_completes_the_flip(
+        conn, tmp_path, monkeypatch, capsys):
+    """The residue this bug leaves behind: strategy 'succeeded', goal
+    NOT terminal. The gate's answer is exactly what settles that pair,
+    so it is applied rather than dropped — and it says so."""
+    gid, sid, _parent, _ = _promotable(conn, tmp_path, monkeypatch)
+    did = _inject_for(conn, sid, gid)
+    gate = _pending_gate(sid)
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    # an out-of-band writer settles the strategy under an unproved goal
+    conn.execute("UPDATE strategies SET status='succeeded' WHERE id=?", (sid,))
+    conn.commit()
+    gate.answer()
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    assert db.get_goal(conn, gid)["status"] == "proved"
+    assert _outcome_of(conn, did) == "success"
+    out = capsys.readouterr().out
+    assert f"promotion gate result for s{sid}" in out
+    assert "completing the promotion" in out
+
+
+def test_a_gate_result_for_a_dead_strategy_is_named_not_dropped(
+        conn, tmp_path, monkeypatch, capsys):
+    """Every other status is a legitimate "someone else settled it" —
+    but the gate paid for a cold build to say something, so what it
+    found is on the record."""
+    gid, sid, _parent, _ = _promotable(conn, tmp_path, monkeypatch)
+    gate = _pending_gate(sid)
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    db.update_strategy_status(conn, sid, "superseded")
+    gate.answer()
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    assert db.get_goal(conn, gid)["status"] != "proved"
+    out = capsys.readouterr().out
+    assert f"promotion gate result for s{sid} ignored: status=superseded" in out

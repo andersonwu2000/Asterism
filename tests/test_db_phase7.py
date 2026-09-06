@@ -35,7 +35,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
 
 
 def test_queue_accepts_librarian(tmp_path):
@@ -86,7 +86,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -99,7 +99,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
@@ -136,7 +136,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -165,7 +165,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -242,7 +242,7 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"
@@ -373,7 +373,7 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 
     db.init_schema(c)
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert c.execute("SELECT status FROM goals WHERE id = ?",
                      (gid,)).fetchone()[0] == "shelved"
     assert c.execute("SELECT status FROM goals WHERE id = ?",
@@ -395,7 +395,7 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 def test_v51_is_idempotent_on_a_dead_free_db(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     assert c.execute("SELECT count(*) FROM goal_events").fetchone()[0] == 0
 
 
@@ -453,7 +453,7 @@ def test_v52_widens_the_four_checks_the_theory_layer_needs(tmp_path):
     assert c.execute("PRAGMA user_version").fetchone()[0] == 51
 
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
     ts = db.now()
     c.execute("INSERT INTO strategist_decisions (problem,"
               " triggered_at_tick, trigger_kind, decision_kind, payload,"
@@ -533,4 +533,79 @@ def test_v52_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 54
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+
+
+# -- v55: user_file_history.source gains 'framework' ------------------
+
+
+def _downgrade_to_v54(c) -> None:
+    """The v54 shape of `user_file_history`: no 'framework' in the CHECK.
+    The rebuild is the migration's own live-DDL edit run backwards, so
+    the fixture cannot drift from the table it pretends to be."""
+    sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table'"
+                    " AND name='user_file_history'").fetchone()[0]
+    assert "'repin', 'framework'" in sql, sql
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute("DROP TABLE IF EXISTS _ufh_old")
+    c.execute(re.sub(r'CREATE TABLE\s+"?user_file_history"?',
+                     "CREATE TABLE _ufh_old",
+                     sql.replace("'repin', 'framework'", "'repin'", 1),
+                     count=1))
+    c.execute("INSERT INTO _ufh_old SELECT * FROM user_file_history")
+    c.execute("DROP TABLE user_file_history")
+    c.execute("ALTER TABLE _ufh_old RENAME TO user_file_history")
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("PRAGMA user_version = 54")
+    c.commit()
+
+
+def test_v55_widens_user_file_history_source_and_carries_its_rows(tmp_path):
+    """The framework writes Root.lean itself (Verify's promotion to the
+    `def main := @s<N>` alias). Without a source that says so, the sweep
+    watching those bytes for a HUMAN edit filed the machine's own write
+    as an observation and warned that the review/root gate would surface
+    it (Lab.even_sum_subsets, 2026-09-07). The history is the record, so
+    the rebuild carries every row."""
+    c = _fresh(tmp_path)
+    ts = db.now()
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (ts,))
+    c.commit()
+    _downgrade_to_v54(c)
+    c.execute("INSERT INTO user_file_history (problem, file, sha, body,"
+              " seen_at, source) VALUES ('p','Root.lean','aa','stub',?,"
+              "'observed')", (ts,))
+    c.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO user_file_history (problem, file, sha, body,"
+                  " seen_at, source) VALUES ('p','Root.lean','bb','alias',?,"
+                  "'framework')", (ts,))
+
+    db.init_schema(c)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("SELECT sha FROM user_file_history").fetchone()[0] == "aa"
+    c.execute("INSERT INTO user_file_history (problem, file, sha, body,"
+              " seen_at, source) VALUES ('p','Root.lean','bb','alias',?,"
+              "'framework')", (ts,))
+    c.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO user_file_history (problem, file, sha, body,"
+                  " seen_at, source) VALUES ('p','Root.lean','cc','x',?,"
+                  "'guess')", (ts,))
+
+
+def test_v55_is_idempotent_and_matches_a_fresh_disk(tmp_path):
+    c = _fresh(tmp_path)
+    db.init_schema(c)
+    fresh_sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table'"
+                          " AND name='user_file_history'").fetchone()[0]
+    _downgrade_to_v54(c)
+    db.init_schema(c)
+    db.init_schema(c)
+    got = c.execute("SELECT sql FROM sqlite_master WHERE type='table'"
+                    " AND name='user_file_history'").fetchone()[0]
+    # ALTER TABLE ... RENAME quotes the name it writes; everything the
+    # constraint says is what this compares.
+    assert got.replace('"user_file_history"', "user_file_history") == fresh_sql
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 55

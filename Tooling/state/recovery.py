@@ -722,6 +722,46 @@ def sweep_orphan_proof_files(conn: sqlite3.Connection, workspace: Path, *,
     return deleted, kept_cited
 
 
+#: `<name>.lean.verify_backup_s<N>` — Verify's per-promotion safety copy.
+#: The sid is what tells a dead pipeline's leftover from a promotion whose
+#: settle never landed.
+_VERIFY_BACKUP_SID_RE = re.compile(r"\.verify_backup_s(\d+)$")
+
+
+def _reopen_unsettled_promotion(conn: sqlite3.Connection, backup_name: str,
+                                rel: str) -> None:
+    """The file was just restored from a promotion backup — put the
+    promoting strategy back where verify can see it.
+
+    Only `succeeded` needs the move: a strategy still 'proposed' is
+    already in verify's derived queue, and a `dead`/`superseded` one lost
+    its claim. `succeeded` under a goal the restore just un-aliased is the
+    unsettled promotion (the daemon died between the gate submit and
+    `_settle_promotion`, or the answer was dropped) — and nothing else in
+    the compensation net looks at it: `strategies_ready_for_verify` reads
+    'proposed', and `consistency.repair_unambiguous` only repairs live
+    strategies under TERMINAL goals. Idempotent."""
+    m = _VERIFY_BACKUP_SID_RE.search(backup_name)
+    if m is None:
+        return  # legacy un-keyed backup: no strategy to name
+    sid = int(m.group(1))
+    row = conn.execute(
+        "SELECT s.status, s.goal_id, g.status AS goal_status"
+        " FROM strategies s JOIN goals g ON g.id = s.goal_id"
+        " WHERE s.id = ?", (sid,)).fetchone()
+    if row is None or str(row["status"]) != "succeeded":
+        return
+    if str(row["goal_status"]) in _transitions.GOAL_TERMINALS:
+        return  # the promotion DID settle; the backup was just orphaned
+    _transitions.apply_strategy_transition(
+        conn, sid, "proposed", event="recovery_unsettled_promotion")
+    conn.commit()
+    print(f"[recovery] s{sid}: promotion never settled (goal g"
+          f"{int(row['goal_id'])} is '{row['goal_status']}') — {rel} "
+          f"restored from its backup and the strategy put back to "
+          f"'proposed' so verify re-promotes and re-gates it", flush=True)
+
+
 def sweep_lean_backups(conn: sqlite3.Connection,
                        workspace: Path) -> tuple[int, int]:
     """Restore or discard `*.lean.{backup,verify_backup,verify_backup_s*}`
@@ -747,6 +787,21 @@ def sweep_lean_backups(conn: sqlite3.Connection,
 
     .tmp files (Verify's atomic-write candidate) are always removed
     unread — partial content, never safe to use.
+
+    A `.verify_backup_s<N>` whose strategy s<N> is NOT dead and whose
+    goal is not terminal means one more thing than "a pipeline died":
+    it means a PROMOTION whose settle never landed (2026-09-07). The
+    alias is on disk, the cold-build gate was either still running or
+    its answer was dropped, and the strategy may already read
+    'succeeded' — in which case restoring the file alone leaves a
+    settled strategy under an unproved goal that `strategies_ready_for_
+    verify` (status='proposed') will never look at again: a permanent
+    wedge, the residue of the reconcile-backstop bug. So the strategy
+    is put back to 'proposed' along with the file. That is the clean
+    re-drive: the next `verify_housekeeping` tick promotes from the
+    PRISTINE stub (re-promoting over a surviving alias would copy the
+    alias into the backup and poison every later rollback) and
+    re-submits it to the gate.
     """
     backups_handled = 0
     tmps_removed = 0
@@ -781,6 +836,7 @@ def sweep_lean_backups(conn: sqlite3.Connection,
                 else:
                     shutil.copy2(backup, original)
                     backup.unlink()
+                    _reopen_unsettled_promotion(conn, backup.name, rel)
                 backups_handled += 1
             except OSError:
                 pass

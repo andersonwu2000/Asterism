@@ -346,6 +346,28 @@ def test_a_daemon_item_is_scored_on_what_the_run_produced_and_its_wall():
     assert not std.score("daemon", {**exp, "wall_sec_at_most": 60}, rec)["ok"]
 
 
+def test_a_daemon_item_is_scored_on_whether_the_root_actually_landed():
+    """`proved_at_least` counts sub-goals, which an end-to-end item is
+    not about. Lab.even_sum_subsets' first run proved both sub-goals and
+    left the root 'attempting' (the promotion gate's answer was dropped)
+    — and passed. `root_proved` is the check that would have failed
+    it."""
+    landed = {"kind": "daemon", "outcome": "success", "wall_sec": 900.0,
+              "driver_result": {"produced": {"proved": 2},
+                                "root_proved": True}}
+    stuck = {"kind": "daemon", "outcome": "success", "wall_sec": 900.0,
+             "driver_result": {"produced": {"proved": 2},
+                               "root_proved": False}}
+    exp = {"outcome": "success", "proved_at_least": 2, "root_proved": True}
+    assert std.score("daemon", exp, landed)["ok"]
+    got = std.score("daemon", exp, stuck)
+    assert not got["ok"] and got["checks"]["root_proved"]["got"] is False
+    # a record older than the key cannot claim the root: absent = False
+    old = {"kind": "daemon", "outcome": "success", "wall_sec": 1.0,
+           "driver_result": {"produced": {"proved": 2}}}
+    assert not std.score("daemon", exp, old)["ok"]
+
+
 def test_a_provider_probe_is_scored_on_the_tools_its_spawn_actually_called(
         tmp_path):
     """Not on the brick's comment lines — those are a courtesy to the
