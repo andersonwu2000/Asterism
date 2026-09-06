@@ -316,7 +316,7 @@ def _section_stall_warning(conn: sqlite3.Connection,
         " current Forward batch is addressing.",
         "",
         "**`Noop` is not appropriate while this section is present.**"
-        " Choose one of: `Inject(target_goal_id=..., proof=...)`"
+        " Choose one of: `Inject(target_goal_id=..., brick=...)`"
         " (work a `shelved` / `pending_strategist_review` / `frozen`"
         " goal — `frozen` is the root before its first launch, and it"
         " is the only dispatch path to it), a"

@@ -1142,7 +1142,7 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         "Inject set — and that follow-up set has now fully landed. "
         "Strategist's own batch-time promise is the trigger; this is "
         "the moment to evaluate `Inject(target_goal_id=<id>, "
-        "proof=...)` vs a further mint vs a second "
+        "brick=...)` vs a further mint vs a second "
         "`ConfirmShelve` with a refined promise. Fortuitous unblock by "
         "unrelated Forwards is handled "
         "automatically by the G1 dedupe revival pass — no need to "
