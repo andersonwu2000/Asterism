@@ -16,6 +16,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import context_files
 from ..state import db
@@ -1375,7 +1376,13 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     # job, and the rest of the batch is other bricks' business: g7509
     # carried 10,160 B of five-section Proof with no line anywhere
     # saying which section was its own.
-    has_own = bool(authorising_proof(conn, decision_id, goal_id)[0])
+    slug = None
+    if goal_id is not None:
+        g = conn.execute("SELECT slug FROM goals WHERE id = ?",
+                         (int(goal_id),)).fetchone()
+        slug = str(g["slug"]) if g is not None else None
+    has_own = bool(authorising_proof(conn, decision_id, goal_id,
+                                     problem=problem, slug=slug)[0])
     sections, _err = _programme.parse_proposal(str(row["body"] or ""))
     proof = ((sections or {}).get("proof") or "").strip()
     out = [f"## Proof (Programme rev {row['rev']})", ""]
@@ -1460,7 +1467,31 @@ WITH RECURSIVE up(gid, depth) AS (
     JOIN up ON ss.subgoal_id = up.gid
    WHERE ss.link_kind = 'minted'
 )
-SELECT d.brief AS proof, d.id AS decision_id FROM up
+SELECT d.brief AS proof, d.brick_name AS brick_name, d.id AS decision_id
+  FROM up
+  JOIN strategist_decisions d
+    ON CAST(d.produced_goal_id AS INTEGER) = up.gid
+ WHERE (d.brief IS NOT NULL AND TRIM(d.brief) <> '')
+    OR (d.brick_name IS NOT NULL AND TRIM(d.brick_name) <> '')
+ ORDER BY up.depth ASC, d.id DESC
+ LIMIT 1
+"""
+
+#: Same walk against a pre-v54 disk, where `brick_name` does not exist.
+#: Kept as a second string rather than a runtime column probe: the walk
+#: is the recursive query, and a broken one must fail loudly, not
+#: silently return the wrong ancestor.
+_AUTHORISING_PROOF_SQL_LEGACY = """
+WITH RECURSIVE up(gid, depth) AS (
+  VALUES(?, 0)
+  UNION
+  SELECT s.goal_id, up.depth + 1
+    FROM strategy_subgoals ss
+    JOIN strategies s ON s.id = ss.strategy_id
+    JOIN up ON ss.subgoal_id = up.gid
+   WHERE ss.link_kind = 'minted'
+)
+SELECT d.brief AS proof, NULL AS brick_name, d.id AS decision_id FROM up
   JOIN strategist_decisions d
     ON CAST(d.produced_goal_id AS INTEGER) = up.gid
  WHERE d.brief IS NOT NULL AND TRIM(d.brief) <> ''
@@ -1469,52 +1500,120 @@ SELECT d.brief AS proof, d.id AS decision_id FROM up
 """
 
 
-def authorising_proof(conn: sqlite3.Connection,
+def authorising_brick(conn: sqlite3.Connection,
                       decision_id: "int | None" = None,
-                      goal_id: "int | None" = None
-                      ) -> "tuple[str, int | None]":
-    """`(argument, decision_id)` for this piece of work, or `('', None)`.
+                      goal_id: "int | None" = None,
+                      *, problem: "str | None" = None,
+                      slug: "str | None" = None
+                      ) -> "tuple[Any, str, int | None, int | None]":
+    """`(brick, legacy_text, decision_id, rev_id)` — the argument that
+    authorised this piece of work, resolved most-specific-first.
 
-    Empty is a real answer and the caller must handle it: a goal that
-    predates the field, a revived or hand-detached node, a subtree whose
-    injected ancestor left the field blank. On that path the worker gets
-    the whole `## Proof` inline, which is what every worker got before
-    this field existed — the fallback is the old behaviour, so nothing
-    regresses while the tree fills in.
-    """
+    Three routes, in order (owner ruling 2026-09-07):
+
+      1. this spawn's OWN decision — its `brick_name` reads the brick
+         out of `bricks`, pinned to the revision the batch passed;
+      2. the goal's SLUG — a sub-goal a worker declared to collect a
+         brick the Strategist named under a sibling's `Uses:` line has
+         no decision of its own, and the name is the whole link. Tried
+         before the ancestor walk because it is the more specific
+         answer: the walk can only offer the parent's passage;
+      3. the ancestor walk — a decomposition the worker invented,
+         working inside the passage its parent was dispatched under.
+
+    `legacy_text` answers the pre-2026-09-07 rows whose argument was
+    hand-copied into `brief`; exactly one of `brick` / `legacy_text` is
+    ever non-empty. Both empty is a real answer the caller must handle
+    (a goal that predates the field, a revived or hand-detached node):
+    the worker then gets the whole `## Proof` inline, which is what
+    every worker got before any of this existed."""
+    from ..state import programme as _programme
     if decision_id is not None:
+        brick, rev_id = _programme.brick_for_decision_with_rev(
+            conn, int(decision_id))
+        if brick is not None:
+            return brick, "", int(decision_id), rev_id
         try:
             row = conn.execute(
                 "SELECT brief FROM strategist_decisions WHERE id = ?",
                 (int(decision_id),)).fetchone()
         except sqlite3.OperationalError:
-            return "", None
+            return None, "", None, None
         if row is not None and str(row["brief"] or "").strip():
-            return str(row["brief"]).strip(), int(decision_id)
+            return None, str(row["brief"]).strip(), int(decision_id), None
+    if problem and slug:
+        # The revision the ancestor walk resolves to is the preferred
+        # one — that is the batch this subtree is executing — but the
+        # name is what carries, so any revision holding it answers.
+        try:
+            rev = _programme.rev_for_goal(conn, problem, goal_id=goal_id)
+        except sqlite3.Error:
+            rev = None
+        brick, rev_id = _programme.resolve_brick(
+            conn, problem, str(slug),
+            int(rev["id"]) if rev is not None else None)
+        if brick is not None:
+            return brick, "", None, rev_id
     if goal_id is not None:
         try:
             row = conn.execute(_AUTHORISING_PROOF_SQL,
                                (int(goal_id),)).fetchone()
         except sqlite3.OperationalError:
-            return "", None
+            try:
+                row = conn.execute(_AUTHORISING_PROOF_SQL_LEGACY,
+                                   (int(goal_id),)).fetchone()
+            except sqlite3.OperationalError:
+                return None, "", None, None
         if row is not None:
-            return str(row["proof"]).strip(), int(row["decision_id"])
-    return "", None
+            did = int(row["decision_id"])
+            keys = row.keys()
+            name = (str(row["brick_name"] or "").strip()
+                    if "brick_name" in keys else "")
+            if name:
+                brick, rev_id = _programme.brick_for_decision_with_rev(
+                    conn, did)
+                if brick is not None:
+                    return brick, "", did, rev_id
+            return None, str(row["proof"] or "").strip(), did, None
+    return None, "", None, None
+
+
+def authorising_proof(conn: sqlite3.Connection,
+                      decision_id: "int | None" = None,
+                      goal_id: "int | None" = None,
+                      *, problem: "str | None" = None,
+                      slug: "str | None" = None
+                      ) -> "tuple[str, int | None]":
+    """`(argument, decision_id)` for this piece of work, or `('', None)`.
+
+    The rendered form of `authorising_brick`: a named brick renders as
+    its own `### <name>` header, its `Uses:` line when it has one, and
+    the two-part body — the worker is told the name because the name is
+    what it must declare. A legacy row renders as the prose it carries.
+    """
+    from ..state import programme as _programme
+    brick, legacy, did, _rev = authorising_brick(
+        conn, decision_id, goal_id, problem=problem, slug=slug)
+    if brick is not None:
+        return _programme.render_brick(brick), did
+    return legacy, did
 
 
 def _section_strategist_brief(conn: sqlite3.Connection,
                               decision_id: int | None,
-                              goal_id: "int | None" = None) -> list[str]:
+                              goal_id: "int | None" = None,
+                              problem: "str | None" = None,
+                              slug: "str | None" = None) -> list[str]:
     """The argument for THIS brick: the part of its batch's `## Proof`
-    that settles it, which the author copied into the Inject when the
-    batch was written and the Adversary judged along with it.
+    that settles it, which the Adversary judged along with the batch.
 
-    Renders for auto-dispatched sub-goals too, via the ancestor walk —
-    they are working inside the passage their parent was dispatched
-    under, since a `## Proof` may carry no gaps and a decomposition
+    Renders for auto-dispatched sub-goals too — by NAME when the
+    Strategist wrote a brick for that name, otherwise via the ancestor
+    walk, since a `## Proof` may carry no gaps and a decomposition
     therefore only outsources part of it.
     """
-    proof, _ = authorising_proof(conn, decision_id, goal_id)
+    proof, _ = authorising_proof(conn, decision_id, goal_id,
+                                 problem=problem, slug=slug)
     if not proof:
         return []
     return [
@@ -1523,6 +1622,69 @@ def _section_strategist_brief(conn: sqlite3.Connection,
         proof,
         "",
     ]
+
+
+#: The three status lines a named lemma can carry, and nothing else: a
+#: worker deciding whether to declare a stub, cite a node, or cite a
+#: landed brick is deciding between exactly these three.
+def _named_lemma_status(conn: sqlite3.Connection, problem: str,
+                        name: str) -> str:
+    row = conn.execute(
+        "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
+        " ORDER BY id DESC LIMIT 1", (problem, name)).fetchone()
+    if row is None:
+        return (f"no node yet — declare a sub-goal `{name}` to hand its "
+                f"worker this argument")
+    if str(row["status"]) == "proved":
+        return f"landed: g{row['id']} — cite it"
+    return f"alive: g{row['id']} ({row['status']}) — cite it"
+
+
+def _section_named_lemmas(conn: sqlite3.Connection,
+                          problem: str,
+                          decision_id: "int | None" = None,
+                          goal_id: "int | None" = None,
+                          slug: "str | None" = None) -> list[str]:
+    """`## Lemmas named by the strategist` — the transitive `Uses:`
+    closure of THIS worker's brick, each with its full Theorem and
+    Proof.
+
+    A brick's `Uses:` line is the channel that replaced "same-batch
+    Injects must be independent": the named lemma is not dispatched, it
+    waits for whichever worker declares a sub-goal of that name. That
+    worker cannot declare it unless it is shown the argument, so the
+    argument rides here, whole. No truncation — bearing content is never
+    capped (the house rule the `PAPER_INDEX_MAX_CHARS` note states)."""
+    from ..state import programme as _programme
+    brick, _legacy, _did, rev_id = authorising_brick(
+        conn, decision_id, goal_id, problem=problem, slug=slug)
+    if brick is None or not brick.uses:
+        return []
+    siblings = _programme.bricks_for_rev(conn, problem, rev_id)
+    if not any(b.name == brick.name for b in siblings):
+        siblings = siblings + [brick]
+    by_name = {b.name: b for b in siblings}
+    closure = _programme.uses_closure(siblings, brick.name)
+    out = [
+        "## Lemmas named by the strategist",
+        "",
+        "Your argument consumes these. Each is already argued — a stub "
+        "you declare under the exact name hands its worker the argument "
+        "below; one marked alive or landed is cited, not re-declared.",
+        "",
+    ]
+    rendered = 0
+    for name in closure:
+        used = by_name.get(name)
+        if used is None:
+            continue
+        out += [f"### {name}", "",
+                _named_lemma_status(conn, problem, name), "",
+                f"{used.head}. {used.statement}".rstrip(), ""]
+        if used.argument:
+            out += [f"Proof. {used.argument}", ""]
+        rendered += 1
+    return out if rendered else []
 
 
 # ---------------------------------------------------------------------
@@ -1959,7 +2121,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     presearch_lines = _section_presearch_candidates(problem_dir, int(goal["id"]))
     section_names = [
         "brief", "kb_lessons", "paper_index", "programme", "directive",
-        "inject_brief",
+        "inject_brief", "named_lemmas",
         "goal", "intake_finding", "library_available", "strategy_naming",
         "parent_strategy",
         "mathlib_lemmas", "presearch", "proved_goals", "catalog",
@@ -1982,7 +2144,11 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                   goal_id=int(goal["id"])),
         _section_strategist_directive(conn, str(goal["problem"]),
                                       goal_id=int(goal["id"])),
-        _section_strategist_brief(conn, decision_id, int(goal["id"])),
+        _section_strategist_brief(conn, decision_id, int(goal["id"]),
+                                  problem=str(goal["problem"]),
+                                  slug=str(goal["slug"])),
+        _section_named_lemmas(conn, str(goal["problem"]), decision_id,
+                              int(goal["id"]), str(goal["slug"])),
         _section_header(goal, workspace),
         _section_intake_counterexample(intake_counterexample),
         _section_library_available(conn, intent),

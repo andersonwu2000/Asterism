@@ -434,8 +434,8 @@ def _section_failure_replay(conn: sqlite3.Connection,
     try:
         rows = list(conn.execute(
             "SELECT id, triggered_at_tick, trigger_kind, decision_kind,"
-            " target_id, brief, reason, payload, outcome, outcome_detail,"
-            " created_at"
+            " target_id, brief, brick_name, reason, payload, outcome,"
+            " outcome_detail, created_at"
             " FROM strategist_decisions WHERE problem = ?"
             " ORDER BY id DESC LIMIT ?",
             (problem, k),
@@ -471,7 +471,12 @@ def _section_failure_replay(conn: sqlite3.Connection,
             if len(reason) > 200:
                 reason = reason[:200] + "…"
             out.append(f"  reason: {reason}")
-        if r["brief"]:
+        # Named bricks (2026-09-07): an Inject's prose column is empty
+        # and its NAME is the recall handle — `## Completed Inject
+        # batches` carries what became of it.
+        if r["brick_name"]:
+            out.append(f"  brick: `{r['brick_name']}`")
+        elif r["brief"]:
             brief = str(r["brief"])
             if len(brief) > 200:
                 brief = brief[:200] + "…"

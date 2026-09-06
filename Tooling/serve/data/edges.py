@@ -191,12 +191,19 @@ def _goal_docs(conn: sqlite3.Connection, problem: str) -> "dict[int, str]":
     Display-only prose for the goals table; the full type is one click
     away on the goal panel."""
     docs: "dict[int, str]" = {}
-    # strategist briefs (Inject / MarkDeliverable produce goals)
+    # strategist arguments (Inject / MarkDeliverable produce goals).
+    # The prose is the named brick's since 2026-09-07; `brief` answers
+    # for legacy and human-filed rows. One resolver, `programme`'s.
+    from ...state import programme as _programme
     for r in conn.execute(
-            "SELECT produced_goal_id AS gid, brief FROM strategist_decisions"
-            " WHERE problem = ? AND produced_goal_id IS NOT NULL"
-            " AND brief IS NOT NULL", (problem,)):
-        body = re.sub(r"(?m)^#{1,4}\s.*$", "", str(r["brief"]))
+            "SELECT id, produced_goal_id AS gid, brief"
+            " FROM strategist_decisions"
+            " WHERE problem = ? AND produced_goal_id IS NOT NULL",
+            (problem,)):
+        text = _programme.argument_for_decision(conn, r["id"], r["brief"])
+        if not text:
+            continue
+        body = re.sub(r"(?m)^#{1,4}\s.*$", "", text)
         para = next((p.strip() for p in re.split(r"\n\s*\n", body)
                      if p.strip()), "")
         if para:
@@ -407,9 +414,12 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     # `actor` is v48 and SEMANTIC (HID §3.2): a reader who cannot see
     # that a PERSON decided reads a human park as the machine's own.
     _asel = ", actor" if "actor" in _dcols else ""
+    # An Inject's argument is its named brick since 2026-09-07; the
+    # column answers only for legacy and human-filed rows.
+    from ...state import programme as _programme
     for d in conn.execute(
             "SELECT id, batch_id, trigger_kind, decision_kind, target_id,"
-            " brief, reason, payload, outcome, outcome_detail,"
+            " brief, brick_name, reason, payload, outcome, outcome_detail,"
             " produced_goal_id, produced_strategy_id, created_at, updated_at"
             + _gsel + _asel +
             " FROM strategist_decisions WHERE problem = ?"
@@ -424,7 +434,9 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "trigger_kind": str(d["trigger_kind"]),
             "decision_kind": str(d["decision_kind"]),
             "target_id": d["target_id"],
-            "brief": d["brief"],
+            "brief": _programme.argument_for_decision(
+                conn, d["id"], d["brief"]) or None,
+            "brick_name": d["brick_name"],
             "reason": d["reason"],
             "payload": payload,
             "outcome": d["outcome"],

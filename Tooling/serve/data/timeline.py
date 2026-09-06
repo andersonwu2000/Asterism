@@ -484,7 +484,11 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
             payload = json.loads(d["payload"] or "{}")
         except (TypeError, ValueError):
             payload = {}
-        brief = str(d["brief"] or "")
+        # The Inject's argument is its named brick (2026-09-07); the
+        # column answers only for legacy and human-filed rows.
+        from ...state import programme as _programme
+        brief = _programme.argument_for_decision(
+            conn, d["id"], d["brief"])
         reason = str(d["reason"] or "")
         gid = d["produced_goal_id"]
         if gid is None:
@@ -528,7 +532,12 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
         elif verb == "asked":
             # a dispatch whose brick does not exist yet (failed or still
             # in flight) — name what was ASKED FOR, or the row is anonymous
-            asked = _asked_for(brief)
+            # The brick's NAME is the answer outright since 2026-09-07
+            # — no reader, no guess. The three prose readers below stay
+            # for legacy and human-filed rows.
+            named = (str(d["brick_name"] or "").strip()
+                     if "brick_name" in d.keys() else "")
+            asked = named or _asked_for(brief)
             if asked:
                 okind, label = "unbuilt", asked
         note = reason or None
@@ -797,7 +806,8 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
     # `actor` is v48 and semantic (HID §3.2) — see `_ev`.
     _gsel += ", actor" if "actor" in _dcols else ""
     dec_rows = conn.execute(
-        "SELECT id, batch_id, decision_kind, target_id, brief, reason,"
+        "SELECT id, batch_id, decision_kind, target_id, brief,"
+        " brick_name, reason,"
         " payload, outcome, produced_goal_id, created_at, updated_at"
         + _gsel +
         " FROM strategist_decisions WHERE problem = ?"

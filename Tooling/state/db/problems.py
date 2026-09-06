@@ -1003,7 +1003,8 @@ def _step_is_running(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
 
 _OPEN_STEP_SQL = (
     "SELECT d.id, d.batch_id, d.group_id AS grp, d.decision_kind,"
-    " d.brief, d.payload, d.updated_at, d.actor, d.produced_goal_id,"
+    " d.brief, d.brick_name, d.payload, d.updated_at, d.actor,"
+    " d.produced_goal_id,"
     " d.produced_strategy_id,"
     " d.produced_group_id, tg.slug AS target_slug,"
     " tg.status AS target_status, pg.slug AS produced_slug,"
@@ -1056,7 +1057,8 @@ def open_batch_steps(conn: sqlite3.Connection,
         steps.append({
             "decision_id": int(r["id"]), "batch_id": str(r["batch_id"]),
             "grp": r["grp"], "decision_kind": str(r["decision_kind"]),
-            "brief": r["brief"], "payload": r["payload"],
+            "brief": r["brief"], "brick_name": r["brick_name"],
+            "payload": r["payload"],
             "target_slug": r["target_slug"],
             "target_status": r["target_status"],
             "produced_ref": ref, "produced_slug": r["produced_slug"],

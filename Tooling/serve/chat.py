@@ -195,13 +195,17 @@ def _problem_context(conn: sqlite3.Connection, name: str) -> str:
             "SELECT slug, status, statement FROM goals"
             " WHERE problem = ? AND depth = 0 ORDER BY id LIMIT 6",
             (name,))]
+    # An Inject's prose lives in `bricks` since 2026-09-07; every
+    # surface resolves it through the one helper.
+    from ..state import programme as _programme
     recent = [
         {"kind": str(d["decision_kind"]),
          "at": str(d["created_at"]),
-         "brief": _clip(d["brief"] or d["reason"] or "", 220),
+         "brief": _clip(_programme.argument_for_decision(
+             conn, d["id"], d["brief"]) or d["reason"] or "", 220),
          "outcome": d["outcome"]}
         for d in conn.execute(
-            "SELECT decision_kind, brief, reason, outcome, created_at"
+            "SELECT id, decision_kind, brief, reason, outcome, created_at"
             " FROM strategist_decisions WHERE problem = ?"
             " ORDER BY id DESC LIMIT 6", (name,))]
     awaiting = [

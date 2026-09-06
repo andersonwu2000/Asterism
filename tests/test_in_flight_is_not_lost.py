@@ -122,7 +122,7 @@ def test_a_running_batchs_substance_rides_the_lazy_companion(
     companion = (tmp_path / "BATCHES.md").read_text(encoding="utf-8")
     assert "## In flight — batch `cafe1234`" in companion
     assert "do it" in companion, "the full brief, untruncated"
-    assert "mint (a new brick from the brief)" in companion
+    assert "mint (a new brick)" in companion
 
 
 # ---------------------------------------------------------------------

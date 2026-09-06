@@ -23,11 +23,11 @@ from .compile import _CATALOG_RECENT_N, _section_active_goals, _section_charter
 
 def _section_forward_brief(conn: sqlite3.Connection,
                            decision_id: int | None) -> list[str]:
-    """The argument for THIS brick — Forward's primary input: the part of
-    the batch's `## Proof` that settles it, copied into the Inject when
-    the batch was written and judged along with it. Falls back to a
-    placeholder if decision_id is None / row missing (shouldn't happen
-    in production but tests / replay may exercise this)."""
+    """The argument for THIS brick — Forward's primary input: the brick
+    of the batch's `## Proof` the Inject named, judged along with it.
+    Falls back to a placeholder if decision_id is None / row missing
+    (shouldn't happen in production but tests / replay may exercise
+    this)."""
     header = "## The argument for this brick"
     if decision_id is None:
         return [
@@ -37,6 +37,20 @@ def _section_forward_brief(conn: sqlite3.Connection,
             "lemma in the problem's domain.)",
             "",
         ]
+    # Named bricks (2026-09-07): the brick comes out of `bricks` by the
+    # name the Inject carries. `brief` answers only for legacy rows and
+    # for a human Inject, which files prose and names nothing.
+    brick = programme.brick_for_decision(conn, decision_id)
+    if brick is not None:
+        # The two-part brick (owner ruling 2026-08-30): the statement is
+        # the assignment, shown first and on its own. p406 (2026-08-30):
+        # with the claim buried in prose the intake measured this lemma
+        # brick against the charter's root and bounced it. The NAME rides
+        # with it since 2026-09-07 — the declaration head must carry it.
+        return (["## Your assignment", "",
+                 f"`{brick.name}` — {brick.head}. {brick.statement}".rstrip(),
+                 ""]
+                + [header, "", programme.render_brick(brick), ""])
     try:
         row = conn.execute(
             "SELECT brief FROM strategist_decisions WHERE id = ?",
@@ -52,15 +66,19 @@ def _section_forward_brief(conn: sqlite3.Connection,
             "",
         ]
     brief = str(row["brief"]).strip()
-    # The two-part brick (owner ruling 2026-08-30): the statement is the
-    # assignment, shown first and on its own. p406 (2026-08-30): with the
-    # claim buried in prose the intake measured this lemma brick against
-    # the charter's root and bounced it.
     head, statement, _, err = programme.parse_brick_proof(brief)
     assignment: list[str] = []
     if not err and statement:
         assignment = ["## Your assignment", "", f"{head}. {statement}", ""]
     return assignment + [header, "", brief, ""]
+
+
+def _section_forward_named_lemmas(conn: sqlite3.Connection, problem: str,
+                                  decision_id: "int | None") -> list[str]:
+    """`## Lemmas named by the strategist` for the mint arm — the same
+    section the goal arm gets (`context._section_named_lemmas`), keyed by
+    the Inject's decision instead of by a goal."""
+    return context._section_named_lemmas(conn, problem, decision_id)
 
 
 def _section_library_inventory(conn: sqlite3.Connection, problem: str,
@@ -147,7 +165,9 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
             (int(decision_id),)).fetchone() if decision_id is not None else None
     except sqlite3.OperationalError:
         own = None
-    has_own = bool(own is not None and str(own["brief"] or "").strip())
+    has_own = bool(
+        (own is not None and str(own["brief"] or "").strip())
+        or _programme.brick_for_decision(conn, decision_id) is not None)
     try:
         # The rev that dispatched this mint, not the latest — a mint has
         # no goal yet, so the decision IS the whole provenance. See
@@ -254,12 +274,18 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     (The Strategist context still inlines the full tree; it plans over
     the whole structure.)
     """
-    section_names = ["forward_brief", "conventions", "programme_proof",
+    section_names = ["forward_brief", "named_lemmas",
+                     "conventions", "programme_proof",
                      "library_inventory", "presearch",
                      "forward_history", "active_goals", "charter",
                      "user_word", "forbidden", "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
+        # The bricks this one's argument consumes (2026-09-07). They are
+        # NOT dispatched: each reaches the worker that declares a
+        # sub-goal of its name, and this worker is the first one that
+        # can.
+        _section_forward_named_lemmas(conn, problem, decision_id),
         # Standing conventions (research_mission_design.md §3.1). Mint
         # workers NEVER received the old directive — the section list
         # here simply did not carry it, which is how SLC's namespace

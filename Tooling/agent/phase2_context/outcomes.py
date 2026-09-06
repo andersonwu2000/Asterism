@@ -170,13 +170,25 @@ def _step_artifact_lines(conn: sqlite3.Connection,
     return out
 
 
-def _step_prose(row, empty: str = "(no brief)") -> str:
-    """The step's own prose. `brief` for every kind that has one — and
-    for a `Theorize`, which has none, the request itself: the objective
-    and the situation are what a reader of this step needs, and they
-    live in the payload because a decision carries one brief column and
-    this kind writes two pieces of prose."""
+def _step_prose(row, empty: str = "(no brief)", conn=None) -> str:
+    """The step's own prose. The named brick for an Inject (2026-09-07 —
+    `brief` answers only for legacy and human-filed rows), `brief` for
+    every other kind that has one, and for a `Theorize`, which has none,
+    the request itself: the objective and the situation are what a
+    reader of this step needs, and they live in the payload because a
+    decision carries one brief column and this kind writes two pieces of
+    prose."""
     if str(row["decision_kind"]) != "Theorize":
+        if conn is not None and str(row["decision_kind"]) == "Inject":
+            from ...state import programme as _programme
+            # `open_batch_steps` names the column `decision_id`, the
+            # completed-batch query names it `id`; one row shape reaches
+            # here from both.
+            did = (row["decision_id"] if _row_has(row, "decision_id")
+                   else row["id"] if _row_has(row, "id") else None)
+            brick = _programme.brick_for_decision(conn, did)
+            if brick is not None:
+                return _programme.render_brick(brick)
         return str(row["brief"] or empty).strip()
     try:
         payload = json.loads(str(row["payload"]) or "{}")
@@ -299,7 +311,7 @@ def _prose_label(decision_kind: "str | None") -> str:
     surface that still spelled it the old way taught the old way.
     """
     if decision_kind == "Inject":
-        return "proof"
+        return "brick"
     if decision_kind == "Delegate":
         return "charter"
     return "brief"
@@ -391,14 +403,15 @@ def _write_batches_companion(conn: sqlite3.Connection,
                     tgt = (f"target `{r['target_slug']}` "
                            f"({r['target_status']})")
                 else:
-                    tgt = "mint (a new brick from the brief)"
+                    tgt = (f"mint of brick `{r['brick_name']}`"
+                           if r["brick_name"] else "mint (a new brick)")
                 if key == "park" and r["produced_ref"]:
                     tgt += (f" — produced {r['produced_ref']}"
                             f" `{r['produced_slug'] or '?'}`, now"
                             f" {r['produced_status']}; yours to reopen,"
                             f" re-dispatch or leave")
                 lines += [f"### {r['decision_kind']} — {tgt}", "",
-                          _step_prose(r), ""]
+                          _step_prose(r, conn=conn), ""]
     for bid in order:
         lines.append(f"## Batch `{bid[:8]}`")
         lines.append("")
@@ -418,7 +431,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
                              + f" — `{r['landed_path'] or '?'}`")
             lines += _step_artifact_lines(conn, r)
             lines += ["", f"#### {_prose_label(r['decision_kind'])}", "",
-                      _step_prose(r, empty="(none)"), ""]
+                      _step_prose(r, empty="(none)", conn=conn), ""]
             detail = str(r["outcome_detail"] or "").strip()
             if detail:
                 lines += ["#### worker reply", "", detail, ""]
@@ -579,7 +592,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # ConfirmShelve/EmitDirective siblings used to render as brief-less
     # phantom "step 0" rows (agent_feedback 2026-07-11..13).
     rows = list(conn.execute(
-        f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
+        f"SELECT d.id, d.batch_id, d.brief, d.brick_name, d.created_at,"
+        f" d.payload, d.outcome,"
         f" d.outcome_detail, d.updated_at, d.produced_kind,"
         f" d.decision_kind, d.produced_group_id, d.produced_goal_id,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
@@ -628,7 +642,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
             # full (generous cap, not the short recap truncation used by
             # `_section_failure_replay`) so the Strategist can compare what
             # it briefed against what actually came back (#4).
-            brief = (r["brief"] or "").strip()
+            brief = _step_prose(r, empty="", conn=conn)
             if len(brief) > 1200:
                 brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
@@ -765,9 +779,140 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     if len(detail) > 1200:
                         detail = detail[:1200].rstrip() + "…"
                     out.append(f"  why: {detail}")
+        out += _brick_ledger_lines(conn, problem, bid, steps)
         out.append("")
     out.extend(decline_lines)
     return out
+
+
+#: Descendants of one goal through MINTED and cited strategy edges, used
+#: only to ask "is anything under this still alive?". Both edge kinds
+#: count here: a cited sibling is work the subtree is genuinely waiting
+#: on, and the question is whether a worker may still declare the lemma.
+_SUBTREE_ALIVE_SQL = """
+WITH RECURSIVE down(gid) AS (
+  VALUES(?)
+  UNION
+  SELECT ss.subgoal_id FROM strategy_subgoals ss
+    JOIN strategies s ON s.id = ss.strategy_id
+    JOIN down ON s.goal_id = down.gid
+)
+SELECT COUNT(*) FROM down JOIN goals g ON g.id = down.gid
+ WHERE g.status IN ('open', 'attempting')
+"""
+
+
+def _subtree_alive(conn: sqlite3.Connection, goal_id: "int | None") -> bool:
+    if goal_id is None:
+        return False
+    try:
+        row = conn.execute(_SUBTREE_ALIVE_SQL, (int(goal_id),)).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row and int(row[0]))
+
+
+def _goal_parent(conn: sqlite3.Connection, goal_id: int) -> "int | None":
+    row = conn.execute(
+        "SELECT s.goal_id FROM strategies s"
+        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        " WHERE ss.subgoal_id = ? ORDER BY ss.rowid LIMIT 1",
+        (int(goal_id),)).fetchone()
+    return int(row["goal_id"]) if row is not None else None
+
+
+def _brick_ledger_lines(conn: sqlite3.Connection, problem: str,
+                        batch_id: str, steps) -> "list[str]":
+    """What became of every brick this batch's `## Proof` named —
+    injected AND used (owner ruling 2026-09-07).
+
+    A `Uses:` brick is dispatched by nobody: it reaches whichever worker
+    declares a sub-goal of its name, and the Strategist otherwise has no
+    way to learn whether that ever happened. `unused` is INFORMATION, not
+    a trigger — nothing acts on it; the author decides whether the lemma
+    turned out unnecessary or whether the route lost a step.
+
+    Empty for a legacy batch (no revision row, or one whose `## Proof`
+    predates named bricks): there is nothing to report by name."""
+    from ...state import programme as _programme
+    try:
+        rev = conn.execute(
+            "SELECT id FROM programme_revisions"
+            " WHERE problem = ? AND batch_id = ? AND status = 'passed'"
+            " ORDER BY id DESC LIMIT 1", (problem, batch_id)).fetchone()
+    except sqlite3.OperationalError:
+        return []
+    if rev is None:
+        return []
+    bricks = _programme.bricks_for_rev(conn, problem, int(rev["id"]))
+    if not bricks:
+        return []
+    by_step: "dict[str, object]" = {}
+    for r in steps:
+        try:
+            nm = str(r["brick_name"] or "").strip()
+        except (IndexError, KeyError):
+            nm = ""
+        if nm:
+            by_step[nm] = r
+    if not by_step:
+        return []
+    # Which injected brick each used brick hangs off — the one whose
+    # subtree a worker could have declared it in.
+    owner: "dict[str, str]" = {}
+    for name in by_step:
+        for used in _programme.uses_closure(bricks, name):
+            owner.setdefault(used, name)
+    started = min((str(r["created_at"] or "") for r in steps
+                   if _row_has(r, "created_at")), default="")
+    lines: "list[str]" = []
+    for b in bricks:
+        r = by_step.get(b.name)
+        if r is not None:
+            gid = r["produced_goal_id"]
+            if gid is not None:
+                lines.append(f"  - `{b.name}`: dispatched → landed g{int(gid)}")
+            else:
+                lines.append(f"  - `{b.name}`: dispatched → "
+                             f"{r['outcome'] or 'no outcome'}")
+            continue
+        g = conn.execute(
+            "SELECT id, status, created_at FROM goals"
+            " WHERE problem = ? AND slug = ? ORDER BY id DESC LIMIT 1",
+            (problem, b.name)).fetchone()
+        if g is not None:
+            if started and str(g["created_at"] or "") >= started:
+                parent = _goal_parent(conn, int(g["id"]))
+                where = f" under g{parent}" if parent is not None else ""
+                lines.append(f"  - `{b.name}`: appeared as sub-goal "
+                             f"g{int(g['id'])}{where}")
+            else:
+                lines.append(f"  - `{b.name}`: pre-existing "
+                             f"g{int(g['id'])}, cited")
+            continue
+        host = owner.get(b.name)
+        if host is None:
+            continue
+        hr = by_step.get(host)
+        alive = _subtree_alive(
+            conn, hr["produced_goal_id"] if hr is not None else None)
+        if alive:
+            lines.append(f"  - `{b.name}`: pending — `{host}`'s subtree "
+                         f"in flight")
+        else:
+            lines.append(f"  - `{b.name}`: unused — `{host}`'s subtree "
+                         f"settled with no node named `{b.name}`")
+    if not lines:
+        return []
+    return ["  Bricks this batch named (injected and used):"] + lines
+
+
+def _row_has(row, key: str) -> bool:
+    try:
+        row[key]
+    except (IndexError, KeyError):
+        return False
+    return True
 
 
 _DECLINE_REASONS_SURFACED = (
@@ -1020,7 +1165,8 @@ def _section_pending_reopens(conn: sqlite3.Connection,
                    else "shelve reason: (empty)")
         # Pull what the promised batch actually produced.
         siblings = list(conn.execute(
-            "SELECT d.id, d.brief, d.target_id, d.produced_goal_id,"
+            "SELECT d.id, d.brief, d.brick_name, d.target_id,"
+            " d.produced_goal_id,"
             " d.outcome, g.slug AS produced_slug, g.status AS produced_status"
             " FROM strategist_decisions d"
             " LEFT JOIN goals g ON g.id = d.produced_goal_id"
@@ -1030,7 +1176,11 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         ))
         out.append(f"promised batch ({len(siblings)} Inject(s)):")
         for s in siblings:
-            brief_head = (s["brief"] or "").strip().split("\n", 1)[0][:70]
+            # The brick's NAME is the whole head line when there is
+            # one (2026-09-07); a legacy row still leads with prose.
+            brief_head = (f"`{s['brick_name']}`" if s["brick_name"]
+                          else (s["brief"] or "").strip()
+                          .split("\n", 1)[0][:70])
             if s["produced_slug"] is not None:
                 tail = (f"→ `{s['produced_slug']}` "
                         f"(status={s['produced_status']})")
