@@ -98,11 +98,12 @@ DOSSIER_INLINE_INVARIANT = ("charter.md", REQUEST_BASENAME, "PROGRAMME.md")
 DOSSIER_INLINE_TAIL = (REPORT_BASENAME, "since.md")
 DOSSIER_INLINE_ORDER = DOSSIER_INLINE_INVARIANT + DOSSIER_INLINE_TAIL
 
-#: Mapped, not inlined: big and read by a minority of rounds (TREE.md
-#: ~40KB), or already answered in the prompt's own dialogue of rulings
-#: (dialogue.md, which grows a round at a time). What rides is the
-#: OUTLINE — the headings, line ranges and sizes `inspect` would answer
-#: with — and the reviewer reads the one section its ruling turns on.
+#: Mapped, not inlined. TREE.md because it is big (~40KB) and a
+#: minority of rounds turn on a line of it; `dialogue.md` because it
+#: grows by one round every round — it could never sit in the cacheable
+#: prefix, and what a reviewer wants out of it is one round's bullets,
+#: which its headings ARE. What rides is the OUTLINE — the headings,
+#: line ranges and sizes `inspect` would answer with.
 DOSSIER_OUTLINED = ("TREE.md", "dialogue.md")
 
 #: Not even outlined: CATALOG.md is hundreds of sections, so its map IS
