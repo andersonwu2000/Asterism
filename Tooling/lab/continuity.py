@@ -90,6 +90,7 @@ def plan_chain(chain: str, round_no: int) -> "list[dict]":
 def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
               after_pair=None, incoming_verdict: "dict | None" = None,
               revision_basename: str = "draft.md",
+              legs: "tuple[str, ...]" = LEGS,
               notes: "dict | None" = None) -> dict:
     """Walk a chain, writing the record as it goes.
 
@@ -99,14 +100,21 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
     the chain can be exercised without a provider — the kinds below wire
     the real ones in.
 
-    `after_pair(round_no, verdict)` fires ONCE per pair, after both legs
-    have run, carrying the RESUMED leg's ruling. That is where the
-    debate advances, and it is here rather than inside `judge` because
-    the two legs must be handed the SAME dossier: a leg that appended
-    its own ruling as it finished gave the second leg a `dialogue.md`
-    one round longer than the first's, which is a second variable
-    (measured on the first dry smoke, 2026-09-07 — 1,925 bytes against
-    1,850).
+    `legs` is the comparison this chain runs, in order, and defaults to
+    both. An arm with no session to resume runs `("fresh",)` alone —
+    that is not a continuity measurement at all but a TRAP, one prompt
+    put in front of one fresh seat, and it goes through this same walker
+    because the record a trap leaves must be readable beside the pairs.
+
+    `after_pair(round_no, verdict)` fires ONCE per pair, after every leg
+    has run, carrying the FIRST leg's ruling (`resumed`, when both run —
+    a chain fed from the control would be measuring the control's
+    downstream effect). That is where the debate advances, and it is
+    here rather than inside `judge` because the legs must be handed the
+    SAME dossier: a leg that appended its own ruling as it finished gave
+    the second leg a `dialogue.md` one round longer than the first's,
+    which is a second variable (measured on the first dry smoke,
+    2026-09-07 — 1,925 bytes against 1,850).
 
     Everything is written UNDER `out` as it completes, not at the end: a
     chain that dies on its third leg still has to leave the first two
@@ -148,7 +156,7 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
             continue
 
         pair_verdict = None
-        for leg in LEGS:
+        for leg in legs:
             t0 = time.monotonic()
             rec = judge(n, leg, leg == "resumed")
             rec = dict(rec or {})
@@ -170,7 +178,7 @@ def run_chain(*, chain: str, round_no: int, out: Path, judge, revise,
             # reader who opens `verdict_resumed.json` gets.
             _write_json(out, f"verdict_{leg}.json",
                         verdict if verdict is not None else {})
-            if leg == "resumed" and verdict is not None:
+            if leg == legs[0] and verdict is not None:
                 carried = pair_verdict = verdict
             _write_json(out, "rounds.json", rounds)
         # The round is over for BOTH legs — now the debate may move.
@@ -433,7 +441,16 @@ def keep_attempts(workspace: Path, out: Path,
 def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
                             review=None, spawn=None) -> dict:
     """One Theorist review round, resumed against fresh — and, on a
-    chained arm, the author's revision in front of it."""
+    chained arm, the author's revision in front of it.
+
+    WITHOUT `resume_sid:` there is nothing to resume, so only the
+    `fresh` leg runs and the arm is a TRAP rather than a continuity
+    pair: one frozen document in front of one fresh reviewer, scored on
+    what its verdict says. `final_round:` picks which half of criterion
+    3 that reviewer is shown (`theorist/review.round_prompt_flags`) —
+    the wording under test is a property of the round, and an arm that
+    could not name it would measure whichever half the loop happened to
+    reach."""
     from ..agent import runtime as _rt
     from ..agent.phase2_context import compile_strategist_context
     from ..core import config
@@ -457,7 +474,11 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
             "against, and the historical episode's own Theorize row is "
             "what it must be")
 
-    assert_resumable_seat("theory_reviewer", ws)
+    final_round = bool(opts.get("final_round"))
+    resume_sid = str(opts.get("resume_sid") or "")
+    legs = LEGS if resume_sid else ("fresh",)
+    if resume_sid:
+        assert_resumable_seat("theory_reviewer", ws)
     chain = str(opts.get("chain") or "pair")
     if chain != "pair":
         assert_resumable_seat("theorist", ws)
@@ -465,9 +486,10 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
     report_body = _read_input(opts, "report")
     dialogue = _read_json_input(opts, "dialogue", [])
     from_run, incoming = resolve_chain_source(spec, ws, opts)
-    roots = resolve_sessions_roots(from_run, opts)
-    reviewer_rollout, reviewer_seen = find_rollout(
-        roots, str(opts["resume_sid"]))
+    roots = resolve_sessions_roots(from_run, opts) if resume_sid else []
+    reviewer_rollout = reviewer_seen = None
+    if resume_sid:
+        reviewer_rollout, reviewer_seen = find_rollout(roots, resume_sid)
     author_rollout = author_seen = author_cut = None
     if chain != "pair":
         if not opts.get("author_resume_sid"):
@@ -518,7 +540,8 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
                         workspace=ws, problem=problem, group_id=group,
                         objective=objective, situation=situation,
                         report_body=state["body"],
-                        dialogue=list(state["dialogue"]), pipeline_id=pid)
+                        dialogue=list(state["dialogue"]), pipeline_id=pid,
+                        final_round=final_round)
             if not resumed:
                 verdict, err, rc = review(**args)
                 thread = None
@@ -611,8 +634,10 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
             judge=_leg, revise=_revise, after_pair=_advance,
             incoming_verdict=incoming,
             revision_basename=f"draft_r{int(opts.get('round_no') or 1)}.md",
+            legs=legs,
             notes=_notes(opts, spec, reviewer_seen, author_seen,
-                         author_cut))
+                         author_cut, legs=legs,
+                         final_round=final_round))
         result["usage"] = _driver.usage_for(conn, pipeline_ids)
     finally:
         conn.close()
@@ -837,7 +862,8 @@ def run_judge_review_round(spec: dict, ws: Path, out: Path, *,
 
 
 def _notes(opts: dict, spec: dict, judge_seen, author_seen,
-           author_cut=None) -> dict:
+           author_cut=None, *, legs: "tuple[str, ...]" = LEGS,
+           final_round: "bool | None" = None) -> dict:
     """What the record has to say about this arm beyond its numbers.
 
     `resume_note` above all: the resumed session was argued under the
@@ -847,11 +873,11 @@ def _notes(opts: dict, spec: dict, judge_seen, author_seen,
     an Inject names its brick now instead of carrying a copy — is
     therefore part of what the resumed leg measures, and a reader who
     does not know that will read the difference as the resume's."""
-    return {"resume_note": str(opts.get("resume_note") or ""),
-            "legs_order": list(LEGS),
-            "dossier": ("identical for both legs — the resumed leg gets "
-                        "the same dialogue.md the fresh one does, so the "
-                        "only variable is session memory"),
+    out = {"resume_note": str(opts.get("resume_note") or ""),
+           "legs_order": list(legs),
+           "dossier": ("identical for both legs — the resumed leg gets "
+                       "the same dialogue.md the fresh one does, so the "
+                       "only variable is session memory"),
             "resumed_session_sandbox": (
                 "`codex exec resume` takes no --sandbox/-C/--add-dir, so "
                 "the resumed turn inherits the sandbox roots recorded in "
@@ -861,10 +887,25 @@ def _notes(opts: dict, spec: dict, judge_seen, author_seen,
                 "round's outputs land in the lab workspace; codex's "
                 "native file access is the residue and no prompt here "
                 "offers it."),
-            "from_run": str(spec.get("from_run") or ""),
-            "rollout_candidates": {"judge": judge_seen or [],
-                                   "author": author_seen or []},
-            "author_session_cut": author_cut or {}}
+           "from_run": str(spec.get("from_run") or ""),
+           "rollout_candidates": {"judge": judge_seen or [],
+                                  "author": author_seen or []},
+           "author_session_cut": author_cut or {}}
+    if list(legs) == ["fresh"]:
+        out["dossier"] = ("one fresh seat, one frozen document — this "
+                          "arm resumes nothing, so it measures the "
+                          "prompt rather than session memory")
+    if final_round is not None:
+        # WHICH WORDING WAS UNDER TEST. Criterion 3's push half is
+        # rendered from this flag, and a record that did not name it
+        # could not say which of the two halves produced the ruling
+        # it holds.
+        out["criterion_3_half"] = ("final_round — no revision follows, "
+                                   "the line goes in `reservations`"
+                                   if final_round else
+                                   "more_rounds — fire and require the "
+                                   "next step")
+    return out
 
 
 KINDS = {
@@ -879,7 +920,7 @@ KINDS = {
 ARM_KEYS = {
     "theory_review_round": (
         "group", "round_no", "chain", "request", "report", "dialogue",
-        "sessions_root", "resume_sid", "author_resume_sid",
+        "final_round", "sessions_root", "resume_sid", "author_resume_sid",
         "author_resume_turns", "from_arm", "resume_note", "reference"),
     "judge_review_round": (
         "group", "round_no", "chain", "trigger", "proposal", "decisions",
@@ -904,14 +945,31 @@ def check_options(name: str, kind: str, opts: dict, base: Path) -> None:
             raise LabError(f"arm {name!r} ({kind}): `{key}:` is required")
 
     _need("group")
-    _need("resume_sid")
-    _need("sessions_root")
+    # A `theory_review_round` with no session to resume is a TRAP, not a
+    # continuity pair: one document, one fresh reviewer, scored on the
+    # verdict. Everything the resume needs is then unasked-for rather
+    # than optional-by-accident — an arm that named `sessions_root:` and
+    # no sid would otherwise look configured and resume nothing.
+    fresh_only = kind == "theory_review_round" and not opts.get("resume_sid")
+    if not fresh_only:
+        _need("resume_sid")
+        _need("sessions_root")
     _need("report" if kind == "theory_review_round" else "proposal")
     chain = str(opts.get("chain") or "pair")
     if chain not in CHAINS:
         raise LabError(
             f"arm {name!r} ({kind}): chain {chain!r} is not one of "
             f"{list(CHAINS)}")
+    if fresh_only and chain != "pair":
+        raise LabError(
+            f"arm {name!r} ({kind}): chain {chain!r} needs a session to "
+            f"resume — every chain but `pair` continues one. Give it "
+            f"`resume_sid:`, or run the single round `pair` runs.")
+    if "final_round" in opts and not isinstance(opts["final_round"], bool):
+        raise LabError(
+            f"arm {name!r} ({kind}): `final_round:` is true or false — "
+            f"it picks which half of the reviewer's criterion 3 is "
+            f"rendered (`true` = no revision follows this round)")
     if chain == "revise_then_pair" and not opts.get("from_arm"):
         raise LabError(
             f"arm {name!r} ({kind}): `chain: revise_then_pair` answers a "
@@ -924,6 +982,27 @@ def check_options(name: str, kind: str, opts: dict, base: Path) -> None:
             f"`author_resume_sid:`")
     if kind == "theory_review_round":
         req = opts.get("request") or {}
+        if isinstance(req, str):
+            # A request frozen BESIDE the document, like every other
+            # input this kind takes. Inline is still legal — a one-line
+            # objective in the table reads better than a file — but a
+            # trap's request is part of the scene it freezes, and a
+            # scene split between a yaml table and a directory is one
+            # nobody can lift whole into the next run.
+            path = (base / req).resolve()
+            if not path.is_file():
+                raise LabError(
+                    f"arm {name!r} ({kind}): `request: {req!r}` names no "
+                    f"file at {path} — a request is either inline "
+                    f"(`{{objective, situation}}`) or a JSON file with "
+                    f"those two keys, resolved beside the table")
+            try:
+                req = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                raise LabError(
+                    f"arm {name!r} ({kind}): {path} is not valid JSON: "
+                    f"{exc}") from None
+            opts["request"] = req
         if not isinstance(req, dict) or not str(
                 req.get("objective") or "").strip():
             raise LabError(

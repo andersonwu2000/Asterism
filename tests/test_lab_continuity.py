@@ -381,6 +381,34 @@ def test_both_legs_of_a_pair_see_the_same_scene(tmp_path):
     ]
 
 
+def test_a_trap_runs_one_leg_and_it_is_the_fresh_one(tmp_path):
+    """An arm with no session to resume is not a continuity pair: one
+    frozen document, one fresh seat. It walks the same chain so the
+    record it leaves is readable beside the pairs' — and the ruling it
+    carries into `verdict_fresh.json` is the one the scorer reads."""
+    seen: "list[tuple]" = []
+
+    def judge(round_no, leg, resumed):
+        seen.append((round_no, leg, resumed))
+        return {"verdict": _verdict(f"r{round_no}-{leg}"), "rc": 0}
+
+    out = tmp_path / "_out"
+    result = cont.run_chain(chain="pair", round_no=1, out=out, judge=judge,
+                            revise=lambda *a: {}, legs=("fresh",))
+    assert seen == [(1, "fresh", False)]
+    assert result["outcome"] == "success"
+    assert not (out / "verdict_r1_resumed.json").exists()
+    assert json.loads((out / "verdict_fresh.json").read_text(
+        encoding="utf-8")) == _verdict("r1-fresh")
+    # `after_pair` carries the FIRST leg's ruling, whichever legs ran —
+    # with only the fresh one there is no control to be fed from.
+    advanced: "list[dict]" = []
+    cont.run_chain(chain="pair", round_no=1, out=tmp_path / "_out2",
+                   judge=judge, revise=lambda *a: {}, legs=("fresh",),
+                   after_pair=lambda n, v: advanced.append(v))
+    assert advanced == [_verdict("r1-fresh")]
+
+
 def test_a_pair_whose_resumed_leg_ruled_on_nothing_advances_nothing(
         tmp_path):
     """`after_pair` carries the resumed ruling; there being none is not
@@ -505,10 +533,61 @@ def _opts(tmp_path, **over) -> dict:
 
 def test_an_arm_missing_the_session_it_resumes_is_refused_at_the_yaml(
         tmp_path):
+    """A JUDGE round has nothing to be without a session — it exists to
+    compare resumed against fresh."""
+    (tmp_path / "proposal.md").write_text("# p\n", encoding="utf-8")
+    opts = {"group": "root", "sessions_root": str(tmp_path),
+            "proposal": "proposal.md",
+            "decisions": None, "rows": None}
+    with pytest.raises(LabError, match="`resume_sid:` is required"):
+        cont.check_options("a", "judge_review_round", opts, tmp_path)
+
+
+def test_a_theory_arm_with_no_session_runs_the_fresh_leg_alone(tmp_path):
+    """Without `resume_sid:` there is nothing to resume, so the arm is a
+    TRAP — one frozen document in front of one fresh reviewer — and the
+    keys the resume needs are unasked-for rather than missing."""
     opts = _opts(tmp_path)
     opts.pop("resume_sid")
-    with pytest.raises(LabError, match="`resume_sid:` is required"):
+    opts.pop("sessions_root")
+    cont.check_options("a", "theory_review_round", opts, tmp_path)
+
+
+def test_a_trap_arm_may_not_ask_for_a_chain_it_cannot_run(tmp_path):
+    """Every chain but `pair` continues a session; with none named there
+    is nothing to continue, and the arm must not build a workspace
+    before finding that out."""
+    opts = _opts(tmp_path, chain="pair_revise_pair")
+    opts.pop("resume_sid")
+    opts.pop("sessions_root")
+    with pytest.raises(LabError, match="needs a session to resume"):
         cont.check_options("a", "theory_review_round", opts, tmp_path)
+
+
+def test_final_round_is_a_boolean_and_is_refused_when_it_is_not(tmp_path):
+    """It selects one of criterion 3's two halves; a string would be
+    truthy and the arm would silently measure the other wording."""
+    opts = _opts(tmp_path, final_round=True)
+    cont.check_options("a", "theory_review_round", opts, tmp_path)
+    with pytest.raises(LabError, match="`final_round:` is true or false"):
+        cont.check_options("a", "theory_review_round",
+                           _opts(tmp_path, final_round="yes"), tmp_path)
+
+
+def test_a_request_may_be_frozen_in_a_file_beside_the_document(tmp_path):
+    """A trap's request is part of the scene it freezes; a scene split
+    between a yaml table and a directory is one nobody can lift whole
+    into the next run."""
+    (tmp_path / "request.json").write_text(
+        json.dumps({"objective": "settle it", "situation": "here"}),
+        encoding="utf-8")
+    opts = _opts(tmp_path, request="request.json")
+    cont.check_options("a", "theory_review_round", opts, tmp_path)
+    assert opts["request"] == {"objective": "settle it",
+                               "situation": "here"}
+    with pytest.raises(LabError, match="names no file"):
+        cont.check_options("a", "theory_review_round",
+                           _opts(tmp_path, request="nope.json"), tmp_path)
 
 
 def test_a_chained_arm_must_say_which_arm_it_continues(tmp_path):

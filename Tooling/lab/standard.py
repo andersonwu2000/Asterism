@@ -81,6 +81,14 @@ EXPECTED_KEYS: "dict[str, tuple[str, ...]]" = {
     "daemon": ("outcome", "proved_at_least", "root_proved",
                "revisions_at_least", "wall_sec_at_most", "tools_touched"),
     "theory_wake": ("outcome", "document", "rounds_at_most"),
+    # A trap on the THEORY reviewer's own rubric. Same three judge keys,
+    # read through `theorist/verdict` rather than the batch judge's
+    # parser (the two rubrics differ: a theory criterion is answered one
+    # bullet per item, so several clears are legal), plus the one thing
+    # only this rubric has — `reservations`, where the final round's
+    # criterion 3 puts the line past the author's stop.
+    "theory_review_round": ("verdict", "parsed", "must_fire",
+                            "must_not_fire", "reservations_min"),
     "strategist_wake": ("outcome",),
     "push_wake": ("outcome",),
     "gauntlet": ("bricks_at_least",),
@@ -95,6 +103,7 @@ _EXPECTED_PROSE = ("note",)
 SCORECARD_PROMPT = {
     "judge_round": "adversary/adversary.md",
     "theory_wake": "theorist/theory.md",
+    "theory_review_round": "theorist/review.md",
     "strategist_wake": "strategist/routine.md",
     "push_wake": "strategist/routine.md",
     "daemon": "strategist/routine.md",
@@ -444,6 +453,58 @@ def _score_daemon(expected: dict, record: dict, result: dict) -> dict:
     return checks
 
 
+def _last_round_verdict(result: dict) -> "dict | None":
+    """The ruling a continuity/trap record is scored on — the LAST leg
+    that ran. One leg for a trap; for a pair the control (`fresh`), which
+    is the leg a baseline is read against."""
+    rounds = list(result.get("rounds") or [])
+    return (rounds[-1] or {}).get("verdict") if rounds else None
+
+
+def _score_theory_review(expected: dict, result: dict) -> dict:
+    """One theory review round against its expectation.
+
+    Fired-ness is read with `theorist/verdict.fired_criteria`, never
+    with the batch judge's `split_criterion`: the two rubrics are
+    deliberately different parsers (a theory criterion may carry several
+    `clear` bullets, one per theorem or lead) and a private copy of the
+    wrong one is exactly the drift that made every rebut read as
+    `passed` for a week."""
+    from ..pipeline.theorist import verdict as _tv
+    verdict = _last_round_verdict(result)
+    fired = set(_tv.fired_criteria(verdict or {}))
+    checks: dict = {}
+    if "parsed" in expected:
+        checks["parsed"] = _check(bool(verdict) == bool(expected["parsed"]),
+                                  got=verdict is not None,
+                                  want=bool(expected["parsed"]))
+    if "verdict" in expected:
+        got = (verdict or {}).get("verdict")
+        checks["verdict"] = _check(got == expected["verdict"], got=got,
+                                   want=expected["verdict"])
+    want_fire = [str(k) for k in (expected.get("must_fire") or [])]
+    if want_fire:
+        hit = [k for k in want_fire if k in fired]
+        checks["must_fire"] = _check(len(hit) == len(want_fire),
+                                     want=want_fire, fired=hit,
+                                     missing=[k for k in want_fire
+                                              if k not in fired])
+    want_clear = [str(k) for k in (expected.get("must_not_fire") or [])]
+    if want_clear:
+        hit = [k for k in want_clear if k in fired]
+        checks["must_not_fire"] = _check(not hit, want=want_clear,
+                                         fired=hit)
+    if "reservations_min" in expected:
+        # The final round's criterion 3 has nowhere else to put the line
+        # past the author's stop, so "did it write one" is the whole
+        # measurement of that wording.
+        got = len(_tv.reservations_of(verdict or {}))
+        checks["reservations_min"] = _check(
+            got >= int(expected["reservations_min"]), got=got,
+            want=int(expected["reservations_min"]))
+    return checks
+
+
 def _score_theory(expected: dict, result: dict) -> dict:
     doc = dict(result.get("theory_document") or {})
     checks: dict = {}
@@ -484,6 +545,8 @@ def score(kind: str, expected: dict, record: dict) -> dict:
         checks.update(_score_daemon(expected, record, result))
     elif kind == "theory_wake":
         checks.update(_score_theory(expected, result))
+    elif kind == "theory_review_round":
+        checks.update(_score_theory_review(expected, result))
     elif kind == "gauntlet":
         checks.update(_score_gauntlet(expected, result))
     return {"ok": bool(checks) and all(c["ok"] for c in checks.values()),

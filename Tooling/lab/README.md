@@ -155,7 +155,12 @@ arms:
     #                    author_resume_turns, from_arm, resume_note],
     #                    plus the round's frozen inputs — a theory
     #                    round's `request`/`report`/`dialogue`, a judge
-    #                    round's `proposal`/`decisions`/`dialogue`
+    #                    round's `proposal`/`decisions`/`dialogue`.
+    #                    A theory round also takes `final_round:` (which
+    #                    half of criterion 3 the reviewer is shown), its
+    #                    `request:` may be a JSON file rather than
+    #                    inline, and with NO `resume_sid:` it runs the
+    #                    `fresh` leg alone — a trap, not a pair
 ```
 
 ## The continuity kinds — one round, run twice

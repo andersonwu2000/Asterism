@@ -27,6 +27,27 @@ from .verdict import (REPORT_BASENAME, VERDICT_BASENAME, VERDICT_TRIES,
 PROJECTION_DIRNAME = "review"
 REQUEST_BASENAME = "request.md"
 
+#: The two names `prompts/theorist/review.md` splits criterion 3's PUSH
+#: half on. Exactly one is true on any round, and BOTH are always
+#: spelled — `agent/runtime.render_prompt_template` is FAIL-OPEN (a
+#: conditional whose flag it was never given is rendered), so handing it
+#: only the true one would render the other block too and the reviewer
+#: would read two contradictory instructions: "require the next step"
+#: and "no revision follows this round".
+FLAG_MORE_ROUNDS = "more_rounds"
+FLAG_FINAL_ROUND = "final_round"
+
+
+def round_prompt_flags(final_round: bool) -> "dict[str, bool]":
+    """Criterion 3's flags for a round that is (or is not) the last one.
+
+    A round is FINAL when no revision is owed after it — the author will
+    never see this ruling, so a line the reviewer finds past the
+    author's stop has nowhere to go but `reservations`, which travels
+    with the document to the Strategist."""
+    return {FLAG_MORE_ROUNDS: not final_round,
+            FLAG_FINAL_ROUND: bool(final_round)}
+
 #: What `agent/` under the papers dir actually holds, appended to the
 #: reviewer's rendered prompt rather than written into the static one:
 #: the shelf gained refused documents on 2026-09-06 and the prompt still
@@ -166,9 +187,14 @@ def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
 def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
            workspace: Path, problem: str, group_id: "int | None",
            objective: str, situation: str, report_body: str,
-           dialogue: "list[dict]", pipeline_id: str,
+           dialogue: "list[dict]", pipeline_id: str, final_round: bool,
            quota_park=None) -> "tuple[dict | None, str, int]":
     """One review round: fresh reviewer, projection-isolated.
+
+    `final_round` says whether a revision is owed AFTER this round, and
+    it has no default ON PURPOSE: it selects one of criterion 3's two
+    push halves and the renderer is fail-open, so a caller that forgot
+    it would show the reviewer both. Every caller must decide.
 
     Returns (verdict, err, rc): rc != 0 → provider failure; rc == 0 with
     err → the reviewer produced no usable ruling; else the verdict is
@@ -216,6 +242,9 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         kind="theory_reviewer", prompt_path=prompt_path,
         problem_dir=proj, attempts_dir=proj, timeout_sec=timeout_sec,
         mcp_config_path=tools_cfg,
+        # Criterion 3's push half, per round. Both names always given —
+        # see `round_prompt_flags`.
+        prompt_flags=round_prompt_flags(final_round),
         # Read-only, in place — the same grant the batch judge has, and
         # for the same reason: the landed proofs and the Project's
         # documents are ground truth, not the author's narrative, so

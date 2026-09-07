@@ -21,7 +21,13 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 1. **Worth**: the document must advance on the present state — something the record, the notes and the literature do not have — and argue how it stands to the MAIN claim (implies it, is equivalent to it, reduces it to a smaller claim, proposes a stronger one, refutes it, and so on). Answering a better objective than the one posed is allowed; the reason must be written. Restating the record, paraphrasing the notes, a wrong direction, or a relation resting on something the record has not proved and the document does not prove, is not allowed.
 2. **Rigour**: every statement claimed proved must have a complete proof — **re-derive it**, and reproduce the computations it leans on. A gap papered over, or a check you cannot reproduce, is not allowed.
-3. **Challenging the unknown**: the report must attack the open statement itself, and it must say which new ideas it tried. Try to push past where the author stopped; if you find a new line, fire, tell the author where the way out is and require the next step. Judge on substance, not success. Attempts that are only announced are not allowed.
+3. **Challenging the unknown**: the report must attack the open statement itself, and it must say which new ideas it tried. Judge on substance, not success. Attempts that are only announced are not allowed.
+<!-- #if more_rounds -->
+   Try to push past where the author stopped; if you find a new line, fire, tell the author where the way out is and require the next step.
+<!-- #endif -->
+<!-- #if final_round -->
+   Try to push past where the author stopped. No revision follows this round, so a line you find goes in `reservations`, written as you would write it for the author — the line, the way out, the next step; it reaches the Strategist with the document.
+<!-- #endif -->
 4. **Leads**: every lead carries its reason and the test it survived (a case analysis, a construction, a computation), and says what a counterexample would have to look like. A conjecture with no reason and no test, or a next step that is a wish, is not allowed.
 
 ## Output
@@ -34,7 +40,7 @@ Write `{attempts_dir}/verdict.json` — adjudicate every criterion, a list per c
    "2": ["clear: <which proof you re-derived and which computation you redid, and what it returned>"],
    "3": ["clear: <the open statement — which new ideas were tried — where your own next step stopped>"],
    "4": ["clear: <the lead, its reason, its test>"]},
- "reservations": ["<advisory note — for concerns that fire no criterion>"]}
+ "reservations": ["<advisory note — for concerns that fire no criterion; on the final round, also the line past the author's stop>"]}
 ```
 
 Any fired = rebut (your fired bullets go verbatim to the author for one revision); all clear = accept. No criterion takes a bare `clear` — each clear carries one concrete sentence for THIS document. This file is a review verdict, not an audit: exactly the four keys above, strings only.

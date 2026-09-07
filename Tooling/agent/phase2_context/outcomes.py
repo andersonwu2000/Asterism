@@ -212,7 +212,18 @@ def _theorize_result_lines(row) -> list[str]:
     and the next wake's `## Notes on this problem` lists it), a refused
     one names the refusal, the criteria that fired and — since the
     2026-09-06 landing rule — the path of the record it left, which is
-    the evidence the next request on the same wall is written against."""
+    the evidence the next request on the same wall is written against.
+
+    ON THE ACCEPTED ROAD THE PATH IS THE FIRST LINE AND NOT THE WHOLE
+    DETAIL (2026-09-07). An accepted ruling can still carry the
+    reviewer's RESERVATIONS, and on the review's final round that is
+    where criterion 3's push half puts the line past the author's stop —
+    written for an author who will never take another turn, so this wake
+    is the next thing that can act on it. They ride below the path
+    (`theorist.RESERVATIONS_HEADING`) and are NOT capped: the 1200-char
+    cut below is for a refusal's summary, and cutting advice at the
+    point where it says what to do next would leave only the complaint.
+    """
     try:
         payload = json.loads(str(row["payload"]) or "{}")
     except (TypeError, ValueError):
@@ -225,9 +236,11 @@ def _theorize_result_lines(row) -> list[str]:
     detail = str(row["outcome_detail"] or "").strip()
     outcome = str(row["outcome"] or "")
     if outcome.startswith("success"):
-        out.append(f"  document: `{detail}`" if detail else
+        path, _, rest = detail.partition("\n")
+        out.append(f"  document: `{path.strip()}`" if path.strip() else
                    "  accepted, but no path was recorded — grep "
                    "`_docs/agent/` for this group's newest document")
+        out += [f"  {ln.rstrip()}" for ln in rest.splitlines() if ln.strip()]
     elif detail:
         if len(detail) > 1200:
             detail = detail[:1200].rstrip() + "…"

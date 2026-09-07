@@ -410,6 +410,57 @@ def test_a_theory_item_is_scored_on_the_documents_verdict_and_its_rounds():
     assert not std.score("theory_wake", {"document": "rejected"}, rec)["ok"]
 
 
+def _theory_review_record(verdict: str, criteria: dict,
+                          reservations=()) -> dict:
+    return {"kind": "theory_review_round", "outcome": "success",
+            "wall_sec": 300.0,
+            "driver_result": {"rounds": [{"leg": "fresh", "verdict": {
+                "verdict": verdict, "criteria": criteria,
+                "reservations": list(reservations)}}]}}
+
+
+def test_a_theory_trap_is_scored_on_the_theory_rubrics_own_parser():
+    """A theory criterion may carry SEVERAL `clear` bullets — one per
+    theorem or lead — which the batch judge's parser refuses. Reading
+    this rubric with that one is the drift that made every rebut read as
+    passed for a week, so the check goes through
+    `theorist/verdict.fired_criteria`."""
+    hollow = _theory_review_record(
+        "rebut", {"1": ["fired: restates the charter"],
+                  "2": ["clear: nothing is claimed proved"],
+                  "3": ["fired: the attempts are only announced"],
+                  "4": ["clear: no lead is offered"]})
+    exp = {"verdict": "rebut", "must_fire": ["3"]}
+    assert std.score("theory_review_round", exp, hollow)["ok"]
+
+    lead = _theory_review_record(
+        "pass", {"1": ["clear: the stronger form is new"],
+                 "2": ["clear: re-derived theorem 1",
+                       "clear: redid the n <= 5 table"],
+                 "3": ["clear: the involution is attacked head on"],
+                 "4": ["clear: the mod-3 lead carries its test"]},
+        reservations=["the same argument on any odd element generalises"])
+    control = {"verdict": "pass", "must_not_fire": ["3"],
+               "reservations_min": 1}
+    got = std.score("theory_review_round", control, lead)
+    assert got["ok"], got
+    assert got["checks"]["reservations_min"]["got"] == 1
+    # multi-clear on criterion 2 is legal here and must not read as fired
+    assert got["checks"]["must_not_fire"]["fired"] == []
+
+
+def test_a_final_round_that_left_no_line_past_the_authors_stop_fails():
+    """`reservations_min` is the whole measurement of the final-round
+    wording: no revision follows, so a reviewer that found something and
+    wrote it nowhere lost it."""
+    silent = _theory_review_record(
+        "pass", {k: ["clear: fine enough"] for k in "1234"})
+    got = std.score("theory_review_round",
+                    {"verdict": "pass", "reservations_min": 1}, silent)
+    assert not got["ok"]
+    assert got["checks"]["reservations_min"]["got"] == 0
+
+
 def test_a_gauntlet_is_scored_on_how_many_bricks_came_back_proved():
     rec = {"kind": "gauntlet", "outcome": "success", "wall_sec": 60.0,
            "driver_result": {"bricks": [{"slug": "a", "ok": True},

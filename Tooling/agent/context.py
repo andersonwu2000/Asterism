@@ -1879,6 +1879,18 @@ def _theory_doc_marks(conn, workspace: Path) -> "dict[str, dict]":
             review += f" (criteria {', '.join(fired)})"
         parts = [f"group {int(gid)}" if gid is not None else "no group",
                  str(r["created_at"] or "")[:10], review]
+        reservations = (_verdict.reservations_of(ruling)
+                        if isinstance(ruling, dict) else [])
+        if reservations:
+            # NOT the text — this is a roster line, and the reservations
+            # are in the file's own header, verbatim, where a reader who
+            # opens the document meets them. Saying they EXIST is what
+            # the roster owes: on a review's final round criterion 3's
+            # push half writes the line past the author's stop there,
+            # and no revision followed to answer it (owner ruling
+            # 2026-09-07).
+            parts.append(
+                f"{len(reservations)} reservation(s) — in its header")
         if status == "rejected" and _verdict.RIGOUR_CRITERION in fired:
             parts.append("rigour defective — see criterion "
                          + _verdict.RIGOUR_CRITERION)

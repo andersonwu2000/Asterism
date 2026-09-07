@@ -43,7 +43,8 @@ from . import checkpoint as _checkpoint
 from . import landing as _landing
 from .review import projection_dir, review as review_round
 from .verdict import (REPORT_BASENAME, RIGOUR_DEFECTIVE, fired_criteria,
-                      parse_theory_verdict, rigour_is_defective)
+                      parse_theory_verdict, reservations_of,
+                      rigour_is_defective)
 
 #: What the failure outcome says to the Strategist that asked. Fixed
 #: wording (theory_wake_design.md §3.7): a rejection is not a bug
@@ -67,6 +68,19 @@ SPAWN_DIED_DETAIL = ("The Theorist's spawn did not complete ({reason}); "
 #: The third road: the request itself is unusable. Nothing ran, and
 #: there is nothing to re-issue either — the decision has to change.
 NO_REQUEST_DETAIL = "The Theorize decision carried no usable request"
+
+#: What introduces the reviewer's reservations on the accepted road's
+#: outcome. The PATH stays the first line — `outcomes.
+#: _theorize_result_lines` reads it as the document to open — and these
+#: ride below it, verbatim and uncut. Nothing else carries them to a
+#: Strategist: they fired no criterion, so they are in neither
+#: `criticisms` nor the refusal detail, and on the FINAL round criterion
+#: 3's push half writes the line past the author's stop into exactly
+#: this list (owner ruling 2026-09-07), with no author turn left to
+#: answer it.
+RESERVATIONS_HEADING = (
+    "the reviewer's reservations — no revision answered them; they are "
+    "advice on this document, not a ruling against it:")
 
 #: Revision rounds a fired verdict may buy, on the SAME author session.
 #: Three, from the experiment: the author that has not answered the
@@ -397,12 +411,21 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         # was a re-dispatch that read `authoring` here.
         _mark(_checkpoint.PHASE_AWAITING_REVIEW, turn, body)
         reviewed = body
+        # Whether a revision is owed AFTER this round — the same test
+        # the `revision < rounds` guard below makes, hoisted because the
+        # reviewer has to be TOLD which of criterion 3's two push halves
+        # applies before it rules (`review.round_prompt_flags`). Derived
+        # from the loop variable rather than from the turn, so every
+        # resumed entry point (`awaiting_review` at round k enters at
+        # `revision = k - 1`, `awaiting_revision` at `revision = k`)
+        # computes exactly what the cold path would.
+        final_round = revision >= rounds
         verdict, err, rrc = review_round(
             round_no=turn, attempts_dir=attempts_dir, conn=conn,
             workspace=workspace, problem=problem, group_id=group_id,
             objective=objective, situation=situation, report_body=body,
             dialogue=dialogue, pipeline_id=pipeline_id,
-            quota_park=_quota_park)
+            final_round=final_round, quota_park=_quota_park)
         if rrc != 0:
             return _fail_spawn(
                 _rc_reason(rrc, "theory_reviewer",
@@ -474,11 +497,18 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         return _fail("theory_rejected", "\n".join(lines),
                      headline=REJECTED_DETAIL)
 
-    _settle(conn, decision_id, outcome="success", detail=path)
+    reservations = reservations_of(verdict)
+    detail = "\n".join([path]
+                       + ([RESERVATIONS_HEADING] if reservations else [])
+                       + [f"- {r}" for r in reservations])
+    _settle(conn, decision_id, outcome="success", detail=detail)
     print(f"[theorist] {problem} g{group_id}: accepted after {turn} "
-          f"round(s) — {path}", flush=True)
+          f"round(s) — {path}"
+          + (f" (+{len(reservations)} reservation(s))" if reservations
+             else ""), flush=True)
     return PipelineResult(outcome="success")
 
 
 __all__ = ["run_theorist", "REJECTED_DETAIL", "SPAWN_DIED_DETAIL",
-           "NO_REQUEST_DETAIL", "DEFAULT_ROUNDS", "parse_theory_verdict"]
+           "NO_REQUEST_DETAIL", "RESERVATIONS_HEADING", "DEFAULT_ROUNDS",
+           "parse_theory_verdict"]

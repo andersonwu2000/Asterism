@@ -88,7 +88,8 @@ def _script(*, verdicts, report=_REPORT):
     """A scripted `spawn_llm`: the author writes `report.md` every turn,
     the reviewer writes the next verdict in the list."""
     state = {"author": 0, "review": 0, "author_sids": [],
-             "review_sids": [], "rebuttals": [], "seats": []}
+             "review_sids": [], "review_flags": [], "rebuttals": [],
+             "seats": []}
 
     def fake_spawn(**kw):
         kind = kw.get("kind")
@@ -96,6 +97,7 @@ def _script(*, verdicts, report=_REPORT):
         if kind == "theory_reviewer":
             state["review"] += 1
             state["review_sids"].append(kw.get("session_id"))
+            state["review_flags"].append(dict(kw.get("prompt_flags") or {}))
             v = verdicts[min(state["review"] - 1, len(verdicts) - 1)]
             if v is not None:
                 (kw["attempts_dir"] / "verdict.json").write_text(
@@ -1651,3 +1653,262 @@ def test_theorize_freeze_adopt_refuses_a_decision_that_is_settled(
         pipeline_id="zz", decision=did, author_sid=None))
     assert rc == 1
     assert _ck.load(d) is None
+
+
+# ---------------------------------------------------------------------
+# criterion 3's two push halves, and where the FINAL round's line goes
+#
+# Owner ruling 2026-09-07: `prompts/theorist/review.md` splits criterion
+# 3. The defect half always applies; the PUSH half is one of two blocks
+# — "fire and require the next step" while a revision is still owed, and
+# "write it into `reservations`" on the last round, because no author
+# turn follows to answer it. `render_prompt_template` is FAIL-OPEN, so
+# the framework must always pass exactly one of the two names, and the
+# reservations it produces have to reach a reader.
+# ---------------------------------------------------------------------
+
+def _review_prompt() -> str:
+    from Tooling.pipeline import PROMPT_DIR
+    return (PROMPT_DIR / "theorist" / "review.md").read_text(
+        encoding="utf-8")
+
+
+#: A sentence from each half, distinctive enough to tell them apart.
+_MORE_ROUNDS_MARK = "require the next step"
+_FINAL_ROUND_MARK = "No revision follows this round"
+
+
+def test_each_flag_renders_exactly_one_of_criterion_3s_push_halves() -> None:
+    """The renderer keeps a block whose flag it was never given, so the
+    two names are only exclusive if BOTH are always passed. Rendered
+    with neither — the shape a caller that forgot would produce — the
+    reviewer reads two contradictory instructions at once."""
+    from Tooling.agent.runtime import render_prompt_template
+    from Tooling.pipeline.theorist.review import round_prompt_flags
+
+    src = _review_prompt()
+    assert _MORE_ROUNDS_MARK in src and _FINAL_ROUND_MARK in src
+
+    mid = render_prompt_template(src, flags=round_prompt_flags(False))
+    assert _MORE_ROUNDS_MARK in mid and _FINAL_ROUND_MARK not in mid
+
+    last = render_prompt_template(src, flags=round_prompt_flags(True))
+    assert _FINAL_ROUND_MARK in last and _MORE_ROUNDS_MARK not in last
+
+    # The defect half is not conditional — it rules on every round.
+    for text in (mid, last):
+        assert "Attempts that are only announced are not allowed" in text
+
+    both = render_prompt_template(src, flags=None)
+    assert _MORE_ROUNDS_MARK in both and _FINAL_ROUND_MARK in both
+
+
+def test_only_the_last_review_is_told_that_no_revision_follows(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four rounds argued out (`DEFAULT_ROUNDS` revisions plus the cold
+    one). A revision is owed after every round but the last, so exactly
+    the last reviewer is shown the `final_round` half."""
+    did = _theorize(conn, workspace)
+    fake, state = _script(verdicts=[_fired("3")] * 9)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    assert state["review"] == theorist.DEFAULT_ROUNDS + 1
+    assert [f["final_round"] for f in state["review_flags"]] == \
+        [False, False, False, True]
+    # Both names on every round: the renderer is fail-open, so a round
+    # that named only the true one would render the other block too.
+    for flags in state["review_flags"]:
+        assert flags["more_rounds"] is not flags["final_round"]
+
+
+def test_a_single_round_cap_makes_the_first_review_the_final_one(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap is the REQUEST's. With no revision on offer the opening
+    round is already the last, and telling its reviewer to require a
+    next step would be requiring one of nobody."""
+    monkeypatch.setenv("ASTERISM_THEORIST_ROUNDS", "0")
+    did = _theorize(conn, workspace)
+    fake, state = _script(verdicts=[_fired("3")])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    assert state["review"] == 1
+    assert state["review_flags"][0] == {"more_rounds": False,
+                                        "final_round": True}
+
+
+def test_a_resumed_round_is_told_what_the_cold_path_would_have_said(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both resume roads enter the loop mid-way, and the flag is derived
+    from the loop variable rather than from the turn — so `awaiting_
+    review` at round 3 (which owes one more revision) and `awaiting_
+    revision` at round 3 (whose next round is the fourth and last) each
+    compute exactly what an uninterrupted run would have."""
+    from Tooling.pipeline.theorist import checkpoint as _ck
+    gid = groups_mod.ensure_top_group(conn, "p")
+
+    did = _theorize(conn, workspace)
+    _frozen(workspace, "old-fr1", decision_id=did, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVIEW, round_no=3,
+            verdicts=[_fired("3"), _fired("3")])
+    fake, state = _script(verdicts=[_fired("3")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did, pipeline_id="th-fr1")
+    # round 3 (a revision still owed), then round 4 (the last)
+    assert [f["final_round"] for f in state["review_flags"]] == [False, True]
+
+    did2 = _theorize(conn, workspace)
+    _frozen(workspace, "old-fr2", decision_id=did2, group_id=gid,
+            phase=_ck.PHASE_AWAITING_REVISION, round_no=3,
+            verdicts=[_fired("3")] * 3)
+    fake2, state2 = _script(verdicts=[_fired("3")] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake2)
+    _run(conn, workspace, pintent, did2, pipeline_id="th-fr2")
+    # the author takes round 3's revision; round 4 is the last review
+    assert [f["final_round"] for f in state2["review_flags"]] == [True]
+
+
+# ---------------------------------------------------------------------
+# and the reservations have to reach somebody
+# ---------------------------------------------------------------------
+
+_RESERVATION = ("push past the toggle-1 involution: the same argument on "
+                "any odd element generalises the count to every finite A "
+                "with an odd member — that is the next step")
+
+
+def _clear_with_reservations(*reservations):
+    v = _clear()
+    v["reservations"] = list(reservations)
+    return v
+
+
+def test_the_landed_header_carries_the_reservations_verbatim(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attempts dir the ruling was written in is deleted at pipeline
+    end, so an accepted document's reservations survive only here. They
+    sit AFTER the criteria lines, one line each, uncut — on the final
+    round this is where criterion 3's push half writes the line past the
+    author's stop."""
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear_with_reservations(
+        _RESERVATION, "the n = 0 edge case is not stated")])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    text = (workspace / path).read_text(encoding="utf-8")
+    head = text.split("-->", 1)[0].splitlines()
+    assert f"reservations: {_RESERVATION}" in head
+    assert "reservations: the n = 0 edge case is not stated" in head
+    # after the criteria, and inside the comment
+    assert head.index(f"reservations: {_RESERVATION}") > max(
+        i for i, ln in enumerate(head) if ln.startswith("criterion "))
+
+
+def test_a_ruling_with_no_reservations_writes_no_line_about_it(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The absence of the line is what says nothing was left over — an
+    empty `reservations:` would be one more line to read rather than one
+    to find, the same rule the rigour flag follows."""
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear()])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    assert "reservations:" not in (workspace / path).read_text(
+        encoding="utf-8")
+
+
+def test_a_refused_document_still_carries_its_fired_lines(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal's own header is unchanged by the new line: status,
+    the criteria that fired, every bullet — and the reservations below
+    them when the ruling carried any."""
+    did = _theorize(conn, workspace)
+    ruling = _fired("1")
+    ruling["reservations"] = [_RESERVATION]
+    fake, _ = _script(verdicts=[ruling] * 4)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed"
+
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    text = (workspace / path).read_text(encoding="utf-8")
+    assert text.startswith("<!--\nstatus: rejected\n")
+    assert "criteria fired: 1" in text
+    assert "criterion 1: fired: the relation is not argued" in text
+    assert f"reservations: {_RESERVATION}" in text
+
+
+def test_a_header_line_cannot_end_the_comment_it_lives_in() -> None:
+    """Every line below `status:` is the reviewer's own text, which no
+    parser constrains — a `-->` inside one would close the comment early
+    and spill the framework's bookkeeping into the document's prose."""
+    head = landing.header(
+        group_id=1, pipeline_id="p", rounds=1,
+        verdict_lines=["criterion 1: clear: it holds --> see below"],
+        reservations=["reservations: push on --> the odd element"])
+    assert head.count("-->") == 1
+    assert head.endswith("-->")
+
+
+def test_an_accepted_theory_return_shows_its_reservations_to_the_wake(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`## Completed Inject batches` is the surface a wake reads its last
+    batch from. An accepted document's reservations fired no criterion,
+    so they are in neither `criticisms` nor a refusal detail — without
+    this the final round's line past the author's stop would reach
+    nobody. The PATH stays the first line, and the advice is not cut."""
+    from Tooling.agent import phase2_context
+    long_one = (_RESERVATION + " " + "and here is the reason " * 80).strip()
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear_with_reservations(long_one)])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    attempts = tmp_path / "_ctx_res"
+    attempts.mkdir()
+    text = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", workspace=workspace,
+        group_id=groups_mod.ensure_top_group(conn, "p"),
+        attempts_dir=attempts))
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    assert f"document: `{path}`" in text
+    assert theorist.RESERVATIONS_HEADING in text
+    assert long_one in text          # bearing content is never capped
+
+
+def test_the_notes_roster_says_an_accepted_document_left_reservations(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outcome above lives as long as the batch is on the
+    scoreboard; the roster lists the document for good. It carries the
+    COUNT and points at the header — the text itself is in the file the
+    reader is being sent to."""
+    from Tooling.agent import context as _context
+    did = _theorize(conn, workspace)
+    fake, _ = _script(verdicts=[_clear_with_reservations(_RESERVATION)])
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    _run(conn, workspace, pintent, did)
+
+    text = "\n".join(_context._section_owner_notes(pintent, workspace, conn))
+    assert "1 reservation(s) — in its header" in text

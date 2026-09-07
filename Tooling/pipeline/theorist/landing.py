@@ -43,8 +43,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .verdict import (RIGOUR_DEFECTIVE, fired_criteria, rigour_is_defective,
-                      verdict_lines as _verdict_lines)
+from .verdict import (RIGOUR_DEFECTIVE, fired_criteria,
+                      reservation_lines as _reservation_lines,
+                      rigour_is_defective, verdict_lines as _verdict_lines)
 
 #: Filename stem shape: `g<group>_<YYYYMMDD-HHMM>[_rejected]_<slug>`.
 #: The group and the minute are what make two documents on one wall
@@ -132,10 +133,21 @@ _REJECTED_PROSE = (
     "criterion 2 (Rigour) below, not this status.")
 
 
+def _comment_safe(line: str) -> str:
+    """One header line that cannot END the comment it lives in.
+
+    `-->` inside a value would close the HTML comment early and spill
+    the framework's bookkeeping into the document's prose — and every
+    line below is the reviewer's own text, which no parser constrains.
+    The sequence is broken, not deleted: the sentence still reads."""
+    return str(line).replace("-->", "--‑>")
+
+
 def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
            verdict_lines: "list[str]", status: str = STATUS_ACCEPTED,
            fired: "list[str] | None" = None,
            rigour_defective: bool = False,
+           reservations: "list[str] | None" = None,
            resumed_from: str = "") -> str:
     """The provenance comment the landed file opens with.
 
@@ -148,7 +160,13 @@ def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
 
     `status:` OPENS it, on both roads. The shelf holds refused documents
     too now, and a reader who has to reach the fourth line to learn
-    which kind this is has already started reading it as a result."""
+    which kind this is has already started reading it as a result.
+
+    `reservations:` CLOSES it, one line each, after the criteria. On the
+    final round criterion 3's push half puts the reviewer's own line
+    past the author's stop there and no revision follows to answer it,
+    so the header is where that advice reaches whoever picks the wall up
+    next. Uncapped, like the criteria lines: it is bearing content."""
     rejected = status == STATUS_REJECTED
     lines = ["<!--",
              f"status: {status}",
@@ -171,8 +189,8 @@ def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
         # find.
         lines.append(RIGOUR_DEFECTIVE)
     lines += [f"{ln}" for ln in verdict_lines]
-    lines.append("-->")
-    return "\n".join(lines)
+    lines += list(reservations or [])
+    return "\n".join([_comment_safe(ln) for ln in lines] + ["-->"])
 
 
 def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
@@ -200,6 +218,7 @@ def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
                verdict_lines=_verdict_lines(verdict), status=status,
                fired=fired_criteria(verdict) if rejected else None,
                rigour_defective=rejected and rigour_is_defective(verdict),
+               reservations=_reservation_lines(verdict),
                resumed_from=resumed_from)
         + "\n\n" + body.rstrip("\n") + "\n",
         area=_project_docs.AREA_AGENT)

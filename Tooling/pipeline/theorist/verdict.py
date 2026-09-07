@@ -286,6 +286,29 @@ def verdict_lines(verdict: "dict | None") -> "list[str]":
     return out
 
 
+def reservations_of(verdict: "dict | None") -> "list[str]":
+    """The reviewer's reservations, one collapsed line each, in order.
+
+    Whitespace is collapsed and NOTHING is dropped or cut. On the final
+    round criterion 3's push half writes the line past the author's stop
+    HERE — the author will never see it, so this list is the only thing
+    carrying it onward, and a cap would cut exactly the half that says
+    what to do next."""
+    out: "list[str]" = []
+    for r in (verdict or {}).get("reservations") or []:
+        text = " ".join(str(r).split())
+        if text:
+            out.append(text)
+    return out
+
+
+def reservation_lines(verdict: "dict | None") -> "list[str]":
+    """`reservations: <line>` each, for the landed header — same shape
+    and same reason as `verdict_lines`. Empty when there are none, so
+    the header carries no line saying nothing was said."""
+    return [f"reservations: {text}" for text in reservations_of(verdict)]
+
+
 #: Which criterion of `prompts/theorist/review.md`'s rubric is Rigour.
 #: The one that decides whether the document's theorems are RESULTS: the
 #: reviewer clears it by re-deriving them, so a document it cleared may
