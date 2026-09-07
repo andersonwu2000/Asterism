@@ -12,9 +12,9 @@ apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors
 
 Four MCP tools talk to a live Lean server already holding **your `patch.lean` sandbox**:
 
-- `mcp__lsp__apply_edit(edits)` — anchored edits, several per call: `[{"replace": "<exact old text>", "with": "<new>"}, {"replace_between": ["<from>", "<to>"], "with": "<new>"}, {"insert_after": "<anchor>", "text": "<new>"}]`. Anchors must be verbatim and unique; if one fails NOTHING is applied and the response says which and how to fix it. No line numbers — the response reports where each edit landed, plus the file’s tail and `scope_balance`.
+- `mcp__lsp__apply_edit(edits)` — anchored edits, several per call: `[{"replace": "<exact old text>", "with": "<new>"}, {"replace_between": ["<from>", "<to>"], "with": "<new>"}, {"insert_after": "<anchor>", "text": "<new>"}]`. Anchors must be verbatim and unique; if one fails NOTHING is applied and the response says which and how to fix it. No line numbers — the response reports where each edit landed, plus the file’s tail and `scope_balance`. Terse by default: errors only (the first with its full goal state), warnings folded to one line per linter category; pass `verbose=true` for the whole dump.
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
-- `mcp__lsp__errors_at(line=None)` — list current diagnostics.
+- `mcp__lsp__errors_at(line=None)` — list current diagnostics; same terse default, `verbose=true` for every diagnostic in full, `line=N` always exact.
 - `mcp__lsp__validate_file()` — validate `patch.lean` from DISK; `file="new_<slug>.lean"` validates a stub (auto-prepends Mathlib + Defs + your patch's `open`s). Returns two independent verdicts: `diagnostics` = Lean compilation, `submission` = commit-gate rehearsal — both must be clean (`ok:true` covers only the former). Write first, then validate — there is no string mode, and commit checks it saw your final bytes. Run it once more before finishing.
 - `mcp__lsp__withdraw_stub(slug)` — drop a `new_<slug>.lean` you no longer want submitted as a sub-goal.
 - `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` — several read questions in one call; `decl` answers from the framework's record. `compute(code)` runs a Python calculation (numpy; no filesystem, no network — and it proves nothing, only the Lean kernel does).

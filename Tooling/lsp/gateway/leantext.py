@@ -8,9 +8,10 @@ both directions, the parity verdict, the diagnostic remap back to the
 agent's frame, the goal readers, the buffer/disk resync and the
 scope-balance counter.
 
-A leaf inside this package: it imports `.state` and the
-`state.assemble` / `state.db` / `state.intent` / `state.metaprog` SoT
-primitives, and nothing else from here. That is what let the earlier
+Near-leaf inside this package: it imports `.state`, the leaf `.terse`
+(for the `_collapse_repeats` re-export), and the `state.assemble` /
+`state.db` / `state.intent` / `state.metaprog` SoT primitives, and
+nothing else from here. That is what let the earlier
 cuts' two call-time reach-backs close — `governor` and `sessions` now
 import `_compilation_for` from HERE at module level, and its patch
 target moves with it to `gateway.leantext`.
@@ -44,24 +45,12 @@ def _format_diag(d: dict) -> dict:
     }
 
 
-def _collapse_repeats(formatted: "list[dict]") -> "list[dict]":
-    """Fold diagnostics that repeat the same message verbatim into one
-    entry carrying `repeats` + `also_lines`. Nothing is hidden — the
-    payload is the same information at one tenth the reading cost
-    (07-29 feedback: three identical `push_neg` deprecation warnings on
-    every probe, competing with the real ok/error signal)."""
-    out: "list[dict]" = []
-    seen: "dict[tuple[str, str], dict]" = {}
-    for f in formatted:
-        key = (str(f.get("severity")), str(f.get("message")))
-        first = seen.get(key)
-        if first is None:
-            seen[key] = f
-            out.append(f)
-            continue
-        first["repeats"] = int(first.get("repeats", 1)) + 1
-        first.setdefault("also_lines", []).append(f.get("line"))
-    return out
+# Re-exported, not defined here since 2026-09-07: the fold now keys on
+# the linter CATEGORY, which is agent-facing presentation rather than
+# Lean text mechanics, and `verify.py` + the facade import the name from
+# this module. `terse` is a leaf (it imports nothing from the package),
+# so the re-export closes no cycle.
+from .terse import _collapse_repeats  # noqa: E402,F401
 
 
 def _metaprog_error(text: str, where: str) -> "str | None":

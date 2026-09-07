@@ -2268,9 +2268,15 @@ def test_apply_edit_reports_the_goal_at_both_ends(
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
-    assert "goal_at_edit_start" in multi
+    # 2026-09-07: the START goal left the DEFAULT payload — it answers
+    # the question the agent did not ask, and it cost 914 KB of one
+    # day's tool output. It comes back with `verbose=true`, and a
+    # single-line edit still carries its one goal under the START name
+    # (`test_lsp_terse_payload.py` owns the rest of that contract).
+    assert "goal_at_edit_start" not in multi
     assert "goal_at_edit_end" in multi
     assert "goal_at_edit_end" not in single
+    assert "goal_at_edit_start" in single
     # 2026-08-24 fix: ~38 agent reports read a non-empty
     # `goal_at_edit_end` as "proof incomplete" and burned a turn
     # cross-checking with validate_file — it is a cursor snapshot at the

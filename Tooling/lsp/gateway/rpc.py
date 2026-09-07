@@ -59,6 +59,7 @@ from .leantext import (
     _summarize_goal,
 )
 from .server import _offload_to_thread, mcp
+from .terse import _cap_region, _terse_report
 from .sessions import _acquire_slot, _current_session
 from .state import SessionMetadata, _log_for, _state, _ts_now
 from .wall import (  # noqa: F401 — re-exported: verify/__init__ bind rpc.<name>
@@ -90,7 +91,7 @@ def _echo_removed(removed: str) -> str:
 
 @mcp.tool(structured_output=False)
 @_offload_to_thread
-def apply_edit(edits: list = None) -> str:
+def apply_edit(edits: list = None, verbose: bool = False) -> str:
     """Apply one or more anchored edits to the target Lean file.
 
     Each edit names the TEXT it acts on, not a line number:
@@ -118,8 +119,16 @@ def apply_edit(edits: list = None) -> str:
     which edit and how to repair it, the file is unchanged, and your
     other anchors are still valid on resubmission.
 
+    The response is TERSE by default: `diagnostics` carries the errors
+    only, in source order, with the full goal state on the first one;
+    warnings are folded to one line per linter category with a count.
+    Pass `verbose=true` for the untrimmed payload (every warning, every
+    error's full hypothesis dump, the whole edited region, the removed
+    text and the goal at the region's start).
+
     Args:
       edits: list of edit objects (see above).
+      verbose: return the full, untrimmed payload.
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -252,10 +261,15 @@ def apply_edit(edits: list = None) -> str:
     # dropped `:= by`, clobbered `have`): the recurring corruption in
     # agent_feedback (C1). Seeing the actual result makes a misfire obvious
     # immediately rather than via a confusing downstream diagnostic.
+    # A LONG region is elided in the middle (2026-09-07): a 60-line
+    # replacement echoed 64 numbered lines of text the agent had just
+    # written, and post_edit_region was 1.22 MB of one day's 6 MB of
+    # tool output. Re-anchoring needs the two ends, not the mirror.
     _echo = []
     for lo, hi in _regions:
         a, b = max(1, lo - 2), min(len(new_lines), hi + 2)
-        _echo += [f"{i}: {new_lines[i - 1]}" for i in range(a, b + 1)]
+        _span = [f"{i}: {new_lines[i - 1]}" for i in range(a, b + 1)]
+        _echo += _span if verbose else _cap_region(_span)
         _echo.append("")
     # The TAIL, always. Two of the loudest failure reports were a dropped
     # `end` and a duplicated proof body, both at end-of-file, where an
@@ -349,21 +363,39 @@ def apply_edit(edits: list = None) -> str:
         new_content, meta.problem, meta.workspace, _own_stubs,
         kind=meta.kind)
     _n_diags = len(formatted)
-    formatted = _collapse_repeats(formatted)
+    # The heartbeat gate reads the RAW messages: the collapse rewrites a
+    # folded non-error's message, and a gate that quotes a rewritten one
+    # would quote itself.
+    _note_diagnostics(meta, formatted, time.perf_counter() - t0)
+    formatted = _collapse_repeats(formatted, by_category=not verbose)
+    # Errors first, then the file, then the cursor — in that order.
+    # An agent reported reading `goal_at_edit_end: no goals` as success
+    # while the edit still carried Lean errors (2026-09-07 10:16); the
+    # verdict field should not sit below the field it is mistaken for.
+    _n_err = sum(1 for f in formatted if f.get("severity") == "error")
+    _report = ({"error_count": _n_err if converged else None,
+                "diagnostics": formatted} if verbose
+               else _terse_report(formatted, converged))
     response = {
         "edit": (f"applied {len(spans)} edit(s) at lines "
                  + ", ".join(f"{a}-{b}" for a, b in _regions)
                  + f"; file is now {len(new_lines)} lines"),
+        **_report,
         # Always a number, never a conditional warning: see the note at
         # the splice above.
         "scope_balance": _bal_after,
-        "replaced_text": replaced_text,
         "post_edit_region": post_edit_region,
-        "goal_at_edit_start": goal_text,
-        "diagnostics": formatted,
+        # The goal at the region's END is the one an agent asked for
+        # (2026-08-06 feedback x6, both arms) — its START is dropped
+        # from the terse payload because it answers the question the
+        # agent did NOT ask. A single-line edit or a deletion has one
+        # goal for both ends, and it rides under the START name.
+        **({"goal_at_edit_start": goal_text}
+           if verbose or goal_end_text is None else {}),
         **({"goal_at_edit_end": goal_end_text,
             "goal_at_edit_end_note": _GOAL_AT_EDIT_END_NOTE}
            if goal_end_text is not None else {}),
+        **({"replaced_text": replaced_text} if verbose else {}),
         # None, not 0, when Lean never finished: a count is the one field
         # every reader trusts, so an unfinished elaboration must not own
         # one (the fake-clean class, ~150 worker reports 2026-08-29).
@@ -372,7 +404,6 @@ def apply_edit(edits: list = None) -> str:
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
-    _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if not converged:
         response["ok"] = False
         response["status"] = "elab_wall"
@@ -627,12 +658,20 @@ _GOAL_AT_EDIT_END_NOTE = (
 
 @mcp.tool(structured_output=False)
 @_offload_to_thread
-def errors_at(line: int | None = None) -> str:
+def errors_at(line: int | None = None, verbose: bool = False) -> str:
     """Get current diagnostics for the file.
+
+    TERSE by default: `diagnostics` carries the errors only, in source
+    order, the first one with its full goal state and the rest with the
+    hypothesis dump counted instead of printed; warnings are folded to
+    one line per linter category with a count. `verbose=true` returns
+    every diagnostic in full. Asking for a single `line` is always
+    precise — that answer is never trimmed.
 
     Args:
       line: Optional 1-indexed line. If set, return only diagnostics
             on that line. If None, return all.
+      verbose: return every diagnostic, untrimmed.
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -667,7 +706,8 @@ def errors_at(line: int | None = None) -> str:
         formatted = [f for f in formatted if f["line"] == line]
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "errors_at",
-                    "args": {"line": line}, "duration_s": dur,
+                    "args": {"line": line, "verbose": bool(verbose)},
+                    "duration_s": dur,
                     "slot_kind": _slot_kind, "converged": converged,
                     "returned_count": len(formatted)})
     # `elapsed_s` as a number, not two timestamps to subtract: a worker
@@ -676,8 +716,18 @@ def errors_at(line: int | None = None) -> str:
     # (g7554, 2026-08-12).
     _elapsed = time.perf_counter() - t0
     _note_diagnostics(meta, formatted, _elapsed)
-    response = {"diagnostics": formatted,
-                "count": len(formatted) if converged else None,
+    # A `line` query is the agent asking a precise question, and it
+    # already bounds the answer — it comes back whole. Everything else
+    # goes through the fold + trim (2026-09-07): one `errors_at` reached
+    # its worker as `truncated output (original token count: 18055)`,
+    # and what truncation drops is the tail, not the noise.
+    _n_all = len(formatted)
+    _n_err = sum(1 for f in formatted if f.get("severity") == "error")
+    _report = ({"error_count": _n_err if converged else None,
+                "diagnostics": formatted} if verbose or line is not None
+               else _terse_report(_collapse_repeats(formatted), converged))
+    response = {**_report,
+                "count": _n_all if converged else None,
                 "elapsed_s": round(_elapsed, 1),
                 "_server_recv_ts": _recv_ts,
                 "_server_send_ts": _ts_now()}
