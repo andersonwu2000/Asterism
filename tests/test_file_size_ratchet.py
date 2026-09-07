@@ -673,7 +673,7 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/leantext.py": 808,  # +8 2026-09-05: an import-covered stub that still says `sorry` is not proved  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/rpc.py": 950,  # 2026-08-29 wall (CPU-second meter) + native_decide gate; SPLIT before the next bump (gates/wall -> own module)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
-    "Tooling/lsp/gateway/gates.py": 500,  # 2026-08-30 ancestor-cycle refusal at the editing tools
+    "Tooling/lsp/gateway/gates.py": 540,  # +46 2026-09-07 the locked-signature mirror learns the `-- decline: disprove` road (six pipelines reverted a correct negation on its false warning); it belongs in the mirror it corrects, not in a tenth module  # 2026-08-30 ancestor-cycle refusal at the editing tools
     "Tooling/lsp/gateway/verify.py": 883,  # +3 2026-09-05: the inlined stub texts are collected once and shared with parity  # +30 2026-08-31: #5 conditional headline hoist
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
     # `Tooling/core/cli.py` (3,307 lines, no prior watermark here) split

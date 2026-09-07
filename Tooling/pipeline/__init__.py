@@ -640,7 +640,7 @@ DECLINE_UNPROVABLE = "unprovable"
 #: here. Backward routes it through `_disprove.run_disproof_gate`
 #: BEFORE the generic decline mapping — it is a submission with an
 #: intent marker, not an exit.
-DECLINE_DISPROVE = "disprove"
+DECLINE_DISPROVE = assemble.DECLINE_DISPROVE
 DECLINE_RETURN_TO_PARENT = "return_to_parent"
 DECLINE_SHELVE = "shelve"
 DECLINE_NEEDS_DECOMPOSITION = "needs_decomposition"
@@ -818,20 +818,12 @@ def _extract_leading_comments(text: str) -> str:
     return "".join(out)
 
 
-_DECLINE_DIRECTIVE_RE = re.compile(r"^\s*--\s*decline\s*:\s*(\S+)",
-                                   re.MULTILINE)
-
-
-def _extract_decline_reason(comment_block: str) -> str | None:
-    """If the leading comment block opens with a `-- decline: <reason>`
-    directive, return the reason. Otherwise None. The directive must
-    appear in the leading-comment region (caller already extracted via
-    `_extract_leading_comments`); placing it deeper in the file is
-    ignored on purpose so an agent describing prior declines in a
-    paragraph can't accidentally trigger the path.
-    """
-    m = _DECLINE_DIRECTIVE_RE.search(comment_block)
-    return m.group(1) if m else None
+# The directive reader is the state-layer SoT (`state.assemble`), not a
+# local copy: the gateway's locked-signature mirror has to recognize the
+# `disprove` marker commit recognizes — same object, no drift. Historical
+# names kept for the call sites and the tests.
+_DECLINE_DIRECTIVE_RE = assemble.DECLINE_DIRECTIVE_RE
+_extract_decline_reason = assemble.extract_decline_reason
 
 
 # def/abbrev included (2026-07-05, feedback audit): the theorem-only head

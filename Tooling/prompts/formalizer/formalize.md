@@ -8,7 +8,7 @@ Time budget: {timeout_min} minutes.
 
 ## Write the proof
 
-apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors, 0 sorry. Edit only the body and the annotation block above the theorem — signature changes are rejected as `patch_signature_mismatch`. The framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports.
+apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors, 0 sorry. Edit only the body and the annotation block above the theorem — signature changes are rejected as `patch_signature_mismatch` (the one exception is the `disprove` decline below). The framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports.
 
 Four MCP tools talk to a live Lean server already holding **your `patch.lean` sandbox**:
 
@@ -78,7 +78,7 @@ When the proof stands (0 errors, 0 sorry — warnings don't block the proof loop
 
 When one of the cases below applies, place the directive immediately above the theorem in `patch.lean`, keep `:= by sorry`, write no sub-goal files. Pick one:
 
-- `disprove` — you believe the statement is FALSE: rewrite the goal statement in `patch.lean` to `¬ (<the locked signature's statement>)` (or its push_neg form) and prove it — the one exception to "keep `:= by sorry`". If you cannot prove the negation, use `return_to_nl`.
+- `disprove` — you believe the statement is FALSE: rewrite the goal statement in `patch.lean` to `¬ (<the locked signature's statement>)` (or its push_neg form) and prove it — the one exception to "keep `:= by sorry`", and the one road where the signature lock does not apply (keep the `theorem s<id>` head; a `locked_signature` warning from an editing tool is wrong about this turn). If you cannot prove the negation, use `return_to_nl`.
 - `return_to_parent` — the goal statement you were handed is incomplete/wrong (parent's decomposition omitted a hypothesis, gave the wrong structure, …); provable only once the parent re-states it. Name the missing piece.
 - `shelve` — missing vocabulary / theorems / abstractions to proceed (describe the missing piece and how you'd use it), or the goal embeds a large concrete data structure that would replicate across every sub-goal (propose a concrete shape). In doubt vs `return_to_parent`, pick `shelve`.
 - `return_to_nl` — the argument you were given does not settle this goal: uncovered, mis-aimed, or false as stated. Name which, and what. Do not reroute around it.

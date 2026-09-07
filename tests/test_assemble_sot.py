@@ -19,6 +19,13 @@ def test_pipeline_names_are_assemble_objects() -> None:
     assert forward._DECL_HEAD_RE is assemble.DECL_HEAD_RE
     assert _cite_gate._PROBLEM_IMPORT_RE is assemble.PROBLEM_IMPORT_RE
     assert pipeline._SORRY_STUB_RE is assemble.SORRY_STUB_RE
+    # The decline directive crossed the boundary on 2026-09-07: the
+    # gateway's locked-signature mirror must read the marker with the
+    # object commit reads it with, or the disprove road goes unreachable
+    # again.
+    assert pipeline._extract_decline_reason is assemble.extract_decline_reason
+    assert pipeline._DECLINE_DIRECTIVE_RE is assemble.DECLINE_DIRECTIVE_RE
+    assert pipeline.DECLINE_DISPROVE is assemble.DECLINE_DISPROVE
 
 
 def test_decl_head_matches_inductive() -> None:

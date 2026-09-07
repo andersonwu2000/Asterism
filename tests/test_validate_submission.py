@@ -383,6 +383,87 @@ def test_locked_signature_submission(tmp_path):
     assert gateway._locked_signature_submission(good, att) is None
 
 
+#: A disprove submission as the workers actually spell it (2026-09-07
+#: transcripts): the marker on the leading block, the statement rewritten
+#: to the negation under the SAME head.
+_DISPROVE_PATCH = (
+    "-- decline: disprove\n"
+    "-- Counterexample: n = 0 breaks the claim.\n"
+    "theorem s42 : ¬ (∀ n : Nat, n ≠ n) := by simp\n"
+)
+
+
+def test_locked_signature_exempts_the_disprove_road(tmp_path):
+    """The `-- decline: disprove` road is the one turn whose job is to
+    rewrite the statement, and commit knows it: `backward.py`'s decline
+    branch routes the patch to the disproof gate and returns BEFORE the
+    `patch_signature_mismatch` check. The mirror said "commit rejects
+    ANY edit to it" anyway and six pipelines reverted a correct negation
+    on 2026-09-07 (c61c9604, f2d68d3a, 7136aaae, 8b71492d, d76e14a1,
+    6ae796e5)."""
+    from Tooling.lsp import gateway
+    att = tmp_path / "att"
+    att.mkdir()
+    (att / "_locked_signature.txt").write_text(
+        "theorem s42 (n : Nat) : n = n", encoding="utf-8")
+
+    r = gateway._locked_signature_submission(_DISPROVE_PATCH, att)
+    assert r["checked"] and r["ok"] is True
+    assert "does NOT apply" in r["note"]
+
+    # The SAME rewrite without the marker is still a lock violation.
+    r = gateway._locked_signature_submission(
+        _DISPROVE_PATCH.replace("-- decline: disprove\n", ""), att)
+    assert r["checked"] and r["ok"] is False
+    assert "LOCKED" in r["hint"]
+
+    # A different directive is not the disprove road either.
+    r = gateway._locked_signature_submission(
+        _DISPROVE_PATCH.replace("disprove", "return_to_nl"), att)
+    assert r["ok"] is False
+
+    # Marker below the declaration head (prose inside a proof) does not
+    # unlock anything — same leading-block rule commit applies.
+    r = gateway._locked_signature_submission(
+        "theorem s42 : ¬ (∀ n : Nat, n ≠ n) := by\n"
+        "  -- decline: disprove was considered\n"
+        "  simp\n", att)
+    assert r["ok"] is False
+
+    # Marker present but the head gone: the ONE thing commit still needs
+    # on this road (the disproof gate renames that declaration).
+    r = gateway._locked_signature_submission(
+        "-- decline: disprove\n-- s42 is false.\n"
+        "theorem other : True := trivial\n", att)
+    assert r["ok"] is False
+    assert "HEAD must survive" in r["hint"]
+
+
+def test_validate_file_does_not_predict_a_reject_for_a_disprove_rewrite(
+        monkeypatch, tmp_path):
+    """End of the road the six pipelines walked: the roll-up. A
+    disprove-marked rewrite must not appear in `commit_will_reject`,
+    which is the field the workers keyed on."""
+    import asyncio
+    import json
+
+    from Tooling.lsp import gateway as lsp_gateway
+    from tests.test_lsp_gateway import _DiagBackend, _setup_validate_session
+    (tmp_path / "Problems" / "p").mkdir(parents=True)
+    (tmp_path / "_locked_signature.txt").write_text(
+        "theorem s42 (n : Nat) : n = n", encoding="utf-8")
+    (tmp_path / "x.lean").write_text(_DISPROVE_PATCH, encoding="utf-8")
+    ctx = _setup_validate_session(monkeypatch, tmp_path,
+                                  _DiagBackend(diags=[]))
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.validate_file()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["submission"]["locked_signature"]["ok"] is True
+    assert "locked_signature" not in out.get("commit_will_reject", [])
+
+
 def test_stale_olean_submission(tmp_path):
     import os
     import time

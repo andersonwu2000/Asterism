@@ -162,6 +162,35 @@ def strip_annotation_placeholder(leading: str) -> str:
 THEOREM_LINE_RE = re.compile(r"(?m)^\s*theorem\s+\S+")
 
 
+# ── the `-- decline:` directive (commit's reader, shared) ────────────
+# The leading block's `-- decline: <reason>` line routes a Backward /
+# Formalizer submission out of the ordinary prove path. It lives HERE
+# rather than in the pipeline because one of its values crosses the
+# validate/commit boundary: on the `disprove` road commit never reaches
+# the locked-signature comparison (`backward.py`'s decline branch
+# returns first), so the gateway's signature mirror has to recognize
+# the same marker commit does or it warns "signature is LOCKED" at the
+# one turn whose whole job is to rewrite the statement (six pipelines
+# reverted a correct negation on that warning, 2026-09-07).
+DECLINE_DIRECTIVE_RE = re.compile(r"^\s*--\s*decline\s*:\s*(\S+)",
+                                  re.MULTILINE)
+
+#: The directive that is a SUBMISSION, not an exit: the agent rewrote
+#: the statement to its negation and proves that (`_disprove`).
+DECLINE_DISPROVE = "disprove"
+
+
+def extract_decline_reason(comment_block: str) -> "str | None":
+    """If the leading comment block carries a `-- decline: <reason>`
+    directive, return the reason. Otherwise None. The directive must
+    appear in the leading-comment region (caller already extracted it);
+    placing it deeper in the file is ignored on purpose so an agent
+    describing prior declines in a paragraph can't accidentally trigger
+    the path."""
+    m = DECLINE_DIRECTIVE_RE.search(comment_block)
+    return m.group(1) if m else None
+
+
 # ── framework import injection (formerly backward._ensure_imports_subgoal
 #    + its gateway mirror _needed_imports/_ensure_imports) ──
 

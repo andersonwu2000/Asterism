@@ -244,7 +244,12 @@ def teaching(locked_signature: "str | None", why: str) -> str:
         f"rewrite patch.lean so your declaration proves exactly that "
         f"(keep the `-- decline: disprove` marker; do the push_neg work "
         f"inside the proof body, or state the pushed form and the gate's "
-        f"push_neg arm will match it). If you cannot prove the negation "
+        f"push_neg arm will match it). The signature lock does not apply "
+        f"on this road — commit sends a disprove-marked patch here before "
+        f"it ever compares signatures, so a `locked_signature` warning "
+        f"from an editing tool is wrong about this turn; keep the "
+        f"declaration HEAD and rewrite what follows the `:`. If you "
+        f"cannot prove the negation "
         f"either, the statement may be true after all — submit "
         f"`-- decline: return_to_nl` and say what you learned."
     )

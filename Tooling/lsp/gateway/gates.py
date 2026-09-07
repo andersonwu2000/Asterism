@@ -184,7 +184,17 @@ def _locked_signature_submission(content: str,
     content's current signature against it via the SAME shared helpers.
     None when there is no seed file (non-Backward session) or `content`
     doesn't mention the locked name (probing a sub-goal stub, not the
-    patch)."""
+    patch).
+
+    ONE ROAD IS EXEMPT. A `-- decline: disprove` patch is the turn whose
+    job IS rewriting the statement, and commit knows it: `backward.py`'s
+    decline branch routes it to `_disprove.run_disproof_gate` and returns
+    before the `patch_signature_mismatch` check runs. This gate warned
+    unconditionally anyway and six pipelines on 2026-09-07 (c61c9604,
+    f2d68d3a, 7136aaae, 8b71492d, d76e14a1, 6ae796e5) believed the tool,
+    reverted a correct negation and downgraded to `return_to_nl`. There
+    it checks what commit checks: the declaration HEAD survives (the
+    disproof gate renames it for the absurd bridge)."""
     f = attempts_dir / "_locked_signature.txt"
     try:
         if not f.is_file():
@@ -196,8 +206,31 @@ def _locked_signature_submission(content: str,
     name = parts[1] if len(parts) >= 2 else ""
     if not name or not re.search(rf"\b{re.escape(name)}\b", content):
         return None
-    agent_sig = assemble.normalize_signature(
-        assemble.signature_prefix(content, name))
+    if (assemble.extract_decline_reason(_gw_leading_comments(content))
+            == assemble.DECLINE_DISPROVE):
+        head = re.compile(
+            rf"^\s*(?:@\[[^\]]*\]\s*)?(?:theorem|lemma)\s+"
+            rf"{re.escape(name)}\b", re.MULTILINE)
+        if head.search(content):
+            return {"checked": True, "ok": True,
+                    "note": (f"`-- decline: disprove` road: the signature "
+                             f"lock does NOT apply — commit sends this patch "
+                             f"to the disproof gate before any signature "
+                             f"comparison, so rewriting the statement under "
+                             f"the `{name}` head is the point. Keep the head: "
+                             f"the gate certifies that declaration against "
+                             f"the goal's negation in the kernel")}
+        return {
+            "checked": True, "ok": False,
+            "hint": (f"`-- decline: disprove` road: the signature lock does "
+                     f"not apply (rewrite the statement freely), but the "
+                     f"declaration HEAD must survive — the disproof gate "
+                     f"certifies `theorem {name} : <the negation>` (the "
+                     f"goal's own slug head is accepted too)"),
+            "locked": locked,
+            "current": _agent_signature(content, name),
+        }
+    agent_sig = _agent_signature(content, name)
     if agent_sig == locked:
         return {"checked": True, "ok": True}
     return {
@@ -205,10 +238,20 @@ def _locked_signature_submission(content: str,
         "hint": (f"the `{name}` signature is LOCKED — commit rejects ANY "
                  "edit to it (even an equivalent rewrite that elaborates "
                  "fine); restore it exactly and make changes after `:= by` "
-                 "only"),
+                 "only. The one exception is a `-- decline: disprove` "
+                 "submission, which commit routes to the disproof gate "
+                 "before any signature comparison"),
         "locked": locked,
-        "current": agent_sig or "(declaration head not parseable)",
+        "current": agent_sig,
     }
+
+
+def _agent_signature(content: str, name: str) -> str:
+    """`content`'s current `<kind> <name> … : <type>`, normalized the way
+    the locked seed was — or the fallback phrase when there is no head."""
+    return (assemble.normalize_signature(
+        assemble.signature_prefix(content, name))
+        or "(declaration head not parseable)")
 
 
 def _stale_olean_submission(content: str, problem: str,
@@ -361,6 +404,9 @@ def _declhead_submission(content: str) -> "dict":
 #: Decline placeholder marker — kept in lockstep with
 #: `pipeline.forward._DECLINE_RE` (the gateway subprocess stays free of
 #: pipeline imports; a source pin in tests holds the two together).
+#: This is forward's WHOLE-FILE placeholder scan. The leading-block
+#: reader — the one the locked-signature road consults — is
+#: `assemble.extract_decline_reason`, the very object commit calls.
 _GW_DECLINE_RE = re.compile(r"^\s*--\s*decline\s*:\s*([a-z_]+)\b",
                             re.MULTILINE | re.IGNORECASE)
 
