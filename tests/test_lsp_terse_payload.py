@@ -257,25 +257,37 @@ def test_errors_at_is_terse_but_a_line_query_is_exact(
 def test_collapse_folds_warnings_by_category_and_errors_verbatim():
     """Errors fold only on the identical message: two errors sharing a
     first line are two problems, and merging them would hide one."""
-    diags = [
-        {"line": 3, "col": 0, "severity": "warning",
-         "message": "This simp argument is unused:\n  hA\n\nNote: This "
-                    "linter can be disabled with `set_option "
-                    "linter.unusedSimpArgs false`"},
-        {"line": 9, "col": 0, "severity": "warning",
-         "message": "This simp argument is unused:\n  hB\n\nNote: This "
-                    "linter can be disabled with `set_option "
-                    "linter.unusedSimpArgs false`"},
-        {"line": 5, "col": 0, "severity": "error", "message": "unknown id x"},
-        {"line": 6, "col": 0, "severity": "error", "message": "unknown id y"},
-    ]
-    out = terse._collapse_repeats(diags)
+    def diags():
+        # A FACTORY, not a list: `_collapse_repeats` folds by mutating
+        # the survivor in place, so a second call on the same objects
+        # would score the first call's result.
+        return [
+            {"line": 3, "col": 0, "severity": "warning",
+             "message": "This simp argument is unused:\n  hA\n\nNote: This "
+                        "linter can be disabled with `set_option "
+                        "linter.unusedSimpArgs false`"},
+            {"line": 9, "col": 0, "severity": "warning",
+             "message": "This simp argument is unused:\n  hB\n\nNote: This "
+                        "linter can be disabled with `set_option "
+                        "linter.unusedSimpArgs false`"},
+            {"line": 5, "col": 0, "severity": "error",
+             "message": "unknown id x"},
+            {"line": 6, "col": 0, "severity": "error",
+             "message": "unknown id y"},
+        ]
+    out = terse._collapse_repeats(diags())
     assert len(out) == 3
     assert out[0]["category"] == "linter.unusedSimpArgs"
     assert out[0]["repeats"] == 2 and out[0]["also_lines"] == [9]
     assert "×2" in out[0]["message"]
     assert out[1]["message"] == "unknown id x" and "repeats" not in out[1]
     assert out[2]["message"] == "unknown id y"
+    # `by_category=False` is what verbose asks for: today's fold exactly,
+    # identical messages only and no rewrite of the survivor.
+    plain = terse._collapse_repeats(diags(), by_category=False)
+    assert len(plain) == 4
+    assert all("category" not in p for p in plain)
+    assert plain[0]["message"].startswith("This simp argument is unused")
 
 
 def test_a_warning_with_no_linter_option_keys_on_its_first_line():

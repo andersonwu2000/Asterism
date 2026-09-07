@@ -101,8 +101,9 @@ def _collapse_repeats(formatted: "list[dict]",
     the entry keeps `category` so a later reader does not have to
     re-derive it from the rewrite.
 
-    `by_category=False` is the pre-09-07 fold, and it is what `verbose`
-    asks for: the escape hatch has to return the payload the trim was
+    `by_category=False` is the pre-09-07 fold EXACTLY — identical
+    messages only, and no rewrite — because it is what `verbose` asks
+    for: the escape hatch has to return the payload the trim was
     applied to, or it is not an escape hatch.
     """
     out: "list[dict]" = []
@@ -120,7 +121,8 @@ def _collapse_repeats(formatted: "list[dict]",
         first["repeats"] = int(first.get("repeats", 1)) + 1
         first.setdefault("also_lines", []).append(f.get("line"))
     for f in out:
-        if str(f.get("severity")) != "error" and f.get("repeats"):
+        if by_category and str(f.get("severity")) != "error" \
+                and f.get("repeats"):
             f["category"] = _diag_category(f)
             f["message"] = (f"{f['category']} \u00d7{f['repeats']} (folded "
                             f"\u2014 {_VERBOSE_HINT} prints each)")
