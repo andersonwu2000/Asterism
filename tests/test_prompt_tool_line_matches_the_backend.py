@@ -127,3 +127,39 @@ def test_the_flags_are_added_by_the_spawn_path_not_by_each_caller(
     assert seen["mcp_only_reads"] is True
     assert seen["native_file_tools"] is False
     assert seen["has_history"] is True, "the caller's own flags survive"
+
+
+def test_every_adapter_hands_the_flags_to_the_renderer() -> None:
+    """And the spawn path adding them is only half of it: the ADAPTER
+    has to pass them on. `render_prompt_template` is fail-open, so an
+    adapter that drops `flags` renders every conditional block — both
+    halves of the theory reviewer's criterion 3, every not-yet-
+    applicable strategist paragraph — and the same prompt then means
+    different things depending on which backend the seat sits on.
+
+    Read off the source rather than by spawning four real providers:
+    the claim is about the call site, and three of the four adapters
+    need a CLI on the machine to reach it."""
+    import ast
+    import inspect
+    from Tooling.llm import antigravity_cli, claude_cli, codex_cli
+    from Tooling.llm import openai_api
+
+    # codex composes its stdin payload out of claude_cli's two helpers,
+    # so its call site IS `claude_cli._load_prompt` — named here so a
+    # future split of that seam fails this test rather than the fleet.
+    assert "_load_prompt" in inspect.getsource(
+        codex_cli.CodexCliProvider.spawn)
+
+    for mod in (claude_cli, antigravity_cli, openai_api):
+        tree = ast.parse(inspect.getsource(mod))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "render_prompt_template"]
+        assert calls, f"{mod.__name__} renders no prompt template"
+        for call in calls:
+            names = {kw.arg for kw in call.keywords}
+            assert "flags" in names, (
+                f"{mod.__name__}:{call.lineno} calls "
+                f"render_prompt_template without `flags` — the renderer "
+                f"is fail-open, so every conditional block would render")

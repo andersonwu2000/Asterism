@@ -176,9 +176,17 @@ class OpenAIProvider:
             print(f"[llm:openai] prompt read failed: {e}", flush=True)
             return 99
         from Tooling.agent import render_prompt_template
+        # `flags` is not optional here even though the renderer tolerates
+        # its absence: it is FAIL-OPEN, so a provider that drops them
+        # renders EVERY conditional block — both halves of the theory
+        # reviewer's criterion 3, the strategist's not-yet-applicable
+        # paragraphs — and the agent reads two instructions where the
+        # framework wrote one. The other three adapters pass them; this
+        # one did not, which made the same prompt mean different things
+        # depending on which seat happened to be on which backend.
         prompt_template = render_prompt_template(
             prompt_template, is_postmortem=req.is_postmortem,
-            attempts_dir=req.attempts_dir)
+            flags=req.prompt_flags, attempts_dir=req.attempts_dir)
 
         context_path = req.attempts_dir / "Context.md"
         try:
