@@ -10,17 +10,31 @@ import {
   refKey,
 } from '../lib/docShell'
 import type { DocRef, DocView, PaperRow } from '../lib/docShell'
+import {
+  activateTab,
+  activeRef,
+  closeTab,
+  closeTabsWhere,
+  mapTabs,
+  movedRef,
+  openTab,
+  readTabs,
+  writeTabs,
+} from '../lib/docTabs'
+import type { TabState } from '../lib/docTabs'
 import type { DocEntry } from '../lib/docShelf'
 import { usePublishFocus } from '../lib/focus'
+import { projectPath } from '../lib/projectRoute'
 import { replace } from '../lib/router'
 import DocRail, { ClosedColumn } from '../components/DocRail'
 import type { UploadItem } from '../components/DocRail'
 import DocShell from '../components/DocShell'
 import type { Conflict } from '../components/DocShell'
+import DocTabs from '../components/DocTabs'
 import type { PaperShelfItem, ProblemDetail } from '../lib/types'
 
 /*
- * Documents (human_interface_design.md §1.2 + §3.6; the 2026-09-04
+ * Workspace (human_interface_design.md §1.2 + §3.6; the 2026-09-04
  * rewrite in docs_tab_spec.md).
  *
  * The tab's centre of gravity is the PERSON's own documents and the
@@ -78,14 +92,25 @@ export default function Docs({
    * leaving the section (this section hides the task column — its own
    * column is the files) */
   tasks: string[]
-  /** everything after `docs/` in the address */
+  /** everything after `workspace/` in the address */
   path: string[]
 }) {
-  /* The address SEEDS the selection and the screen owns it after that
-   * (the Sky's idiom for the selected star): clicking through files
-   * must not fill the reader's history with one entry per file, so the
-   * address is kept up to date with `replace`, never `navigate`. */
-  const [open, setOpen] = useState<DocRef | null>(() => parseDocAddress(path))
+  /* What is OPEN is a strip of tabs (`lib/docTabs`), and the reading is
+   * the active one. The address SEEDS it and the screen owns it after
+   * that (the Sky's idiom for the selected star): clicking through
+   * files must not fill the reader's history with one entry per file,
+   * so the address is kept up to date with `replace`, never `navigate`.
+   *
+   * The strip a reader left behind is restored first, and the address —
+   * a mailed link, a row on the Timeline — opens on top of it. */
+  const [tabs, setTabs] = useState<TabState>(() => {
+    const held = readTabs(project)
+    const seed = parseDocAddress(path)
+    return seed === null ? held : openTab(held, seed)
+  })
+  const open = activeRef(tabs)
+  /** open it, or bring its tab forward — the rail's one way in */
+  const setOpen = useCallback((ref: DocRef) => setTabs((s) => openTab(s, ref)), [])
   const [task, setTask] = useState<string | null>(() => {
     const seed = parseDocAddress(path)
     return seed?.kind === 'task' && seed.task !== null ? seed.task : problem
@@ -189,18 +214,51 @@ export default function Docs({
    * eleven of them. The address now carries the task; a link minted
    * before it is resolved here, once, against the shelf's own default. */
   useEffect(() => {
-    if (open?.kind === 'task' && open.task === null && task !== null)
-      setOpen({ kind: 'task', task, path: open.path })
-  }, [open, task])
+    if (task === null) return
+    setTabs((s) =>
+      s.tabs.some((r) => r.kind === 'task' && r.task === null)
+        ? mapTabs(s, (r) =>
+            r.kind === 'task' && r.task === null
+              ? { kind: 'task', task, path: r.path }
+              : r,
+          )
+        : s,
+    )
+  }, [task])
+
+  /* The strip survives the reload, per Project (`lib/docTabs`). */
+  useEffect(() => writeTabs(project, tabs), [project, tabs])
 
   /* The address keeps up with what is on screen. `replace` because this
    * is not a MOVE the reader made — Back has to leave the section, not
-   * rewind a walk through the rail. */
+   * rewind a walk through the rail. Closing the last tab takes the
+   * document out of the address too: an address naming a file nothing
+   * has open would reopen it on the next reload. */
   useEffect(() => {
-    if (open === null) return
+    if (open === null) {
+      replace(projectPath(project, 'workspace'))
+      return
+    }
     if (open.kind === 'task' && open.task === null) return
     replace(docAddress(project, open))
   }, [project, open])
+
+  /* …and the address can change from OUTSIDE while this screen stands:
+   * a Timeline row, a route's file link, the browser's own history. A
+   * document the address names is opened, or brought forward when it is
+   * already a tab — which is the whole of "navigating to a document
+   * opens its tab". No loop with the effect above: that one writes the
+   * address FROM the active tab, so what arrives back here names the
+   * tab it came from and `openTab` returns the same state. */
+  const addressPath = path.join('/')
+  useEffect(() => {
+    const named = parseDocAddress(path)
+    if (named === null) return
+    if (named.kind === 'task' && named.task === null) return
+    setTabs((s) => openTab(s, named))
+    // `addressPath` IS `path`; the array is rebuilt on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addressPath])
 
   /* The open document's bytes. A pdf is never read INTO this screen —
    * its viewer fetches the raw address itself, and the base64 payload
@@ -432,9 +490,9 @@ export default function Docs({
           }}
           onTask={(t) => {
             setTask(t)
-            // the open file belonged to the task that is no longer
-            // listed; keeping it open would say the rail lists it
-            setOpen((o) => (o?.kind === 'task' ? null : o))
+            // the open files belonged to the task that is no longer
+            // listed; keeping their tabs would say the rail lists them
+            setTabs((s) => closeTabsWhere(s, (r) => r.kind === 'task'))
           }}
           onShelve={(files) => void shelvePapers(files)}
           onHide={() => setColumnOpen(false)}
@@ -443,53 +501,66 @@ export default function Docs({
             setOpen(ref)
           }}
           onRenamed={(from, to) => {
+            // the draft and the tab follow the file together, by the
+            // same prefix rule (`docTabs::movedRef`)
             renameDraft(project, from, to)
-            setOpen((o) =>
-              o?.kind === 'doc' && (o.path === from || o.path.startsWith(`${from}/`))
-                ? { kind: 'doc', path: to + o.path.slice(from.length) }
-                : o,
-            )
+            setTabs((s) => mapTabs(s, (r) => movedRef(r, from, to)))
           }}
-          onDeleted={(path, next) => {
-            dropDraft(project, path)
-            setOpen(next)
+          onDeleted={(deleted, next) => {
+            dropDraft(project, deleted)
+            setTabs((s) => {
+              const closed = closeTab(s, refKey({ kind: 'doc', path: deleted }))
+              return next === null ? closed : openTab(closed, next)
+            })
           }}
         />
       ) : (
         <ClosedColumn onOpen={() => setColumnOpen(true)} />
       )}
-      <DocShell
-        project={project}
-        open={open}
-        isDir={openIsDir}
-        theory={theory}
-        doc={
-          open === null || openIsDir
-            ? null
-            : {
-                text,
-                base64: doc?.content_base64,
-                error: loadError,
-              }
-        }
-        view={view}
-        onView={setView}
-        dirty={dirty}
-        saving={saving}
-        note={note}
-        conflict={conflict}
-        savedAt={savedAt}
-        autoFocus={autoFocus}
-        onChange={onChange}
-        onSave={() => void save(true)}
-        onTakeDisk={() => {
-          if (open?.kind === 'doc') dropDraft(project, open.path)
-          setConflict(null)
-          setNote(null)
-          setReload((n) => n + 1)
-        }}
-        onKeepMine={() => void save(false)}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* what is open, above what is being read (owner, 2026-09-08).
+            The strip draws nothing at all when nothing is open — the
+            shell below says so in words. */}
+        <DocTabs
+          tabs={tabs.tabs}
+          active={tabs.active}
+          dirty={dirtyPathSet}
+          onActivate={(k) => setTabs((s) => activateTab(s, k))}
+          onClose={(k) => setTabs((s) => closeTab(s, k))}
+        />
+        <DocShell
+          project={project}
+          open={open}
+          isDir={openIsDir}
+          theory={theory}
+          doc={
+            open === null || openIsDir
+              ? null
+              : {
+                  text,
+                  base64: doc?.content_base64,
+                  error: loadError,
+                }
+          }
+          view={view}
+          onView={setView}
+          dirty={dirty}
+          saving={saving}
+          note={note}
+          conflict={conflict}
+          savedAt={savedAt}
+          autoFocus={autoFocus}
+          onChange={onChange}
+          onSave={() => void save(true)}
+          onTakeDisk={() => {
+            if (open?.kind === 'doc') dropDraft(project, open.path)
+            setConflict(null)
+            setNote(null)
+            setReload((n) => n + 1)
+          }}
+          onKeepMine={() => void save(false)}
+        />
+      </div>
     </div>
   )
 }
