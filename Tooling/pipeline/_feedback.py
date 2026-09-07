@@ -1,32 +1,43 @@
-"""Agent framework-feedback questionnaire — developer-only writeback.
+"""Agent framework-feedback sink — developer-only writeback.
 
 A dev-mode channel for the framework developer to hear, from the agents
 that worked inside the framework, what to improve. Two entry kinds land
 in ONE file (`.asterism/agent_feedback.md`, gitignored):
 
-  1. Survivor self-report — an agent that ran to a resumable terminal
-     writes ONE sentence (friction / suggestion / critique) into a scratch
-     file in its own sandbox; the framework reads it post-spawn and appends
-     a metadata-prefixed line. Piggybacks the reflection spawn (same
-     `--resume` session) so it costs no extra spawn. See `_reflection.py`.
+  1. Agent-filed note — the `feedback(note, evidence)` MCP tool
+     (`knowledge/mcp_tools.py`), called BY THE AGENT the moment something
+     misleads it, mid-run. `record_note` below is the writer.
 
   2. Death-cause auto-write — an agent that died without a resumable
      session (the infra reasons `_retry.py` skips reflection for:
-     spawn_fast_fail / quota_exhausted / missing_dep) can't self-report,
-     so the framework writes its death cause directly. Closes the
-     selection bias: the worst experiences would otherwise be invisible.
+     spawn_fast_fail / quota_exhausted / missing_dep) can't file
+     anything, so the framework writes its death cause directly. Closes
+     the selection bias: the worst experiences would otherwise be
+     invisible, and a spawn that died mid-tool-call filed nothing.
 
-The agent only ever writes ONE sentence to its own sandbox; the framework
-owns the metadata prefix `[ts | kind | model | outcome | problem/slug]` and
-the (globally-locked) append to the shared file. So concurrent spawns
-across different problems never corrupt the file (each writes its own
-sandbox scratch; the framework serializes the appends).
+WHY MID-RUN AND NOT AT THE TAIL (owner ruling 2026-09-07). The channel
+used to be an end-of-run questionnaire: every finished spawn was resumed
+for one extra leg (`attempt_feedback`) and asked to write one sentence
+into its sandbox. That leg was retired. It cost a spawn per pipeline; it
+reached only agents that survived to a resumable terminal; and it asked
+at the one moment the friction is furthest away — an agent looking back
+at a finished task reconstructs its complaint, where a tool called at the
+moment a gate refuses on a false premise carries the refusal verbatim.
+
+The framework still owns the metadata prefix
+`[ts | kind | model | outcome | problem/slug]` and the (globally-locked)
+append, so concurrent spawns across different problems never corrupt the
+file: the agent supplies one sentence, never a line of the record.
 
 Off by default. Enable with `feedback.enabled: true` in Asterism.yaml (or
-`ASTERISM_FEEDBACK_ENABLED=true`). The output file lives under the
-gitignored `.asterism/` runtime-state tree, so a shared framework checkout
-neither has it nor triggers it, and `envelope.PRIVATE_READ_SUBTREES`
-already denies every spawn read access to it.
+`ASTERISM_FEEDBACK_ENABLED=true`). The same gate decides whether the seat
+prompts ADVERTISE the tool (`agent/runtime` renders the `feedback_tool`
+conditional block from it) — outside developer mode the tool exists but
+no prompt spends an agent's attention on it. The output file lives under
+the gitignored `.asterism/` runtime-state tree, so a shared framework
+checkout neither has it nor triggers it, and
+`envelope.PRIVATE_READ_SUBTREES` already denies every spawn read access
+to it.
 """
 from __future__ import annotations
 
@@ -40,32 +51,17 @@ from pathlib import Path
 #: sink is runtime state, so it lives with the rest of it under
 #: `.asterism/` — gitignored, and already a spawn read-deny root.
 _FEEDBACK_REL = ".asterism/agent_feedback.md"
-_SCRATCH_FILENAME = "_agent_feedback.md"
 
 #: What starts a record. The ring trim below counts in these units, and
 #: so does anything else that asks how much this file holds — a second
 #: spelling of the marker would drift the first time the prefix changes.
 RECORD_MARK = "- ["
 
-# Standalone framework-feedback questionnaire. Rendered by `attempt_feedback`
-# as its OWN `--resume` turn at every pipeline's tail (no longer piggybacked on
-# reflection — feedback is decoupled so it covers ALL pipelines uniformly, not
-# just the backward/builder reflection). `{feedback_path}` is substituted with
-# the survivor scratch path. Framing (per the framework developer): NOT a
-# satisfaction survey — ask for the single most useful friction / suggestion /
-# critique, grounded; `(none)` only as a genuine last resort.
-# Task #10(c): the questionnaire text lives in
-# Tooling/prompts/feedback_survivor.md (placeholder __FEEDBACK_PATH__);
-# this constant keeps the historical `{feedback_path}` .format contract
-# for the render site below.
-def _survivor_section() -> str:
-    from . import PROMPT_DIR
-    return ((PROMPT_DIR / "_shared" / "feedback_survivor.md")
-            .read_text(encoding="utf-8").rstrip("\n")
-            .replace("__FEEDBACK_PATH__", "{feedback_path}"))
-
-
-SURVIVOR_PROMPT_SECTION = _survivor_section()
+#: What the `outcome` column says for a note filed by a running agent.
+#: The column has always answered "how did this spawn end", and a mid-run
+#: record has no answer to that yet — writing `success` there would date
+#: a complaint to an outcome nobody has seen.
+IN_FLIGHT = "in-flight"
 
 #: Ring cap (owner call 2026-08-29): feedback is short-shelf-life signal —
 #: entries go stale against the moving code (triage re-verifies every claim
@@ -77,7 +73,7 @@ MAX_ENTRIES = 1000
 
 _HEADER = (
     "# Agent framework feedback (dev-only)\n\n"
-    "_Survivor self-reports + framework-written death causes. One line each:_\n"
+    "_Agent-filed notes + framework-written death causes. One line each:_\n"
     "_`- [ts | kind | model | outcome | problem/slug] <sentence>`_\n"
     "_(+ optional `  evidence: ...` continuation). Newest at the bottom;_\n"
     f"_a ring — only the newest {MAX_ENTRIES} records are kept._\n\n"
@@ -145,12 +141,6 @@ def feedback_enabled(workspace: Path | None) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
 
-def scratch_path(attempts_dir: Path) -> Path:
-    """Where the survivor agent writes its one-sentence answer — inside its
-    OWN spawn sandbox, so cross-problem concurrent spawns never contend."""
-    return attempts_dir / _SCRATCH_FILENAME
-
-
 def _resolve_model(kind: str, workspace: Path | None) -> str:
     """The configured model string for `kind` (for the metadata prefix).
     Best-effort: returns '?' if unresolvable."""
@@ -162,10 +152,15 @@ def _resolve_model(kind: str, workspace: Path | None) -> str:
         return "?"
 
 
-def _append(workspace: Path, line: str) -> None:
+def _append(workspace: Path, line: str) -> bool:
     """Globally-locked append of one record to the shared feedback file,
     creating it (with header) on first write. Best-effort: any error is
-    swallowed — feedback must never block or fail the dispatcher."""
+    swallowed — feedback must never block or fail the dispatcher.
+
+    Returns whether the record landed. The framework-written callers
+    ignore it; the agent-facing tool does not — an acknowledgement that
+    says "filed" for a write that failed teaches the agent the channel
+    works when it does not."""
     path = feedback_path(workspace)
     try:
         with _APPEND_LOCK:
@@ -176,7 +171,8 @@ def _append(workspace: Path, line: str) -> None:
                 f.write(line if line.endswith("\n") else line + "\n")
             _trim_locked(path)
     except OSError:
-        pass
+        return False
+    return True
 
 
 def _now_minute() -> str:
@@ -189,128 +185,68 @@ def _prefix(*, kind: str, model: str, outcome: str, problem: str,
             f"{problem}/{slug}] ")
 
 
-def record_survivor(workspace: Path | None, *, attempts_dir: Path,
-                    kind: str, slug: str, problem: str, outcome: str,
-                    seat: "str | None" = None) -> None:
-    """Read the survivor agent's scratch answer and, if it said something,
-    append a metadata-prefixed line to the shared file. No-op when feedback
-    is disabled, the scratch file is missing/empty, or the answer is the
-    explicit `(none)`. Best-effort throughout."""
+def _one_line(text: str, limit: int) -> str:
+    """Flatten agent-authored text to one bounded line.
+
+    A record is ONE line and `count_records` counts `RECORD_MARK` lines,
+    so a note carrying a newline would split into two records, the
+    second of which is not one. A tool-call argument is text of any
+    shape, so the flattening happens here, at the writer, rather than
+    being asked of every caller."""
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[:limit].rstrip() + " …"
+
+
+#: How much of one record the agent may write. Not politeness: the ring
+#: keeps the newest `MAX_ENTRIES` RECORDS, so one spawn pasting a whole
+#: tool dump evicts other spawns' sentences by volume. A sentence and a
+#: line of evidence fit inside these; a transcript does not.
+MAX_NOTE_CHARS = 400
+MAX_EVIDENCE_CHARS = 600
+
+
+def record_note(workspace: Path | None, *, kind: str, slug: str,
+                problem: str, note: str, evidence: str = "",
+                outcome: str = IN_FLIGHT,
+                seat: "str | None" = None) -> bool:
+    """Append ONE agent-filed record. Returns whether it landed.
+
+    The writer behind the `feedback(note, evidence)` MCP tool. The agent
+    supplies `note` (and optionally `evidence`); every other column is
+    the framework's, resolved from the spawn's own identity by the
+    caller. Returns False — never raises — when feedback is disabled,
+    the note is empty, or the append failed, so the tool's
+    acknowledgement can say which.
+
+    The MODEL is a property of the seat, not of the label: there is no
+    `forward.model` or `cleanup:audit.model` key, so resolving from the
+    label wrote `?` into every such record (2026-08-13). Callers that
+    only ever label (`record_death`, the record-shape tests) pass no
+    seat and keep the old reading."""
     if not feedback_enabled(workspace) or workspace is None:
-        return
-    try:
-        sp = scratch_path(attempts_dir)
-        if not sp.exists():
-            return
-        body = sp.read_text(encoding="utf-8").strip()
-    except OSError:
-        return
-    if not body or body.strip().lower() in ("(none)", "none"):
-        return
-    lines = [ln.rstrip() for ln in body.splitlines() if ln.strip()]
-    if not lines:
-        return
-    # The MODEL is a property of the seat, not of the label: there is no
-    # `forward.model` or `cleanup:audit.model` key, so resolving from the
-    # label wrote `?` into every such record (2026-08-13). Callers that
-    # only ever label (record_death, the record-shape tests) pass no seat
-    # and keep the old reading.
-    model = _resolve_model(seat or kind, workspace)
-    first = lines[0]
-    rec = _prefix(kind=kind, model=model, outcome=outcome,
-                  problem=problem, slug=slug) + first
-    # Carry a single evidence/continuation line if present.
-    if len(lines) > 1:
-        rec += "\n  " + lines[1].lstrip("- ").strip()
-    _append(workspace, rec)
+        return False
+    first = _one_line(note, MAX_NOTE_CHARS)
+    if not first:
+        return False
+    rec = _prefix(kind=kind, model=_resolve_model(seat or kind, workspace),
+                  outcome=outcome, problem=problem, slug=slug) + first
+    ev = _one_line(evidence, MAX_EVIDENCE_CHARS)
+    if ev:
+        # Same continuation shape the file has always carried, so
+        # `count_records` still counts this as ONE record.
+        rec += "\n  evidence: " + ev
+    return _append(workspace, rec)
 
 
 def record_death(workspace: Path | None, *, kind: str, slug: str,
                  problem: str, reason: str) -> None:
     """Framework-written death cause for an agent that died without a
-    resumable session (so it can't self-report). No-op when disabled.
-    The `(dead)` outcome marker distinguishes these from self-reports."""
+    resumable session (so it could file nothing itself). No-op when
+    disabled. The `(dead)` outcome marker distinguishes these from
+    agent-filed notes."""
     if not feedback_enabled(workspace) or workspace is None:
         return
     rec = _prefix(kind=kind, model=_resolve_model(kind, workspace),
                   outcome="(dead)", problem=problem, slug=slug)
     _append(workspace, rec + f"DIED: {reason} (no resumable session — "
             f"framework-written, agent could not self-report)")
-
-
-_FEEDBACK_PROMPT_FILENAME = "_feedback_prompt.md"
-_FEEDBACK_TIMEOUT_SEC = 90
-
-
-def attempt_feedback(*, kind: str, seat: str, sid: str,
-                     slug: str, outcome: str,
-                     problem_dir: Path, attempts_dir: Path,
-                     workspace: Path | None,
-                     problem_label: str | None = None) -> None:
-    """Dedicated framework-feedback STEP, run at the tail of every pipeline.
-
-    `--resume <sid>` the just-finished agent session (so the agent answers with
-    full context of what it just did — a clean 'looking back' read) and ask the
-    standalone questionnaire; then record its one-sentence answer. Uniform
-    across pipelines (backward/builder/forward/strategist/librarian-cleanup) so
-    framework feedback is no longer limited to the backward/builder reflection.
-
-    No-op when feedback is disabled (so it is FREE in production — only the
-    developer's opt-in `feedback.enabled` runs) or `sid` is empty. Best-effort
-    throughout: any failure is swallowed — the pipeline outcome already
-    committed, a lost feedback turn costs at most one un-recorded sentence."""
-    from .. import agent
-    if not feedback_enabled(workspace) or not sid:
-        return
-    try:
-        fb_scratch = scratch_path(attempts_dir)
-        prompt = SURVIVOR_PROMPT_SECTION.replace("{feedback_path}", str(fb_scratch))
-        ppath = attempts_dir / _FEEDBACK_PROMPT_FILENAME
-        ppath.write_text(prompt, encoding="utf-8")
-        # is_postmortem=True → provider uses `--resume <sid>` and loads the
-        # prompt verbatim (same path reflection uses for its resume turn).
-        #
-        # THE SAME TOOL CONFIG THE WORK TURNS HAD, and it is not about
-        # tools: a resumed turn re-sends the whole conversation, and the
-        # tool definitions sit at the FRONT of that request. Drop them
-        # and the cached prefix cannot match, so a one-sentence question
-        # is billed for the entire session at full price. Measured
-        # 2026-08-15 on Test.provider_probe: every feedback turn came
-        # back `cached_input_tokens = 0` — 184,184 tokens, 41% of the
-        # run's fresh input — while every other resume in the same
-        # sessions cached normally. A two-arm probe isolated it: same
-        # cold prompt, same session, resume WITH the config cached 11,008
-        # of 12,056; resume WITHOUT it cached 0 of 11,291.
-        #
-        # Whichever file the work spawn wrote is the one that matches:
-        # `_mcp_config.json` (gateway + tools) for a formalizer,
-        # `_mcp_tools.json` (tools alone) for the Strategist and the
-        # judge. A gateway token already released makes the http server
-        # unstartable and, with codex's `required = true`, fails this
-        # spawn — which degrades to exactly today's outcome for a lost
-        # session: no record, and the rc line below says so.
-        from . import resume_mcp_config
-        mcp = resume_mcp_config(attempts_dir)
-        rc = agent.spawn_llm(
-            kind=seat, prompt_path=ppath, problem_dir=problem_dir,
-            attempts_dir=attempts_dir, session_id=sid,
-            mcp_config_path=mcp,
-            is_postmortem=True, timeout_sec=_FEEDBACK_TIMEOUT_SEC)
-        wrote = scratch_path(attempts_dir).exists()
-        # Diagnostic: the feedback spawn resumes the agent's session via
-        # `--resume <sid>`; if that sid is gone / the spawn errors, no scratch
-        # is written and the record is silently lost (cleanup:audit / classify
-        # produced ZERO entries this way — feedback was wired but never landed).
-        # Surface the rc + whether a scratch landed so a dry channel is visible.
-        if rc != 0 or not wrote:
-            print(f"[feedback] {kind}/{slug}: spawn rc={rc}, "
-                  f"scratch_written={wrote} (no record landed)", flush=True)
-        # `problem_label` override: a caller whose problem_dir is not the
-        # problem (the Adversary's isolated projection dir) still labels
-        # the record honestly.
-        record_survivor(workspace, attempts_dir=attempts_dir, kind=kind,
-                        slug=slug, problem=problem_label or problem_dir.name,
-                        outcome=outcome, seat=seat)
-    except Exception as exc:  # noqa: BLE001 — feedback must never break pipeline
-        print(f"[feedback] {kind}/{slug}: raised {type(exc).__name__}: {exc}",
-              flush=True)

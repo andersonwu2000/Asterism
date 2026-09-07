@@ -1,7 +1,7 @@
 """Prompt-template extraction pins (task #10(c)).
 
-The rescue / force-progress / feedback prompt text moved from inline
-Python strings to Tooling/prompts/ templates. These snapshots pin the
+The rescue / force-progress prompt text moved from inline Python
+strings to Tooling/prompts/ templates. These snapshots pin the
 RENDERED output to the historical wording — an accidental template edit
 that would change what agents see trips here (the SG-run-#10 drift class
 these templates were extracted to prevent).
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from Tooling.pipeline._feedback import SURVIVOR_PROMPT_SECTION
 from Tooling.pipeline._retry import _build_fresh_rescue_stage2_prompt
 
 
@@ -60,18 +59,10 @@ def test_force_progress_template_renders(tmp_path):
     assert "__" not in out
 
 
-def test_feedback_survivor_keeps_format_contract():
-    assert SURVIVOR_PROMPT_SECTION.startswith(
-        "## Framework feedback — for the framework developer")
-    assert "{feedback_path}" in SURVIVOR_PROMPT_SECTION
-    assert SURVIVOR_PROMPT_SECTION.endswith("or exactly `(none)`.")
-    assert "__FEEDBACK_PATH__" not in SURVIVOR_PROMPT_SECTION
-
-
 def test_templates_exist_in_prompts_dir():
     from Tooling.pipeline import PROMPT_DIR
     for name in ("fresh_rescue_stage2.md", "fresh_rescue_stage2_mint.md",
-                 "force_progress.md", "feedback_survivor.md"):
+                 "force_progress.md"):
         assert (Path(PROMPT_DIR) / "_shared" / name).is_file(), name
 
 

@@ -28,3 +28,7 @@ This is triage, not the rewrite — you are choosing where the effort goes, cons
 Use the bare declaration names exactly as listed in `Context.md`. An empty array `[]` is the right answer when nothing clearly needs simplifying.
 
 Now read `Context.md` and write `simplify.json`.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

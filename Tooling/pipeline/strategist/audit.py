@@ -446,11 +446,6 @@ def finish_routine_audit(conn: sqlite3.Connection, *, problem: str,
     _groups.touch_routine(conn, gid)
     db.update_problem_last_routine_at(conn, problem)
     _apply_kb_curation(conn, problem=problem, attempts_dir=attempts_dir)
-    from .. import _feedback
-    _feedback.attempt_feedback(
-        kind="strategist", seat="strategist", sid=sid, slug="routine",
-        outcome="success", problem_dir=problem_dir,
-        attempts_dir=attempts_dir, workspace=workspace)
     n_fired = len(verdict.fired)
     n_clear = len(verdict.clear)
     n_un = len(verdict.unaudited)

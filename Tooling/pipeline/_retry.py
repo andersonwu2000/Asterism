@@ -632,7 +632,6 @@ def run_with_session_retries(
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
-    feedback_fn: "ReflectionFn | None" = None,
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
     initial_sid: str | None = None,
@@ -846,15 +845,11 @@ def run_with_session_retries(
         )
         if not triggered:
             return
-        # Framework feedback runs as its OWN tail step, INDEPENDENT of reflection
-        # — it fires for every pipeline that ran to a real terminal (incl.
-        # Forward, which passes no reflection_fn). Same `--resume <sid>` session.
-        if feedback_fn is not None:
-            try:
-                feedback_fn(sid, result)
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                print(f"[feedback] callback raised, swallowed: {exc}",
-                      flush=True)
+        # Framework feedback used to run as its OWN tail step here, one
+        # extra `--resume <sid>` leg per finished pipeline. Retired
+        # 2026-09-07 (owner ruling): agents file it mid-run through the
+        # `feedback` MCP tool instead — at the moment something misleads
+        # them, and from the seats that never survived to this line.
         if reflection_fn is not None:
             try:
                 reflection_fn(sid, result)
@@ -1192,7 +1187,6 @@ def run_lsp_edit_loop(
     parse_fn: ParseFn,
     postmortem_fn: "PostmortemFn | None" = None,
     reflection_fn: "ReflectionFn | None" = None,
-    feedback_fn: "ReflectionFn | None" = None,
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
     release_session_after: bool = False,
@@ -1215,8 +1209,8 @@ def run_lsp_edit_loop(
         PipelineResult (terminal success/decline → returned verbatim; any
         other failure → recorded + retried by the inner loop).
       - `kind` / `prompt_path` / `problem` / `problem_dir`: the spawn identity.
-      - optional `postmortem_fn` / `reflection_fn` / `feedback_fn` / `death_fn`
-        hooks (Builder wires all; migrate-hole-fill none; audit feedback only).
+      - optional `postmortem_fn` / `reflection_fn` / `death_fn` hooks
+        (Builder wires all; migrate-hole-fill and cleanup-audit none).
 
     Everything INVARIANT — cold vs warm session resume, stale-session re-mint,
     timeout / thinking-trap takeover, eager failure recording, budget /
@@ -1253,7 +1247,7 @@ def run_lsp_edit_loop(
             attempts_dir=attempts_dir, spawn_fn=_spawn, parse_fn=parse_fn,
             postmortem_fn=postmortem_fn or (lambda _sid: None),
             workspace=workspace, reflection_fn=reflection_fn,
-            feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id,
+            death_fn=death_fn, decision_id=decision_id,
             initial_sid=initial_sid, rescue_template=rescue_template,
             kind=kind)
     finally:

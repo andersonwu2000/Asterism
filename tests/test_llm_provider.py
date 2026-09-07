@@ -72,12 +72,14 @@ def test_llm_request_dataclass_fields() -> None:
 
 def test_thinking_budget_never_below_api_floor() -> None:
     from Tooling.llm import claude_cli as cc
-    # short spawns (the regression case): 90s feedback turn used to yield 1000
+    # short spawns (the regression case): the 90s feedback turn used to
+    # yield 1000. That turn is gone — the survivor leg was retired
+    # 2026-09-07 — but its timeout stays IN THIS LIST as a number, not
+    # as an import of a constant that no longer exists: what the floor
+    # protects is any short spawn, and 90s is the shortest one the
+    # framework has ever dispatched.
     for t in (0, 30, 59, 60, 90, 119):
         assert cc._thinking_budget(t) >= 1024, t
-    # the specific feedback timeout that regressed
-    from Tooling.pipeline import _feedback
-    assert cc._thinking_budget(_feedback._FEEDBACK_TIMEOUT_SEC) >= 1024
 
 
 def test_thinking_budget_scales_with_timeout_above_floor() -> None:

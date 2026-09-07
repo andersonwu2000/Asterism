@@ -47,15 +47,14 @@ MAX_CHARS = 8000
 #: A model guesses parameter names. When it guesses wrong, FastMCP's
 #: pydantic model raises `Field required`, and on the Antigravity CLI a
 #: raising MCP tool stamps the WHOLE envelope `status: ERROR` — the run
-#: exits 1, and the postmortem turn that `--resume`s the same session to
-#: collect feedback dies with it. One wrong parameter name therefore
-#: costs a spawn's entire feedback record.
+#: exits 1. One wrong parameter name therefore costs the whole spawn,
+#: and everything it had not yet written.
 #:
 #: Measured 2026-08-10, first live minute of the Gemini formalizer seat:
-#: the model called `inspect(inspect_requests=[…])`. Six spawns filed no
-#: feedback that window. The same failure is recorded four lines below
-#: for `loogle(query=…)` — the lesson was written down and then not
-#: applied to the next tool.
+#: the model called `inspect(inspect_requests=[…])`. Six spawns died
+#: filing nothing in that window. The same failure is recorded four
+#: lines below for `loogle(query=…)` — the lesson was written down and
+#: then not applied to the next tool.
 #:
 #: The fix is deliberately NOT a list of accepted aliases: enumerating
 #: the names a model might invent is the "列舉會爛" trap, and the next
@@ -532,6 +531,113 @@ def write_file(path: str = "", content: str = "") -> str:
             hint='`content` is empty — the whole file body goes in '
                  '`content` (a mis-spelled parameter name lands here)')
     return workspace_query.run_write(path, content)
+
+
+#: How many notes ONE spawn may file. The sink is a ring of whole
+#: records (`_feedback.MAX_ENTRIES`), so a seat stuck in a loop would
+#: evict every other spawn's sentence by volume — the failure mode is
+#: not a rude agent, it is one agent hitting the same broken gate on
+#: every iteration and saying so each time. Generous enough that the
+#: docstring's "call it as soon as it happens, not at the end" is real
+#: advice, and the refusal names the cap rather than going quiet.
+_FEEDBACK_PER_SPAWN = 10
+
+#: (spawn attempts-dir) → notes filed. Process-global for the same
+#: reason `_LOOGLE_REPEATS` is: the tools run in the shim, one process
+#: for many spawns, so the key is the spawn.
+_FEEDBACK_FILED: "dict[str, int]" = {}
+
+
+def _spawn_identity() -> "tuple[str, str, str]":
+    """`(kind, problem, slug)` for THIS spawn — what the tools server
+    can actually answer, and nothing invented past it.
+
+    The server knows three things about who it is serving, all declared
+    by whoever spawned it: `ASTERISM_SEAT` (the seat table's key),
+    `spawn_guard.PROBLEM_ENV` (the dotted problem), and the attempts
+    directory `inspect` resolves through `workspace_query`. It does NOT
+    know the pipeline LABEL (`forward` / `cleanup:audit` / …): that
+    lives in the pipeline function and never reaches a spawn — even
+    `agent.spawn_llm` is dispatched with the seat, not the label
+    (`pipeline/_hooks.make_goal_hooks`: "THE SEAT, NOT THE LABEL").
+
+    So `kind` is the seat, and the slug column carries the PIPELINE ID
+    — the attempts dir's own name, which is also `.asterism/mcp_logs/
+    <pipeline_id>.jsonl` and the `spawn_usage.pipeline_id` row. A
+    developer reading a note can therefore reach the spawn that filed
+    it, which a goal slug would not have given for the seats (the
+    judge, the reviewer) that have none.
+
+    On the zen shim — one process serving many spawns — only the
+    attempts dir is request-local, so seat and problem degrade to
+    `agent` / `?` rather than to another spawn's answer. The
+    pipeline id still names the spawn exactly, which is the column
+    that has to be right."""
+    from ..llm.spawn_guard import current_problem
+    from . import workspace_query as _wq
+    kind = (os.environ.get("ASTERISM_SEAT") or "").strip() or "agent"
+    problem = (current_problem() or "?").strip() or "?"
+    own = _wq._own_attempt_dir()
+    return kind, problem, (own.name if own is not None else "?")
+
+
+@_seat_tool(structured_output=False)
+def feedback(note: str = "", evidence: str = "") -> str:
+    """Tell the framework's developer about the framework — the moment
+    something misleads you. One sentence (`note`) and, when you have it,
+    one line of `evidence` (the tool output, the message, the file and
+    line). About the framework only — a tool that lied, a gate that
+    refused on a false premise, a prompt or Context line that pointed
+    you wrong — never about the mathematics. It is filed and read; it
+    does not change your task or your verdict. Call it as soon as it
+    happens, not at the end.
+    """
+    # NEVER RAISES. Every other tool here shares that rule (a raising
+    # MCP tool stamps the whole agy envelope ERROR), and this one has a
+    # second reason: it is called at the moment something ALREADY went
+    # wrong, so a failure here would arrive as a second, louder fault on
+    # top of the one the agent was trying to report.
+    try:
+        return _file_feedback(note, evidence)
+    except Exception as exc:  # noqa: BLE001 — see above
+        return (f"feedback: not filed — the framework's own sink failed "
+                f"({type(exc).__name__}). Say it in your final message "
+                f"instead; nothing about your task changes.")
+
+
+def _file_feedback(note: str, evidence: str) -> str:
+    from ..pipeline import _feedback as _fb
+    if not (note or "").strip():
+        return _ARG_HELP.format(
+            tool="feedback",
+            hint='the parameters are `note` and `evidence`, e.g. '
+                 'feedback(note="validate_json named a criterion my '
+                 'rubric does not have", evidence="OK as JSON, but … '
+                 'missing criterion 5")')
+    workspace = _workspace_root()
+    if not _fb.feedback_enabled(workspace):
+        # Registered but not collecting: the tool stays on every seat so
+        # nothing depends on a prompt and a whitelist agreeing, and this
+        # sentence is what keeps "filed" honest when the sink is off.
+        return ("feedback: this workspace does not collect framework "
+                "feedback, so nothing was filed. Carry on — your task "
+                "is unaffected.")
+    kind, problem, slug = _spawn_identity()
+    if len(_FEEDBACK_FILED) > 512:
+        _FEEDBACK_FILED.clear()
+    filed = _FEEDBACK_FILED.get(slug, 0)
+    if filed >= _FEEDBACK_PER_SPAWN:
+        return (f"feedback: not filed — you have already filed "
+                f"{filed} notes this spawn, which is the cap. Put "
+                f"anything further in your final message.")
+    ok = _fb.record_note(workspace, kind=kind, slug=slug, problem=problem,
+                         note=note, evidence=evidence, seat=kind)
+    if not ok:
+        return ("feedback: not filed — the write failed. Say it in your "
+                "final message instead; nothing about your task changes.")
+    _FEEDBACK_FILED[slug] = filed + 1
+    return (f"feedback: filed ({kind}, {problem}). It goes to the "
+            f"framework's developer and changes nothing about your task.")
 
 
 @_seat_tool(structured_output=False)

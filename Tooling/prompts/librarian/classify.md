@@ -40,3 +40,7 @@ A file may depend only on Mathlib and other Library files (never on `Problems/` 
 - The dependency graph being acyclic is a hard requirement — if two files would need each other, merge them or move the shared piece down.
 
 Now read `Context.md` and write your layout plan to `plan.json`.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

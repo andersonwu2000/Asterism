@@ -123,6 +123,23 @@ SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "explainer": _ASSISTANT_TOOLS,
 }
 
+#: Granted to EVERY seat, by construction rather than by remembering.
+#:
+#: `feedback(note, evidence)` is the channel an agent uses to tell the
+#: framework's developer that the framework misled it (owner ruling
+#: 2026-09-07, replacing the end-of-run survivor leg). It is not a
+#: capability one seat needs and another does not — the seat that hits a
+#: gate worded on a false premise is whichever seat happened to hit it,
+#: and the retired leg's own lesson was that the seats with no channel
+#: (presearch, the librarian family) were exactly the ones nothing was
+#: ever heard from. Unioned in below so a seat added to the table above
+#: cannot be born mute, and so `claude_cli._TOOLS_MCP_PATTERNS`, which
+#: derives its allow list from these values, covers it.
+_EVERY_SEAT_TOOLS = frozenset({"feedback"})
+
+SEAT_ASTERISM_TOOLS = {seat: tools | _EVERY_SEAT_TOOLS
+                       for seat, tools in SEAT_ASTERISM_TOOLS.items()}
+
 
 def asterism_tools_for(seat: str) -> "frozenset[str]":
     """The seat's tool whitelist; unknown seats fail LOUDLY — a seat

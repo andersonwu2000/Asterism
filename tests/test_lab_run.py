@@ -675,12 +675,38 @@ def test_the_tools_scorer_still_reads_a_nested_transcript(tmp_path,
 
 _FEEDBACK = (
     "# Agent framework feedback (dev-only)\n\n"
-    "_Survivor self-reports + framework-written death causes._\n\n"
+    "_Agent-filed notes + framework-written death causes._\n\n"
     "- [2026-09-06T20:42 | adversary | claude-opus-5 | pass | p/r1] "
     "the manifest pointed at a path I cannot read.\n"
     "  evidence: two permission errors before I found the copy.\n"
     "- [2026-09-06T20:47 | backward | claude-sonnet-5 | success | p/main] "
     "`rw` rewrote both sides silently.\n")
+
+
+def test_a_mid_run_note_counts_like_any_other_record(tmp_path,
+                                                     monkeypatch):
+    """The survivor leg retired 2026-09-07 and the `feedback` MCP tool
+    took its place, so from here on the lab's count is made mostly of
+    MID-RUN records. The file format did not change — this pins that,
+    against the writer itself rather than against a fixture, so a
+    prefix change that the lab's counter could not read fails here."""
+    from Tooling.pipeline import _feedback
+
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "true")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    assert _feedback.record_note(
+        ws, kind="strategist", slug="pid-77", problem="Combinatorics.uc",
+        note="the routine verdict gate named a criterion I was not given",
+        evidence="validate_json: missing criterion 5")
+
+    kept, n = driver_mod.keep_feedback(ws, tmp_path / "out")
+
+    assert kept == ["agent_feedback.md"]
+    assert n == 1, "the evidence line was counted as a second record"
+    copied = (tmp_path / "out" / "agent_feedback.md").read_text(
+        encoding="utf-8")
+    assert f"| {_feedback.IN_FLIGHT} |" in copied
 
 
 def test_the_agents_feedback_is_copied_out_and_counted(tmp_path):

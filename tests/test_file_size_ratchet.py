@@ -832,7 +832,13 @@ _WATERMARKS = {
     # exists to prevent. The compile machinery itself went the other way
     # and moved OUT, to `Tooling/core/tex_engine.py`, shared with
     # `serve/tex_render.py`. Conscious bump.
-    "Tooling/knowledge/mcp_tools.py": 1100,
+    # 1100 → 1210 2026-09-07 — `feedback(note, evidence)`, the channel
+    # that replaced the end-of-run survivor leg. Same reason it cannot
+    # live elsewhere: the tool list IS the whitelist. The WRITER did go
+    # the other way and stayed where it was — `pipeline/_feedback` owns
+    # the record shape, the ring and the gate, and this file only
+    # resolves the spawn's own identity and calls it. Conscious bump.
+    "Tooling/knowledge/mcp_tools.py": 1210,
     # 1000 (the default cap) → 1060 2026-09-06 — a turn that stops is an
     # ending and has to say so: `_stopped_note` / `_fail_open_rows` and
     # the two places that reach them (the reader's EOF, and the reader

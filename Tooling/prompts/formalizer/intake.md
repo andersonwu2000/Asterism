@@ -27,3 +27,7 @@ or
 ```
 
 If the argument does not settle this assignment, decline — don't invent the mathematics and don't route around it. If a concrete instance breaks the statement itself, decline `unprovable` with the counterexample in the note — fresh eyes catch transcription slips the argument layer cannot see. (The claim alone terminates nothing: a goal is only DISPROVED when a work turn proves the negation in Lean via `-- decline: disprove`.) Any other defect → proceed; the work turn carries the full decline vocabulary. The framework runs lemma pre-search after intake; candidates arrive with the work turn.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

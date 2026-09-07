@@ -21,3 +21,7 @@ For each pair, write the shortest proof of `x`'s statement that goes through `y`
 - Omit a pair entirely if you cannot bridge it in a line or two — a mechanical build gate verifies every bridge and reverts any that fails, so a wrong guess is harmless but a skipped pair just stays as-is.
 
 Now read `Context.md` and write your bridges to `bridges.json`.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

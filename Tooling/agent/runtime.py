@@ -123,6 +123,31 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
             .replace("{interval_min}", _format_minutes(interval_min)))
 
 
+def _feedback_tool_advertised(attempts_dir: "Path | None",
+                              workspace: "Path | None") -> bool:
+    """Whether the seat prompts may name `feedback(note, evidence)`.
+
+    ONE gate, not a second one: `pipeline._feedback.feedback_enabled` is
+    the same switch that decides whether the sink collects at all
+    (`feedback.enabled` / `ASTERISM_FEEDBACK_ENABLED`). A prompt that
+    advertised the tool where the sink is off would teach an agent to
+    spend a call on an acknowledgement that says "nothing was filed".
+
+    Best-effort and CLOSED on failure — the safe answer for a flag whose
+    false value hides developer-facing text from an end user's agent is
+    "do not advertise"."""
+    try:
+        from ..pipeline._feedback import feedback_enabled
+        ws = workspace
+        if ws is None and attempts_dir is not None:
+            # The standard layout `_record_spawn_usage` also assumes:
+            # attempts_dir = <workspace>/.attempts/<pipeline_id>.
+            ws = Path(attempts_dir).parent.parent
+        return feedback_enabled(ws)
+    except Exception:  # noqa: BLE001 — a flag must never fail a spawn
+        return False
+
+
 def _format_minutes(value: float) -> str:
     """Render a minutes value compactly: integer when whole, one
     decimal otherwise. Avoids '60.0' noise for the common default."""
@@ -285,8 +310,19 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     # provider, which is the defect this exists to close (a codex worker
     # told it had `Read / Grep / Write / Edit` and had none of them).
     # Caller-supplied flags win — a test pins one on purpose.
+    #
+    # `feedback_tool` rides the same route, and for the same reason: it
+    # is a property of the INSTALLATION, not of the task, so no caller
+    # can be trusted to remember it. It gates the one sentence that
+    # advertises `feedback(note, evidence)` — developer mode only (owner
+    # ruling 2026-09-07): an end user's agents must not spend attention
+    # on a channel that reports to the framework's developer. Passed
+    # EXPLICITLY, never omitted, because the renderer is fail-OPEN — the
+    # block an absent flag keeps is the one this is here to drop.
     from ..llm import capabilities as _caps
     prompt_flags = {**_caps.prompt_tool_flags(_caps.provider_for_kind(kind)),
+                    "feedback_tool": _feedback_tool_advertised(
+                        attempts_dir, usage_workspace),
                     **(prompt_flags or {})}
     _t0 = _time.monotonic()
     _before = _repo_status(usage_workspace)

@@ -170,9 +170,9 @@ def attempt_reflection(*,
                 print(f"[reflection] template missing at {template_path}; "
                       f"skipping", flush=True)
                 return
-            # Framework feedback is DECOUPLED from reflection — it runs as its
-            # own `--resume` step (`_feedback.attempt_feedback`) at every
-            # pipeline's tail, so reflection here is KB-lessons-only.
+            # Framework feedback is DECOUPLED from reflection — agents
+            # file it mid-run through the `feedback` MCP tool, so
+            # reflection here is KB-lessons-only.
             # Bound the directive leg to whatever argv budget remains
             # after everything else is rendered (2026-07-13). Twin of
             # the titles-only fix on the lessons leg (2026-07-05, same

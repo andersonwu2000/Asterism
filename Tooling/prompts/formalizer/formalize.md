@@ -18,6 +18,9 @@ Four MCP tools talk to a live Lean server already holding **your `patch.lean` sa
 - `mcp__lsp__validate_file()` — validate `patch.lean` from DISK; `file="new_<slug>.lean"` validates a stub (auto-prepends Mathlib + Defs + your patch's `open`s). Returns two independent verdicts: `diagnostics` = Lean compilation, `submission` = commit-gate rehearsal — both must be clean (`ok:true` covers only the former). Write first, then validate — there is no string mode, and commit checks it saw your final bytes. Run it once more before finishing.
 - `mcp__lsp__withdraw_stub(slug)` — drop a `new_<slug>.lean` you no longer want submitted as a sub-goal.
 - `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` — several read questions in one call; `decl` answers from the framework's record. `compute(code)` runs a Python calculation (numpy; no filesystem, no network — and it proves nothing, only the Lean kernel does).
+<!-- #if feedback_tool -->
+- `feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->
 
 ## Outsource the heavy parts
 

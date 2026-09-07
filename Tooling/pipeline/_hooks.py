@@ -1,10 +1,18 @@
 """Standard spawn-lifecycle hooks for goal-targeted pipelines (task #8).
 
-Builder and Backward wired the same four hooks (postmortem / reflection /
-feedback / death) in ~45 near-verbatim lines each; a future gate or hook
-change had to be applied twice and could silently drift. One factory now
-owns the shape; Forward keeps its own two hooks (different slug identity,
-deliberately no reflection/death) — it was never a copy of this pack.
+Builder and Backward wired the same hooks (postmortem / reflection /
+death) in ~45 near-verbatim lines each; a future gate or hook change had
+to be applied twice and could silently drift. One factory now owns the
+shape; Forward keeps its own hook (different slug identity, deliberately
+no reflection/death) — it was never a copy of this pack.
+
+There was a fourth hook here, `feedback_fn`, which resumed the finished
+session for one more leg to ask the agent what the framework got wrong.
+It was retired 2026-09-07 (owner ruling): agents now file that mid-run
+through the `feedback` MCP tool, at the moment it happens, instead of
+reconstructing it afterwards for the price of a spawn. `death_fn` stays
+— an agent that died without a resumable session can file nothing, and
+that silence is the selection bias the framework writes over itself.
 """
 from __future__ import annotations
 
@@ -14,8 +22,8 @@ from pathlib import Path
 def make_goal_hooks(*, kind: str, seat: str, goal, problem_dir: Path,
                     attempts_dir: Path, prompt_dir: Path,
                     workspace: Path, postmortem_prompt: Path):
-    """The (postmortem_fn, reflection_fn, feedback_fn, death_fn) tuple for
-    a goal-targeted pipeline spawn. `goal` is the sqlite goal row (slug /
+    """The (postmortem_fn, reflection_fn, death_fn) tuple for a
+    goal-targeted pipeline spawn. `goal` is the sqlite goal row (slug /
     id / problem).
 
     `kind` NAMES the record (log lines, `agent_feedback.md`, death rows).
@@ -49,14 +57,6 @@ def make_goal_hooks(*, kind: str, seat: str, goal, problem_dir: Path,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             prompt_dir=prompt_dir, workspace=workspace)
 
-    def feedback_fn(sid: str, result) -> None:
-        from . import _feedback
-        _feedback.attempt_feedback(
-            kind=kind, seat=seat, sid=sid, slug=goal["slug"],
-            outcome=(result.failure_reason or result.outcome),
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            workspace=workspace)
-
     def death_fn(result) -> None:
         from . import _feedback
         _feedback.record_death(
@@ -64,4 +64,4 @@ def make_goal_hooks(*, kind: str, seat: str, goal, problem_dir: Path,
             problem=problem_dir.name,
             reason=result.failure_reason or result.outcome)
 
-    return postmortem_fn, reflection_fn, feedback_fn, death_fn
+    return postmortem_fn, reflection_fn, death_fn

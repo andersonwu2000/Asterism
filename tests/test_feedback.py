@@ -1,4 +1,13 @@
-"""Agent framework-feedback questionnaire (`_feedback.py`)."""
+"""Agent framework-feedback sink (`_feedback.py`) + the `feedback` tool.
+
+Owner ruling 2026-09-07: the end-of-run survivor leg — one extra
+`--resume` spawn per finished pipeline, asking the agent to write a
+sentence into a scratch file — is retired. Agents file mid-run through
+the `feedback(note, evidence)` MCP tool instead. What is pinned here is
+the writer's record shape (unchanged, so the lab still counts it), the
+tool's behaviour, and the fact that no pipeline spawns that extra leg
+any more.
+"""
 from __future__ import annotations
 
 import pytest
@@ -19,53 +28,58 @@ def ws_on(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _attempts(ws):
-    d = ws / ".attempts"
-    d.mkdir(exist_ok=True)
-    return d
-
-
 def test_disabled_is_noop(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "false")
-    att = _attempts(tmp_path)
-    _feedback.scratch_path(att).write_text("real friction", encoding="utf-8")
-    _feedback.record_survivor(tmp_path, attempts_dir=att, kind="backward",
-                              slug="g1", problem="p", outcome="exhausted")
+    assert _feedback.record_note(tmp_path, kind="backward", slug="g1",
+                                 problem="p", note="real friction") is False
     _feedback.record_death(tmp_path, kind="forward", slug="g2", problem="p",
                            reason="quota_exhausted")
     assert not (tmp_path / _OUT).exists()
 
 
-def test_survivor_appends_with_metadata_prefix(ws_on):
-    att = _attempts(ws_on)
-    _feedback.scratch_path(att).write_text(
-        "the gateway timeout message misled me\n"
-        "evidence: rc=124 read like a build error",
-        encoding="utf-8")
-    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
-                              slug="g1", problem="Geometry.x",
-                              outcome="exhausted")
+def test_note_appends_with_metadata_prefix(ws_on):
+    assert _feedback.record_note(
+        ws_on, kind="backward", slug="g1", problem="Geometry.x",
+        note="the gateway timeout message misled me",
+        evidence="rc=124 read like a build error") is True
     content = (ws_on / _OUT).read_text(encoding="utf-8")
     assert content.startswith("# Agent framework feedback")     # header
     assert "the gateway timeout message misled me" in content
     assert "evidence: rc=124 read like a build error" in content
     # framework-owned metadata prefix
     assert "| backward |" in content
-    assert "| exhausted |" in content
+    assert f"| {_feedback.IN_FLIGHT} |" in content
     assert "Geometry.x/g1]" in content
 
 
-def test_survivor_none_and_missing_are_noop(ws_on):
-    att = _attempts(ws_on)
-    # explicit (none)
-    _feedback.scratch_path(att).write_text("(none)", encoding="utf-8")
-    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
-                              slug="g1", problem="p", outcome="success")
-    assert not (ws_on / _OUT).exists()
-    # missing scratch
-    _feedback.scratch_path(att).unlink()
-    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
-                              slug="g1", problem="p", outcome="success")
+def test_a_note_is_always_one_record(ws_on):
+    """The agent hands over free text; the file is line-structured and
+    `count_records` counts `RECORD_MARK` lines. A note carrying newlines
+    would otherwise split into a record plus a line that is not one."""
+    _feedback.record_note(
+        ws_on, kind="strategist", slug="routine", problem="p",
+        note="first\nsecond\n\n  third",
+        evidence="line one\nline two")
+    text = (ws_on / _OUT).read_text(encoding="utf-8")
+    assert _feedback.count_records(text) == 1
+    assert "first second third" in text
+    assert "evidence: line one line two" in text
+
+
+def test_a_note_is_capped_so_one_spawn_cannot_evict_the_others(ws_on):
+    """The ring keeps whole RECORDS, so an agent pasting a transcript
+    would push every other spawn's sentence out by volume."""
+    _feedback.record_note(ws_on, kind="librarian", slug="s", problem="p",
+                          note="x" * 5000, evidence="y" * 5000)
+    line = [ln for ln in (ws_on / _OUT).read_text(encoding="utf-8")
+            .splitlines() if ln.startswith(_feedback.RECORD_MARK)][0]
+    assert len(line) < _feedback.MAX_NOTE_CHARS + 200
+    assert line.endswith("…")
+
+
+def test_an_empty_note_is_not_a_record(ws_on):
+    assert _feedback.record_note(ws_on, kind="adversary", slug="r1",
+                                 problem="p", note="   ") is False
     assert not (ws_on / _OUT).exists()
 
 
@@ -80,10 +94,8 @@ def test_death_writes_cause_line(ws_on):
 
 
 def test_records_accumulate_one_header(ws_on):
-    att = _attempts(ws_on)
-    _feedback.scratch_path(att).write_text("first thing", encoding="utf-8")
-    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
-                              slug="a", problem="p", outcome="success")
+    _feedback.record_note(ws_on, kind="backward", slug="a", problem="p",
+                          note="first thing")
     _feedback.record_death(ws_on, kind="builder", slug="b", problem="p",
                            reason="spawn_fast_fail")
     content = (ws_on / _OUT).read_text(encoding="utf-8")
@@ -100,20 +112,17 @@ def test_feedback_file_is_a_ring_of_whole_records(ws_on, monkeypatch):
     header block survives every trim."""
     assert _feedback.MAX_ENTRIES == 1000        # the owner's number
     monkeypatch.setattr(_feedback, "MAX_ENTRIES", 5)
-    att = _attempts(ws_on)
     for i in range(3):
         _feedback.record_death(ws_on, kind="forward", slug=f"g{i}",
                                problem="p", reason=f"reason_{i}")
-    _feedback.scratch_path(att).write_text(
-        "keeper friction\nevidence: with a continuation line",
-        encoding="utf-8")
-    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
-                              slug="keeper", problem="p", outcome="success")
+    _feedback.record_note(ws_on, kind="backward", slug="keeper", problem="p",
+                          note="keeper friction",
+                          evidence="with a continuation line")
     for i in range(3, 7):
         _feedback.record_death(ws_on, kind="forward", slug=f"g{i}",
                                problem="p", reason=f"reason_{i}")
     content = (ws_on / _OUT).read_text(encoding="utf-8")
-    # 8 appended, 5 kept: the survivor + the last four deaths
+    # 8 appended, 5 kept: the note + the last four deaths
     assert content.count("\n- [") == 5
     assert content.startswith("# Agent framework feedback")   # header intact
     assert "keeper friction" in content
@@ -123,188 +132,66 @@ def test_feedback_file_is_a_ring_of_whole_records(ws_on, monkeypatch):
     assert "reason_3" in content and "reason_6" in content
 
 
-def test_survivor_prompt_section_has_path_placeholder():
-    # The standalone feedback prompt must carry the scratch-path placeholder so
-    # attempt_feedback can substitute the per-spawn sandbox file.
-    assert "{feedback_path}" in _feedback.SURVIVOR_PROMPT_SECTION
-    # framing: asks for friction / suggestion / critique, not satisfaction
-    low = _feedback.SURVIVOR_PROMPT_SECTION.lower()
-    assert "friction" in low and "suggestion" in low and "critique" in low
+def test_the_model_column_resolves_from_the_seat_not_the_label(
+    ws_on, monkeypatch,
+):
+    """There is no `forward.model` or `cleanup:audit.model` key, so
+    resolving from the record LABEL wrote `?` into every such record
+    (2026-08-13)."""
+    from Tooling.core import config
+    models = {"formalizer.model": "seat-model", "feedback.enabled": True}
+    monkeypatch.setattr(
+        config, "get",
+        lambda key, **kw: models.get(key, kw.get("default")))
+    _feedback.record_note(ws_on, kind="forward", slug="s", problem="p",
+                          note="n", seat="formalizer")
+    assert "| seat-model |" in (ws_on / _OUT).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------
-# attempt_feedback — the dedicated per-pipeline tail step
+# the retired survivor leg
 # ---------------------------------------------------------------------
 
-def test_attempt_feedback_disabled_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "false")
-    from Tooling import agent
-    calls = []
-    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
-    att = _attempts(tmp_path)
-    pdir = tmp_path / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="strategist", seat="strategist", sid="s1", slug="inject_done",
-                               outcome="success", problem_dir=pdir,
-                               attempts_dir=att, workspace=tmp_path)
-    assert calls == []                               # no resume spawn when off
-    assert not (tmp_path / _OUT).exists()
+def test_the_survivor_leg_is_gone_from_the_module():
+    """Retired 2026-09-07. Named here rather than left to rot: the leg
+    cost a spawn per pipeline, reached only agents that survived to a
+    resumable terminal, and asked at the one moment the friction is
+    furthest away."""
+    for gone in ("attempt_feedback", "record_survivor", "scratch_path",
+                 "SURVIVOR_PROMPT_SECTION"):
+        assert not hasattr(_feedback, gone), gone
+    from Tooling.pipeline import PROMPT_DIR
+    assert not (PROMPT_DIR / "_shared" / "feedback_survivor.md").exists()
+    # The lab reads these three; they stay.
+    assert _feedback.RECORD_MARK == "- ["
+    assert callable(_feedback.feedback_path)
+    assert callable(_feedback.count_records)
 
 
-def test_attempt_feedback_resumes_session_and_records(ws_on, monkeypatch):
-    from Tooling import agent
-    seen: dict = {}
+def test_no_pipeline_spawns_an_extra_leg_after_it_finishes(
+    ws_on, monkeypatch,
+):
+    """The mechanism pin, read off the retry loop rather than the
+    source: run the shared loop to a terminal with feedback ENABLED and
+    count the spawns. Before the retirement this was 2 — the work spawn
+    and the resumed questionnaire."""
+    import sqlite3
 
-    def fake_spawn(**k):
-        seen.update(k)
-        # simulate the resumed agent writing its one-sentence answer
-        _feedback.scratch_path(k["attempts_dir"]).write_text(
-            "the audit retry prompt did not name the deprecated lemma",
-            encoding="utf-8")
+    from Tooling.pipeline import PipelineResult, _retry
+
+    spawns: list = []
+
+    def spawn_fn(ctx) -> int:
+        spawns.append(ctx.sid)
         return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="cleanup:audit", seat="librarian", sid="sid-9", slug="Foo.lean",
-                               outcome="success", problem_dir=pdir,
-                               attempts_dir=att, workspace=ws_on)
-    # resumed the just-finished session (not a cold spawn)
-    assert seen["is_postmortem"] is True and seen["session_id"] == "sid-9"
-    fb = (ws_on / _OUT).read_text(encoding="utf-8")
-    assert "cleanup:audit" in fb and "p/Foo.lean" in fb
-    assert "deprecated lemma" in fb
 
+    result = _retry.run_with_session_retries(
+        conn=sqlite3.connect(":memory:"), goal_id=None,
+        pipeline_id="pid", budget_threshold=3, shelve_threshold=0,
+        attempts_dir=ws_on, spawn_fn=spawn_fn,
+        parse_fn=lambda: PipelineResult(outcome="success"),
+        postmortem_fn=lambda _sid: None, workspace=ws_on, kind="strategist")
 
-def test_feedback_resumes_with_the_tool_config_the_work_turns_had(
-    ws_on, monkeypatch,
-) -> None:
-    """A resumed turn re-sends the whole conversation, and the tool
-    definitions sit at the FRONT of that request — so dropping them
-    invalidates the cached prefix and a one-sentence question is billed
-    for the entire session at full price.
-
-    Measured 2026-08-15 on Test.provider_probe: every feedback turn came
-    back `cached_input_tokens = 0` (184,184 tokens, 41% of the run's
-    fresh input) while every other resume in the same sessions cached
-    normally. Two-arm probe, same cold prompt and session: resume WITH
-    the config cached 11,008 of 12,056; WITHOUT it, 0 of 11,291.
-    """
-    from Tooling import agent
-    seen: dict = {}
-    monkeypatch.setattr(agent, "spawn_llm",
-                        lambda **k: (seen.update(k), 0)[1])
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    (att / "_mcp_tools.json").write_text("{}", encoding="utf-8")
-
-    _feedback.attempt_feedback(kind="strategist", seat="strategist",
-                               sid="sid-1", slug="inject_done",
-                               outcome="success", problem_dir=pdir,
-                               attempts_dir=att, workspace=ws_on)
-
-    assert seen["mcp_config_path"] == att / "_mcp_tools.json"
-
-
-def test_feedback_prefers_the_gateway_config_when_the_spawn_had_one(
-    ws_on, monkeypatch,
-) -> None:
-    """A formalizer's work turns carry gateway + tools; matching the
-    prefix means matching THAT set, not a subset of it."""
-    from Tooling import agent
-    seen: dict = {}
-    monkeypatch.setattr(agent, "spawn_llm",
-                        lambda **k: (seen.update(k), 0)[1])
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    (att / "_mcp_tools.json").write_text("{}", encoding="utf-8")
-    (att / "_mcp_config.json").write_text("{}", encoding="utf-8")
-
-    _feedback.attempt_feedback(kind="forward", seat="formalizer",
-                               sid="sid-2", slug="f", outcome="proved",
-                               problem_dir=pdir, attempts_dir=att,
-                               workspace=ws_on)
-
-    assert seen["mcp_config_path"] == att / "_mcp_config.json"
-
-
-def test_feedback_without_any_config_still_runs(ws_on, monkeypatch) -> None:
-    """A pipeline that never wrote one gets None — the pre-2026-08-15
-    behaviour, which is correct there: nothing to match."""
-    from Tooling import agent
-    seen: dict = {}
-    monkeypatch.setattr(agent, "spawn_llm",
-                        lambda **k: (seen.update(k), 0)[1])
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-
-    _feedback.attempt_feedback(kind="strategist", seat="strategist",
-                               sid="sid-3", slug="s", outcome="success",
-                               problem_dir=pdir, attempts_dir=att,
-                               workspace=ws_on)
-
-    assert seen["mcp_config_path"] is None
-
-
-def test_attempt_feedback_no_sid_is_noop(ws_on, monkeypatch):
-    from Tooling import agent
-    calls = []
-    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="forward", seat="formalizer", sid="", slug="f",
-                               outcome="success", problem_dir=pdir,
-                               attempts_dir=att, workspace=ws_on)
-    assert calls == []                               # empty sid → can't resume
-
-
-def test_attempt_feedback_logs_diagnostic_on_dry_spawn(ws_on, monkeypatch, capsys):
-    """When the resume spawn errors (rc!=0) and writes no scratch, surface a
-    diagnostic instead of silently dropping the record — this dry-channel is
-    what revealed the #33 1024-floor bug (every short-timeout feedback spawn
-    died rc=1, recording nothing)."""
-    from Tooling import agent
-    monkeypatch.setattr(agent, "spawn_llm", lambda **k: 1)   # rc=1, no scratch
-    att = _attempts(ws_on)
-    pdir = ws_on / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="cleanup:audit", seat="librarian", sid="sid-x", slug="Foo.lean",
-                               outcome="success", problem_dir=pdir,
-                               attempts_dir=att, workspace=ws_on)
-    out = capsys.readouterr().out
-    assert "[feedback] cleanup:audit/Foo.lean: spawn rc=1" in out
-    assert "scratch_written=False" in out
-    assert not (ws_on / _OUT).exists()               # nothing landed (no scratch)
-
-
-def test_a_tail_turn_dispatches_with_the_seat_not_the_label(
-    tmp_path, monkeypatch,
-) -> None:
-    """A tail turn RESUMES the work spawn's session, so it must be
-    dispatched with the work spawn's seat. The label is a different
-    thing and belongs only in the record.
-
-    Measured 2026-08-13: the mint arm labelled its tail `forward` — a
-    seat retired in the Formalizer merge — so `forward.provider` fell
-    back to the default and `claude --resume <codex-session-id>`
-    returned rc=1 on four consecutive runs. Invisible on an all-claude
-    setup, where both names resolve to the same provider, which is why
-    only a mixed configuration exposed it."""
-    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "true")
-    from Tooling import agent
-    calls = []
-    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
-    att = _attempts(tmp_path)
-    pdir = tmp_path / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(
-        kind="forward", seat="formalizer", sid="sid-1", slug="inject7",
-        outcome="proved", problem_dir=pdir, attempts_dir=att,
-        workspace=tmp_path)
-    assert calls, "no resume spawn was dispatched"
-    assert calls[0]["kind"] == "formalizer", (
-        "the tail turn resolved its provider from the record label")
+    assert result.outcome == "success"
+    assert len(spawns) == 1, "a finished pipeline spawned an extra leg"
+    assert not (ws_on / _OUT).exists()

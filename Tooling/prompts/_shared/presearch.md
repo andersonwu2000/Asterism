@@ -33,3 +33,7 @@ Put only genuinely relevant lemmas in each block — do not pad it; an empty blo
 fine. List most-relevant first. For Mathlib, give the **exact** name loogle / `inspect`
 showed: the framework `#check`s every Mathlib name and drops guesses, so never
 invent names from memory. No prose outside the JSON. Time budget: __TIMEOUT_MIN__ min.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

@@ -27,3 +27,7 @@ Search before deciding: loogle any statement that reads like a standard, general
 
 - A mechanical gate verifies every non-`keep` and reverts what doesn't hold — so suspect generously; a wrong guess costs one build, not correctness.
 - Cover every declaration in the file exactly once.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

@@ -8,6 +8,9 @@ Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"
 <!-- #if mcp_only_reads -->
 Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Batch queries freely — each gets its own full budget; queries deferred by name in the reply need only be resent. Write every file you produce with `write_file(path, content)` — full overwrite into your attempts dir, lands immediately; prefer it over `apply_patch`. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
 <!-- #endif -->
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->
 
 <!-- #if routine_verdict -->
 This wake was seated by your **routine_fired** audit: Context.md opens with `## Routine audit verdict` — the lines it fired on and why. This batch acts on EVERY fired root: `ConfirmShelve` it (its restart condition in the Roadmap's PAST) or `Inject` it with the argument that keeps it; the framework refuses a batch that leaves one untouched.

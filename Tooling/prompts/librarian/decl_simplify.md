@@ -13,3 +13,7 @@ Iterate: edit → read goal/errors → fix. Done when `_cleanup_probe` has 0 err
 ## Output: patch.lean
 
 The edited `theorem _cleanup_probe <sig> := <shorter proof>`. A build gate re-checks it (same statement, no `sorry`) and reverts a wrong proof, so ship only a proof you have driven to 0 errors.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

@@ -1087,16 +1087,4 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             "rubric_sha": hashlib.sha256(
                 prompt_path.read_bytes()).hexdigest()[:16],
         }
-        # Framework-feedback questionnaire — the judge was the one spawn
-        # family without the channel (zero adversary lines ever landed).
-        # Resume cwd stays the projection: isolation holds; only the
-        # record's label names the real problem.
-        from . import _feedback
-        _feedback.attempt_feedback(
-            kind="adversary", seat="adversary", sid=sid,
-            slug=f"r{round_no}",
-            outcome=str(verdict.get("verdict", "")),
-            problem_dir=proj, attempts_dir=proj,
-            workspace=attempts_dir.parent.parent,
-            problem_label=problem)
         return verdict, "", 0

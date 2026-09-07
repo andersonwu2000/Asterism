@@ -71,3 +71,7 @@ The rebuilt file must emit **no warnings**; any residual warning rejects the fil
 Edit only `audited.lean`, never a workspace `.lean` file.
 
 Now read `Context.md`, then edit `audited.lean` to PR quality, driving `errors_at` to zero.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

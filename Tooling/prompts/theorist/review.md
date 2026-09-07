@@ -6,6 +6,9 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 <!-- #if mcp_only_reads -->
 Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Batch queries freely — each gets its own full budget; queries deferred by name in the reply need only be resent. Write every file you produce with `write_file(path, content)` — full overwrite into your attempts dir, lands immediately; prefer it over `apply_patch`. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — take the time the judgment needs.
 <!-- #endif -->
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->
 
 ## What you see
 

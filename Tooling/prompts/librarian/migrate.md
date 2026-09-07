@@ -55,3 +55,7 @@ Mathlib at `.lake/packages/mathlib/Mathlib/`, Library at `Library/`. Names and m
 - name: `rg -n "(theorem|lemma|def) <name>\b" .lake/packages/mathlib/Mathlib/ Library/`
 - type: `loogle('<pattern>')`
 - sibling signature: `#check <name>` — a migrated sibling can differ from the original proof's call
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

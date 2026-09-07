@@ -279,7 +279,7 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
     so `conn` is unused — audit is a per-FILE unit, not a goal-bound pipeline)."""
     from .... import agent
     from ....core import dispatcher
-    from ....pipeline import PipelineResult, _feedback
+    from ....pipeline import PipelineResult
     from ....pipeline._retry import SpawnCtx, run_lsp_edit_loop
 
     prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _AUDIT_PROMPT
@@ -396,14 +396,6 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
                 outcome="failed", failure_reason="librarian_warnings_remain",
                 failure_detail=_WARN_MSG + "\n".join(warns[:10]))
 
-        def feedback(sid: str, result: "PipelineResult", _att=attempts) -> None:
-            _feedback.attempt_feedback(
-                kind="cleanup:audit", seat="librarian", sid=sid,
-                slug=leaf,
-                outcome=("success" if result.outcome == "success"
-                         else "exhausted"),
-                problem_dir=problem_dir, attempts_dir=_att, workspace=workspace)
-
         # `release_session_after=True`: free this audit's gateway slot before the
         # next file (or next pass) registers (the cleanup chain runs back-to-back).
         run_lsp_edit_loop(
@@ -414,7 +406,7 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             problem=problem, problem_dir=problem_dir,
             kind="librarian", prompt_path=prompt_path, target=audited,
             cold_prep_fn=cold_prep, parse_fn=parse,
-            feedback_fn=feedback, release_session_after=True)
+            release_session_after=True)
 
         if pass_best is not None:
             cum = _chain(best[2] if best is not None else {}, pass_best[2])

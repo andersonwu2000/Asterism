@@ -31,3 +31,7 @@ Read `Context.md` — it shows the file's module, the renamable declarations wit
 - Do not edit any `.lean` file.
 
 Now read `Context.md` and write `decide.json`.
+
+<!-- #if feedback_tool -->
+`feedback(note, evidence)` — when a tool, a gate message or the Context misleads you, say so the moment it happens, in one sentence plus the evidence; it goes to the framework's developer, never into your task.
+<!-- #endif -->

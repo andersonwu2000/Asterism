@@ -163,3 +163,118 @@ def test_every_adapter_hands_the_flags_to_the_renderer() -> None:
                 f"{mod.__name__}:{call.lineno} calls "
                 f"render_prompt_template without `flags` — the renderer "
                 f"is fail-open, so every conditional block would render")
+
+
+# ---------------------------------------------------------------------
+# `feedback(note, evidence)` is advertised in DEVELOPER MODE ONLY
+# ---------------------------------------------------------------------
+#
+# Owner amendment 2026-09-07. The tool stays registered on every seat
+# (its ack already says "this workspace does not collect framework
+# feedback" when the sink is off), but an end user's agents must not
+# spend attention on a channel that reports to the framework's
+# developer. So the sentence lives in a `feedback_tool` block and the
+# flag comes from the SAME switch that decides whether the sink
+# collects — `pipeline._feedback.feedback_enabled`.
+
+_FEEDBACK_SENTENCE = "`feedback(note, evidence)` —"
+
+#: Every prompt carrying the block. Enumerated from disk rather than
+#: typed: a seat prompt added with the block and forgotten here would
+#: otherwise be tested by nothing.
+_FEEDBACK_PROMPTS = sorted(
+    p for p in (ROOT / "Tooling" / "prompts").rglob("*.md")
+    if "<!-- #if feedback_tool -->" in p.read_text(encoding="utf-8"))
+
+
+def test_the_block_reaches_every_seat_prompt() -> None:
+    """The seats that filed nothing under the retired survivor leg —
+    presearch, the librarian family, the intake turn — are exactly the
+    ones that had no channel. Adding the tool without telling them
+    would have reproduced that silence."""
+    names = {p.name for p in _FEEDBACK_PROMPTS}
+    assert {"adversary.md", "routine.md", "inject_batch_done.md",
+            "theory.md", "review.md", "formalize.md", "mint.md",
+            "intake.md", "presearch.md", "classify.md",
+            "migrate.md"} <= names, sorted(names)
+
+
+@pytest.mark.parametrize("path", _FEEDBACK_PROMPTS, ids=lambda p: p.name)
+def test_outside_developer_mode_no_prompt_names_the_tool(path) -> None:
+    rendered = render_prompt_template(
+        path.read_text(encoding="utf-8"),
+        flags={**caps.prompt_tool_flags("claude"), "feedback_tool": False})
+    assert _FEEDBACK_SENTENCE not in rendered
+    assert "#if feedback_tool" not in rendered      # marker stripped too
+
+
+@pytest.mark.parametrize("path", _FEEDBACK_PROMPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_in_developer_mode_both_tool_line_variants_carry_it(
+    path, provider,
+) -> None:
+    """Once, in either variant — the native-file-tools line and the
+    mcp-only-reads line are alternatives, and a sentence duplicated
+    across them would reach a worker twice."""
+    rendered = render_prompt_template(
+        path.read_text(encoding="utf-8"),
+        flags={**caps.prompt_tool_flags(provider), "feedback_tool": True})
+    assert rendered.count(_FEEDBACK_SENTENCE) == 1
+
+
+def test_the_flag_comes_from_the_one_gate_the_sink_uses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A second switch would let the prompts advertise a channel that
+    files nothing, or hide one that collects."""
+    from Tooling.agent import runtime
+    seen: dict = {}
+
+    class _Provider:
+        def spawn(self, req):
+            seen.update(req.prompt_flags or {})
+            return 0
+
+    monkeypatch.setattr(runtime.llm, "get_provider",
+                        lambda kind=None: _Provider())
+    monkeypatch.setattr(caps, "provider_for_kind", lambda k, **kw: "codex")
+    monkeypatch.setattr(runtime, "_record_spawn_usage", lambda **kw: None)
+    monkeypatch.setattr(runtime, "_artifact_audit", lambda **kw: None)
+    attempts = tmp_path / ".attempts" / "pid"
+    attempts.mkdir(parents=True)
+
+    for value, expected in (("false", False), ("true", True)):
+        monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", value)
+        runtime.spawn_llm(kind="strategist", prompt_path=tmp_path / "p.md",
+                          problem_dir=tmp_path, attempts_dir=attempts)
+        assert seen["feedback_tool"] is expected
+
+
+def test_the_flag_is_passed_explicitly_even_when_it_is_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The renderer is fail-OPEN: an omitted flag KEEPS its block, so
+    "we only pass it when it is on" would advertise the tool in exactly
+    the installations the gate exists to hide it from."""
+    from Tooling.agent import runtime
+    seen: dict = {}
+
+    class _Provider:
+        def spawn(self, req):
+            seen.update({"flags": dict(req.prompt_flags or {})})
+            return 0
+
+    monkeypatch.setattr(runtime.llm, "get_provider",
+                        lambda kind=None: _Provider())
+    monkeypatch.setattr(caps, "provider_for_kind", lambda k, **kw: "claude")
+    monkeypatch.setattr(runtime, "_record_spawn_usage", lambda **kw: None)
+    monkeypatch.setattr(runtime, "_artifact_audit", lambda **kw: None)
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "false")
+
+    runtime.spawn_llm(kind="adversary", prompt_path=tmp_path / "p.md",
+                      problem_dir=tmp_path, attempts_dir=tmp_path,
+                      prompt_flags={"dossier_inline": True})
+
+    assert "feedback_tool" in seen["flags"]
+    assert seen["flags"]["feedback_tool"] is False
+    assert seen["flags"]["dossier_inline"] is True   # caller's own survive

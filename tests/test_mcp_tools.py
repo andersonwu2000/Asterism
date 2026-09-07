@@ -59,6 +59,10 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
         # over (owner, 2026-09-06). Not a write channel: the build runs
         # in a scratch directory outside every Project.
         "tex_check",
+        # The framework's own inbox (owner ruling 2026-09-07), replacing
+        # the end-of-run survivor leg: an agent says what misled it at
+        # the moment it happens, from whichever seat happened to hit it.
+        "feedback",
     }
 
 
@@ -1207,3 +1211,129 @@ def test_a_stale_log_is_not_this_builds_diagnosis(
     out = mcp_tools.tex_check(project="Erdos", path="user/paper.tex")
     assert "Undefined control sequence" not in out, out
     assert "nothing in its log yet" in out, out
+
+
+# ---------------------------------------------------------------------
+# feedback — the framework's own inbox (owner ruling 2026-09-07)
+# ---------------------------------------------------------------------
+#
+# It replaced the end-of-run survivor leg: a resumed spawn per finished
+# pipeline, asking an agent to reconstruct, afterwards, what the
+# framework got wrong. The tool asks for it at the moment it happens —
+# and reaches the seats (presearch, the librarian family, anything that
+# died mid-turn) that never survived to a tail.
+
+_FB_OUT = ".asterism/agent_feedback.md"
+
+
+@pytest.fixture
+def seated(tmp_path, monkeypatch):
+    """A spawn's identity as the tools server sees it: its seat, its
+    problem, and its attempts dir — the three things declared into this
+    server's own env by the pipeline config writers."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.llm import spawn_guard
+
+    att = tmp_path / ".attempts" / "pid-77"
+    att.mkdir(parents=True)
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "true")
+    monkeypatch.setenv("ASTERISM_SEAT", "strategist")
+    monkeypatch.setenv(spawn_guard.PROBLEM_ENV, "Combinatorics.union_closed")
+    monkeypatch.setenv(spawn_guard.ATTEMPT_DIR_ENV, str(att))
+    monkeypatch.setattr(mcp_tools, "_workspace_root", lambda: tmp_path)
+    mcp_tools._FEEDBACK_FILED.clear()
+    return tmp_path
+
+
+def test_feedback_files_one_record_with_the_seats_own_identity(seated):
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import _feedback
+
+    ack = mcp_tools.feedback(
+        note="validate_json named a criterion my rubric does not have",
+        evidence='OK as JSON, but … missing criterion 5')
+
+    assert ack.startswith("feedback: filed")
+    text = (seated / _FB_OUT).read_text(encoding="utf-8")
+    assert _feedback.count_records(text) == 1
+    line = [ln for ln in text.splitlines()
+            if ln.startswith(_feedback.RECORD_MARK)][0]
+    # kind = the seat (the only identity this server has: the pipeline
+    # LABEL never reaches a spawn), and the slug column names the spawn
+    # itself, which is also `.asterism/mcp_logs/<pipeline_id>.jsonl`.
+    assert "| strategist |" in line
+    assert f"| {_feedback.IN_FLIGHT} |" in line
+    assert "Combinatorics.union_closed/pid-77]" in line
+    assert "criterion my rubric does not have" in line
+    assert "evidence: OK as JSON" in text
+
+
+def test_feedback_says_so_when_the_workspace_does_not_collect(
+    seated, monkeypatch,
+):
+    """Registered on every seat, collecting only in developer mode — so
+    the ack has to distinguish "filed" from "there is nowhere to file
+    it". An agent told "filed" by a sink that is off learns the channel
+    works when it does not."""
+    from Tooling.knowledge import mcp_tools
+
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "false")
+    ack = mcp_tools.feedback(note="the gate refused on a false premise")
+    assert "does not collect" in ack
+    assert not (seated / _FB_OUT).exists()
+
+
+def test_feedback_never_raises_and_teaches_the_parameter(seated,
+                                                         monkeypatch):
+    """Every tool here has optional parameters for one reason: a raising
+    MCP tool stamps the whole agy envelope ERROR. This one has a second
+    — it is called when something has ALREADY gone wrong."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import _feedback
+
+    assert "`note`" in mcp_tools.feedback()          # nothing bound
+    assert not (seated / _FB_OUT).exists()
+
+    def _boom(*a, **k):
+        raise RuntimeError("sink is on fire")
+
+    monkeypatch.setattr(_feedback, "record_note", _boom)
+    ack = mcp_tools.feedback(note="something")
+    assert "not filed" in ack and "your task" in ack
+
+
+def test_feedback_write_failure_is_reported_not_swallowed(seated,
+                                                          monkeypatch):
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import _feedback
+
+    monkeypatch.setattr(_feedback, "record_note", lambda *a, **k: False)
+    ack = mcp_tools.feedback(note="something")
+    assert "not filed" in ack
+
+
+def test_one_spawn_cannot_evict_every_other_spawns_notes(seated):
+    """The sink is a ring of whole records; a seat looping on one broken
+    gate would otherwise push everyone else out by volume. The refusal
+    names the cap instead of going quiet."""
+    from Tooling.knowledge import mcp_tools
+    from Tooling.pipeline import _feedback
+
+    for i in range(mcp_tools._FEEDBACK_PER_SPAWN):
+        assert mcp_tools.feedback(note=f"note {i}").startswith(
+            "feedback: filed")
+    ack = mcp_tools.feedback(note="one too many")
+    assert "cap" in ack
+    text = (seated / _FB_OUT).read_text(encoding="utf-8")
+    assert _feedback.count_records(text) == mcp_tools._FEEDBACK_PER_SPAWN
+
+
+def test_every_seat_that_can_read_can_also_file(seated):
+    """Not a per-seat grant: the seat that hits a gate worded on a false
+    premise is whichever seat happened to hit it, and the retired leg's
+    own lesson was that the seats with no channel were exactly the ones
+    nothing was ever heard from."""
+    from Tooling.llm.envelope import SEAT_ASTERISM_TOOLS
+
+    for seat, tools in SEAT_ASTERISM_TOOLS.items():
+        assert "feedback" in tools, seat

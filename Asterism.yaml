@@ -298,17 +298,17 @@ librarian:
                                # (sonnet-5 pricing not yet benchmarked); revert
                                # to sonnet-4-6 if the bulk cost regresses.
 
-# Developer-only agent framework-feedback questionnaire. Off by default.
-# When on: survivor agents append one sentence (friction / suggestion /
-# critique) to .asterism/agent_feedback.md (piggybacks the reflection
-# spawn — no extra spawn), and the framework writes a death-cause line for
-# agents that died without a resumable session. The output file is under the
-# gitignored .asterism/ runtime-state tree, so a shared checkout neither has
-# it nor triggers it. Survivor reports require reflection on
-# (lessons.reflection_enabled, default on); death-cause writes are
-# independent.
+# Developer-only agent framework feedback. Off by default. When on:
+# every seat's prompt names the `feedback(note, evidence)` MCP tool, and
+# an agent that a tool, gate or Context line misleads files one sentence
+# to .asterism/agent_feedback.md AS IT HAPPENS; the framework writes a
+# death-cause line for agents that died without a resumable session. ONE
+# switch for both — a prompt that advertised the tool where the sink is
+# off would teach an agent to spend a call on "nothing was filed". The
+# output file is under the gitignored .asterism/ runtime-state tree, so a
+# shared checkout neither has it nor triggers it.
 feedback:
-  enabled: true                # re-enabled for the Formalizer e2e acceptance (user 2026-07-29); the ~15-30s questionnaire resume per spawn is acceptable in dev runs
+  enabled: true                # developer mode (user 2026-07-29). Since 2026-09-07 this costs NO extra spawn: the end-of-run questionnaire leg is retired and the tool is called mid-turn.
 
 # (scholar seat retired 2026-08-22 — paper fetching is the Strategist's
 # own tool surface now; the Scholar pipeline is gone.)

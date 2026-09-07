@@ -1127,17 +1127,6 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # already captures the spawn rc and the parser-state verdict.
         return None
 
-    def forward_feedback(sid: str, result) -> None:
-        from . import _feedback
-        _feedback.attempt_feedback(
-            # `forward` is the record label; the mint work spawn is
-            # dispatched as `formalizer` (no `forward:` seat exists).
-            kind="forward", seat="formalizer", sid=sid,
-            slug=(f"inject{decision_id}" if decision_id else "forward"),
-            outcome=(result.failure_reason or result.outcome),
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            workspace=workspace)
-
     # ── Intake stage (update_plan_2026_07 #1, mint job) ──────────────
     # Confirmation-shaped: the brief usually pins the Proof claim, but
     # "the claim has no backing in the Proof" must be catchable before
@@ -1216,7 +1205,6 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             cold_prep_fn=forward_cold_prep,
             parse_fn=forward_parse,
             postmortem_fn=forward_postmortem,
-            feedback_fn=forward_feedback,
             decision_id=decision_id,
             initial_sid=intake_sid,
             # Mint's parse reads `new_forward.lean` only — the default

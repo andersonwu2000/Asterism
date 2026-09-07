@@ -749,7 +749,6 @@ def spawn_collect(workspace: Path, problem: str, prompt_path: Path,
     FIRST output name — the stage's mandatory artifact — is missing. Optional
     sidecars (later names) are simply absent from the dict."""
     from .... import agent
-    from ....pipeline import _feedback
     attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
     (attempts / "Context.md").write_text(context_text, encoding="utf-8")
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
@@ -764,15 +763,8 @@ def spawn_collect(workspace: Path, problem: str, prompt_path: Path,
         p = attempts / name
         if p.exists():
             out[name] = p.read_text(encoding="utf-8")
-    # Framework feedback (dedicated tail step). spawn_collect is the single
-    # choke point for EVERY agentic cleanup stage, so this one call covers them
-    # all (the librarian agents were otherwise the only pipeline with no
-    # feedback channel). Tagged by stage (prompt filename) so reports filter by
-    # `cleanup:polish` / `cleanup:audit` / …; no-op unless feedback is enabled.
-    fm = re.search(r"`([^`]+\.lean)`", context_text)
-    _feedback.attempt_feedback(
-        kind=f"cleanup:{prompt_path.stem}", seat="librarian", sid=sid,
-        slug=(fm.group(1).rsplit("/", 1)[-1] if fm else prompt_path.stem),
-        outcome="success", problem_dir=problem_dir,
-        attempts_dir=attempts, workspace=workspace)
+    # Framework feedback used to be asked for here, as an extra resume
+    # leg per cleanup stage. Retired 2026-09-07 (owner ruling): the
+    # librarian seat carries the `feedback` MCP tool like every other,
+    # and files mid-run.
     return out

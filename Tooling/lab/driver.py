@@ -200,8 +200,9 @@ def keep_feedback(workspace: Path, out: Path) -> "tuple[list[str], int]":
 
     THE LAB IS WHERE A PROMPT CHANGE IS JUDGED BY WHAT THE AGENTS
     COMPLAIN ABOUT, and this file is the only place they say it —
-    survivor self-reports plus the framework's own death causes
-    (`pipeline/_feedback.py`). It is written into `.asterism/`, which is
+    notes agents file mid-run through the `feedback` MCP tool, plus the
+    framework's own death causes (`pipeline/_feedback.py`). It is
+    written into `.asterism/`, which is
     runtime state, which is exactly what `lab run` deletes when the run
     ends: without this copy the first end-to-end run's four reports
     survived only because the workspace happened to still be standing
