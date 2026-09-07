@@ -618,16 +618,52 @@ def test_workarea_exit_no_release_when_no_token(
 # render_prompt_template — placeholder substitution
 # ---------------------------------------------------------------------
 
-def test_render_prompt_template_substitutes_timeout_min() -> None:
-    """`{timeout_min}` reflects WORKER_TIMEOUT_SEC for body prompts and
-    POSTMORTEM_TIMEOUT_SEC for postmortem prompts."""
-    from Tooling.agent.runtime import (
-        render_prompt_template, WORKER_TIMEOUT_SEC, POSTMORTEM_TIMEOUT_SEC,
-    )
-    body = render_prompt_template("budget {timeout_min}")
-    assert body == f"budget {WORKER_TIMEOUT_SEC // 60}"
-    pm = render_prompt_template("budget {timeout_min}", is_postmortem=True)
-    assert pm == f"budget {POSTMORTEM_TIMEOUT_SEC // 60}"
+def test_render_prompt_template_substitutes_timeout_min(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`{timeout_min}` is the cap THIS spawn was given, never a module
+    constant. It read `WORKER_TIMEOUT_SEC` (900) while `spawn_llm`
+    resolved `dispatch.spawn_timeout_sec` (1800), so every prompt on the
+    fleet asked for 15 minutes of work from a 30-minute turn — and the
+    three spawns axed on 2026-09-07 were all mid-edit."""
+    from Tooling.agent.runtime import render_prompt_template, spawn_timeout_sec
+    # The adapters pass the request's own value — an intake turn's 300s
+    # override renders ITS budget, not the worker default.
+    assert render_prompt_template(
+        "budget {timeout_min}", timeout_sec=300) == "budget 5"
+    assert render_prompt_template(
+        "budget {timeout_min}", timeout_sec=1800) == "budget 30"
+    # Unpassed, it falls back to the SAME resolution spawn_llm runs.
+    monkeypatch.setenv("ASTERISM_SPAWN_TIMEOUT_SEC", "1200")
+    assert spawn_timeout_sec() == 1200
+    assert render_prompt_template("budget {timeout_min}") == "budget 20"
+    monkeypatch.setenv("ASTERISM_POSTMORTEM_TIMEOUT_SEC", "360")
+    assert spawn_timeout_sec(is_postmortem=True) == 360
+    assert render_prompt_template(
+        "budget {timeout_min}", is_postmortem=True) == "budget 6"
+
+
+def test_every_adapter_renders_the_budget_it_will_enforce() -> None:
+    """The resolution is only half of it: an adapter that renders
+    without `timeout_sec` falls back to the config default and an
+    overridden spawn (intake at 300s, a rescue leg at 180s) lies again.
+    Read off the source — three of the four adapters need a CLI on the
+    machine to reach the call site (codex composes claude's helpers)."""
+    import ast
+    import inspect
+    from Tooling.llm import antigravity_cli, claude_cli, openai_api
+
+    for mod in (claude_cli, antigravity_cli, openai_api):
+        tree = ast.parse(inspect.getsource(mod))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "render_prompt_template"]
+        assert calls, f"{mod.__name__} renders no prompt template"
+        for call in calls:
+            assert "timeout_sec" in {kw.arg for kw in call.keywords}, (
+                f"{mod.__name__}:{call.lineno} renders the prompt without "
+                f"the request's timeout — `{{timeout_min}}` would advertise "
+                f"a budget this spawn does not have")
 
 
 def test_render_prompt_template_substitutes_interval_min(

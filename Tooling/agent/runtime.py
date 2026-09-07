@@ -38,12 +38,36 @@ POSTMORTEM_TIMEOUT_SEC = 180
 THEORIZE_CHECKPOINT = "_theorize.json"
 
 
+def spawn_timeout_sec(*, is_postmortem: bool = False) -> int:
+    """The wall-clock cap a spawn is actually given — the ONE resolution,
+    read by `spawn_llm` when the caller names no timeout and by
+    `render_prompt_template` when nobody hands it the request's value.
+
+    The constants above are only this knob's DEFAULT. Reading them as if
+    they were the answer is what made every prompt on the fleet say "15
+    minutes" while `dispatch.spawn_timeout_sec: 1800` had the killer
+    waiting 30 (2026-09-07: three spawns axed mid-edit, their work lost
+    to `stale_validation` salvage)."""
+    if is_postmortem:
+        return int(config.get(
+            "dispatch.postmortem_timeout_sec",
+            default=POSTMORTEM_TIMEOUT_SEC,
+            env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+        ))
+    return int(config.get(
+        "dispatch.spawn_timeout_sec",
+        default=WORKER_TIMEOUT_SEC,
+        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
+    ))
+
+
 _PROMPT_COND_RE = re.compile(
     r"[ \t]*<!-- #if (\w+) -->[ \t]*\n(.*?)[ \t]*<!-- #endif -->[ \t]*\n?",
     re.DOTALL)
 
 
 def render_prompt_template(text: str, *, is_postmortem: bool = False,
+                           timeout_sec: "int | None" = None,
                            flags: "dict[str, bool] | None" = None,
                            attempts_dir: "Path | None" = None) -> str:
     """Substitute prompt template placeholders against live config.
@@ -59,8 +83,14 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
         side left `decision.json` and `proposal.md` in the problem dir
         where the next spawn's bare read then found them. The framework
         knows this path; it should not be a thing to infer.
-      - `{timeout_min}` — per-spawn wall-clock (WORKER_TIMEOUT_SEC for
-        body prompts, POSTMORTEM_TIMEOUT_SEC for postmortems).
+      - `{timeout_min}` — the wall-clock cap THIS spawn was given.
+        `timeout_sec` is the request's own value, which every adapter
+        passes straight off `LLMRequest`, so an intake turn (300s) or
+        any `timeout_sec_override` renders ITS budget rather than the
+        worker default. Omitted, it falls back to the same resolution
+        `spawn_llm` runs. It used to be read off the module constant
+        while the spawn was capped by `dispatch.spawn_timeout_sec`:
+        the prompt said 15 minutes, the killer waited 30.
       - `{interval_min}` — Strategist T1 routine cadence (minutes;
         `strategist.interval_min` config knob). Only the strategist
         prompts (`strategist/*.md`) use this placeholder today; the
@@ -77,8 +107,8 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
             return m.group(2)
         return ""
     text = _PROMPT_COND_RE.sub(_cond, text)
-    timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
-                   else WORKER_TIMEOUT_SEC)
+    if timeout_sec is None:
+        timeout_sec = spawn_timeout_sec(is_postmortem=is_postmortem)
     interval_min = config.get(
         "strategist.interval_min", default=120.0,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
@@ -220,9 +250,12 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     `is_postmortem`: set on the postmortem spawn after a main
     timeout. Provider uses `--resume <session_id>`, loads `prompt_path`
     verbatim (a short instruction asking the agent to dump state +
-    blockers into `_progress.md`). `timeout_sec` defaults to
-    `POSTMORTEM_TIMEOUT_SEC` (180s) for postmortem calls and
-    `WORKER_TIMEOUT_SEC` (900s) otherwise.
+    blockers into `_progress.md`). `timeout_sec` defaults to whatever
+    `spawn_timeout_sec` resolves — `dispatch.postmortem_timeout_sec` for
+    postmortem calls, `dispatch.spawn_timeout_sec` otherwise, with the
+    module constants as those knobs' defaults. Whatever it settles on
+    is what the request carries, so the prompt's `{timeout_min}` and
+    the killer's clock are the same number.
 
     `inline_prompt`: 2026-05-10 — fresh-rescue stage 2 / stage 3
     inline prompt. Caller has minted a fresh `session_id` and copied
@@ -242,18 +275,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     dropped (b6: ~0.5h of judge cost invisible, 2026-07-18).
     """
     if timeout_sec is None:
-        if is_postmortem:
-            timeout_sec = config.get(
-                "dispatch.postmortem_timeout_sec",
-                default=POSTMORTEM_TIMEOUT_SEC,
-                env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-            )
-        else:
-            timeout_sec = config.get(
-                "dispatch.spawn_timeout_sec",
-                default=WORKER_TIMEOUT_SEC,
-                env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
-            )
+        timeout_sec = spawn_timeout_sec(is_postmortem=is_postmortem)
     if timeout_sec_override is not None:
         timeout_sec = timeout_sec_override
     import time as _time

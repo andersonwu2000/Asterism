@@ -130,6 +130,21 @@ def test_intake_generic_error_degrades_to_cold(tmp_path, monkeypatch) -> None:
     assert out.sid is None and out.declined is None and out.infra_rc is None
 
 
+def test_intake_prompt_carries_its_own_budget(monkeypatch) -> None:
+    """The intake turn runs on `dispatch.intake_timeout_sec` (300s
+    today) — a fifth of the worker cap — and its prompt was the one
+    seat prompt with no budget line at all. It renders from the same
+    override the spawn is given."""
+    from Tooling.agent.runtime import render_prompt_template
+    text = (PROMPT_DIR / "formalizer" / "intake.md").read_text(
+        encoding="utf-8")
+    assert "{timeout_min}" in text
+    monkeypatch.setenv("ASTERISM_INTAKE_TIMEOUT_SEC", "300")
+    rendered = render_prompt_template(
+        text, timeout_sec=_intake.intake_timeout_sec(None))
+    assert "Time budget: 5 minutes." in rendered
+
+
 # ---------------------------------------------------------------------
 # run_backward wiring
 # ---------------------------------------------------------------------

@@ -186,6 +186,7 @@ class OpenAIProvider:
         # depending on which seat happened to be on which backend.
         prompt_template = render_prompt_template(
             prompt_template, is_postmortem=req.is_postmortem,
+            timeout_sec=req.timeout_sec,
             flags=req.prompt_flags, attempts_dir=req.attempts_dir)
 
         context_path = req.attempts_dir / "Context.md"

@@ -1042,9 +1042,12 @@ def _load_prompt(req: LLMRequest) -> str:
     string so the spawn still proceeds and the failure surfaces as a
     normal agent error rather than a silent crash.
 
-    Substitutes `{timeout_min}` with the live spawn timeout (in
-    minutes) so the prompt's wall-clock hint stays in sync with
-    `WORKER_TIMEOUT_SEC` / `POSTMORTEM_TIMEOUT_SEC`.
+    Substitutes `{timeout_min}` with THIS request's `timeout_sec` — the
+    cap the spawn below is actually killed at. The claim that it "stays
+    in sync" used to be false: the renderer read the module constant
+    (900) while the spawn was capped by `dispatch.spawn_timeout_sec`
+    (1800), so every prompt on the fleet asked for 15 minutes of work
+    from a 30-minute turn.
     """
     from Tooling.agent import render_prompt_template
     try:
@@ -1052,6 +1055,7 @@ def _load_prompt(req: LLMRequest) -> str:
     except OSError as e:
         return f"(prompt file unavailable: {e})"
     return render_prompt_template(text, is_postmortem=req.is_postmortem,
+                                  timeout_sec=req.timeout_sec,
                                   flags=req.prompt_flags,
                                   attempts_dir=req.attempts_dir)
 
