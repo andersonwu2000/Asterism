@@ -221,3 +221,19 @@ artefact list.
 included, which is the artefact that mattered the one time it was
 deleted — plus the landed theory documents, both providers' transcripts,
 and the driver's own `driver_result.json`.
+
+`_out/asterism.db` is a WAL-safe copy of the workspace's DB, taken for
+**every** kind (`driver.keep_db_record`). It is not a convenience: on
+the `daemon` kind it is the only record there is. Production `rmtree`s
+`.attempts/<pipeline id>/` as each pipeline exits, so a daemon arm keeps
+no attempts tree at all and its proposals, verdicts and dialogue exist
+only as rows. That kind therefore also gets the reading beside it —
+`PROGRAMME.md` / `TREE.md` / `CATALOG.md` as the problem dir held them,
+`dialogue/rev<N>.json` per programme revision (every row at that rev,
+since only the passed one is unique), and `theory/<doc id>.md` per landed
+document.
+
+`_out/transcripts/claude/<cwd>/` is one directory per spawn cwd, because
+that is what the CLI files under: a spawn runs in its attempts dir or its
+problem dir, never at the workspace root, so the workspace's own munge
+names a directory that usually does not exist.

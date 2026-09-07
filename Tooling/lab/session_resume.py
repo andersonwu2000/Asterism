@@ -20,10 +20,13 @@ WHAT A RESUME ACTUALLY IS, on codex (`llm/codex_cli.py`):
      `CODEX_HOME` (`attempts_dir/_codex_home/sessions/YYYY/MM/DD/`);
      with the file missing it dies in seconds with `failed to resolve
      rollout path`.
-  4. `_codex_usage.json` carries the thread's running totals, because
-     codex reports SESSION-cumulative token counts and `spawn_usage`
-     sums the rows it is handed. Without a baseline the resumed spawn is
-     billed for the whole conversation — measured at 2.0x on 2026-08-15.
+  4. `_codex_usage.json` carries the thread's running totals as of the
+     historical session's last turn. `spawn_usage` sums the rows it is
+     handed, and the adapter bills a spawn by the growth of the thread's
+     rollout across it (`codex_cli.rollout_usage`), so this is the
+     "before" of that subtraction. Seeding it is an optimisation, not a
+     requirement: with the file absent the adapter reads the staged
+     rollout itself.
 
 `stage_resume` rebuilds all four from the one file that survived, and
 `resume_cold_spawn` rewrites a round's cold spawn to use it — at
@@ -132,38 +135,18 @@ def find_rollout(roots, thread_id: str) -> "tuple[Path, list[dict]]":
 
 
 def rollout_baseline(rollout: "Path | str") -> "dict[str, int]":
-    """The thread's running totals, in `StreamParser`'s OWN key names.
+    """The thread's running totals as of this rollout, in
+    `StreamParser`'s OWN key names.
 
-    Read from the LAST `token_usage_record.thread_token_usage` in the
-    file, and translated the way `stream_parser` translates a live
-    `turn.completed`: codex's `input_tokens` INCLUDES the cached ones and
-    the parser's does not, so the cached half is subtracted rather than
-    counted twice. Handed to the adapter as `_codex_usage.json`, this is
-    what makes the resumed spawn's `spawn_usage` row say what THIS turn
-    cost instead of what the whole conversation has cost."""
-    last: "dict | None" = None
-    with open(rollout, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            # Cheap prefilter: these files run to megabytes and only a
-            # few dozen lines are usage records.
-            if '"token_usage_record"' not in line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if obj.get("type") == "token_usage_record":
-                last = obj
-    if last is None:
-        return {}
-    u = (last.get("payload") or {}).get("thread_token_usage") or {}
-    total_in = int(u.get("input_tokens") or 0)
-    cached = int(u.get("cached_input_tokens") or 0)
-    return {"input_tokens": max(0, total_in - cached),
-            "cache_read_input_tokens": cached,
-            "cache_creation_input_tokens":
-                int(u.get("cache_write_input_tokens") or 0),
-            "output_tokens": int(u.get("output_tokens") or 0)}
+    THE ADAPTER'S READER, not a second one. `codex_cli.rollout_usage` is
+    what bills every live spawn — it reads the last
+    `token_usage_record.thread_token_usage` and takes the cached half
+    out of `input_tokens`, because codex's includes it and the parser's
+    does not. A copy here would drift from it silently and the drift
+    would show up as a resumed leg that argued for four minutes and
+    spent nothing, which is what 2026-09-07 spent the morning on."""
+    from ..llm import codex_cli as _codex
+    return _codex.rollout_usage(rollout)
 
 
 def truncate_rollout(src: "Path | str", dst: "Path | str",
@@ -245,9 +228,9 @@ def stage_resume(attempts_dir: "Path | str", *, sid: str,
       `_codex_sessions.json`   `{sid: thread}` — without it `prior` is
                                empty and the spawn is cold with a full
                                prompt, which looks like a run
-      `_codex_usage.json`      `{thread: totals}` — without it the
-                               resumed turn is billed for every earlier
-                               turn as well
+      `_codex_usage.json`      `{thread: totals}` — the "before" the
+                               adapter subtracts the finished rollout
+                               from, so the row is this turn's growth
 
     Staged INTO the attempts dir the round is about to use, and always
     after that dir is built: both round builders `rmtree` their
@@ -296,14 +279,14 @@ def harvest_rollout(attempts_dir: "Path | str", thread_id: str
     `_preserve_transcript` copies rather than moves — codex needs the
     original in place for the next resume — so the grown file is here
     until `lab run` clears the workspace. This is what carries one
-    session from round 2 into round 3."""
+    session from round 2 into round 3.
+
+    The lookup is the adapter's own (`codex_cli._thread_rollout`): it
+    bills every spawn off the file this returns, and two searches for
+    one file is two answers to "which copy is the conversation"."""
+    from ..llm import codex_cli as _codex
     home_name, _, _ = _codex_names()
-    root = Path(attempts_dir) / home_name / "sessions"
-    if not root.is_dir():
-        return None
-    hits = sorted(root.rglob(f"rollout-*-{thread_id}.jsonl"),
-                  key=lambda p: p.stat().st_size)
-    return hits[-1] if hits else None
+    return _codex._thread_rollout(Path(attempts_dir) / home_name, thread_id)
 
 
 def resumes_a_codex_rollout(provider: "str | None") -> bool:

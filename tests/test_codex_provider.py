@@ -286,44 +286,165 @@ def test_usage_lands_in_the_shape_spawn_usage_reads() -> None:
     assert not hasattr(codex_cli, "_record_usage")
 
 
+def _rollout(path, rows):
+    """A codex rollout carrying `rows` of `(input, cached, output)` as
+    the THREAD's running totals — the shape `rollout_usage` reads."""
+    lines = []
+    for total_in, cached, out in rows:
+        lines.append(json.dumps({
+            "type": "token_usage_record",
+            "payload": {"thread_token_usage": {
+                "input_tokens": total_in, "cached_input_tokens": cached,
+                "cache_write_input_tokens": 0, "output_tokens": out}}}))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+THREAD = "01a06ed4-3ac4-7aa2-aaf0-7b085bb01583"
+
+
 def test_a_resumed_spawn_is_billed_only_for_its_own_turns(
     tmp_path: Path,
 ) -> None:
-    """Codex re-reports the WHOLE conversation's totals on every resume,
-    and `spawn_usage` sums the rows it is handed. Without a baseline the
-    second stage re-bills the first — the 2.0x over-count measured on
-    Test.provider_probe on 2026-08-15, where one formalizer's three
-    stage rows summed to 1.11M prompt tokens against a session total of
-    550,619 (checked against the rollout, which agreed with the LAST row
-    exactly).
+    """A THREAD's totals grow across every resume and `spawn_usage` sums
+    the rows it is handed, so each row has to be that spawn's GROWTH.
+
+    The sequence is the one measured on `judge_continuity/
+    strategist_c_r1` (2026-09-07): a historical session, a resumed turn
+    on top of it, and a SECOND resumed turn on top of that. The three
+    rows must sum to the conversation, and no row may be zero while its
+    turn was filing a verdict — which is exactly what the run reported
+    (`output_tokens: 0` at r2, all zeros at r3).
     """
+    home = tmp_path / "_codex_home"
+    roll = (home / "sessions" / "2026" / "09" / "05"
+            / f"rollout-2026-09-05T07-49-57-{THREAD}.jsonl")
+
+    # The historical session, before the lab ever woke it.
+    _rollout(roll, [(400, 300, 40), (841175, 725120, 13357)])
+    baseline = codex_cli.rollout_usage(roll)
+    assert baseline == {"input_tokens": 116055,
+                        "cache_read_input_tokens": 725120,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 13357}
+
+    # Turn one, resumed: the file grows and the row is the growth.
+    _rollout(roll, [(400, 300, 40), (841175, 725120, 13357),
+                    (1798738, 1555968, 22949)])
+    after1 = codex_cli.rollout_usage(roll)
+    turn1 = codex_cli._usage_delta(after1, baseline)
+    assert turn1 == {"input_tokens": 126715,
+                     "cache_read_input_tokens": 830848,
+                     "cache_creation_input_tokens": 0,
+                     "output_tokens": 9592}
+
+    # Turn two, resumed AGAIN — baselined on turn one's end, not on the
+    # historical session's, which is the r3 leg that reported nothing.
+    _rollout(roll, [(400, 300, 40), (841175, 725120, 13357),
+                    (1798738, 1555968, 22949),
+                    (2939727, 2542208, 27735)])
+    after2 = codex_cli.rollout_usage(roll)
+    turn2 = codex_cli._usage_delta(after2, after1)
+    assert turn2 == {"input_tokens": 154749,
+                     "cache_read_input_tokens": 986240,
+                     "cache_creation_input_tokens": 0,
+                     "output_tokens": 4786}
+
+    # Every turn produced output, and the rows sum to the conversation.
+    assert turn1["output_tokens"] and turn2["output_tokens"]
+    for k in ("input_tokens", "cache_read_input_tokens", "output_tokens"):
+        assert baseline[k] + turn1[k] + turn2[k] == after2[k]
+
+
+def test_the_stream_figure_is_the_execs_own_and_carries_no_baseline(
+) -> None:
+    """WHY THE SUBTRACTION MOVED OFF THE STREAM. `turn.completed.usage`
+    runs over the `codex exec` PROCESS, not the thread: the resumed exec
+    above reported 957563/830848/9592 into its stream — the GROWTH, not
+    the thread total. Subtracting a thread baseline from it is what
+    turned `strategist_c_r1`'s r2 leg into `output_tokens: 0` and its r3
+    leg into all zeros while both were filing verdicts.
+
+    So the parser takes no baseline, and the only way a measured figure
+    reaches it is `adopt_usage`."""
+    import inspect
+
     from Tooling.llm.stream_parser import StreamParser
 
-    # Stage 1, cold: nothing recorded for this thread yet.
-    p1 = StreamParser(dialect="codex",
-                      usage_baseline=codex_cli._usage_baseline(
-                          tmp_path, None))
-    p1.feed_line('{"type":"turn.completed","usage":{"input_tokens":22138,'
-                 '"cached_input_tokens":55296,"output_tokens":608}}')
-    assert p1.usage()["output_tokens"] == 608
-    codex_cli._remember_usage(tmp_path, "th-1", p1.cumulative_usage())
+    assert "usage_baseline" not in inspect.signature(
+        StreamParser.__init__).parameters
+    p = StreamParser(dialect="codex")
+    p.feed_line('{"type":"turn.completed","usage":{"input_tokens":957563,'
+                '"cached_input_tokens":830848,"output_tokens":9592}}')
+    assert p.usage()["output_tokens"] == 9592, "the exec's own spend"
+    p.adopt_usage({"input_tokens": 126715, "output_tokens": 9592,
+                   "cache_read_input_tokens": 830848,
+                   "cache_creation_input_tokens": 0})
+    assert p.usage() == {"turns": 1, "input_tokens": 126715,
+                         "output_tokens": 9592,
+                         "cache_read_input_tokens": 830848,
+                         "cache_creation_input_tokens": 0}
 
-    # Stage 2 resumes it. Codex reports the conversation so far; the
-    # spawn spent the difference.
-    p2 = StreamParser(dialect="codex",
-                      usage_baseline=codex_cli._usage_baseline(
-                          tmp_path, "th-1"))
-    p2.feed_line('{"type":"turn.completed","usage":{"input_tokens":80347,'
-                 '"cached_input_tokens":470272,"output_tokens":3187}}')
-    u2 = p2.usage()
-    assert u2["output_tokens"] == 3187 - 608
-    assert u2["cache_read_input_tokens"] == 470272 - 55296
-    # And the two rows now SUM to the session total, which is what a
-    # summing ledger needs them to do.
-    u1 = p1.usage()
-    assert (u1["cache_read_input_tokens"] + u2["cache_read_input_tokens"]
-            == 470272)
-    assert u1["output_tokens"] + u2["output_tokens"] == 3187
+
+def test_a_killed_spawn_still_reports_what_it_spent(tmp_path: Path) -> None:
+    """The stream says nothing when the process is reaped before
+    `turn.completed`, and the row used to be zero for the hour it had
+    just spent. The rollout is written per API call, so it is there."""
+    from Tooling.llm.stream_parser import StreamParser
+    roll = _rollout(tmp_path / f"rollout-2026-09-07T00-00-00-{THREAD}.jsonl",
+                    [(12558, 0, 114), (458047, 382208, 9774)])
+    p = StreamParser(dialect="codex")
+    p.feed_line('{"type":"turn.started"}')
+    assert p.usage()["output_tokens"] == 0, "the stream knows nothing"
+    p.adopt_usage(codex_cli._usage_delta(codex_cli.rollout_usage(roll), {}))
+    assert p.usage()["output_tokens"] == 9774
+    assert p.usage()["input_tokens"] == 75839
+
+
+def test_a_baseline_in_the_wrong_coordinates_is_clamped_and_said_out_loud(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A component that would go negative means the two figures do not
+    count the same thing. Clamping ALONE is how the bug hid: a judge
+    that argued for four minutes reported spending nothing, and nothing
+    said why."""
+    got = codex_cli._usage_delta({"output_tokens": 4786},
+                                 {"output_tokens": 22949}, label="adversary")
+    assert got["output_tokens"] == 0
+    said = capsys.readouterr().out
+    assert "output_tokens=-18163" in said and "adversary" in said
+
+
+def test_a_rollout_with_no_usage_record_means_unknown_not_zero(
+    tmp_path: Path,
+) -> None:
+    """`{}` and `{...: 0}` are different answers: the first leaves the
+    stream's figure standing, the second would overwrite it with zero."""
+    p = tmp_path / f"rollout-2026-09-07T00-00-00-{THREAD}.jsonl"
+    p.write_text('{"type":"session_meta"}\n', encoding="utf-8")
+    assert codex_cli.rollout_usage(p) == {}
+    assert codex_cli.rollout_usage(tmp_path / "absent.jsonl") == {}
+
+
+def test_the_threads_rollout_is_found_by_thread_and_by_size(
+    tmp_path: Path,
+) -> None:
+    """One CODEX_HOME holds every conversation the attempts dir ran — a
+    resumed judge and the cold postmortem beside it — and a resumed turn
+    APPENDS, so the longer copy is the later state."""
+    home = tmp_path / "_codex_home"
+    _rollout(home / "sessions" / "2026" / "09" / "05"
+             / f"rollout-2026-09-05T07-49-57-{THREAD}.jsonl", [(10, 0, 1)])
+    big = _rollout(home / "sessions" / "2026" / "09" / "07"
+                   / f"rollout-2026-09-07T07-40-19-{THREAD}.jsonl",
+                   [(10, 0, 1), (20, 0, 2), (30, 0, 3)])
+    _rollout(home / "sessions" / "2026" / "09" / "07"
+             / "rollout-2026-09-07T07-41-00-other-thread.jsonl",
+             [(999, 0, 999)])
+    assert codex_cli._thread_rollout(home, THREAD) == big
+    assert codex_cli._thread_rollout(home, "never-seen") is None
+    assert codex_cli._thread_rollout(home, None) is None
 
 
 def test_a_cold_thread_carries_no_baseline(tmp_path: Path) -> None:
@@ -334,7 +455,7 @@ def test_a_cold_thread_carries_no_baseline(tmp_path: Path) -> None:
     assert codex_cli._usage_baseline(tmp_path, "never-seen") == {}
     codex_cli._remember_usage(tmp_path, "th-a", {"output_tokens": 5})
     assert codex_cli._usage_baseline(tmp_path, "th-b") == {}
-    assert codex_cli._usage_baseline(tmp_path, "th-a") == {"output_tokens": 5}
+    assert codex_cli._usage_baseline(tmp_path, "th-a")["output_tokens"] == 5
 
 
 def test_two_threads_in_one_directory_do_not_cross_bill(
@@ -349,10 +470,10 @@ def test_two_threads_in_one_directory_do_not_cross_bill(
                               {"output_tokens": 6226})
     codex_cli._remember_usage(tmp_path, "th-adversary",
                               {"output_tokens": 6957})
-    assert codex_cli._usage_baseline(tmp_path, "th-strategist") == {
-        "output_tokens": 6226}
-    assert codex_cli._usage_baseline(tmp_path, "th-adversary") == {
-        "output_tokens": 6957}
+    assert codex_cli._usage_baseline(
+        tmp_path, "th-strategist")["output_tokens"] == 6226
+    assert codex_cli._usage_baseline(
+        tmp_path, "th-adversary")["output_tokens"] == 6957
 
 
 def test_a_corrupt_ledger_does_not_break_the_spawn(tmp_path: Path) -> None:
@@ -362,7 +483,7 @@ def test_a_corrupt_ledger_does_not_break_the_spawn(tmp_path: Path) -> None:
                                                     encoding="utf-8")
     assert codex_cli._usage_baseline(tmp_path, "th-1") == {}
     codex_cli._remember_usage(tmp_path, "th-1", {"output_tokens": 3})
-    assert codex_cli._usage_baseline(tmp_path, "th-1") == {"output_tokens": 3}
+    assert codex_cli._usage_baseline(tmp_path, "th-1")["output_tokens"] == 3
 
 
 def test_a_fully_cached_turn_reports_no_fresh_input() -> None:

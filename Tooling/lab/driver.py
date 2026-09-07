@@ -60,6 +60,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -225,6 +226,179 @@ def keep_feedback(workspace: Path, out: Path) -> "tuple[list[str], int]":
         print(f"[lab] agent feedback not kept: {type(exc).__name__}: {exc}",
               flush=True)
         return [], 0
+
+
+# ---------------------------------------------------------------------
+# the DB — the daemon kind's ONLY record
+# ---------------------------------------------------------------------
+
+#: The workspace DB, copied into `_out/`.
+DB_BASENAME = "asterism.db"
+
+#: The renders the DB owns, as the problem dir holds them. Copied rather
+#: than re-rendered: these files ARE the framework's own render of the
+#: rows beside them, and a second renderer here would be a second
+#: opinion about what a revision says.
+RENDERED_BASENAMES = ("PROGRAMME.md", "TREE.md", "CATALOG.md")
+
+
+def keep_db_record(workspace: Path, out: Path, *, problem: str,
+                   kind: str) -> "list[str]":
+    """Copy the workspace's DB into `_out/`, and — on the daemon kind —
+    the human-readable pieces of it beside.
+
+    A DAEMON RUN'S RECORD IS THE DATABASE. Production `rmtree`s
+    `.attempts/<pipeline id>/` as each pipeline exits
+    (`agent/runtime.WorkArea`), so `keep_attempts` has nothing to copy
+    and `run_daemon` returns no pipeline ids at all: the strategist's
+    proposal, the judge's verdict and the rounds they argued live in
+    `programme_revisions` / `theory_documents` and nowhere else. The
+    2026-09-07 smoke run proved its root and ingested it, and its `_out/`
+    held a log, a feedback file and two MCP logs — nothing anybody could
+    read the argument out of once the workspace was cleared.
+
+    The copy is `snapshot.snapshot_db`, not `shutil.copyfile`: in WAL
+    mode part of the committed state is in `-wal`, and a bare file copy
+    silently loses whatever has not been checkpointed. The backup API
+    takes no write lock, so a daemon still draining underneath is
+    neither blocked nor half-copied.
+
+    Best-effort, like `keep_feedback`, and for the same reason: a run
+    that produced a verdict must not fail because a copy did not."""
+    kept: "list[str]" = []
+    src = Path(workspace) / DB_BASENAME
+    if not src.is_file():
+        return kept
+    dst = Path(out) / DB_BASENAME
+    try:
+        from Tooling.lab.snapshot import snapshot_db
+        snapshot_db(src, dst)
+        # ONE FILE, not three. `backup` carries the source's journal
+        # mode across, so the copy is a WAL database and every reader
+        # after it — including the renders below, which open it
+        # read-only — leaves an `-shm` and an `-wal` beside it in
+        # `_out/`. Nothing is in them, and a record whose reader has to
+        # ask which of three files is the database is a record with a
+        # question in it.
+        _flip = sqlite3.connect(str(dst))
+        try:
+            _flip.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            _flip.close()
+        kept.append(DB_BASENAME)
+    except Exception as exc:            # noqa: BLE001 — see docstring
+        print(f"[lab] DB not kept: {type(exc).__name__}: {exc}", flush=True)
+        return kept
+    if kind != "daemon":
+        # Every other kind keeps its attempts tree WHOLE, and the
+        # projection in it already carries that round's PROGRAMME.md,
+        # TREE.md and CATALOG.md as the agent was shown them. Rendering
+        # them again out here would be a second, later copy of the same
+        # thing under a name that does not say which round it is.
+        return kept
+    try:
+        kept += _keep_daemon_reading(Path(workspace), Path(out), dst,
+                                     problem)
+    except Exception as exc:            # noqa: BLE001 — see docstring
+        print(f"[lab] DB renders not kept: {type(exc).__name__}: {exc}",
+              flush=True)
+    return kept
+
+
+def _keep_daemon_reading(workspace: Path, out: Path, snapshot: Path,
+                         problem: str) -> "list[str]":
+    """The parts of the DB a human reads, out of the COPY.
+
+    Read from `_out/asterism.db` rather than from the live file: the
+    copy is one consistent instant and the live one may still be moving,
+    so a render taken from it could disagree with the database filed
+    beside it."""
+    from Tooling.state import db
+
+    kept: "list[str]" = []
+    pdir = db.problem_dir(workspace, problem)
+    for name in RENDERED_BASENAMES:
+        p = pdir / name
+        if p.is_file():
+            shutil.copyfile(p, out / name)
+            kept.append(name)
+
+    conn = sqlite3.connect(
+        f"file:{snapshot.as_posix()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        kept += _keep_dialogue(conn, out, problem)
+        kept += _keep_theory(conn, workspace, out, problem)
+    finally:
+        conn.close()
+    return kept
+
+
+def _keep_dialogue(conn, out: Path, problem: str) -> "list[str]":
+    """`_out/dialogue/rev<N>.json` — the judge rounds, per revision.
+
+    ONE FILE PER REV, NOT PER ROW. A rev number is unique only among
+    PASSED rows (`ux_programme_passed_rev`); the rejected attempts at
+    the same rev are the rest of that revision's argument, and they
+    carry the criticisms that killed it. Naming a file after the row id
+    would scatter one debate across four of them.
+
+    The dialogue itself is handed over as the column stores it — parsed
+    so the file is JSON rather than JSON-in-a-string, never re-rendered.
+    `state/programme` has the renderers for prose; this is the record."""
+    rows = conn.execute(
+        "SELECT id, rev, status, rounds, verdict, dialogue, created_at"
+        "  FROM programme_revisions WHERE problem = ?"
+        " ORDER BY rev, id", (problem,)).fetchall()
+    if not rows:
+        return []
+    by_rev: "dict[int, list[dict]]" = {}
+    for r in rows:
+        try:
+            rounds = json.loads(r["dialogue"] or "[]")
+        except ValueError:
+            rounds = r["dialogue"]
+        by_rev.setdefault(int(r["rev"]), []).append(
+            {"id": int(r["id"]), "status": r["status"],
+             "rounds": r["rounds"], "verdict": r["verdict"],
+             "created_at": r["created_at"], "dialogue": rounds})
+    d = out / "dialogue"
+    d.mkdir(parents=True, exist_ok=True)
+    kept: "list[str]" = []
+    for rev, revisions in sorted(by_rev.items()):
+        name = f"rev{rev}.json"
+        (d / name).write_text(
+            json.dumps({"problem": problem, "rev": rev,
+                        "revisions": revisions},
+                       indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8")
+        kept.append(f"dialogue/{name}")
+    return kept
+
+
+def _keep_theory(conn, workspace: Path, out: Path,
+                 problem: str) -> "list[str]":
+    """`_out/theory/<doc id>.md` — every theory document the run landed.
+
+    Keyed by row id, not by filename: two documents on one problem can
+    share a basename, and the id is what the `theory_documents` row this
+    file came from is called. A REFUSED document travels too (owner
+    ruling 2026-09-06) — it is exactly the post-mortem material."""
+    rows = conn.execute(
+        "SELECT id, path FROM theory_documents"
+        " WHERE problem = ? AND path IS NOT NULL ORDER BY id",
+        (problem,)).fetchall()
+    kept: "list[str]" = []
+    for r in rows:
+        src = workspace / str(r["path"])
+        if not src.is_file():
+            continue
+        d = out / "theory"
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"{int(r['id'])}.md"
+        shutil.copyfile(src, d / name)
+        kept.append(f"theory/{name}")
+    return kept
 
 
 def _intent(conn, problem: str):
@@ -1002,10 +1176,15 @@ def main(argv=None) -> int:
     # all done — and it must be out of `.asterism/` before `lab run`
     # clears the workspace.
     fb_kept, fb_n = keep_feedback(ws, out)
+    # And the DB, for the same window and the same reason — every kind,
+    # because every kind's rows are the run and the workspace holding
+    # them is about to go.
+    db_kept = keep_db_record(ws, out, problem=spec["problem"], kind=kind)
     result.update({"kind": kind, "problem": spec["problem"],
                    "wall_sec": round(time.monotonic() - t0, 1),
                    "seats": seats_now(),
-                   "artefacts": list(result.get("artefacts") or []) + fb_kept,
+                   "artefacts": (list(result.get("artefacts") or [])
+                                 + fb_kept + db_kept),
                    "feedback_records": fb_n})
     (out / RESULT_BASENAME).write_text(
         json.dumps(result, ensure_ascii=False, indent=2, default=str),

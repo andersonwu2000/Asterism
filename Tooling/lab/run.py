@@ -32,10 +32,18 @@ derivable later:
                          this module deletes.
 
 Transcripts are the builder's responsibility, not the seat's: claude
-files them under `~/.claude/projects/<munged cwd>/` and codex under the
-workspace's own `.asterism/codex_sessions/`, and the first of those
-survives the workspace being deleted only if something copies it out
-first.
+files them under `~/.claude/projects/<munged SPAWN cwd>/` — which is the
+attempts dir or the problem dir, never the workspace root, so it is a
+whole FAMILY of directories under the workspace's own munge — and codex
+under the workspace's own `.asterism/codex_sessions/`. Neither survives
+the workspace being deleted unless something copies it out first.
+
+The DB is kept for the same reason and by the same rule
+(`driver.keep_db_record`): on the daemon kind the run's whole record —
+proposals, verdicts, dialogue — is rows, and production `rmtree`s the
+attempts dir behind every pipeline, so `_out/attempts/` is empty for
+that kind BY CONSTRUCTION and a copy of `asterism.db` is the only thing
+that can answer what the run argued.
 """
 from __future__ import annotations
 
@@ -53,7 +61,7 @@ from pathlib import Path
 from . import LabError
 from . import build as _build
 from . import snapshot as _snapshot
-from .driver import RESULT_BASENAME, keep_feedback
+from .driver import RESULT_BASENAME, keep_db_record, keep_feedback
 
 OUT_DIRNAME = "_out"
 RECORD_BASENAME = "run_record.json"
@@ -103,15 +111,65 @@ def claude_transcript_dir(cwd: Path) -> Path:
             / re.sub(r"[^A-Za-z0-9]", "-", str(Path(cwd))))
 
 
+#: What a directory separator munges to, and therefore the one character
+#: that has to follow the workspace's munge before a directory can be
+#: called one of ITS spawns'. Not cosmetic: `…-e2e-r1` is a bare prefix
+#: of `…-e2e-r10`, so a plain `startswith` would file repetition 10's
+#: transcripts into repetition 1's `_out/`.
+_MUNGE_SEP = "-"
+
+#: The label for the workspace's own munge, when a spawn really did run
+#: with `cwd` at the workspace root. Its jsonl has no remainder to be
+#: named after.
+WORKSPACE_TRANSCRIPT_DIRNAME = "_workspace"
+
+
+def claude_transcript_dirs(ws: Path) -> "list[tuple[str, Path]]":
+    """Every `~/.claude/projects/` directory this workspace's spawns
+    filed under — `(label, dir)`, the label being what the directory is
+    below the workspace.
+
+    THE WORKSPACE'S OWN MUNGE IS USUALLY NOT ONE OF THEM. A claude spawn
+    runs with `cwd` set to its attempts dir or to the problem dir, never
+    to the workspace root, so its jsonl lands under the munge of THAT
+    path — a different directory name, which is why the 2026-09-07
+    daemon run (four judges, one formalizer, root proved) kept no
+    transcripts at all. The five directories it actually wrote were
+
+        <munge>--attempts-<pipeline id>-adversary-r<n>
+        <munge>-Problems-Lab-even-sum-subsets
+
+    and every one of them is the workspace's munge, then the munge of a
+    path separator, then the rest. That is the match — anchored on the
+    separator, because `<munge>` alone is a prefix of the next
+    repetition's."""
+    base = Path.home() / ".claude" / "projects"
+    if not base.is_dir():
+        return []
+    root = claude_transcript_dir(ws)
+    prefix = root.name + _MUNGE_SEP
+    found: "list[tuple[str, Path]]" = []
+    for d in sorted(base.iterdir()):
+        if not d.is_dir():
+            continue
+        if d.name == root.name:
+            found.append((WORKSPACE_TRANSCRIPT_DIRNAME, d))
+        elif d.name.startswith(prefix):
+            # The remainder, with the separator's own dashes trimmed:
+            # `--attempts-<pid>-adversary-r2` reads as the cwd it is.
+            found.append((d.name[len(root.name):].lstrip(_MUNGE_SEP), d))
+    return found
+
+
 def collect_transcripts(ws: Path, out: Path) -> "list[str]":
     """Both providers' reasoning, copied out before the workspace goes.
 
     codex keeps its rollout inside the workspace (`_preserve_transcript`
     moves it out of the doomed per-spawn home), so it dies with the
     workspace unless it is copied. claude keeps its jsonl in its own
-    home under a name derived from the cwd, which survives — but a
-    reader a week later should not have to reconstruct the munge to find
-    it."""
+    home under a name derived from the cwd, which survives the
+    workspace — but only under a name nobody can reconstruct a week
+    later, and only until the CLI's own housekeeping reaches it."""
     kept: "list[str]" = []
     codex = ws / ".asterism" / "codex_sessions"
     if codex.is_dir():
@@ -120,13 +178,12 @@ def collect_transcripts(ws: Path, out: Path) -> "list[str]":
             shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(codex, dst)
         kept.append("transcripts/codex")
-    claude = claude_transcript_dir(ws)
-    if claude.is_dir():
-        dst = out / "transcripts" / "claude"
-        dst.mkdir(parents=True, exist_ok=True)
-        for jsonl in sorted(claude.glob("*.jsonl")):
+    for label, src in claude_transcript_dirs(ws):
+        dst = out / "transcripts" / "claude" / label
+        for jsonl in sorted(src.glob("*.jsonl")):
+            dst.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(jsonl, dst / jsonl.name)
-            kept.append(f"transcripts/claude/{jsonl.name}")
+            kept.append(f"transcripts/claude/{label}/{jsonl.name}")
     return kept
 
 
@@ -278,6 +335,13 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
     # the WORKSPACE's code, which is the code that wrote the file.
     fb_kept, fb_n = keep_feedback(ws, out)
     artefacts += fb_kept
+    # The DB, on the same terms. Repeated out here for the same reason
+    # the feedback copy is: a driver that died before its own copy is
+    # exactly the run whose rows somebody will want, and the clear below
+    # is not undoable. Run from HERE the copy also reaches a workspace
+    # built from a commit whose `driver.main` predates it.
+    artefacts += keep_db_record(ws, out, problem=spec["problem"],
+                                kind=arm.kind)
     # The clear runs BEFORE the record is built, so what it could not
     # remove is part of the record rather than a line in a log nobody
     # kept. Everything that reads the workspace is done by here: the

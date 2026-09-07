@@ -100,17 +100,10 @@ class StreamParser:
         "todo_list",
     })
 
-    def __init__(self, dialect: str = "claude",
-                 usage_baseline: "dict[str, int] | None" = None) -> None:
+    def __init__(self, dialect: str = "claude") -> None:
         if dialect not in ("claude", "codex"):
             raise ValueError(f"unknown stream dialect {dialect!r}")
         self._dialect = dialect
-        # What the PROVIDER had already reported for this conversation
-        # before this spawn started. Only a backend whose usage figures
-        # are session-cumulative needs it (codex resumes a thread and
-        # re-reports the whole conversation's totals); claude reports
-        # per-call and passes nothing, so the default is a no-op.
-        self._usage_baseline = dict(usage_baseline or {})
         self._lock = threading.Lock()
         now = time.monotonic()
         self._state = ParserState.IDLE
@@ -292,12 +285,21 @@ class StreamParser:
                 # on one backend and "the fresh part" on the other — and
                 # every consumer (cost report, cache-hit rate, the quota
                 # ledger) reads that field as fresh.
-                # ASSIGNED, NOT ACCUMULATED. Codex's figures are the
-                # SESSION's running totals, not this turn's — the same
-                # numbers grow across `codex exec resume`, so `+=` counts
-                # the whole conversation again on every turn. What this
-                # spawn actually spent is the difference against the
-                # baseline (see `usage`).
+                # ASSIGNED, NOT ACCUMULATED. The block is a running
+                # total, so `+=` over several of them counts the earlier
+                # ones again.
+                #
+                # WHAT IT IS RUNNING OVER IS THE `codex exec` PROCESS,
+                # not the thread. Measured 2026-09-07 against the
+                # rollouts of `judge_continuity/strategist_c_r1`, five
+                # spawns, exact to the token: a resumed exec reported
+                # 126715/830848/9592, which is the thread's own
+                # `thread_token_usage` at the end of that exec MINUS its
+                # value at the start — not the thread total. So there is
+                # nothing here to subtract a session baseline from, and
+                # the one this used to carry turned the resumed legs'
+                # rows into zeros. The exact figure is measured from the
+                # rollout instead and arrives via `adopt_usage`.
                 cached = u.get("cached_input_tokens")
                 cached = cached if isinstance(cached, int) else 0
                 total_in = u.get("input_tokens")
@@ -331,31 +333,37 @@ class StreamParser:
         """What THIS SPAWN spent (task #7). An in-flight turn's output is
         included so a TIMEOUT kill still reports what was spent.
 
-        On a backend that reports session-cumulative figures, this spawn's
-        share is the provider's number minus what it had already reported
-        for the same conversation — otherwise a resumed session re-bills
-        every earlier turn each time it wakes. Measured on the 08-15
-        codex probe before the baseline existed: one formalizer pipeline's
-        three stage rows summed to 1.11M prompt tokens against a session
-        total of 550,619, so the ledger read 2x the truth. `spawn_usage`
-        SUMS rows, so it has to be given increments.
+        The figure is whatever the stream said, unless the adapter
+        MEASURED one from the provider's own persisted ledger and handed
+        it over (`adopt_usage`). `spawn_usage` sums rows, so a row that
+        is anything but this spawn's own increment corrupts the total.
         """
         with self._lock:
             u = dict(self._usage)
             u["output_tokens"] += self._turn_output
-            for k, base in self._usage_baseline.items():
-                if k in u and k != "turns":
-                    u[k] = max(0, u[k] - int(base))
             return u
 
-    def cumulative_usage(self) -> "dict[str, int]":
-        """What the PROVIDER reported for the conversation, baseline
-        included — the value to carry forward as the next resume's
-        baseline. Identical to `usage` on a per-call backend."""
+    def adopt_usage(self, measured: "dict[str, int]") -> None:
+        """Replace the token counts with a figure measured OUTSIDE the
+        stream, keeping the stream's own `turns`.
+
+        For codex, whose per-exec stream figure is a report and whose
+        rollout is a ledger. Two things the stream cannot do: it says
+        nothing at all when the spawn was killed before `turn.completed`
+        (a timed-out codex spawn reported 0 tokens for its whole hour),
+        and it cannot be checked against anything. The rollout's
+        `thread_token_usage` is written per API call and survives the
+        process, so the difference across the spawn is both complete and
+        verifiable. See `codex_cli._run_proc`."""
         with self._lock:
-            u = dict(self._usage)
-            u["output_tokens"] += self._turn_output
-            return u
+            for k, v in measured.items():
+                if k == "turns":
+                    continue
+                self._usage[k] = max(0, int(v))
+            # The adopted figure already covers the turn that was in
+            # flight; adding the stream's running count on top of it in
+            # `usage` would double what that turn wrote.
+            self._turn_output = 0
 
     def snapshot(self) -> StateSnapshot:
         """Return the current state without blocking the parser."""

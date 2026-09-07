@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -509,7 +510,9 @@ def test_the_run_record_pins_the_slice_the_commit_and_the_prompts(
     assert rec["outcome"] == "success" and rec["rc"] == 0
     assert rec["usage"]["turns"] == 7
     assert rec["seats"]["adversary"]["model"] == "gpt-5"
-    assert rec["artefacts"] == ["attempts/pid1"]
+    # The driver's own artefacts, plus what `run_once` keeps on top of
+    # them — the DB rides out of every kind (`driver.keep_db_record`).
+    assert rec["artefacts"] == ["asterism.db", "attempts/pid1"]
     assert rec["slice_manifest"]["problem"] == PROBLEM
     assert rec["clear_leftovers"] == [], \
         "the workspace went, and the record says so"
@@ -606,8 +609,68 @@ def test_transcripts_are_copied_out_before_the_workspace_goes(tmp_path,
     out = tmp_path / "out"
     kept = run_mod.collect_transcripts(ws, out)
     assert (out / "transcripts" / "codex" / "abc" / "rollout.jsonl").is_file()
-    assert (out / "transcripts" / "claude" / "sess.jsonl").is_file()
+    assert (out / "transcripts" / "claude"
+            / run_mod.WORKSPACE_TRANSCRIPT_DIRNAME / "sess.jsonl").is_file()
     assert "transcripts/codex" in kept
+
+
+def test_a_spawns_transcript_is_found_under_its_own_cwd_not_the_workspace(
+        tmp_path, monkeypatch):
+    """THE ONE THAT KEPT NOTHING. A claude spawn runs with `cwd` at its
+    attempts dir or its problem dir, never at the workspace root, so its
+    jsonl lands under the munge of THAT path — a directory the
+    workspace's own munge does not name. The 2026-09-07 daemon run
+    proved its root with four judges and a formalizer and `_out/` held
+    no `transcripts/` at all."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    ws = tmp_path / "runs" / "standard" / "smoke_r1"
+    ws.mkdir(parents=True)
+    projects = home / ".claude" / "projects"
+    munge = run_mod.claude_transcript_dir(ws).name
+    for name, jsonl in (
+            (f"{munge}--attempts-abc123-adversary-r2", "judge.jsonl"),
+            (f"{munge}-Problems-Lab-even-sum-subsets", "formalizer.jsonl"),
+            # A SIBLING REPETITION, not this one. `smoke_r1`'s munge is a
+            # bare prefix of `smoke_r10`'s, so a plain `startswith` would
+            # file repetition 10's spawns into repetition 1's record.
+            (f"{munge}0--attempts-def456-adversary-r1", "other.jsonl"),
+            ("D--somewhere-else", "unrelated.jsonl")):
+        (projects / name).mkdir(parents=True)
+        (projects / name / jsonl).write_text("{}\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    kept = run_mod.collect_transcripts(ws, out)
+
+    assert sorted(kept) == [
+        "transcripts/claude/Problems-Lab-even-sum-subsets/formalizer.jsonl",
+        "transcripts/claude/attempts-abc123-adversary-r2/judge.jsonl"]
+    assert sorted(d.name for d in
+                  (out / "transcripts" / "claude").iterdir()) == [
+        "Problems-Lab-even-sum-subsets", "attempts-abc123-adversary-r2"], \
+        "repetition 10's directory is not repetition 1's"
+
+
+def test_the_tools_scorer_still_reads_a_nested_transcript(tmp_path,
+                                                          monkeypatch):
+    """`tools_touched` is scored off `_out/transcripts/`, and the copies
+    now sit one directory deeper. The scorer walks, so it does — pinned
+    here because the layout moved under it."""
+    from Tooling.lab import standard as standard_mod
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    ws = tmp_path / "ws_r1"
+    ws.mkdir()
+    d = (home / ".claude" / "projects"
+         / (run_mod.claude_transcript_dir(ws).name + "-Problems-Lab-p"))
+    d.mkdir(parents=True)
+    (d / "s.jsonl").write_text(
+        '{"name":"mcp__asterism_tools__compute"}\n', encoding="utf-8")
+
+    out = tmp_path / "out"
+    run_mod.collect_transcripts(ws, out)
+    assert "compute" in standard_mod.tools_seen(out)
 
 
 _FEEDBACK = (
@@ -639,6 +702,152 @@ def test_the_agents_feedback_is_copied_out_and_counted(tmp_path):
     # indented continuation, which is the unit the file's own ring
     # trims in (`pipeline/_feedback`).
     assert n == 2
+
+
+_DIALOGUE = ('[{"role": "adversary", "round": 1,'
+             ' "criticisms": ["the bound is asserted, not argued"]}]')
+
+
+def _db_workspace(tmp_path: Path):
+    """A workspace whose DB is a daemon run's record — and whose
+    committed rows are still in the `-wal`, which is where a live
+    daemon's are. The connection is returned OPEN on purpose: closing it
+    checkpoints, and a checkpointed DB cannot show what a bare
+    `copyfile` would lose."""
+    ws = tmp_path / "ws"
+    pdir = ws / "Problems" / "Lab" / "even_sum_subsets"
+    pdir.mkdir(parents=True)
+    for name in driver_mod.RENDERED_BASENAMES:
+        (pdir / name).write_text(f"# {name}\n", encoding="utf-8")
+    (ws / "_docs").mkdir()
+    (ws / "_docs" / "landed.md").write_text("the argument\n",
+                                            encoding="utf-8")
+    conn = sqlite3.connect(str(ws / "asterism.db"))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE programme_revisions (id INTEGER PRIMARY KEY,"
+                 " problem TEXT, rev INTEGER, status TEXT, rounds INTEGER,"
+                 " verdict TEXT, dialogue TEXT, created_at TEXT)")
+    conn.execute("CREATE TABLE theory_documents (id INTEGER PRIMARY KEY,"
+                 " problem TEXT, path TEXT)")
+    conn.executemany(
+        "INSERT INTO programme_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(1, "Lab.even_sum_subsets", 7, "rejected", 3, "reject",
+          _DIALOGUE, "2026-09-06T22:59:00"),
+         (2, "Lab.even_sum_subsets", 7, "passed", 1, "accept",
+          "[]", "2026-09-06T23:40:00"),
+         (3, "Other.problem", 7, "passed", 1, "accept", "[]",
+          "2026-09-06T23:41:00")])
+    conn.executemany(
+        "INSERT INTO theory_documents VALUES (?, ?, ?)",
+        [(5, "Lab.even_sum_subsets", "_docs/landed.md"),
+         (6, "Lab.even_sum_subsets", "_docs/never_written.md")])
+    conn.commit()
+    return ws, conn
+
+
+def test_a_daemon_runs_record_is_the_db_and_it_is_kept(tmp_path):
+    """PRODUCTION `rmtree`s `.attempts/<pid>/` as each pipeline exits,
+    so a daemon arm keeps no attempts tree at all and its proposals,
+    verdicts and dialogue exist only as rows. The 2026-09-07 smoke run
+    proved its root and left a log, a feedback file and two MCP logs —
+    nothing anybody could read the argument out of."""
+    ws, conn = _db_workspace(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    try:
+        kept = driver_mod.keep_db_record(ws, out, kind="daemon",
+                                         problem="Lab.even_sum_subsets")
+        # WAL-SAFE. The rows are committed but not checkpointed, so a
+        # `shutil.copyfile` of the DB file would lose every one of them.
+        naive = tmp_path / "naive.db"
+        shutil.copyfile(ws / "asterism.db", naive)
+        with sqlite3.connect(str(naive)) as bad:
+            with pytest.raises(sqlite3.DatabaseError):
+                bad.execute("SELECT COUNT(*) FROM programme_revisions")
+    finally:
+        conn.close()
+
+    assert "asterism.db" in kept
+    # ONE file, not three: `backup` carries the source's WAL mode
+    # across, and every reader after it would leave an `-shm`/`-wal`
+    # beside the copy for the next reader to wonder about.
+    assert not list(out.glob("asterism.db-*"))
+    copied = sqlite3.connect(str(out / "asterism.db"))
+    try:
+        assert copied.execute(
+            "SELECT COUNT(*) FROM programme_revisions").fetchone()[0] == 3
+    finally:
+        copied.close()
+
+    # The renders the DB owns, as the problem dir holds them.
+    for name in driver_mod.RENDERED_BASENAMES:
+        assert (out / name).read_text(encoding="utf-8") == f"# {name}\n"
+        assert name in kept
+
+    # One file per REV, carrying every row at that rev: `rev` is unique
+    # only among PASSED rows, and the rejected attempts beside it are
+    # the rest of that revision's argument.
+    rev7 = json.loads((out / "dialogue" / "rev7.json").read_text(
+        encoding="utf-8"))
+    assert [r["id"] for r in rev7["revisions"]] == [1, 2]
+    assert rev7["revisions"][0]["dialogue"][0]["criticisms"] == [
+        "the bound is asserted, not argued"]
+    assert "dialogue/rev7.json" in kept
+    assert not (out / "dialogue" / "rev8.json").exists(), \
+        "another problem's revision is not this run's"
+
+    # And the theory documents, keyed by row id. A row whose file never
+    # landed is skipped rather than faked.
+    assert (out / "theory" / "5.md").read_text(
+        encoding="utf-8") == "the argument\n"
+    assert not (out / "theory" / "6.md").exists()
+    assert kept.count("theory/5.md") == 1
+
+
+def test_every_other_kind_keeps_the_db_and_not_a_second_render(tmp_path):
+    """A judge or strategist arm keeps its attempts tree WHOLE, and the
+    projection in it already carries that round's PROGRAMME.md, TREE.md
+    and CATALOG.md as the agent was shown them. A second copy out here
+    would not say which round it is."""
+    ws, conn = _db_workspace(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    try:
+        kept = driver_mod.keep_db_record(ws, out, kind="judge_round",
+                                         problem="Lab.even_sum_subsets")
+    finally:
+        conn.close()
+    assert kept == ["asterism.db"]
+    assert not (out / "dialogue").exists()
+    assert not (out / "PROGRAMME.md").exists()
+
+
+def test_a_workspace_with_no_db_is_not_an_error(tmp_path):
+    """`gauntlet` never opens one, and a driver that died before the
+    build did not make one. Neither is a failure of the run."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    assert driver_mod.keep_db_record(ws, out, kind="daemon",
+                                     problem="Lab.p") == []
+
+
+def test_a_db_the_renders_cannot_be_read_out_of_still_travels(tmp_path,
+                                                              capsys):
+    """Telemetry must never fail a run. A DB with no `theory_documents`
+    (an older schema, a slice from before v52) still gets copied, and
+    the loss is a line on stdout rather than a lost record."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    sqlite3.connect(str(ws / "asterism.db")).close()
+    out = tmp_path / "out"
+    out.mkdir()
+    kept = driver_mod.keep_db_record(ws, out, kind="daemon",
+                                     problem="Lab.p")
+    assert kept == ["asterism.db"]
+    assert (out / "asterism.db").is_file()
+    assert "DB renders not kept" in capsys.readouterr().out
 
 
 def test_a_workspace_with_no_feedback_file_reports_zero(tmp_path):

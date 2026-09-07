@@ -56,18 +56,27 @@ each is marked DELTA below and in the code:
            `codex exec` exit rather than run a worker with no tools —
            the loud failure the framework prefers over a silent one.
            claude has no equivalent.
-  DELTA 10 USAGE IS THE SESSION'S, NOT THE CALL'S — twice over. Its
-           `input_tokens` INCLUDES `cached_input_tokens` where claude's
-           excludes them, and the figures are the whole conversation's
-           running totals, re-reported in full by every `codex exec
-           resume`. `spawn_usage` sums the rows it is handed and reads
-           `input_tokens` as the fresh part, so both had to be undone
-           at the source: the parser subtracts the cached share, and a
-           per-thread ledger (`_USAGE_LEDGER`, beside `_SESSION_MAP`)
-           carries each conversation's running totals so a resumed
-           spawn is billed only for its own turns. Measured 2026-08-15
-           on Test.provider_probe: 2.0x over-count per pipeline, and a
-           cache-hit rate of 49% where the truth was 97%.
+  DELTA 10 USAGE IS NOT THE CALL'S, AND WHOSE IT IS DEPENDS ON WHERE
+           YOU READ IT. `input_tokens` INCLUDES `cached_input_tokens`
+           where claude's excludes them, so the parser subtracts the
+           cached share (measured 2026-08-15: a cache-hit rate of 49%
+           where the truth was 97%). Beyond that there are two
+           different figures, and the framework used to conflate them:
+             * the STREAM's `turn.completed.usage` runs over the `codex
+               exec` PROCESS. A resumed exec reports its own spend, not
+               the thread's.
+             * the ROLLOUT's `thread_token_usage` runs over the THREAD
+               and keeps growing across every resume.
+           Subtracting the second from the first is what turned every
+           resumed spawn's row into zeros (`judge_continuity/
+           strategist_c_r1`, 2026-09-07). What this adapter does now is
+           read the LEDGER: `thread_token_usage` before the spawn and
+           after it, and the difference is the row. `_USAGE_LEDGER`
+           (beside `_SESSION_MAP`) carries the "before" per thread so
+           the file is scanned once per spawn rather than twice, and
+           `lab/session_resume` seeds it when it stages a historical
+           session. The stream's figure stands only when no rollout can
+           be read — see `_run_proc`.
   DELTA 11 THE STREAM HAS ITS OWN IDLE CLOCK, AND IT IS ONLY SETTABLE
            ON A PROVIDER YOU NAME. `stream_idle_timeout_ms` and its two
            retry siblings are `ModelProviderInfo` fields, and 0.153.0
@@ -618,24 +627,118 @@ def _remember_thread(attempts_dir: Path, sid: "str | None",
         pass
 
 
-#: Per-thread running totals, so a resumed spawn is billed for its own
-#: turns rather than for the conversation. Beside `_SESSION_MAP` and
+#: A THREAD's running totals as of the end of the last spawn that
+#: touched it — the "before" half of the subtraction that bills a
+#: resumed spawn for its own turns. Beside `_SESSION_MAP` and
 #: per-pipeline for the same reason (DELTA 2): the Strategist's rounds
 #: share a directory and resume one thread; each Adversary round gets a
 #: fresh projection and starts a new one.
 _USAGE_LEDGER = "_codex_usage.json"
 
+#: The four token counts, in the parser's own key names. `turns` is not
+#: one of them: it counts events in a stream, not tokens in a ledger,
+#: and adding or subtracting it across spawns means nothing.
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+               "cache_creation_input_tokens")
+
+
+def _usage_add(a: dict, b: dict) -> "dict[str, int]":
+    return {k: int(a.get(k) or 0) + int(b.get(k) or 0) for k in _USAGE_KEYS}
+
+
+def _usage_delta(after: dict, before: dict, *, label: str = ""
+                 ) -> "dict[str, int]":
+    """`after - before`, clamped at zero AND LOUD ABOUT IT.
+
+    A component that would go negative means the "before" is not this
+    thread's earlier state — the two figures are in different
+    coordinates. That is exactly the 2026-09-07 bug (a per-exec stream
+    figure minus a per-thread rollout total), and under a silent clamp
+    it looked like a resumed judge that argued for four minutes and
+    spent nothing."""
+    out: "dict[str, int]" = {}
+    negative: "list[str]" = []
+    for k in _USAGE_KEYS:
+        d = int(after.get(k) or 0) - int(before.get(k) or 0)
+        if d < 0:
+            negative.append(f"{k}={d}")
+        out[k] = max(0, d)
+    if negative:
+        print(f"[llm:codex] usage baseline is not this thread's earlier "
+              f"state{' for ' + label if label else ''} "
+              f"({', '.join(negative)}) — the row is clamped and therefore "
+              f"under-reports. Check that the ledger and the rollout "
+              f"count the same thing.", flush=True)
+    return out
+
+
+def rollout_usage(rollout: "Path | str") -> "dict[str, int]":
+    """A codex thread's cumulative totals, out of its own rollout, in
+    `StreamParser`'s key names.
+
+    THE PROVIDER'S OWN LEDGER. Read from the last
+    `token_usage_record.thread_token_usage` in the file, which codex
+    appends per API call and which therefore survives the exec process,
+    a killed spawn, and a stream nobody parsed. Translated the way the
+    parser translates a live `turn.completed`: codex's `input_tokens`
+    INCLUDES the cached ones and the parser's does not, so the cached
+    half is subtracted rather than counted twice.
+
+    Empty when the file holds no usage record — a spawn that died before
+    its first API call, and a case the caller has to keep meaning
+    "unknown" rather than "zero"."""
+    last: "dict | None" = None
+    try:
+        with open(rollout, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                # Cheap prefilter: these files run to megabytes and only
+                # a few dozen lines are usage records.
+                if '"token_usage_record"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if obj.get("type") == "token_usage_record":
+                    last = obj
+    except OSError:
+        return {}
+    if last is None:
+        return {}
+    u = (last.get("payload") or {}).get("thread_token_usage") or {}
+    total_in = int(u.get("input_tokens") or 0)
+    cached = int(u.get("cached_input_tokens") or 0)
+    return {"input_tokens": max(0, total_in - cached),
+            "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens":
+                int(u.get("cache_write_input_tokens") or 0),
+            "output_tokens": int(u.get("output_tokens") or 0)}
+
+
+def _thread_rollout(home: Path, thread_id: "str | None") -> "Path | None":
+    """This thread's rollout inside the spawn's own CODEX_HOME.
+
+    Largest wins, for the reason `lab/session_resume.find_rollout` gives:
+    a resumed turn APPENDS to the file, so the longer copy is the later
+    state of the conversation."""
+    if not thread_id:
+        return None
+    root = Path(home) / "sessions"
+    if not root.is_dir():
+        return None
+    hits = [p for p in root.rglob(f"rollout-*-{thread_id}.jsonl")
+            if p.is_file()]
+    if not hits:
+        return None
+    return max(hits, key=lambda p: p.stat().st_size)
+
 
 def _usage_baseline(attempts_dir: Path, thread_id: "str | None") -> dict:
-    """What codex has already reported for `thread_id`.
+    """The thread's cumulative totals as of the last spawn that touched
+    it, or `{}` when nothing is filed for it.
 
     Empty for a cold call — a new thread starts the count at zero, so
-    the whole figure is this spawn's. THIS IS THE WHOLE OF DELTA 10:
-    codex's `usage` block is the SESSION's totals and it keeps growing
-    across `codex exec resume`, while `spawn_usage` sums the rows it is
-    given. Handing it the raw figure billed every earlier turn again on
-    every wake — measured 2026-08-15 at 2.0x on a three-stage formalizer.
-    """
+    the whole figure is this spawn's."""
     if not thread_id:
         return {}
     try:
@@ -649,7 +752,7 @@ def _usage_baseline(attempts_dir: Path, thread_id: "str | None") -> dict:
 
 def _remember_usage(attempts_dir: Path, thread_id: "str | None",
                     cumulative: dict) -> None:
-    """Carry this conversation's running totals to the next resume."""
+    """Carry this THREAD's running totals to the next resume."""
     if not thread_id or not cumulative:
         return
     try:
@@ -659,8 +762,7 @@ def _remember_usage(attempts_dir: Path, thread_id: "str | None",
             data = {}
     except (OSError, ValueError):
         data = {}
-    data[thread_id] = {k: int(v) for k, v in cumulative.items()
-                       if isinstance(v, int)}
+    data[thread_id] = {k: int(cumulative.get(k) or 0) for k in _USAGE_KEYS}
     try:
         (attempts_dir / _USAGE_LEDGER).write_text(json.dumps(data),
                                                   encoding="utf-8")
@@ -1079,6 +1181,18 @@ class CodexCliProvider:
             _repo_root + os.pathsep + env["PYTHONPATH"]
             if env.get("PYTHONPATH") else _repo_root)
 
+        # What this thread had already cost, taken BEFORE the process
+        # can append to its rollout. The ledger answers it without
+        # reading a megabyte; the rollout is the fallback for a resume
+        # whose ledger entry is missing — a session staged by hand, or
+        # one whose previous spawn died before it could write.
+        pre_usage = (_usage_baseline(req.attempts_dir, prior)
+                     if resuming else {})
+        if resuming and not pre_usage:
+            staged = _thread_rollout(home, prior)
+            if staged is not None:
+                pre_usage = rollout_usage(staged)
+
         # THE SPAWN IS A TREE. `codex` resolves to `codex.cmd`, so the
         # direct child is `cmd.exe` and the agent itself is two levels
         # down; `Popen.kill()` would leave it running (measured
@@ -1120,26 +1234,26 @@ class CodexCliProvider:
             return SpawnRC.MISSING_DEP
         track_proc(proc, job)
         try:
-            # `prior` is the thread this call resumes, or "" when cold —
-            # which is exactly the key its running totals are filed
-            # under, so the baseline is known BEFORE the stream starts
-            # rather than inferred from it.
+            # `prior` is the thread this call resumes, or "" when cold.
+            # Both it and what the thread had already cost are settled
+            # BEFORE the stream starts rather than inferred from it.
             return self._run_proc(req, proc, prompt, home,
-                                  resume_thread=prior if resuming else None)
+                                  resume_thread=prior if resuming else None,
+                                  pre_usage=pre_usage)
         finally:
             untrack_proc(proc)
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
                   prompt: str, home: Path,
-                  resume_thread: "str | None" = None) -> int:
+                  resume_thread: "str | None" = None,
+                  pre_usage: "dict | None" = None) -> int:
         from .claude_cli import (_watchdog, _persist_parser_state,
                                  kill_proc_tree)
         from .stream_parser import StreamParser
 
         events = _Events()
-        parser = StreamParser(
-            dialect="codex",
-            usage_baseline=_usage_baseline(req.attempts_dir, resume_thread))
+        pre_usage = dict(pre_usage or {})
+        parser = StreamParser(dialect="codex")
         stdout_chunks: "list[str]" = []
         stderr_chunks: "list[str]" = []
 
@@ -1225,20 +1339,43 @@ class CodexCliProvider:
             t.join(timeout=2)
         if wd is not None:
             wd.join(timeout=2)
-        _persist_parser_state(req.attempts_dir, parser)
         rc = proc.returncode
         stdout = "".join(stdout_chunks)
         stderr = "".join(stderr_chunks)
 
-        if events.thread_id:
-            _remember_thread(req.attempts_dir, req.session_id,
-                             events.thread_id)
-            # …and what the conversation has cost SO FAR, which is the
-            # next resume's baseline. Written after the persist above so
-            # a crash between the two loses the carry-forward (the next
-            # spawn over-reports) rather than the spawn's own row.
-            _remember_usage(req.attempts_dir, events.thread_id,
-                            parser.cumulative_usage())
+        # WHAT THIS SPAWN COST, out of the provider's own ledger. The
+        # rollout carries `thread_token_usage` per API call, so the
+        # difference across the spawn is this exec's spend whatever the
+        # stream chose to report — and it is there even when the stream
+        # said nothing at all, which is every killed spawn: before this,
+        # a codex worker reaped at its wall reported zero tokens for the
+        # hour it had just spent. The stream's own figure stands only
+        # when there is no rollout to read.
+        thread = events.thread_id or resume_thread
+        rollout = _thread_rollout(home, thread)
+        post_usage = rollout_usage(rollout) if rollout is not None else {}
+        if post_usage:
+            parser.adopt_usage(_usage_delta(
+                post_usage, pre_usage,
+                label=f"{req.kind or 'codex'}/{thread}"))
+        # Persisted after the adoption, because the row it writes is
+        # what `spawn_usage` bills (`agent/runtime` reads it back out of
+        # `_parser_state.json`).
+        _persist_parser_state(req.attempts_dir, parser)
+
+        if thread:
+            if events.thread_id:
+                _remember_thread(req.attempts_dir, req.session_id,
+                                 events.thread_id)
+            # …and what the THREAD has cost so far, which is the next
+            # resume's baseline. Written after the persist above so a
+            # crash between the two loses the carry-forward rather than
+            # the spawn's own row — and losing it now costs a rollout
+            # scan on the next resume rather than a wrong figure, since
+            # the fallback reads the same number out of the file.
+            _remember_usage(req.attempts_dir, thread,
+                            post_usage or _usage_add(pre_usage,
+                                                     parser.usage()))
 
         # The quota reading is taken BEFORE any rc branch: a spawn that
         # times out still spent tokens, and its rollout still carries the

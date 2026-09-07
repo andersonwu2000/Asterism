@@ -485,7 +485,15 @@ _WATERMARKS = {
     "Tooling/state/programme.py": 1150,  # born on the ratchet 2026-09-07 (named bricks)
     "Tooling/state/db/__init__.py": 200,  # born 2026-08-29 from the db.py split
     "Tooling/quality/verify.py": 1030,  # +35 2026-09-07 a promotion gate result is never dropped in silence, and the promotion announces its own write to Root.lean (`_announce_framework_write`) — the file crossed the 1000-line default cap, so it gets a named watermark
-    "Tooling/lab/driver.py": 1020,  # +20 2026-09-07 `root_proved` — the daemon kind's end-state check; crossed the default cap, so it gets a named watermark
+    # 1020→1200 2026-09-07 `keep_db_record` and the three readers under it
+    # — a daemon arm's record IS the DB (production rmtrees the attempts
+    # dir behind every pipeline, so `keep_attempts` has nothing to copy),
+    # and the copy plus the reading of it is ~180 lines. Conscious bump.
+    # SPLIT CANDIDATE: the "shared bookkeeping" section (`seats_now`,
+    # `usage_for`, `keep_attempts`, `keep_feedback`, `keep_db_record`) is
+    # now a second concern beside the six kinds, and is what should move
+    # the next time this file needs room.
+    "Tooling/lab/driver.py": 1200,  # +20 2026-09-07 `root_proved` — the daemon kind's end-state check; crossed the default cap, so it gets a named watermark
     "Tooling/state/db/core.py": 1095,  # +5 2026-09-07 only verify writes strategy 'succeeded': the async promotion gate gave "proposed, every sub-goal proved" a second meaning and the backstop settled the batch under an unproved goal — conscious bump  # +50 2026-09-07 named bricks (v54): the `bricks` table and `strategist_decisions.brick_name`, each with the reason its key is addressed twice — conscious bump  # +5 2026-09-06 `strategist_decisions.infra_deaths` and what it bounds — conscious bump  # +5 2026-09-06 a refused theory document lands too (owner ruling): `theory_documents.path` is set on both roads, and the comment says which road still leaves it NULL  # +52 2026-09-04 the Theorist layer (v52): `theory_documents` plus the four widened CHECKs  # +4 2026-09-04 goal status `dead` retired (v51): the goals.status split-rule comment rewritten around parks  # +1 2026-09-03 strategist_decisions.report_carried_at: the batch-report carry-over mark the clock ratchet cannot express  # +62 2026-09-02 HID §1.4: `scope_sql`/`scope_names`/`scope_matches` — a scope may name an explicit list, and the translation to SQL lives in ONE place  # born 2026-08-29 from the db.py split
     "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/goals.py": 695,  # +17 2026-09-07 only verify writes strategy 'succeeded': the async promotion gate gave "proposed, every sub-goal proved" a second meaning and the backstop settled the batch under an unproved goal — conscious bump  # +15 2026-09-05 a goal handed back for a verdict settles its Inject (`returned:review`) — a delivery, not work in flight  # +12 2026-09-04 goal status `dead` retired (v51): `set_inject_outcome_detail` also SETTLES, since a park never settles an inject  # born 2026-08-29 from the db.py split
@@ -781,7 +789,12 @@ _WATERMARKS = {
     # split promise below still stands and is now overdue.
     "Tooling/knowledge/workspace_query.py": 1569,  # +29 2026-09-05 decl scope comes from the spawn that declared it, not from cwd  # +38 2026-09-05 a glob spec resolves its own prefix, so the workspace-root fallback and the .lake wall reach both spellings  # +12 2026-09-05 a grep hit is the file's own line (edit anchors) + a non-greedy resume-anchor parse  # +25 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # +20 2026-08-31 decl problem scoping + .lake workspace anchor; the 08-29 split promise still stands  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
-    "Tooling/llm/codex_cli.py": 1350,  # +100 2026-09-05 DELTA 11 — the NL seats' stream-idle clock, and the renamed provider it can only be set on (measured against 0.153.0; the measurements ARE the docstring)
+    # 1350→1500 2026-09-07 DELTA 10 rewritten: a spawn is billed by the
+    # growth of its thread's ROLLOUT across it (`rollout_usage`,
+    # `_thread_rollout`, `_usage_delta`) rather than by subtracting a
+    # thread baseline from a per-exec stream figure, which reported every
+    # resumed spawn as zero. Conscious bump.
+    "Tooling/llm/codex_cli.py": 1500,  # +100 2026-09-05 DELTA 11 — the NL seats' stream-idle clock, and the renamed provider it can only be set on (measured against 0.153.0; the measurements ARE the docstring)
     "Tooling/pipeline/forward.py": 1250,  # +50 2026-09-07 named bricks (v54): `brick_name_defect` — the mint's declaration head must carry the brick's name, refused before the LSP elaboration rather than at landing
     "Tooling/lsp/lifecycle.py": 1200,  # +28 2026-09-03 gateway_live_marker/_pid — the gateway's presence as a file, so no reader proves absence with a connect that hangs; 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
     "Tooling/llm/antigravity_cli.py": 1150,
