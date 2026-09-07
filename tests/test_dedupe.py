@@ -752,6 +752,112 @@ def test_existing_duplicate_strategy_guard(
     assert _existing_duplicate_strategy(conn, target, {crux}) is None
 
 
+def test_a_reachable_twin_is_adopted_not_refused(
+    conn: sqlite3.Connection,
+) -> None:
+    """FB-2(b), owner ruling 2026-09-07. The twin guard used to answer
+    yes/no and FAIL the pipeline on yes. It now judges the twin's wait
+    set by REACHABILITY and returns what to DO about it.
+
+    g10929's five decompositions (52a41d36, 17cad4a8, 2602be07,
+    68f648e1, ca70d2dd) were each refused as duplicates of s27301 --
+    which was `stalled` on the shelved g10931 and could not resume
+    without exactly the revive those decompositions were asking for."""
+    from Tooling.pipeline.backward import _duplicate_strategy_verdict
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    crux = _seed_sub(conn, slug="crux", statement="X", status="shelved")
+    target = _seed_sub(conn, slug="target", statement="Q", depth=2)
+    _link(conn, root, [target])
+    sid = _link(conn, target, [crux], status="stalled")
+    conn.commit()
+
+    # The commit that REVIVES the shelved gate adopts the twin: the
+    # decomposition is right, it simply coincides with s<sid>.
+    assert _duplicate_strategy_verdict(
+        conn, target, {crux}, alive_after={crux}) == ("adopt", sid, [])
+    # Without that revive the twin is still stuck, and the refusal has
+    # to name what blocks it.
+    action, dup, blockers = _duplicate_strategy_verdict(
+        conn, target, {crux})
+    assert (action, dup) == ("refuse", sid)
+    assert blockers == [(crux, "crux", "shelved")]
+    # A different link set is not a twin at all.
+    other = _seed_sub(conn, slug="other", statement="Y")
+    assert _duplicate_strategy_verdict(
+        conn, target, {crux, other})[0] == "commit"
+
+
+def test_a_twin_waiting_on_a_disproved_goal_blocks_nothing(
+    conn: sqlite3.Connection,
+) -> None:
+    """A strategy waiting on a refuted statement will never resume, so
+    it is not a blocker: the fresh assertion commits."""
+    from Tooling.pipeline.backward import _duplicate_strategy_verdict
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    dead = _seed_sub(conn, slug="dead_gate", statement="X",
+                     status="disproved")
+    target = _seed_sub(conn, slug="target", statement="Q", depth=2)
+    _link(conn, root, [target])
+    _link(conn, target, [dead], status="stalled")
+    conn.commit()
+    action, _sid, blockers = _duplicate_strategy_verdict(
+        conn, target, {dead})
+    assert action == "commit"
+    assert blockers == [(dead, "dead_gate", "disproved")]
+
+
+def test_the_remaining_refusal_names_the_blockers_and_the_way_out(
+    conn: sqlite3.Connection,
+) -> None:
+    """FB-2(c): the old text named no goal, no status and no move --
+    "s<id> is already waiting on those gates. Nothing new will happen"."""
+    from Tooling.pipeline.backward import _duplicate_refusal_detail
+    detail = _duplicate_refusal_detail(
+        27301, {10931}, [(10931, "crux", "shelved")])
+    assert "s27301" in detail
+    assert "g10931" in detail and "shelved" in detail
+    assert "CITE" in detail
+    assert "decompose without them" in detail
+
+
+def test_adopting_a_twin_resumes_it_and_burns_no_attempt(
+    conn: sqlite3.Connection,
+) -> None:
+    """The adopt outcome, end to end at the state level: the cited park
+    is revived, the stalled twin is `proposed` again, this pipeline's
+    own reserved row is superseded (not dead -- nothing failed), and the
+    result reads `success` so cascade_one never increments attempts."""
+    from Tooling.pipeline.backward import _adopt_twin_strategy
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    crux = _seed_sub(conn, slug="crux", statement="X", status="shelved")
+    target = _seed_sub(conn, slug="target", statement="Q", depth=2)
+    _link(conn, root, [target])
+    twin = _link(conn, target, [crux], status="stalled")
+    reserved = db.insert_strategy(
+        conn, goal_id=target, lean_path="Problems/p/Root.lean",
+        scratch_path="", created_by="pid")
+    conn.commit()
+
+    r = _adopt_twin_strategy(
+        conn, goal_id=target, twin_sid=twin, reserved_sid=reserved,
+        leading="-- the same reduction", revive_ids={crux})
+
+    assert r.outcome == "success"
+    assert f"s{twin}" in r.failure_detail and "resumes" in r.failure_detail
+    assert db.get_goal(conn, crux)["status"] == "open"
+    assert conn.execute("SELECT status FROM strategies WHERE id=?",
+                        (twin,)).fetchone()["status"] == "proposed"
+    row = conn.execute(
+        "SELECT status, proposal_md FROM strategies WHERE id=?",
+        (reserved,)).fetchone()
+    assert row["status"] == "superseded"
+    assert row["proposal_md"] == "-- the same reduction"
+    assert int(db.get_goal(conn, target)["attempts"]) == 0
+
+
 def test_a_spent_twin_is_a_reuse_hit_not_a_block(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

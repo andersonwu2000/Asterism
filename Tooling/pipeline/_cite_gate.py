@@ -162,17 +162,27 @@ def _resolve_cite_dependencies(
             # Soft terminal — revivable. dedupe doesn't block it, so
             # neither does citation: auto-link on the decomp path; reject on
             # leaf-bypass/Builder (transitive sorry).
+            #
+            # EVERY machine park is revived (owner ruling 2026-09-07:
+            # "when new work cites a shelved node A, reopen A").
+            # A ConfirmShelve park used to be excluded, on the argument
+            # that reopening it before its injected prereqs land would
+            # re-dispatch it into a re-fail/re-shelve mini-spin. What
+            # that cost instead was worse and observable: g10931 was
+            # ConfirmShelve-parked, g10929's decomposition reuse-linked
+            # it, the link therefore never revived it, and the twin
+            # strategy waiting on it stayed `stalled` — so five
+            # successive decompositions were refused as duplicates of a
+            # strategy that could never resume. The citer's own wait
+            # edge is what makes the reopen safe now: it does not
+            # dispatch the goal ahead of anything, it restores the live
+            # path the wait needs. Overriding the Strategist's park is
+            # a decision it must SEE, so `revive_cited_goals` records
+            # the override and `phase2_context.outcomes` reports it on
+            # the next wake.
             if allow_auto_link:
                 auto_link.add(gid)
-                # Revive ONLY a cascade-shelved goal (lost its last live path)
-                # — the agent_feedback T8 motivation. A ConfirmShelve-PARKED
-                # goal is deliberately held pending its injected prereqs; the
-                # auto_link makes the citing strategy WAIT for it (it proves
-                # when the Strategist re-engages it via inject_batch_done), so
-                # do NOT reopen it early — that would re-dispatch it before its
-                # prereqs exist and re-fail/re-shelve in a mini-spin.
-                if not _db.is_confirm_shelve_parked(conn, gid):
-                    revive.add(gid)
+                revive.add(gid)
             else:
                 bad.append((slug, status))
             continue
@@ -232,3 +242,42 @@ def _resolve_cite_dependencies(
         "Patch imports sibling goals that cannot be cited:\n"
         + "\n".join(lines) + hint + human_note + orphan_note
     )
+
+
+def revive_cited_goals(conn: sqlite3.Connection, revive_ids: "set[int]", *,
+                       citing_goal_id: int) -> "list[int]":
+    """Reopen every cited/reuse-linked goal that is still `shelved`.
+
+    ONE implementation (owner ruling 2026-09-07). It used to be two
+    identical loops, one per Backward commit path, and the ruling that
+    a citation reopens what it cites has to hold on both — including
+    the reuse-link road, where dedupe collapses a declared sub-goal onto
+    an existing twin and `_apply_reuse_rewrites` turns it into a
+    citation. That road is how g10929 reached the shelved twin g10931.
+
+    Re-checks status per goal: only a park is revivable by citation
+    (`disproved` never reaches `revive_ids` — the gate rejects it), and
+    the time-of-check/use race may have moved one already.
+
+    Returns the ids actually revived. A revive that overrode a
+    ConfirmShelve is recorded in its `goal_events.reason` so the
+    Strategist's next Context can report the override — the framework
+    just undid a decision that agent made deliberately, and a park it
+    is not told about is a park it will keep re-issuing.
+    """
+    from ..state import transitions
+    revived: "list[int]" = []
+    for rid in sorted(revive_ids):
+        cur = _db.get_goal(conn, rid)
+        if cur is None or str(cur["status"]) != "shelved":
+            continue
+        overridden = _db.is_confirm_shelve_parked(conn, rid)
+        reason = f"cited by g{citing_goal_id}'s decomposition"
+        if overridden:
+            reason += " (overrides a ConfirmShelve)"
+        transitions.apply_goal_transition(
+            conn, rid, "open", event="backward_revive", reason=reason)
+        revived.append(rid)
+        print(f"[backward-revive] cited sibling goal {rid} "
+              f"({cur['slug']}) shelved -> open: {reason}", flush=True)
+    return revived

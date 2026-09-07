@@ -335,6 +335,52 @@ def is_infra(failure_reason: str) -> bool:
     return failure_reason in INFRA_REASONS
 
 
+#: The spawn died before anything of its was judged — a watchdog kill, a
+#: thinking trap, a non-zero rc, an empty output. Whatever it left on
+#: disk is UNFINISHED work.
+SPAWN_DIED_REASONS: frozenset = frozenset({
+    "agent_timeout", "agent_stuck_thinking", "agent_no_output",
+    "agent_rc_nonzero",
+})
+
+#: The AGENT ended its own run with a `-- decline:` directive (the
+#: values of `pipeline.DECLINE_TO_FAILURE_REASON`, plus the decline
+#: shapes minted outside that map). Nothing was refused: the worker
+#: judged the TASK, not the framework the patch.
+AGENT_DECLINE_REASONS: frozenset = frozenset({
+    "agent_declined", "agent_shelved", "agent_infeasible",
+    "parent_needs_fix", "return_to_nl", "agent_bailed",
+})
+
+
+def draft_verdict_class(failure_reason: str) -> str:
+    """How work salvaged from a failed run must be FRAMED to the next
+    spawn on the same goal: 'interrupted' | 'declined' | 'refused'.
+
+    The drafts slot had one framing for all three — "a prior spawn was
+    interrupted before its patch.lean could be promoted" — and it is
+    only true of the first. A patch the framework REFUSED at commit
+    (duplicate strategy, circular decomposition, build error) handed on
+    under that wording reads as a draft to finish, so the next spawn
+    re-submits the shape and meets the same refusal (owner ruling
+    2026-09-07). Here rather than at the call site because the split is
+    a fact about the taxonomy, and the Builder-side salvage will want
+    the same answer."""
+    if not failure_reason:
+        return "interrupted"
+    if failure_reason in SPAWN_DIED_REASONS or is_infra(failure_reason):
+        return "interrupted"
+    traits = REGISTRY.get(failure_reason)
+    if traits is not None and traits.origin in ("framework", "race"):
+        # Our own shape error (a missing stub, a worker exception) or a
+        # parallel cascade settling the target: the agent's work was
+        # never weighed either.
+        return "interrupted"
+    if failure_reason in AGENT_DECLINE_REASONS:
+        return "declined"
+    return "refused"
+
+
 #: The rc values the FRAMEWORK defines (llm/base.py SpawnRC + the
 #: antigravity provider's 123). Every provider is contractually
 #: required to translate its own failures into these, so reading them

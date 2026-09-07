@@ -273,16 +273,28 @@ def _insert_decision(conn: sqlite3.Connection, kind: str,
     conn.commit()
 
 
-def test_decomp_links_but_does_not_revive_confirmshelve_parked(
+def test_a_citation_revives_a_confirmshelve_park_and_says_so(
     conn: sqlite3.Connection,
 ) -> None:
-    """A ConfirmShelve-PARKED sibling (the latest decision targeting it is a
-    ConfirmShelve) is deliberately held pending its injected prereqs. Citation
-    still auto_links it (the citing strategy WAITS for it to prove via its own
-    inject_batch_done re-engagement), but must NOT revive it — reopening early
-    re-dispatches before prereqs exist → re-fail → re-shelve mini-spin."""
+    """FB-2(a), owner ruling 2026-09-07: "when new work cites a shelved
+    node A, reopen A" - a ConfirmShelve park included.
+
+    It used to be the exception, on the argument that reopening ahead
+    of its injected prereqs would re-dispatch it into a re-fail /
+    re-shelve mini-spin. The cost of NOT reviving was worse and
+    observable: g10931 was ConfirmShelve-parked, g10929's decomposition
+    reuse-linked it, and the twin strategy waiting on it could never
+    resume - so five successive decompositions were refused as
+    duplicates of a strategy that was permanently stuck. The citer's
+    own wait edge is what makes the reopen safe: it restores the live
+    path the wait needs rather than racing the goal ahead of anything.
+
+    Overriding the Strategist's own park is recorded in the goal event
+    so its next Context can report it."""
+    from Tooling.pipeline.backward import revive_cited_goals
     g = _insert_goal(conn, "parked", status="shelved")
     _insert_decision(conn, "ConfirmShelve", g)   # latest action = ConfirmShelve
+    citer = _insert_goal(conn, "citer", status="attempting")
     patch = "import Problems.p.proofs.L_parked\n"
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
@@ -290,8 +302,28 @@ def test_decomp_links_but_does_not_revive_confirmshelve_parked(
         workspace=Path.cwd(),
     )
     assert err is None
-    assert auto_link == {g}     # citing strategy still waits for it
-    assert revive == set()      # but NOT reopened early
+    assert auto_link == {g}
+    assert revive == {g}
+
+    assert revive_cited_goals(conn, revive, citing_goal_id=citer) == [g]
+    assert db.get_goal(conn, g)["status"] == "open"
+    ev = conn.execute(
+        "SELECT event, reason FROM goal_events WHERE goal_id = ?"
+        " ORDER BY id DESC LIMIT 1", (g,)).fetchone()
+    assert ev["event"] == "backward_revive"
+    assert f"cited by g{citer}" in ev["reason"]
+    assert "overrides a ConfirmShelve" in ev["reason"]
+
+
+def test_revive_is_idempotent_and_skips_a_goal_the_race_moved(
+    conn: sqlite3.Connection,
+) -> None:
+    """One implementation for both commit paths, so its re-check has to
+    hold: a goal no longer `shelved` when the revive runs is skipped."""
+    from Tooling.pipeline.backward import revive_cited_goals
+    g = _insert_goal(conn, "raced", status="proved")
+    assert revive_cited_goals(conn, {g}, citing_goal_id=1) == []
+    assert db.get_goal(conn, g)["status"] == "proved"
 
 
 def test_decomp_rejects_a_goal_a_person_parked(

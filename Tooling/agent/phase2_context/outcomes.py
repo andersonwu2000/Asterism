@@ -494,6 +494,11 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # growth_exponent re-mint). Rendered on the batch scoreboard — the
     # one wall the strategist already reads — bounded to 5 entries.
     decline_lines = _recent_decline_lines(conn, problem)
+    # The scoreboard's tail carries what happened to this group's work
+    # WITHOUT a decision of its own: worker declines, and — since the
+    # 2026-09-07 ruling — the parks a citation lifted, including this
+    # agent's own ConfirmShelves.
+    tail_lines = _recent_revive_lines(conn, problem) + decline_lines
     batch_ids = db.unacknowledged_inject_batches(conn, problem, group_id)
     # WORK STILL RUNNING IS NOT WORK THAT VANISHED. This section lists
     # batches that have fully terminated, so a batch with a spawn still
@@ -576,7 +581,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
             return ([head, ""] + body
                     + ([parked_line, ""] if parked_line else [])
                     + ([*owner_lines, ""] if owner_lines else [])
-                    + decline_lines)
+                    + tail_lines)
         # Same reason as `_section_pending_reopens` above: nothing
         # completed, nothing running, nothing parked, nothing handed
         # over — that is a FACT about this group's dispatch, and it is
@@ -591,7 +596,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         return ["## Completed Inject batches", "",
                 "(none — no batch of yours has completed since your "
                 "last look, and none is running or parked.)", ""
-                ] + decline_lines
+                ] + tail_lines
     out = ["## Completed Inject batches (newest first)", ""]
     if in_flight or other_n:
         out += ["_Still running, so not listed below: "
@@ -795,7 +800,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     out.append(f"  why: {detail}")
         out += _brick_ledger_lines(conn, problem, bid, steps)
         out.append("")
-    out.extend(decline_lines)
+    out.extend(tail_lines)
     return out
 
 
@@ -968,6 +973,54 @@ def _elide_middle(text: str, budget: int) -> str:
     half = (budget - 40) // 2
     return (f"{text[:half].rstrip()} … [{len(text) - 2 * half} chars "
             f"elided] … {text[-half:].lstrip()}")
+
+
+def _recent_revive_lines(conn: sqlite3.Connection,
+                         problem: str, k: int = 8) -> list[str]:
+    """`### Parked goals reopened by a citation` — goals the framework
+    put back on the board since this Strategist's last wake, because a
+    worker's decomposition cited or reuse-linked them.
+
+    Owner ruling 2026-09-07: a citation onto a `shelved` goal reopens
+    it, and that now includes a goal this agent PARKED itself with a
+    ConfirmShelve. Overriding its own decision without telling it is
+    how a park gets re-issued forever — g10931 was ConfirmShelve-parked,
+    g10929's decomposition needed it, and every road between the two
+    was silent. The event log is the source (`goal_events`, event
+    `backward_revive`); the reason column carries who cited it and
+    whether a ConfirmShelve was overridden."""
+    try:
+        since = conn.execute(
+            "SELECT MAX(created_at) FROM strategist_decisions"
+            " WHERE problem = ?", (problem,)).fetchone()[0]
+        sql = ("SELECT ge.goal_id, ge.reason, ge.at, g.slug, g.status"
+               " FROM goal_events ge JOIN goals g ON g.id = ge.goal_id"
+               " WHERE ge.problem = ? AND ge.event = 'backward_revive'")
+        args: list = [problem]
+        if since:
+            # `>=`, for the same clock-granularity reason as
+            # `_recent_decline_lines`.
+            sql += " AND ge.at >= ?"
+            args.append(since)
+        rows = conn.execute(
+            sql + " ORDER BY ge.id DESC LIMIT ?", (*args, k)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    if not rows:
+        return []
+    out = ["### Parked goals reopened by a citation",
+           "_New work cited these, so the framework gave each a live"
+           " path again. A line marked `overrides a ConfirmShelve` is"
+           " one of YOUR parks that the citation lifted — if the park"
+           " still stands for you, say so; re-parking it silently is"
+           " not the same as answering the work that needed it._", ""]
+    for r in rows:
+        why = " ".join(str(r["reason"] or "").split())
+        out.append(f"- g{int(r['goal_id'])} `{r['slug']}` revived"
+                   f" (now {r['status']})"
+                   + (f": {why}" if why else ""))
+    out.append("")
+    return out
 
 
 def _recent_decline_lines(conn: sqlite3.Connection,

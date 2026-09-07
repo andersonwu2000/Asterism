@@ -512,3 +512,35 @@ def test_persist_partials_carries_the_label_into_the_note(tmp_path):
     body = out.read_text(encoding="utf-8")
     assert body.startswith("**NOT judged")
     assert "blocked on the foot lemma" in body
+
+
+def test_a_refused_patch_is_labelled_refused_not_interrupted(tmp_path):
+    """FB-2(d), owner ruling 2026-09-07: a patch the framework REFUSED
+    at commit must not reach the next spawn as "interrupted before its
+    patch.lean could be promoted". `_refusal_label` derives the framing
+    from the failure taxonomy, so a `duplicate_strategy` says so and a
+    watchdog kill still reads as an interruption."""
+    from Tooling.pipeline.backward import _refusal_label
+    from Tooling.state import failures
+
+    class _R:
+        def __init__(self, reason, detail=""):
+            self.failure_reason = reason
+            self.failure_detail = detail
+
+    label = _refusal_label(_R("duplicate_strategy",
+                              "s27301 waits on g10931 (shelved)"))
+    assert label.startswith("REFUSED at commit")
+    assert "`duplicate_strategy`" in label
+    assert "g10931" in label
+
+    # A spawn that DIED left unfinished work - no verdict to give.
+    assert _refusal_label(_R("agent_timeout", "600s")) == ""
+    assert _refusal_label(_R("quota_exhausted")) == ""
+    assert _refusal_label(_R("worker_exception", "OSError")) == ""
+    # The agent's own decline is not the framework refusing it.
+    assert _refusal_label(_R("agent_shelved", "no route")).startswith(
+        "DECLINED by the previous spawn")
+
+    assert failures.draft_verdict_class("lake_build_error") == "refused"
+    assert failures.draft_verdict_class("") == "interrupted"

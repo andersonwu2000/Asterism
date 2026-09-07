@@ -289,3 +289,33 @@ def test_the_companion_files_an_owner_opened_group_apart_from_in_flight(
 
     assert "## In flight — batch `owner123`" not in companion, companion
     assert "## Opened by the owner — batch `owner123`" in companion, companion
+
+
+def test_a_park_the_framework_lifted_is_reported_to_the_strategist(
+    conn: sqlite3.Connection,
+):
+    """FB-2(a), owner ruling 2026-09-07: a citation onto a shelved goal
+    reopens it - including a goal this Strategist parked itself with a
+    ConfirmShelve. Overriding its own decision in silence is how a park
+    gets re-issued forever (g10931: the citer needed it, and every road
+    between the two was mute)."""
+    from Tooling.state import db, transitions
+    conn.execute(
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)", (db.now(),))
+    gid = db.insert_goal(
+        conn, problem="p", slug="crux",
+        lean_path="Problems/p/proofs/L_crux.lean", statement="X",
+        origin="backward")
+    db.update_goal_status(conn, gid, "shelved")
+    conn.commit()
+    transitions.apply_goal_transition(
+        conn, gid, "open", event="backward_revive",
+        reason="cited by g10929's decomposition (overrides a ConfirmShelve)")
+
+    text = "\n".join(
+        phase2_context._section_inject_batch_outcomes(conn, "p"))
+
+    assert "Parked goals reopened by a citation" in text, text
+    assert f"g{gid} `crux` revived" in text, text
+    assert "overrides a ConfirmShelve" in text, text

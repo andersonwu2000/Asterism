@@ -50,7 +50,17 @@ from ..quality import dedupe, diagnostics
 from . import _axiom
 from . import _presearch
 from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
-                         inject_missing_sibling_imports)  # noqa: F401 — re-export (tests)
+                         inject_missing_sibling_imports,
+                         revive_cited_goals)  # noqa: F401 — re-export (tests)
+# The twin-strategy guard (match / judge / refuse / adopt) moved to
+# `_twin.py` on 2026-09-07, when it grew from a yes/no into a verdict.
+# Re-exported here: the commit paths below and the tests both reach for
+# `backward.<name>`.
+from ._twin import (_adopt_twin_strategy,  # noqa: F401 — re-export
+                    _duplicate_refusal_detail,
+                    _duplicate_strategy_verdict,
+                    _existing_duplicate_strategy,
+                    _wait_set_blockers)
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -101,31 +111,6 @@ def _normalize_slug(raw: str) -> "str | None":
     s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
     s = re.sub(r"_+", "_", s.lower()).strip("_")
     return s if _SLUG_RE.match(s) else None
-
-
-def _existing_duplicate_strategy(conn, goal_id: int,
-                                 linked_set: "set[int]") -> "int | None":
-    """The id of an existing 'proposed'/'stalled' strategy on `goal_id`
-    whose subgoal set equals `linked_set`, or None. P3 duplicate-strategy
-    guard: with the statement-defeq reuse link (P1) live, a walled
-    re-decomposition resolves to pure links — if an identical link set
-    already exists, committing another strategy row is pure pile-up.
-    Only live-ish statuses count: a dead/superseded twin does not block
-    a fresh assertion of the same structure."""
-    if not linked_set:
-        return None
-    by_sid: "dict[int, set[int]]" = {}
-    for r in conn.execute(
-        "SELECT s.id AS sid, ss.subgoal_id AS gid FROM strategies s"
-        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        " WHERE s.goal_id = ? AND s.status IN ('proposed','stalled')",
-        (int(goal_id),),
-    ):
-        by_sid.setdefault(int(r["sid"]), set()).add(int(r["gid"]))
-    for sid in sorted(by_sid):
-        if by_sid[sid] == linked_set:
-            return sid
-    return None
 
 
 def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
@@ -500,7 +485,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         g10937, a goal that had already been revived once. Keep it,
         labelled with the park.
       - anything else (failed / exhausted with retryable reasons):
-        persist what the spawn wrote.
+        persist what the spawn wrote, labelled with the verdict when
+        the framework REFUSED the patch at commit (owner ruling
+        2026-09-07 (d)) — see `_refusal_label`.
     """
     from . import PipelineResult, _drafts
     goal_row = db.get_goal(conn, goal_id)
@@ -545,8 +532,33 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         else:
             _drop()
     else:
-        _keep("")
+        _keep(_refusal_label(result))
     return result
+
+
+def _refusal_label(result) -> str:
+    """The verdict line for a draft kept after a failed run — empty when
+    the spawn was simply cut off.
+
+    The distinction the drafts slot never made (owner ruling
+    2026-09-07 (d)): a spawn that DIED (timeout, watchdog kill, empty
+    output) left an unfinished patch, and "pick it up" is the right
+    instruction. A spawn whose patch reached the commit gate and was
+    REFUSED left a JUDGED patch — a `duplicate_strategy` among them —
+    and handing that on as "interrupted before its patch.lean could be
+    promoted" invites the next spawn to re-submit it into the same
+    refusal. The three-way split lives in
+    `state.failures.draft_verdict_class`."""
+    from ..state import failures as _failures
+    reason = str(result.failure_reason or "")
+    verdict = _failures.draft_verdict_class(reason)
+    if verdict == "interrupted":
+        return ""
+    detail = " ".join(str(result.failure_detail or "").split())
+    head = ("REFUSED at commit" if verdict == "refused"
+            else "DECLINED by the previous spawn")
+    return (f"{head} — `{reason}`"
+            + (f": {detail[:400]}" if detail else ""))
 
 
 def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
@@ -1309,17 +1321,21 @@ def _backward_parse_and_commit(
                 return _abort(guard[0], guard[1], leading)
             # A cite-only patch that links exactly what an existing
             # strategy on this goal already waits on adds nothing — same
-            # rationale as the decomposition path's twin guard.
-            dup_sid = _existing_duplicate_strategy(
-                conn, goal_id, set(auto_link_ids))
-            if dup_sid is not None:
+            # rationale, and since 2026-09-07 the same three-way verdict,
+            # as the decomposition path's twin guard.
+            action, dup_sid, blockers = _duplicate_strategy_verdict(
+                conn, goal_id, set(auto_link_ids),
+                alive_after=set(revive_ids))
+            if action == "adopt" and dup_sid is not None:
+                return _adopt_twin_strategy(
+                    conn, goal_id=goal_id, twin_sid=dup_sid,
+                    reserved_sid=strategy_id, leading=leading,
+                    revive_ids=set(revive_ids))
+            if action == "refuse" and dup_sid is not None:
                 return _abort(
                     "duplicate_strategy",
-                    f"this patch declares no sub-goal and waits on exactly "
-                    f"the same goal set {sorted(auto_link_ids)} as existing "
-                    f"strategy s{dup_sid} on this goal — s{dup_sid} is "
-                    f"already waiting on those gates. Nothing new will "
-                    f"happen that is not already pending.",
+                    _duplicate_refusal_detail(
+                        dup_sid, set(auto_link_ids), blockers),
                     leading,
                 )
         proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
@@ -1462,14 +1478,9 @@ def _backward_parse_and_commit(
             )
         # Revive cited soft terminals, then register the wait edges. Same
         # semantics as the decomposition path — `strategies_ready_for_verify`
-        # blocks this strategy until every cited goal proves.
-        for rid in sorted(revive_ids):
-            cur = db.get_goal(conn, rid)
-            if cur is not None and str(cur["status"]) == "shelved":
-                transitions.apply_goal_transition(
-                    conn, rid, "open", event="backward_revive")
-                print(f"[backward-revive] cited sibling goal {rid} "
-                      f"({cur['slug']}) shelved → open", flush=True)
+        # blocks this strategy until every cited goal proves. One
+        # implementation for both paths since 2026-09-07.
+        revive_cited_goals(conn, set(revive_ids), citing_goal_id=goal_id)
         for pos, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,
                             subgoal_id=auto_gid, position=pos,
@@ -2077,24 +2088,28 @@ def _backward_parse_and_commit(
         # strategy pile: ~30 byte-identical reductions s22785–s22831): a
         # decomposition with NO novel sub-goal whose linked-goal set
         # equals an existing proposed/stalled strategy's subgoal set on
-        # this goal adds nothing — the existing strategy is already
-        # waiting on exactly the same gates. Decline with the twin
-        # strategy named so the Strategist stops re-asserting it.
-        # Novel stubs exempt: new content = a genuinely new strategy.
+        # this goal adds nothing NEW — but whether that is a failure
+        # depends on whether the twin can still move (owner ruling
+        # 2026-09-07; see `_duplicate_strategy_verdict`). A reachable
+        # twin is ADOPTED: the pipeline succeeds, the twin resumes, no
+        # attempt is burned. Novel stubs exempt: new content = a
+        # genuinely new strategy.
         if not sub_meta and auto_link_ids:
-            dup_sid = _existing_duplicate_strategy(
-                conn, goal_id, set(auto_link_ids))
-            if dup_sid is not None:
+            action, dup_sid, blockers = _duplicate_strategy_verdict(
+                conn, goal_id, set(auto_link_ids),
+                alive_after=set(revive_ids))
+            if action == "adopt" and dup_sid is not None:
+                _discard_placed()
+                return _adopt_twin_strategy(
+                    conn, goal_id=goal_id, twin_sid=dup_sid,
+                    reserved_sid=strategy_id, leading=leading,
+                    revive_ids=set(revive_ids))
+            if action == "refuse" and dup_sid is not None:
                 _discard_placed()
                 return _abort(
                     "duplicate_strategy",
-                    f"this decomposition declares no novel sub-goal and "
-                    f"links exactly the same goal set "
-                    f"{sorted(auto_link_ids)} as existing strategy "
-                    f"s{dup_sid} on this goal — it is a byte-identical "
-                    f"re-assertion; s{dup_sid} is already waiting on "
-                    f"those gates. Nothing new will happen that is not "
-                    f"already pending.",
+                    _duplicate_refusal_detail(
+                        dup_sid, set(auto_link_ids), blockers),
                     leading,
                 )
 
@@ -2286,19 +2301,12 @@ def _backward_parse_and_commit(
         # once cited). Since 2026-09-04 a wrong-context decline is one
         # of these parks: its statement was never judged, only the
         # decomposition that minted it, and THIS strategy is a different
-        # context. Re-check status to skip any the time-of-check/use
-        # race already moved.
-        for rid in sorted(revive_ids):
-            cur = db.get_goal(conn, rid)
-            # Only a park is revivable by citation; 'disproved' is
-            # rejected at the gate (never reaches revive_ids). Re-check
-            # status to skip any the time-of-check/use race already
-            # moved to a non-revivable terminal.
-            if cur is not None and str(cur["status"]) == "shelved":
-                transitions.apply_goal_transition(
-                    conn, rid, "open", event="backward_revive")
-                print(f"[backward-revive] cited sibling goal {rid} "
-                      f"({cur['slug']}) shelved → open", flush=True)
+        # context. The re-check, the ConfirmShelve-override record and
+        # the log line all live in `_cite_gate.revive_cited_goals` —
+        # one implementation, so the reuse-link road (which reaches a
+        # twin through `_apply_reuse_rewrites`) gets exactly what a
+        # hand-written citation gets.
+        revive_cited_goals(conn, set(revive_ids), citing_goal_id=goal_id)
         next_pos = len(linked_ids)
         for offset, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,
