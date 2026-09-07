@@ -904,6 +904,256 @@ def test_the_projection_carries_the_request_and_declares_its_rubric(
     assert (proj / "TREE.md").is_file()
 
 
+# ---------------------------------------------------------------------
+# `theory_reviewer.dossier` — the package in the prompt (ruling 09-07)
+#
+# The batch judge's flag, one seat over (`tests/test_adversary.py`, same
+# section name). `files` is production and must not move a byte;
+# `inline` puts the always-read files IN the prompt, invariant-first so
+# one review's rounds share a cacheable prefix, and maps the rest.
+# ---------------------------------------------------------------------
+
+_NOTE_AGENT = "g1_20260906-0100_the_wall_is_not_settled_here.md"
+_NOTE_USER = "owner_note.md"
+_REVIEW_MANIFEST_HEAD = "\n\n## This round's dossier — actually present\n"
+
+
+def _shelve_notes(workspace: Path) -> Path:
+    """The Project's document shelf, with one note in each area — the
+    directory whose FILENAMES criterion 1 is decided against."""
+    docs = workspace / "Problems" / "p" / "_docs"
+    (docs / "agent").mkdir(parents=True, exist_ok=True)
+    (docs / "user").mkdir(parents=True, exist_ok=True)
+    (docs / "agent" / _NOTE_AGENT).write_text(
+        "# The wall\n\nTheorem 1. ...\n", encoding="utf-8")
+    (docs / "user" / _NOTE_USER).write_text(
+        "# Owner note\n\nTry the erasure.\n", encoding="utf-8")
+    return docs
+
+
+def _dossier_prompt(workspace: Path, conn: sqlite3.Connection,
+                    monkeypatch: pytest.MonkeyPatch, *, mode: str,
+                   attempts_name: str, report: str = _REPORT,
+                   dialogue=(), round_no: int = 1) -> str:
+    """One review round under `mode`; returns the prompt file's text.
+
+    The RAW file, not the rendered one — `_rendered_review` below
+    applies the pass the provider applies, and the two are different
+    questions (what the framework wrote vs what the model reads)."""
+    from Tooling.pipeline.theorist import review as _review
+
+    monkeypatch.setenv("ASTERISM_THEORY_REVIEWER_DOSSIER", mode)
+    attempts = workspace / ".attempts" / attempts_name
+    attempts.mkdir(parents=True)
+    seen: dict = {}
+
+    def fake_spawn(**kw):
+        seen.update(kw)
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            json.dumps(_clear()), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    verdict, err, rc = _review.review(
+        round_no=round_no, attempts_dir=attempts, conn=conn,
+        workspace=workspace, problem="p",
+        group_id=groups_mod.ensure_top_group(conn, "p"),
+        objective="S such that S implies MAIN",
+        situation="the bridge died at PAST 3", report_body=report,
+        dialogue=list(dialogue), pipeline_id=attempts_name,
+        final_round=False)
+    assert rc == 0 and verdict is not None, err
+    flags = dict(seen["prompt_flags"])
+    assert (flags["dossier_inline"], flags["dossier_files"]) == \
+        (mode == "inline", mode == "files"), \
+        "both names travel, always — the renderer is fail-open"
+    return Path(seen["prompt_path"]).read_text(encoding="utf-8")
+
+
+def _rendered_review(text: str, *, mode: str) -> str:
+    """The prompt as the MODEL sees it: the conditional blocks resolved
+    the way the provider adapter resolves them."""
+    from Tooling.agent import render_prompt_template
+    from Tooling.pipeline.theorist.review import round_prompt_flags
+    return render_prompt_template(
+        text, flags={**round_prompt_flags(False),
+                     "dossier_inline": mode == "inline",
+                     "dossier_files": mode == "files",
+                     "native_file_tools": False, "mcp_only_reads": True})
+
+
+def test_the_reviewers_files_mode_is_byte_for_byte_the_prompt_of_today(
+    workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default mode changes NOTHING. The daemon hot-swaps this code
+    within a minute of it being saved, onto a board mid-review, so
+    `files` has to be the rubric with the placeholders substituted and
+    the per-spawn manifest after it — nothing between, nothing added."""
+    from Tooling.pipeline import PROMPT_DIR
+    from Tooling.pipeline import adversary as adv
+
+    _shelve_notes(workspace)
+    text = _dossier_prompt(workspace, conn, monkeypatch, mode="files",
+                           attempts_name="rev-files")
+    pdir = workspace / "Problems" / "p"
+    head = ((PROMPT_DIR / "theorist" / "review.md")
+            .read_text(encoding="utf-8")
+            .replace(adv.PROOFS_DIR_PLACEHOLDER,
+                     (pdir / "proofs").resolve().as_posix())
+            .replace(adv.PAPERS_DIR_PLACEHOLDER,
+                     (pdir / "_docs").resolve().as_posix()))
+    assert text.startswith(head), "the rubric, verbatim, first"
+    assert text[len(head):].startswith(_REVIEW_MANIFEST_HEAD), \
+        "and the per-spawn manifest immediately after it"
+    # No inlined body rides — this is a directory the reviewer opens, as
+    # it always was.
+    assert _REPORT not in text
+    # …and what the MODEL reads carries neither section nor its wording.
+    model_sees = _rendered_review(text, mode="files")
+    assert "## Dossier (inline)" not in model_sees
+    assert "## Table of contents" not in model_sees
+    assert "INLINED VERBATIM" not in model_sees
+
+
+def test_the_reviewers_inline_dossier_ships_the_document_and_maps_the_rest(
+    workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`inline`: charter / request / Programme / the document verbatim
+    in the fixed invariant-first order; an outline for TREE.md and the
+    dialogue; the way IN (never a map) for CATALOG.md and the proofs
+    dir; and the shelf listed BY NAME, since criterion 1 is decided
+    against what is already on it."""
+    from Tooling.pipeline.theorist import review as _review
+
+    _shelve_notes(workspace)
+    text = _dossier_prompt(
+        workspace, conn, monkeypatch, mode="inline",
+        attempts_name="rev-inline", round_no=2,
+        dialogue=[{"round": 1, "criticisms": ["[criterion 1] restated"]}])
+    proj = (workspace / ".attempts" / "rev-inline" / "review" / "r2")
+
+    assert "## Dossier (inline)" in text
+    # ORDER: every inlined file that exists appears once, in the order
+    # the constant declares — the round-invariant prefix depends on it.
+    present = [n for n in _review.DOSSIER_INLINE_ORDER
+               if (proj / n).is_file()]
+    assert "report.md" in present and "charter.md" in present
+    at = [text.index(f"### {n}\n") for n in present]
+    assert at == sorted(at), f"out of order: {present}"
+    # VERBATIM: the body is the file's own bytes, no line numbers.
+    for name in present:
+        body = (proj / name).read_text(encoding="utf-8").rstrip("\n")
+        assert body in text, f"{name} is not inlined verbatim"
+    # MAPPED, not inlined: TREE.md and the dialogue get an outline.
+    assert "## Table of contents (read on demand)" in text
+    for name in _review.DOSSIER_OUTLINED:
+        assert (proj / name).is_file(), f"{name} is in every dossier"
+        assert f"### {name} — " in text
+        assert (proj / name).read_text(encoding="utf-8") not in text, \
+            f"{name} is mapped, never inlined"
+    # The shelf: names and sizes, never bodies.
+    assert _NOTE_AGENT in text and _NOTE_USER in text
+    assert "Try the erasure." not in text
+    # The proofs dir: entry count and the queries, never a listing.
+    assert "### proofs dir" in text
+    # The per-spawn block is LAST — everything above it is cacheable.
+    assert text.index(_REVIEW_MANIFEST_HEAD) > text.index("## Dossier (inline)")
+    assert "### " not in text[text.index(_REVIEW_MANIFEST_HEAD):]
+    # And the rubric's own `## What you see` says so.
+    assert "INLINED VERBATIM" in _rendered_review(text, mode="inline")
+
+
+def test_the_reviewers_inline_prefix_is_identical_across_rounds(
+    workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two rounds differing ONLY in the document and the dialogue share
+    every byte up to `### report.md`.
+
+    That is the whole reason the order is fixed: a provider caches a
+    prompt by its prefix, so round 2 must not re-pay for the charter,
+    the request and the Programme — and the request in particular is the
+    one thing that CANNOT change inside a review."""
+    _shelve_notes(workspace)
+    a = _dossier_prompt(workspace, conn, monkeypatch, mode="inline",
+                        attempts_name="rev-p1", report=_REPORT)
+    b = _dossier_prompt(
+        workspace, conn, monkeypatch, mode="inline",
+        attempts_name="rev-p2", round_no=2,
+        report=_REPORT + "\n## Leads\n\nA second route.\n",
+        dialogue=[{"round": 1, "criticisms": ["[criterion 1] restated"]}])
+    cut = "### report.md"
+    assert a != b, "the two rounds really do differ"
+    assert a.split(cut)[0] == b.split(cut)[0], \
+        "the round-invariant prefix moved between rounds"
+
+
+def test_the_roster_the_shelf_and_the_proofs_dir_get_the_way_in(
+    tmp_path: Path,
+) -> None:
+    """Three directories-worth of evidence, three different answers.
+
+    CATALOG.md is hundreds of sections: its outline IS a roster, so what
+    rides is the way in. `{proofs_dir}` is the same shape — the names
+    there are `<slug>.lean` and no ruling turns on which exist. The
+    document shelf is the OPPOSITE case: criterion 1 asks whether the
+    document has something the notes do not already have, so its
+    filenames are evidence and they are listed."""
+    from Tooling.pipeline.theorist import review as _review
+
+    proj = tmp_path / "r1"
+    proj.mkdir()
+    (proj / "CATALOG.md").write_text(
+        "".join(f"## uc_lemma_{i}\nstatement {i}\n" for i in range(400)),
+        encoding="utf-8")
+    (proj / "TREE.md").write_text("# Tree\n## Open\n- a\n", encoding="utf-8")
+    (proj / "report.md").write_text("# doc\n\nbody\n", encoding="utf-8")
+    proofs = tmp_path / "proofs"
+    proofs.mkdir()
+    (proofs / "a.lean").write_text("theorem a : True := trivial\n",
+                                   encoding="utf-8")
+    docs = tmp_path / "_docs"
+    (docs / "agent").mkdir(parents=True)
+    (docs / "user").mkdir()
+    (docs / "agent" / _NOTE_AGENT).write_text("# note\n\nsecret body\n",
+                                              encoding="utf-8")
+    (docs / "agent" / "papers").mkdir()
+    (docs / "user" / _NOTE_USER).write_text("# owner\n", encoding="utf-8")
+
+    text = _review.dossier_sections(proj, proofs_dir=proofs,
+                                    papers_dir=docs)
+
+    assert "### CATALOG.md — " in text and "A roster" in text
+    assert "## uc_lemma_1\n" not in text, "the roster's own map never rides"
+    # The mapped file: the outline `inspect` answers with, verbatim.
+    from Tooling.knowledge import workspace_query as _wq
+    for line in _wq.outline(proj / "TREE.md"):
+        assert line in text
+    # The shelf: every note by name and size, the sub-directory by count,
+    # and not one byte of a body.
+    assert f"`agent/{_NOTE_AGENT}`" in text and f"`user/{_NOTE_USER}`" in text
+    assert "`agent/papers/` — 0 entr(ies)" in text
+    assert "secret body" not in text
+    # The proofs dir: entry count and the queries, never a listing.
+    assert f"### proofs dir `{proofs.as_posix()}` — 1 entr(ies)" in text
+    assert "a.lean" not in text.split("### proofs dir")[1]
+
+
+def test_an_unreadable_reviewer_dossier_mode_runs_the_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """A config typo must not discard a finished document. It degrades
+    to `files` and says so."""
+    from Tooling.pipeline import dossier as _dossier
+    from Tooling.pipeline.theorist import review as _review
+
+    monkeypatch.setenv("ASTERISM_THEORY_REVIEWER_DOSSIER", "INLINED")
+    assert _review.dossier_mode() == _dossier.FILES
+    assert "is not one of" in capsys.readouterr().out
+
+
 def test_the_author_reads_its_group_under_the_theory_trigger(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
@@ -1738,8 +1988,10 @@ def test_a_single_round_cap_makes_the_first_review_the_final_one(
     _run(conn, workspace, pintent, did)
 
     assert state["review"] == 1
-    assert state["review_flags"][0] == {"more_rounds": False,
-                                        "final_round": True}
+    # Criterion 3's pair only — the dossier pair rides in the same dict
+    # (`theory_reviewer.dossier`) and is a different question.
+    flags = state["review_flags"][0]
+    assert (flags["more_rounds"], flags["final_round"]) == (False, True)
 
 
 def test_a_resumed_round_is_told_what_the_cold_path_would_have_said(

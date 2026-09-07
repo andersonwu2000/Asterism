@@ -9,6 +9,9 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 ## What you see
 
+<!-- #if dossier_inline -->
+Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it there, do not open it — except `TREE.md`, `CATALOG.md`, `dialogue.md`, `{papers_dir}` and `{proofs_dir}`, which `## Table of contents (read on demand)` maps instead.
+<!-- #endif -->
 - `charter.md` — this group's charter: the claim every "charter" and "MAIN claim" below means. Below it, the charters above this one.
 - `request.md` — the request this document answers: its objective and situation.
 - `report.md` — the document under review.

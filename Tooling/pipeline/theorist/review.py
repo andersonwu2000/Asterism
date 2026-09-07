@@ -10,6 +10,14 @@ round-fresh record files, the document itself, and the dialogue once a
 round has been argued. The Project's documents and the landed proofs
 are read IN PLACE on a read-only grant, exactly as the batch judge
 reads them.
+
+HOW that dossier reaches the reviewer is `theory_reviewer.dossier`
+(owner ruling 2026-09-07, the batch judge's flag one seat over):
+`files` — today — names the projection's files and the reviewer opens
+them; `inline` puts the small always-read ones in the prompt verbatim
+and maps the rest. The block shapes are shared (`pipeline/dossier.py`);
+which file gets which is below, because it is a reading of THIS
+projection.
 """
 from __future__ import annotations
 
@@ -19,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .. import dossier as _dossier
 from ..adversary import INFRA_RETRY_BACKOFF_SEC, INFRA_SPAWN_RETRIES
 from .verdict import (REPORT_BASENAME, VERDICT_BASENAME, VERDICT_TRIES,
                       describe_verdict_shape, keep_rejected_verdict,
@@ -63,6 +72,94 @@ AGENT_SHELF_NOTE = (
     "`rigour: defective` establishes nothing, so a document under review "
     "here is not restating known work by proving what such a file "
     "claims.")
+
+
+# ---------------------------------------------------------------------
+# how the dossier reaches the reviewer (`theory_reviewer.dossier`)
+# ---------------------------------------------------------------------
+
+#: Inlined FIRST, in this order, and round-INVARIANT: the same bytes for
+#: every round of one review. That is the whole reason the order is
+#: fixed rather than alphabetical or directory order — a provider caches
+#: a prompt by its prefix, so anything that changes between rounds has
+#: to sit after everything that does not, or round 2 pays full price for
+#: text round 1 already paid for.
+DOSSIER_INLINE_INVARIANT = ("charter.md", REQUEST_BASENAME, "PROGRAMME.md")
+#: Inlined after them, and round-VARYING: `report.md` IS the thing under
+#: review and is rewritten by every revision, so it can never sit in the
+#: prefix. It is inlined whole rather than mapped — 28-45KB, and the
+#: rubric's second criterion is "re-derive it", which is not a thing
+#: anyone does from a section at a time.
+#:
+#: `since.md` is the batch judge's name for "what landed while the
+#: author was writing" and this projection does not write one today; it
+#: is listed so that the day it does, it lands after the report instead
+#: of silently outside the dossier.
+DOSSIER_INLINE_TAIL = (REPORT_BASENAME, "since.md")
+DOSSIER_INLINE_ORDER = DOSSIER_INLINE_INVARIANT + DOSSIER_INLINE_TAIL
+
+#: Mapped, not inlined: big and read by a minority of rounds (TREE.md
+#: ~40KB), or already answered in the prompt's own dialogue of rulings
+#: (dialogue.md, which grows a round at a time). What rides is the
+#: OUTLINE — the headings, line ranges and sizes `inspect` would answer
+#: with — and the reviewer reads the one section its ruling turns on.
+DOSSIER_OUTLINED = ("TREE.md", "dialogue.md")
+
+#: Not even outlined: CATALOG.md is hundreds of sections, so its map IS
+#: a roster and printing it would cost more than the file.
+DOSSIER_ROSTERS = ("CATALOG.md",)
+
+#: The two sub-roots of `{papers_dir}`, listed by NAME. Criterion 1 asks
+#: whether the document has something the record and the notes do not
+#: already have, so what exists on that shelf is evidence — see
+#: `dossier.notes_block`.
+DOSSIER_NOTE_AREAS = ("agent", "user")
+
+
+def dossier_mode() -> str:
+    """`files` (today) or `inline`, from `theory_reviewer.dossier`."""
+    from ...core import config
+    return _dossier.normalize(
+        config.get("theory_reviewer.dossier", default=_dossier.FILES,
+                   env_var="ASTERISM_THEORY_REVIEWER_DOSSIER"),
+        key="theory_reviewer.dossier", seat="theorist")
+
+
+def dossier_sections(proj: Path, *, proofs_dir: Path,
+                     papers_dir: Path) -> str:
+    """`## Dossier (inline)` + `## Table of contents`, for `inline` mode.
+
+    Everything the reviewer is otherwise sent to `inspect` for, resolved
+    by the builder that already knows the answer. The two sections sit
+    BETWEEN the rubric and the per-spawn manifest: the rubric is the
+    same text for every review, this is the same text for every round of
+    one review down to `### report.md`, and the manifest is the one part
+    that is this spawn's alone."""
+    out: "list[str]" = [
+        "", "## Dossier (inline)", "",
+        "These files are here in full. They are the dossier — do not "
+        "open them, and do not spend a query re-reading one.", ""]
+    for name in DOSSIER_INLINE_ORDER:
+        p = proj / name
+        if p.is_file():
+            out += _dossier.inline_block(name, p)
+    out += ["## Table of contents (read on demand)", "",
+            "These are NOT inlined — they are big and most rounds need "
+            "one section of one of them. Read a section with "
+            '`inspect([{"read": "<file>", "sections": ["<heading>"]}])`; '
+            "the line ranges below are what that call answers from.", ""]
+    for name in DOSSIER_OUTLINED:
+        p = proj / name
+        if p.is_file():
+            out += _dossier.outline_block(name, p)
+    for name in DOSSIER_ROSTERS:
+        p = proj / name
+        if p.is_file():
+            out += _dossier.roster_block(name, p)
+    out += _dossier.notes_block("papers dir", papers_dir,
+                                areas=DOSSIER_NOTE_AREAS)
+    out += _dossier.dir_block("proofs dir", proofs_dir)
+    return "\n".join(out) + "\n"
 
 
 def projection_dir(attempts_dir: Path, round_no: int) -> Path:
@@ -144,9 +241,10 @@ def build_review_projection(*, round_no: int, attempts_dir: Path,
 
 
 def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
-                   papers_dir: Path, present: "list[str]") -> Path:
-    """The reviewer's prompt with its two workspace placeholders filled
-    and this round's dossier named.
+                   papers_dir: Path, present: "list[str]",
+                   dossier: str = "") -> Path:
+    """The reviewer's prompt with its two workspace placeholders filled,
+    the inline dossier (empty in `files` mode) and this round's manifest.
 
     `{attempts_dir}` and the tool-line conditionals are NOT touched
     here — `render_prompt_template` inside the provider adapter owns
@@ -175,11 +273,17 @@ def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
                 # settled prior work would fire criterion 1 on a
                 # document for restating something nothing established.
                 + AGENT_SHELF_NOTE + "\n")
+    # Rubric, then (in `inline` mode) the dossier and its table of
+    # contents, then the per-spawn manifest LAST — cheapest-to-cache
+    # first. In `files` mode the middle is empty and this is byte for
+    # byte the prompt every round has been written since the manifest
+    # landed; the `#if dossier_inline` sentence in the rubric is dropped
+    # by the template renderer on the flag `review` passes.
     dst.write_text(
         src.read_text(encoding="utf-8")
         .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
         .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix())
-        + manifest,
+        + dossier + manifest,
         encoding="utf-8")
     return dst
 
@@ -221,10 +325,14 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
     papers_dir = _project_docs.root(workspace, project).resolve()
     present = sorted(p.name for p in proj.iterdir()
                      if p.is_file() and not p.name.startswith("_"))
+    mode = dossier_mode()
     prompt_path = _render_prompt(
         PROMPT_DIR / "theorist" / "review.md",
         proj / "_theory_review_prompt.md",
-        proofs_dir=proofs_dir, papers_dir=papers_dir, present=present)
+        proofs_dir=proofs_dir, papers_dir=papers_dir, present=present,
+        dossier=(dossier_sections(proj, proofs_dir=proofs_dir,
+                                  papers_dir=papers_dir)
+                 if mode == _dossier.INLINE else ""))
     tools_cfg = write_tools_mcp_config(proj, workspace,
                                        seat="theory_reviewer",
                                        problem=problem)
@@ -242,9 +350,11 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         kind="theory_reviewer", prompt_path=prompt_path,
         problem_dir=proj, attempts_dir=proj, timeout_sec=timeout_sec,
         mcp_config_path=tools_cfg,
-        # Criterion 3's push half, per round. Both names always given —
-        # see `round_prompt_flags`.
-        prompt_flags=round_prompt_flags(final_round),
+        # Criterion 3's push half, per round, and which dossier wording
+        # the `## What you see` section carries. Both names of each pair
+        # are always given — see `round_prompt_flags`.
+        prompt_flags={**round_prompt_flags(final_round),
+                      **_dossier.prompt_flags(mode)},
         # Read-only, in place — the same grant the batch judge has, and
         # for the same reason: the landed proofs and the Project's
         # documents are ground truth, not the author's narrative, so

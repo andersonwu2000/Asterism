@@ -79,6 +79,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "theorist.timeout_sec": "theory author spawn cap — hang guard, not a work budget (ASTERISM_THEORIST_TIMEOUT_SEC; 10800)",
     "theorist.rounds": "revision rounds a fired theory verdict may buy, on the author's own session (ASTERISM_THEORIST_ROUNDS; 3)",
     "theory_reviewer.timeout_sec": "theory reviewer spawn cap — hang guard, not a work budget (ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC; 7200)",
+    "theory_reviewer.dossier": "how the reviewer's package reaches it: `files` (default — the prompt names the projection's files) or `inline` (the small always-read files verbatim in the prompt, a table of contents for the big ones) (ASTERISM_THEORY_REVIEWER_DOSSIER; files)",
     "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
     "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",
     "feedback.enabled": "dev-mode agent feedback questionnaire (ASTERISM_FEEDBACK_ENABLED; False)",

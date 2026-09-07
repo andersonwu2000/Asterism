@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..state import failures
+from . import dossier as _dossier
 
 
 def _rc_reason(rc: int) -> str:
@@ -83,11 +84,11 @@ _LEGACY_INJECT_LABEL = "proof (legacy row, before named bricks)"
 _INLINE_MAX = 120
 
 
-def _fence_for(text: str) -> str:
-    """A backtick fence longer than any run inside `text`, so a field
-    that quotes code or Lean stays byte-identical inside its block."""
-    longest = max((len(r) for r in re.findall(r"`+", text)), default=0)
-    return "`" * max(3, longest + 1)
+#: The fence, the four block shapes and the mode vocabulary live in
+#: `pipeline/dossier.py` — the theory reviewer projects a dossier too
+#: and reads it the same two ways (owner ruling 2026-09-07). What stays
+#: HERE is which of this projection's files gets which block.
+_fence_for = _dossier.fence_for
 
 
 def _render_field(name: str, value: Any) -> "list[str]":
@@ -278,19 +279,13 @@ PAPERS_DIR_PLACEHOLDER = "{papers_dir}"
 #: `files` — the prompt NAMES the projection's files and the judge opens
 #: what it wants. Every round the framework has ever run took this road,
 #: and it is the default.
-DOSSIER_FILES = "files"
+DOSSIER_FILES = _dossier.FILES
 #: `inline` — the small always-read files ride IN the prompt, verbatim,
 #: and the big sparsely-read ones arrive as the table of contents the
-#: judge would otherwise buy with an `outline` call. Measured over 332
-#: gpt-era judge sessions (2026-09-07): 47.8 `inspect` reads per session,
-#: 31.7 of them on a file the same session had already read; 10 `outline`
-#: calls because the judge has no map; 14% of all tool-output bytes were
-#: whole-file re-reads. A judge round is ~14 turns and the cached re-send
-#: of a growing context is 43% of its cost, so a file read on turn 12
-#: has been re-sent eleven times by then, while the same bytes placed in
-#: the prompt are sent once and cached.
-DOSSIER_INLINE = "inline"
-DOSSIER_MODES = (DOSSIER_FILES, DOSSIER_INLINE)
+#: judge would otherwise buy with an `outline` call. What that buys, and
+#: the 332-session measurement it was decided on, is in `dossier.py`.
+DOSSIER_INLINE = _dossier.INLINE
+DOSSIER_MODES = _dossier.MODES
 
 #: Inlined FIRST, in this order, and round-INVARIANT: the same bytes for
 #: every round of one debate. That is the whole reason the order is
@@ -326,78 +321,12 @@ DOSSIER_ROSTERS = ("CATALOG.md",)
 
 
 def dossier_mode() -> str:
-    """`files` (today) or `inline`, from `adversary.dossier`.
-
-    An unreadable value degrades to `files` with a printed line rather
-    than refusing: this runs inside a wake that already holds a finished
-    proposal, and a config typo must not be what discards it."""
+    """`files` (today) or `inline`, from `adversary.dossier`."""
     from ..core import config
-    raw = str(config.get("adversary.dossier", default=DOSSIER_FILES,
-                         env_var="ASTERISM_ADVERSARY_DOSSIER")
-              or "").strip().lower()
-    if raw in DOSSIER_MODES:
-        return raw
-    print(f"[adversary] adversary.dossier={raw!r} is not one of "
-          f"{list(DOSSIER_MODES)} — running {DOSSIER_FILES!r}", flush=True)
-    return DOSSIER_FILES
-
-
-def _inline_block(name: str, path: Path) -> "list[str]":
-    """One dossier file as the judge reads it: its name, then its body
-    verbatim in a fence long enough to survive the backticks inside it.
-
-    No line numbers and no banner. The judge quotes this text back in
-    its verdict and the strategist is held to the quotation, so what
-    rides has to be the file's own bytes — the numbered, banner-wrapped
-    shape `inspect` returns is a rendering, and a rendering quoted as
-    evidence is how a citation stops being checkable."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    fence = _fence_for(text)
-    return [f"### {name}", fence, text.rstrip("\n"), fence, ""]
-
-
-def _outline_block(name: str, path: Path) -> "list[str]":
-    """One mapped file: its size, then the outline `inspect` answers
-    with — the same call, so the map in the prompt and the map the tool
-    returns cannot disagree."""
-    from ..knowledge import workspace_query as _wq
-    try:
-        lines = _wq.outline(path)
-        size = path.stat().st_size
-    except OSError as exc:                       # unreadable, not fatal
-        return [f"### {name}", f"(outline unavailable: {exc})", ""]
-    return ([f"### {name} — {size:,} bytes"] + list(lines) + [""])
-
-
-def _roster_block(name: str, path: Path) -> "list[str]":
-    """A roster-sized file: NO outline. Its map is longer than most of
-    the sections anyone wants out of it, so what rides is the way in."""
-    try:
-        size = f"{path.stat().st_size:,} bytes"
-    except OSError:
-        size = "size unknown"
-    return [f"### {name} — {size}",
-            f'A roster — too many sections to map. Name what you want: '
-            f'`inspect([{{"read": "{name}", "outline": true, '
-            f'"outline_prefix": "<prefix>"}}])` or `"outline_grep": '
-            f'"<regex>"` for the headings, `{{"grep": "<name>", "in": '
-            f'"{name}"}}` for one entry\'s text, `{{"decl": "<slug>"}}` '
-            f'for the record\'s own answer about a goal.', ""]
-
-
-def _dir_block(label: str, path: Path) -> "list[str]":
-    """A directory: how many entries, and the queries that reach into
-    it. Never a listing — `{proofs_dir}` is the landed proof files and
-    the judge wants the one file a dispute turns on, not their names."""
-    if not path.is_dir():
-        return [f"### {label} `{path.as_posix()}`",
-                "DOES NOT EXIST — do not probe it.", ""]
-    n = sum(1 for _ in path.iterdir())
-    return [f"### {label} `{path.as_posix()}` — {n} entr(ies)",
-            f'Not inlined and not mapped. `inspect([{{"grep": "<name>", '
-            f'"in": "{path.as_posix()}/*.lean"}}])`, `{{"find": '
-            f'"*<name>*"}}`, `{{"size": "{path.as_posix()}/*"}}`, or '
-            f'`{{"decl": "<slug>"}}` for the record\'s own answer.', ""]
+    return _dossier.normalize(
+        config.get("adversary.dossier", default=DOSSIER_FILES,
+                   env_var="ASTERISM_ADVERSARY_DOSSIER"),
+        key="adversary.dossier", seat="adversary")
 
 
 def dossier_sections(proj: Path, *, proofs_dir: Path,
@@ -417,7 +346,7 @@ def dossier_sections(proj: Path, *, proofs_dir: Path,
     for name in DOSSIER_INLINE_ORDER:
         p = proj / name
         if p.is_file():
-            out += _inline_block(name, p)
+            out += _dossier.inline_block(name, p)
     out += ["## Table of contents (read on demand)", "",
             "These are NOT inlined — they are big and most rounds need "
             "one section of one of them. Read a section with "
@@ -426,13 +355,13 @@ def dossier_sections(proj: Path, *, proofs_dir: Path,
     for name in DOSSIER_OUTLINED:
         p = proj / name
         if p.is_file():
-            out += _outline_block(name, p)
+            out += _dossier.outline_block(name, p)
     for name in DOSSIER_ROSTERS:
         p = proj / name
         if p.is_file():
-            out += _roster_block(name, p)
-    out += _dir_block("proofs dir", proofs_dir)
-    out += _dir_block("papers dir", papers_dir)
+            out += _dossier.roster_block(name, p)
+    out += _dossier.dir_block("proofs dir", proofs_dir)
+    out += _dossier.dir_block("papers dir", papers_dir)
     return "\n".join(out) + "\n"
 
 
@@ -1026,13 +955,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
                                 papers_dir=papers_dir)
                if mode == DOSSIER_INLINE else "")
     prompt_path.write_text(rubric + dossier + manifest, encoding="utf-8")
-    # BOTH names, always — the template renderer is fail-open, so a flag
-    # it is not given keeps its block, and passing only the true one
-    # would leave the other mode's wording in the prompt beside it (the
-    # `native_file_tools` / `mcp_only_reads` pair is the same shape and
-    # the same reason).
-    prompt_flags = {"dossier_inline": mode == DOSSIER_INLINE,
-                    "dossier_files": mode == DOSSIER_FILES}
+    prompt_flags = _dossier.prompt_flags(mode)
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
     # produced no usable ruling twice is a wake-level failure), plus a
