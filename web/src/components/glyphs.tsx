@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
+import type { DocKind } from '../lib/docShell'
 import { Link } from '../lib/router'
 import { ConfirmWindow } from './ConfirmWindow'
 
@@ -87,6 +88,132 @@ export const PAGE = (
     <path d="M3 4.25h4M3 6.75h2.5" stroke="currentColor" strokeWidth="0.9" strokeLinecap="round" opacity="0.55" />
   </svg>
 )
+
+/* -- a file's kind, as one mark (2026-09-08) --------------------------
+ *
+ * The rail lists seven kinds of thing and drew none of them, so a
+ * column of forty names was forty identical rows. The vocabulary is
+ * the sky's own, extended rather than replaced: PAGE above is already
+ * "a document", so EVERY file here is that page and the KIND is what is
+ * written on it. A folder is the one non-page — it holds pages, it is
+ * not one.
+ *
+ * - `md`    the page as PAGE draws it: prose lines.
+ * - `tex`   the same two lines, CENTRED — a typeset page. Alignment is
+ *           the difference a reader can see at ten pixels; a second
+ *           line length is not.
+ * - `lean`  a chevron: code, the one thing on the shelf a machine reads.
+ * - `pdf`   a folded corner — a finished page, never written on here.
+ * - `image` the one landscape frame: a picture is not a page of text,
+ *           and the silhouette says so before the contents do.
+ * - `other` a blank page. The console has no reading for it, and
+ *           subtraction outranks addition (DESIGN.md): the kind it
+ *           cannot name earns the least ink.
+ *
+ * Monochrome, `currentColor` throughout: the mark is identity and the
+ * ink around it is state, and the two channels stay separate. Sized for
+ * a text line, on PAGE's own 10×11 box so every row's name lands at the
+ * same x. Decorative — `aria-hidden`, because the name says the kind.
+ */
+const KIND_MARKS: Record<DocKind, ReactNode> = {
+  folder: (
+    <path
+      d="M1 9.5V2h2.7l1 1.3H9v6.2z"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinejoin="round"
+    />
+  ),
+  md: (
+    <>
+      <rect x="1" y="1" width="8" height="9" rx="1" stroke="currentColor" strokeWidth="1" />
+      <path
+        d="M3 4.25h4M3 6.75h2.5"
+        stroke="currentColor"
+        strokeWidth="0.9"
+        strokeLinecap="round"
+        opacity="0.55"
+      />
+    </>
+  ),
+  tex: (
+    <>
+      <rect x="1" y="1" width="8" height="9" rx="1" stroke="currentColor" strokeWidth="1" />
+      {/* CENTRED, where `md` is ragged-left: the difference a reader
+          can see at 10px is alignment, not line length */}
+      <path
+        d="M2.7 4.25h4.6M4.3 6.75h1.4"
+        stroke="currentColor"
+        strokeWidth="0.9"
+        strokeLinecap="round"
+        opacity="0.55"
+      />
+    </>
+  ),
+  lean: (
+    <>
+      <rect x="1" y="1" width="8" height="9" rx="1" stroke="currentColor" strokeWidth="1" />
+      <path
+        d="M4 4.1l1.6 1.4L4 6.9"
+        stroke="currentColor"
+        strokeWidth="0.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.75"
+      />
+    </>
+  ),
+  pdf: (
+    <>
+      <path
+        d="M1 10V1h4.7L9 4.2V10z"
+        stroke="currentColor"
+        strokeWidth="1"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5.7 1v3.2H9"
+        stroke="currentColor"
+        strokeWidth="0.9"
+        strokeLinejoin="round"
+        opacity="0.55"
+      />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="1" y="2" width="8" height="7" rx="1" stroke="currentColor" strokeWidth="1" />
+      <circle cx="3.4" cy="4.4" r="0.8" fill="currentColor" opacity="0.55" />
+      <path
+        d="M1.4 8.3l2.4-2.4 1.6 1.5 1.2-1.1L8.6 7.6"
+        stroke="currentColor"
+        strokeWidth="0.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.55"
+      />
+    </>
+  ),
+  other: (
+    <rect x="1" y="1" width="8" height="9" rx="1" stroke="currentColor" strokeWidth="1" />
+  ),
+}
+
+/** One kind's mark, at text height. The caller owns the ink. */
+export function KindGlyph({ kind }: { kind: DocKind }) {
+  return (
+    <svg
+      width="10"
+      height="11"
+      viewBox="0 0 10 11"
+      fill="none"
+      className="inline-block shrink-0 align-[-1px]"
+      aria-hidden
+    >
+      {KIND_MARKS[kind]}
+    </svg>
+  )
+}
 
 /** A glyph button — the shape the corner affordances share. `live` is
  * a state dot on the mark itself (identity is the shape, state is the

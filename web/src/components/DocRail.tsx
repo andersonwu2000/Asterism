@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, apiDelete, apiPost, apiPut } from '../lib/api'
-import { createFolder, moveTargets, railGroups, refKey } from '../lib/docShell'
+import { RAIL_ACTS, createFolder, docKind, moveTargets, railGroups, refKey } from '../lib/docShell'
 import type { DocRef, PaperRow, RailGroup, RailGroupId, RailRow } from '../lib/docShell'
 import { theoryLine } from '../lib/docShelf'
 import type { DocEntry } from '../lib/docShelf'
 import { ConfirmWindow } from './ConfirmWindow'
-import { PAGE } from './glyphs'
+import { KindGlyph } from './glyphs'
 import { Button, Select } from './ui'
 
 /*
- * The Documents rail (docs_tab_spec.md §D): five groups, and ONE
+ * The Workspace rail (docs_tab_spec.md §D): five groups, and ONE
  * grammar for acting on what they hold.
  *
  * The principles the grammar answers to, in the owner's words: one way
@@ -21,7 +21,10 @@ import { Button, Select } from './ui'
  * That last one is why the actions strip renders under every selected
  * row, not only the writable ones: a group whose rows cannot be renamed
  * says so in the place the rename would have been, rather than leaving
- * the reader to discover it by absence.
+ * the reader to discover it by absence. The exception is `papers`,
+ * which is read-only in exactly the same way and simply says nothing
+ * about it (`docShell.RAIL_ACTS`, owner 2026-09-08) — the sentence it used to
+ * carry was about this console's backlog, not about the paper.
  */
 
 /** One paper on its way onto the shelf. Extraction is real server work,
@@ -31,16 +34,6 @@ export interface UploadItem {
   name: string
   status: 'uploading' | 'shelved' | 'already' | 'error'
   detail?: string
-}
-
-/** What each secondary group says when the person tries to act on one
- * of its rows (§D6). One short sentence, at the item. */
-const READ_ONLY: Record<RailGroupId, string | null> = {
-  yours: null,
-  papers: 'read-only — a paper. Removing one is not offered here yet.',
-  agent: "read-only — the machine's",
-  engine: "read-only — the engine's",
-  proofs: "read-only — the engine's",
 }
 
 /** What a group with nothing in it says. */
@@ -353,7 +346,10 @@ export default function DocRail({
 
   const onTreeKey = (e: React.KeyboardEvent, i: number, item: Item) => {
     const row = item.kind === 'row' ? item.row : null
-    const own = row !== null && item.group.id === 'yours'
+    // the keys read the SAME table the strip does: which group may be
+    // written to is one fact, and a second copy of it here is how a
+    // read-only group grows a rename nobody meant to give it
+    const own = row !== null && RAIL_ACTS[item.group.id] === 'write'
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       focusRow(i + 1)
@@ -453,7 +449,14 @@ export default function DocRail({
                   role="treeitem"
                   aria-expanded={!gFolded}
                   tabIndex={gi === focusAt ? 0 : -1}
-                  className="cursor-pointer text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase transition-colors hover:text-ink-dim"
+                  /* one voice level up the ink ladder, 2026-09-08
+                     (owner): the five headers are the rail's own map
+                     and they sat at `ink-faint/70`, under the quietest
+                     rung the ladder has. Dim is the step above faint —
+                     the rows they name stay at dim too, and the header
+                     earns its place by weight, tracking and case
+                     rather than by out-shouting them. */
+                  className="cursor-pointer text-[10px] font-medium tracking-widest text-ink-dim uppercase transition-colors hover:text-ink"
                   onClick={() => setFold(g.id, !gFolded)}
                   onFocus={() => setFocusAt(gi)}
                   onKeyDown={(e) => onTreeKey(e, gi, { kind: 'header', group: g })}
@@ -604,24 +607,36 @@ export default function DocRail({
                           {on && (
                             <span className="absolute top-1 bottom-1 left-1 w-0.5 rounded-full bg-star" />
                           )}
-                          {row.kind === 'dir' && (
-                            <span
-                              className="shrink-0 cursor-pointer text-ink-faint"
-                              role="presentation"
-                              onClick={(e) => {
-                                // §D4: the chevron folds WITHOUT selecting
-                                e.stopPropagation()
-                                toggleDir(row.ref.path)
-                              }}
-                            >
-                              {closed ? '›' : '⌄'}
-                            </span>
-                          )}
-                          {row.theory && (
-                            <span className="shrink-0 text-ink-faint" aria-hidden>
-                              {PAGE}
-                            </span>
-                          )}
+                          {/* the fold chevron's slot is held open on
+                              every row, files included: a name that
+                              slides left because its row has nothing to
+                              fold makes one depth read as two */}
+                          <span
+                            className={`w-2 shrink-0 text-ink-faint ${
+                              row.kind === 'dir' ? 'cursor-pointer' : ''
+                            }`}
+                            role="presentation"
+                            onClick={
+                              row.kind === 'dir'
+                                ? (e) => {
+                                    // §D4: the chevron folds WITHOUT selecting
+                                    e.stopPropagation()
+                                    toggleDir(row.ref.path)
+                                  }
+                                : undefined
+                            }
+                          >
+                            {row.kind === 'dir' ? (closed ? '›' : '⌄') : ''}
+                          </span>
+                          {/* the kind, as one mark (`glyphs.KindGlyph`).
+                              A theory document used to wear the PAGE
+                              here as a SECOND glyph; PAGE is what an
+                              `.md` draws now, so the row said the same
+                              fact twice — and the line under the name
+                              is what says the theory layer wrote it. */}
+                          <span className="shrink-0 text-ink-faint" aria-hidden>
+                            <KindGlyph kind={docKind(row.ref.path, row.kind)} />
+                          </span>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate">{row.name}</span>
                             {row.theory && (
@@ -773,21 +788,21 @@ function ActionStrip({
   onMove: () => void
   onDelete: () => void
 }) {
-  const refuse = READ_ONLY[group.id]
+  const acts = RAIL_ACTS[group.id]
+  // a silent read-only row with no door to the file manager either has
+  // an empty strip — draw nothing rather than a line of padding
+  if (acts === 'silent' && onReveal === null && note === null && revealed === null)
+    return null
   return (
     <div
       className="pr-4 pb-1 text-[11px] text-ink-faint"
       style={{ paddingLeft: `${16 + depth * 12}px` }}
     >
-      {refuse !== null ? (
+      {acts !== 'write' ? (
         <span className="flex flex-wrap gap-2">
-          <span>{refuse}</span>
-          {onReveal !== null && (
-            <>
-              <span aria-hidden>·</span>
-              <RevealButton onReveal={onReveal} />
-            </>
-          )}
+          {acts !== 'silent' && <span>{acts.refuse}</span>}
+          {acts !== 'silent' && onReveal !== null && <span aria-hidden>·</span>}
+          {onReveal !== null && <RevealButton onReveal={onReveal} />}
         </span>
       ) : (
         <span className="flex flex-wrap gap-2">
