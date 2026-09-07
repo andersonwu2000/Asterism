@@ -969,6 +969,9 @@ _INFRA_DISCARD_CHANNELS = frozenset({
     # 08-25: an overloaded machine (handshake starved by a CPU spike)
     # refuted nothing either.
     "local_overload",
+    # 09-04: nor did a spent refresh token — the machine could not ask
+    # the question, so nothing about the draft was ever weighed.
+    "codex_auth_stale",
     # 08-12: the gateway answered its own 5xx mid-verify (a slot that
     # went away). A lost slot is not a counter-argument, and
     # `framework_verify_error` joins it for the same reason even though

@@ -73,7 +73,7 @@ unit fail count; `librarian_file_busy` is a wait signal and does not consume tha
 
 ## 3. Provider and transport failures
 
-These twelve reasons have `origin='provider_infra'`. They do not charge goal attempts.
+These thirteen reasons have `origin='provider_infra'`. They do not charge goal attempts.
 The registry, not this table, is authoritative for cooldown and death-note traits.
 
 | Reason | Meaning |
@@ -90,6 +90,7 @@ The registry, not this table, is authoritative for cooldown and death-note trait
 | `unclassified_spawn_failure` | A nonzero exit cannot be classified honestly; it is operator evidence, not proof failure. |
 | `provider_network` | Spawn stderr identifies a DNS, TLS, disconnect, or other external-network failure. |
 | `local_overload` | Spawn stderr identifies local resource starvation, such as an MCP handshake timeout. |
+| `codex_auth_stale` | Spawn stderr identifies a spent single-use refresh token; the adapter already re-synced the credential and retried once, so the remedy is `codex login` by the operator. The seat is marked degraded and neither dispatcher breaker is charged. |
 
 There are two classification sites. Channel-level `rc_to_reason` maps the shared provider RC
 contract; the Formalizer's in-pipeline classifier can instead use `agent_timeout` after its

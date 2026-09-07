@@ -817,7 +817,11 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # with 11-round Adversary debates, sol xhigh, ~30 codex spawns on
         # 0.151.0 (rollout session_meta cli_version), parser and MCP
         # tools unchanged.
-        tested_version="0.151.0",
+        # 0.153 smoke: every local run of 2026-09-04 through 09-08 —
+        # including the auth incident (#235) whose stderr is the corpus
+        # for `state.failures._CREDENTIAL_STDERR_MARKERS`; the flagship
+        # moves to the same version.
+        tested_version="0.153.0",
         marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
                        "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
         single_instance_lock=False,
@@ -843,16 +847,20 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         install_method=INSTALL_BY_COMMAND,
         install_command="npm install -g @openai/codex",
         auth_flow=AUTH_OWN_OAUTH,
-        # `~/.codex/auth.json` — readable, and copyable: a spawn
-        # authenticates from a copy under its own CODEX_HOME (measured
-        # 2026-08-12), which is what makes the per-spawn envelope cheap.
+        # `~/.codex/auth.json` — readable, and a spawn authenticates
+        # from it under its own CODEX_HOME (measured 2026-08-12), which
+        # is what makes the per-spawn envelope cheap. It authenticates
+        # from a COPY too, and that is the trap: the refresh token is
+        # single-use, so a copy that gets rotated strands the new token
+        # in a doomed directory (#235). The file is therefore SHARED into
+        # the home, never forked — `codex_cli._place_credential`.
         auth_state=AUTH_STATE_READABLE,
         readiness_argv=("login", "status"),
         # `codex login` opens the ChatGPT OAuth page and finishes by
         # itself, exactly like claude's — which is what lets the console
         # offer the same mid-run account switch for both (2026-08-26).
         login_argv=("login",),
-        # Same file the per-spawn envelope copies. Declaring it buys the
+        # Same file the per-spawn envelope shares. Declaring it buys the
         # accounts panel a free "signed in" and a reversible sign-out;
         # `codex logout` exists but DELETES, and a switch the owner
         # cannot undo by hand is the wrong default for a quota move.

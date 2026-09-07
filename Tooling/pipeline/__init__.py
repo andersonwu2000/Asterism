@@ -398,6 +398,22 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
             if rc >= 0x40000000 else \
             f"agent rc={rc} (provider CLI runtime crashed)"
         reason = "system_killed"
+    elif _failures.is_credential_failure(stderr_tail):
+        # The provider refused the OPERATOR'S CREDENTIAL, not this
+        # request: an OpenAI refresh token is single-use and codex says
+        # so verbatim. Ranked above the transport and duration rules
+        # because this death is FAST (~3s) — the duration heuristic
+        # called it `spawn_fast_fail`, and ten of those exit the daemon,
+        # which is how a rotated token took the flagship fleet down on
+        # 2026-09-04 (#235). The adapter has already re-synced the auth
+        # file and retried once by the time this is read, so reaching
+        # here means the credential really is spent and `codex login` is
+        # the only way out — `daemon status` carries it as `degraded`.
+        base = (f"agent rc={rc} (the provider refused the operator's "
+                f"credential in {spawn_dur:.0f}s — a spent refresh "
+                f"token, not the agent; not charged. Run `codex login` "
+                f"as the operator)")
+        reason = "codex_auth_stale"
     elif _failures.is_network_failure(stderr_tail):
         # Transport evidence outranks the duration heuristics below: a
         # dead network kills a spawn fast OR slow (37s-454s in the 08-17

@@ -102,8 +102,9 @@ import threading
 import time
 from pathlib import Path
 
-from .base import (MCP_TOOL_TIMEOUT_SEC, SPAWN_STDERR, LLMRequest, SpawnRC,
-                   clear_spawn_stderr, transcript_dest, which_launchable)
+from .base import (ATTEMPTS_DIRNAME, MCP_TOOL_TIMEOUT_SEC, SPAWN_STDERR,
+                   LLMRequest, SpawnRC, clear_spawn_stderr, transcript_dest,
+                   which_launchable)
 from ..core import config as _config
 from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
@@ -553,19 +554,80 @@ def _render_config(req: LLMRequest, model: str, effort: str,
         spec.write_roots[0] if spec.write_roots else None)
 
 
+#: The credential's basename in both homes — the operator's and the
+#: spawn's. One spelling, because three functions here reach for it and
+#: `lab.attempt_copy_ignores` matches on exactly this name.
+_AUTH_FILENAME = "auth.json"
+
+
+def _place_credential(auth_src: Path, home: Path) -> None:
+    """Give this spawn the operator's `auth.json` — SHARED where the OS
+    allows it, copied where it does not.
+
+    THE COPY WAS THE BUG (#235, verified in the field 2026-09-04 01:50Z).
+    An OpenAI refresh token is SINGLE-USE: when a spawn's codex refreshes
+    an aged-out access token it writes the NEW refresh token back into
+    whatever file it read, and that file used to be the doomed copy under
+    `.attempts/<pid>/_codex_home/`. The operator's own file kept the
+    now-spent one, so the next spawn copied a consumed token and died on
+    `Your access token could not be refreshed because your refresh token
+    was already used`, in about three seconds — which the pipeline read
+    as `spawn_fast_fail`, and ten of those exit the daemon. A multi-day
+    unattended run hits this deterministically the moment the access
+    token ages out; the flagship fleet circuit-broke on it.
+
+    So on POSIX the spawn's `auth.json` is a SYMLINK to the operator's:
+    codex then rotates the shared file, which is exactly what several
+    `codex exec` sharing one CODEX_HOME already do, and the next spawn
+    reads the live token. The per-spawn home is still per-spawn — it
+    carries `config.toml` (the whole capability envelope) and this
+    spawn's sessions; only the credential is shared, and it is the one
+    file that must not be forked.
+
+    Windows keeps the copy: `os.symlink` there needs SeCreateSymbolicLink
+    or developer mode, and a provider adapter that fails to spawn on an
+    unprivileged box is worse than the bug. `_return_rotated_credential`
+    carries the rotation back by hand at the end of the spawn. Any POSIX
+    box whose filesystem refuses a symlink lands on the same fallback for
+    the same reason, rather than failing the spawn.
+
+    The SOURCE honours `CODEX_HOME` — `operator_codex_home` reads it —
+    so a caller that redirects the operator's home redirects this too."""
+    dest = Path(home) / _AUTH_FILENAME
+    try:
+        # `exists()` follows the link, so a DANGLING symlink from a
+        # previous run reads as absent and `symlink` below would raise
+        # FileExistsError. Ask about the link itself first.
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+    except OSError:
+        pass
+    if os.name != "nt":
+        try:
+            os.symlink(auth_src, dest)
+            return
+        except (OSError, NotImplementedError, AttributeError):
+            # No symlink privilege / no symlink support on this
+            # filesystem. Fall through to the Windows arrangement,
+            # write-back included.
+            pass
+    shutil.copyfile(auth_src, dest)
+
+
 def _spawn_home(req: LLMRequest, model: str, effort: str,
                 flavor: str = "openai") -> "Path | None":
     """Build this spawn's CODEX_HOME and return it, or None on failure.
 
-    Two files: the credential, copied from the operator's own home
-    (codex authenticates fine from a copy — same property agy has), and
-    the rendered envelope. Everything else codex needs it creates itself.
+    Two files: the credential, SHARED with the operator's own home rather
+    than forked into it (`_place_credential` — read its note before
+    changing this back to a copy), and the rendered envelope. Everything
+    else codex needs it creates itself.
 
     Lives inside `attempts_dir` so the dispatcher's orphan sweep is its
     cleanup, and so it is NOT under the system temp dir, which codex
     refuses to provision helper binaries into (measured 2026-08-12)."""
     home = Path(req.attempts_dir) / _SPAWN_HOME_DIRNAME
-    auth_src = operator_codex_home() / "auth.json"
+    auth_src = operator_codex_home() / _AUTH_FILENAME
     try:
         home.mkdir(parents=True, exist_ok=True)
         if flavor == "zen":
@@ -581,7 +643,7 @@ def _spawn_home(req: LLMRequest, model: str, effort: str,
                   f"`codex login` as the operator", flush=True)
             return None
         else:
-            shutil.copyfile(auth_src, home / "auth.json")
+            _place_credential(auth_src, home)
         (home / "config.toml").write_text(_render_config(req, model, effort,
                                                           flavor=flavor),
                                           encoding="utf-8")
@@ -590,6 +652,83 @@ def _spawn_home(req: LLMRequest, model: str, effort: str,
               f"at {home}: {e}", flush=True)
         return None
     return home
+
+
+def _credential_looks_usable(body: bytes) -> bool:
+    """Is this blob a codex credential, rather than an empty file or an
+    error page? The gate on the Windows write-back — a truncated or
+    half-written `auth.json` handed back to the operator's home is a
+    signed-out machine, i.e. a worse outage than the one being fixed.
+
+    Shape, never content: a JSON object carrying either a `tokens` map
+    with a non-empty `refresh_token` (the ChatGPT OAuth arrangement) or a
+    non-empty `OPENAI_API_KEY`. Nothing here is printed or logged."""
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(obj, dict):
+        return False
+    tokens = obj.get("tokens")
+    if isinstance(tokens, dict) and str(tokens.get("refresh_token") or ""):
+        return True
+    return bool(str(obj.get("OPENAI_API_KEY") or ""))
+
+
+def _return_rotated_credential(home: Path) -> None:
+    """Windows only in practice: carry a refresh-token rotation back into
+    the operator's `auth.json` before this home is deleted.
+
+    On POSIX the spawn writes THROUGH a symlink and there is nothing to
+    carry, which is what the `is_symlink` guard says — this function is
+    the copy arrangement's other half, not a second mechanism. Without
+    it, a Windows spawn that refreshes its access token buries the new
+    refresh token in the directory `WorkArea.__exit__` is about to
+    rmtree, and the next spawn copies the spent one (#235).
+
+    FOUR REFUSALS, each of which is a way this could make things worse:
+      * a symlink — already shared, nothing to do;
+      * bytes identical — the ordinary case, every spawn that never
+        refreshed; writing anyway would churn the operator's file and
+        move its mtime for nothing;
+      * the operator's file is NEWER — a concurrent spawn (or the
+        operator's own `codex login`) rotated after we copied, so ours
+        is the stale one and overwriting it would spend their token;
+      * not a usable credential — see `_credential_looks_usable`.
+
+    The write is tmp + `os.replace`, so a reader in another process sees
+    the old file or the new one and never a half-written one. Nothing
+    about the token's CONTENT is ever printed."""
+    src = Path(home) / _AUTH_FILENAME
+    dst = operator_codex_home() / _AUTH_FILENAME
+    tmp = None
+    try:
+        if src.is_symlink() or not src.is_file() or not dst.is_file():
+            return
+        body = src.read_bytes()
+        if body == dst.read_bytes():
+            return
+        if src.stat().st_mtime <= dst.stat().st_mtime:
+            return
+        if not _credential_looks_usable(body):
+            print("[llm:codex] the spawn's auth.json changed but does not "
+                  "parse as a credential — NOT written back", flush=True)
+            return
+        tmp = dst.with_name(dst.name + f".asterism{os.getpid()}.tmp")
+        tmp.write_bytes(body)
+        os.replace(tmp, dst)
+        tmp = None
+        print("[llm:codex] the spawn rotated the refresh token — returned "
+              "it to the operator's credential", flush=True)
+    except OSError as exc:
+        print(f"[llm:codex] could not return the rotated credential: {exc}",
+              flush=True)
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _load_session_map(attempts_dir: Path) -> "dict[str, str]":
@@ -932,10 +1071,12 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
     once — a resumed turn keeps appending to the same rollout, so an
     early snapshot would freeze a partial transcript.
 
-    The HOME still dies, deliberately: it holds a copy of the operator's
-    `auth.json`, and a credential that outlives its attempt is a worse
-    problem than the one being solved. Transcript survives, secret does
-    not — which is cleaner than either of the other two manages.
+    The HOME still dies, deliberately: whatever `auth.json` it holds —
+    the operator's file by symlink, or a copy where the OS refuses one —
+    must not outlive its attempt. Transcript survives, secret does not,
+    which is cleaner than either of the other two manages. The rotation
+    the copy may be carrying is rescued first, by
+    `_return_rotated_credential`, one line above the call to this.
 
     No pruning is added here. Neither of the other backends prunes, and
     a provider that silently deletes its own evidence is precisely the
@@ -996,6 +1137,74 @@ def _write_spawn_stderr(attempts_dir: Path, body: str, rc: int) -> None:
         (attempts_dir / SPAWN_STDERR).write_text(
             f"rc={rc}\n{body[:10240]}", encoding="utf-8")
     except OSError:
+        pass
+
+
+def _died_on_a_spent_credential(attempts_dir) -> bool:
+    """Did this spawn die because the operator's refresh token was
+    already spent? (#235)
+
+    Asked of the FILE the classifier will read and through the SAME
+    predicate it will use (`state.failures.is_credential_failure`), not
+    of a second copy of the marker list kept here: the adapter's decision
+    to re-sync and retry and the pipeline's decision to call the row
+    `codex_auth_stale` must never be able to disagree. `state.failures`
+    is a leaf module — it imports nothing from Tooling — so reaching it
+    from the llm layer costs no cycle."""
+    from ..state.failures import is_credential_failure
+    try:
+        return is_credential_failure(
+            (Path(attempts_dir) / SPAWN_STDERR).read_text(
+                encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
+#: What the operator has to do, in the one wording every channel repeats
+#: — the spawn log, the dead_attempt detail, and `daemon status`.
+_RELOGIN_HINT = ("codex refused the operator's credential twice in a row: "
+                 "the refresh token is spent and no copy of the file can "
+                 "revive it. Run `codex login` as the operator; every "
+                 "codex seat is down until then.")
+
+
+def _resync_credential(home: Path) -> bool:
+    """Re-place the credential from the operator's home, for one retry.
+
+    The retry is worth taking because the operator's file may have moved
+    UNDER us in the seconds this spawn was dying: on Windows a sibling
+    spawn's `_return_rotated_credential` writes a fresh token there, and
+    on POSIX a symlink that was somehow stale is simply re-made. If it
+    has not moved, the retry costs ~3s and the second death is the
+    evidence that this is a real credential problem rather than a race."""
+    auth_src = operator_codex_home() / _AUTH_FILENAME
+    if not auth_src.is_file():
+        return False
+    try:
+        _place_credential(auth_src, Path(home))
+    except OSError as exc:
+        print(f"[llm:codex] could not re-sync the credential: {exc}",
+              flush=True)
+        return False
+    return True
+
+
+def _record_credential_degraded(attempts_dir) -> None:
+    """Surface a spent credential where the hourly patrol already looks.
+
+    `daemon status` renders `core.degraded`'s ledger, so an operator sees
+    `degraded: codex_auth_stale` without grepping a run log — which is
+    the whole point of the ledger (2026-08-29). Best-effort in every
+    direction: a health signal must never become a new failure path."""
+    try:
+        from ..core import degraded
+        ws = Path(attempts_dir).resolve()
+        root = next((p.parent for p in ws.parents
+                     if p.name == ATTEMPTS_DIRNAME), None)
+        if root is None:
+            return
+        degraded.record(root, "codex_auth_stale", _RELOGIN_HINT)
+    except Exception:  # noqa: BLE001 — the ledger is best-effort
         pass
 
 
@@ -1188,55 +1397,93 @@ class CodexCliProvider:
             if staged is not None:
                 pre_usage = rollout_usage(staged)
 
-        # THE SPAWN IS A TREE. `codex` resolves to `codex.cmd`, so the
-        # direct child is `cmd.exe` and the agent itself is two levels
-        # down; `Popen.kill()` would leave it running (measured
-        # 2026-08-15 — see `claude_cli._proc_jobs`).
-        job = create_capped_job(None)
-        # POSIX: own session/process group, so `kill_proc_tree` can
-        # `killpg` the whole `cmd.exe`-equivalent shim -> node -> agent
-        # tree instead of `proc.kill()` reaping only the direct child.
-        # Windows keeps the Job Object above — no session kwarg there.
-        popen_kwargs: dict = {}
-        if os.name != "nt":
-            popen_kwargs["start_new_session"] = True
-        try:
-            proc = subprocess.Popen(
-                cmd, env=env, cwd=str(req.problem_dir),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=no_window_creationflags(),
-                **popen_kwargs,
-            )
-            assign_to_job(job, proc)
-        except OSError as exc:
-            # The CLI could not be STARTED — a different thing from an
-            # agent that ran and failed, and the distinction is worth
-            # real money. On 2026-08-12 a `[WinError 193]` here escaped
-            # as a worker exception, so the framework read it as "the
-            # attempt was made and did not work": it charged the
-            # attempt, re-woke the Strategist, and four Programme
-            # debates later had spent ~106k output tokens on a provider
-            # that had never once launched. MISSING_DEP is infra — it
-            # does not charge the goal and it does not manufacture NL
-            # work for a pipeline that cannot consume it.
-            print(f"[llm:codex] could not launch {cmd[0]!r}: {exc}",
-                  flush=True)
-            _write_spawn_stderr(req.attempts_dir,
-                                f"(could not launch {cmd[0]!r}: {exc})",
-                                SpawnRC.MISSING_DEP)
-            return SpawnRC.MISSING_DEP
-        track_proc(proc, job)
-        try:
-            # `prior` is the thread this call resumes, or "" when cold.
-            # Both it and what the thread had already cost are settled
-            # BEFORE the stream starts rather than inferred from it.
-            return self._run_proc(req, proc, prompt, home,
-                                  resume_thread=prior if resuming else None,
-                                  pre_usage=pre_usage)
-        finally:
-            untrack_proc(proc)
+        # ONE LAUNCH, named — so the credential retry below can ask for a
+        # second one without a second copy of any of this.
+        def _launch_once() -> int:
+            # THE SPAWN IS A TREE. `codex` resolves to `codex.cmd`, so
+            # the direct child is `cmd.exe` and the agent itself is two
+            # levels down; `Popen.kill()` would leave it running
+            # (measured 2026-08-15 — see `claude_cli._proc_jobs`).
+            job = create_capped_job(None)
+            # POSIX: own session/process group, so `kill_proc_tree` can
+            # `killpg` the whole `cmd.exe`-equivalent shim -> node ->
+            # agent tree instead of `proc.kill()` reaping only the direct
+            # child. Windows keeps the Job Object above — no session
+            # kwarg there.
+            popen_kwargs: dict = {}
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+            try:
+                proc = subprocess.Popen(
+                    cmd, env=env, cwd=str(req.problem_dir),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace",
+                    creationflags=no_window_creationflags(),
+                    **popen_kwargs,
+                )
+                assign_to_job(job, proc)
+            except OSError as exc:
+                # The CLI could not be STARTED — a different thing from
+                # an agent that ran and failed, and the distinction is
+                # worth real money. On 2026-08-12 a `[WinError 193]` here
+                # escaped as a worker exception, so the framework read it
+                # as "the attempt was made and did not work": it charged
+                # the attempt, re-woke the Strategist, and four Programme
+                # debates later had spent ~106k output tokens on a
+                # provider that had never once launched. MISSING_DEP is
+                # infra — it does not charge the goal and it does not
+                # manufacture NL work for a pipeline that cannot consume
+                # it.
+                print(f"[llm:codex] could not launch {cmd[0]!r}: {exc}",
+                      flush=True)
+                _write_spawn_stderr(req.attempts_dir,
+                                    f"(could not launch {cmd[0]!r}: {exc})",
+                                    SpawnRC.MISSING_DEP)
+                return SpawnRC.MISSING_DEP
+            track_proc(proc, job)
+            try:
+                # `prior` is the thread this call resumes, or "" when
+                # cold. Both it and what the thread had already cost are
+                # settled BEFORE the stream starts rather than inferred
+                # from it.
+                return self._run_proc(
+                    req, proc, prompt, home,
+                    resume_thread=prior if resuming else None,
+                    pre_usage=pre_usage)
+            finally:
+                untrack_proc(proc)
+
+        rc = _launch_once()
+        # ONE RETRY ON A SPENT CREDENTIAL (#235). The refresh token is
+        # single-use, and on Windows every spawn still works from a copy
+        # — so a sibling spawn that rotated and wrote back may have put a
+        # live token in the operator's file in the seconds this one spent
+        # dying. Re-place the credential and go again: the death is ~3s,
+        # so the retry is cheap, and a SECOND one is the evidence that
+        # this is a real credential problem rather than a race. Not for
+        # zen, which authenticates by API key and must have no auth.json
+        # at all (a ChatGPT credential there routes it to the
+        # subscription backend and 400s).
+        if (rc == 0 or self.flavor == "zen" or is_shutdown_requested()
+                or not _died_on_a_spent_credential(req.attempts_dir)):
+            return rc
+        print("[llm:codex] the spawn died on a spent refresh token — "
+              "re-syncing the operator's credential and retrying once",
+              flush=True)
+        if not _resync_credential(home):
+            print(f"[llm:codex] {_RELOGIN_HINT}", flush=True)
+            _record_credential_degraded(req.attempts_dir)
+            return rc
+        # The first leg's record is already preserved under
+        # `.asterism/codex_sessions/`; clearing here keeps this file the
+        # RETRY's own account, which is what the classifier reads.
+        clear_spawn_stderr(req.attempts_dir)
+        rc = _launch_once()
+        if _died_on_a_spent_credential(req.attempts_dir):
+            print(f"[llm:codex] {_RELOGIN_HINT}", flush=True)
+            _record_credential_degraded(req.attempts_dir)
+        return rc
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
                   prompt: str, home: Path,
@@ -1382,6 +1629,12 @@ class CodexCliProvider:
             return self._classify(req, rc, timed_out, spent, events,
                                   stdout, stderr, stuck_flag, done_flag)
         finally:
+            # BEFORE the transcript, and before anything can delete the
+            # home: if this spawn's codex rotated the refresh token into
+            # its own copy, that token is the only live one and it is
+            # sitting in a doomed directory (#235). A no-op wherever the
+            # credential is shared by symlink.
+            _return_rotated_credential(home)
             # Every exit path, including the two watchdog verdicts and
             # the timeout — a spawn killed mid-thought is exactly the
             # one whose reasoning someone will want to read.

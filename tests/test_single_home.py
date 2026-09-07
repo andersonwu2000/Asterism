@@ -147,7 +147,8 @@ _GRANDFATHERED: "dict[tuple[str, tuple[str, ...]], str]" = {
      ("agent_stuck_thinking", "strategist_noop")):
         "the non-decline half of the same KB predicate — same trait",
     ("Tooling/state/programme.py",
-     ("agent_no_output", "agent_timeout", "daemon_shutdown",
+     ("agent_no_output", "agent_timeout", "codex_auth_stale",
+      "daemon_shutdown",
       "framework_verify_error", "gateway_unreachable", "local_overload",
       "missing_dep", "provider_misconfigured", "provider_network",
       "quota_exhausted", "spawn_fast_fail", "system_killed",

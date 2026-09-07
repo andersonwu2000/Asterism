@@ -1050,6 +1050,46 @@ def test_keep_attempts_leaves_the_provider_home_and_its_credential_behind(
     assert leaked == [], f"credential(s) copied into the record: {leaked}"
 
 
+def test_a_symlinked_credential_is_ignored_before_it_is_dereferenced(
+    tmp_path: Path,
+) -> None:
+    """The new shape of the same hazard (#235, 2026-09-04). A codex
+    spawn's `auth.json` is now a SYMLINK to the operator's live file, and
+    `keep_attempts` runs `copytree(symlinks=False)` — which FOLLOWS a
+    link and writes a real copy of the token into `_out/`. The rule
+    survives only because `ignore` is consulted on the directory listing,
+    before anything is opened, so an ignored link is never dereferenced.
+
+    Dropped at the TOP of the attempts tree on purpose: inside a provider
+    home the home's own name would save it, and this pins the file rule
+    that catches a credential anywhere."""
+    import os
+    ws = tmp_path / "ws"
+    pid = "pipe-sym"
+    att = ws / ".attempts" / pid
+    att.mkdir(parents=True)
+    operator = tmp_path / "op"
+    operator.mkdir()
+    live = operator / "auth.json"
+    live.write_text('{"tokens": {"refresh_token": "SECRET"}}',
+                    encoding="utf-8")
+    try:
+        os.symlink(live, att / "auth.json")
+    except OSError:
+        pytest.skip("this box does not grant symlinks")
+    (att / "report.md").write_text("# the document", encoding="utf-8")
+
+    out = tmp_path / "out"
+    driver_mod.keep_attempts(ws, out, [pid])
+    dst = out / "attempts" / pid
+    assert (dst / "report.md").is_file()
+    assert not (dst / "auth.json").exists()
+    assert not (dst / "auth.json").is_symlink()
+    # the operator's own file is untouched, link and all
+    assert (att / "auth.json").is_symlink()
+    assert "SECRET" in live.read_text(encoding="utf-8")
+
+
 def test_the_ignore_set_asks_the_adapters_for_their_home_names() -> None:
     """The home names are read off the adapters that create them, never
     re-spelled in the lab: a copy of a private constant is the copy that

@@ -365,19 +365,41 @@ def find(workspace: Path, decision_id: "int | None", *,
 def carry(src: Path, dst: Path) -> None:
     """Move the old run's record into THIS pipeline's attempts dir, so
     the standard layout holds from here on. Copy, not move: the frozen
-    dir is the operator's evidence and outlives the run that adopts it."""
+    dir is the operator's evidence and outlives the run that adopts it.
+
+    THE CREDENTIAL NEVER TRAVELS. `search_roots` includes `.attempts/`,
+    so `src` can be an orphaned run whose per-spawn CODEX_HOME is still
+    on disk — and since 2026-09-04 that home's `auth.json` is a SYMLINK
+    to the operator's file (`codex_cli._place_credential`), which a bare
+    `copytree` dereferences into a real copy of the live token. The
+    exclusion list is the lab's one set, asked rather than re-spelled,
+    for the reason its own comment gives: a second copy of a credential
+    list is the copy that keeps working for a month after the adapter
+    renamed something."""
     dst.mkdir(parents=True, exist_ok=True)
     try:
         entries = sorted(Path(src).iterdir())
     except OSError as exc:
         print(f"[theorist] could not read {src}: {exc}", flush=True)
         return
+    from fnmatch import fnmatch
+    from .preserve import _copy_ignores
+    secrets = _copy_ignores()
+    ignore = shutil.ignore_patterns(*secrets) if secrets else None
+
+    def _is_secret(name: str) -> bool:
+        # `shutil.ignore_patterns`' own semantics — globs on the
+        # basename — so the top level is filtered by the same rule the
+        # recursion below is.
+        return any(fnmatch(name, pat) for pat in secrets)
+
     for item in entries:
         if item.is_dir():
-            if item.name in _CARRY_SKIP_DIRS:
+            if item.name in _CARRY_SKIP_DIRS or _is_secret(item.name):
                 continue
-            shutil.copytree(item, dst / item.name, dirs_exist_ok=True)
-        elif item.name not in _CARRY_SKIP_FILES:
+            shutil.copytree(item, dst / item.name, dirs_exist_ok=True,
+                            ignore=ignore)
+        elif item.name not in _CARRY_SKIP_FILES and not _is_secret(item.name):
             shutil.copy2(item, dst / item.name)
 
 

@@ -55,9 +55,10 @@ ROOT_ENV = "ASTERISM_LAB_ROOT"
 #: What must NEVER travel out of an attempts tree into `_out/`, on top
 #: of the obvious build residue.
 #:
-#: A per-spawn provider HOME holds a COPY OF THE OPERATOR'S CREDENTIAL —
-#: `codex_cli._spawn_home` copies `~/.codex/auth.json` into it, and
-#: `antigravity_cli` does the same for its own — and the home is meant to
+#: A per-spawn provider HOME reaches the OPERATOR'S CREDENTIAL —
+#: `antigravity_cli` copies its own into the home, and
+#: `codex_cli._place_credential` puts `~/.codex/auth.json` there as a
+#: SYMLINK (a copy where the OS refuses one) — and the home is meant to
 #: die with the attempt (`_preserve_transcript` moves the transcript out
 #: and lets the secret go down with the directory). `_out/` is the part
 #: of a run that SURVIVES, so a copier that took the tree whole undid
@@ -70,6 +71,12 @@ ROOT_ENV = "ASTERISM_LAB_ROOT"
 #: Patterns are `shutil.ignore_patterns` globs, matched on the BASENAME
 #: at every level, so the file rules catch a credential dropped anywhere
 #: in the tree rather than only inside a home this list happens to know.
+#: `auth.json` earns its place TWICE over since 2026-09-04 (#235): the
+#: copiers run `copytree(symlinks=False)`, which would follow the link
+#: and write the operator's live token into the record as a real file.
+#: `ignore` is consulted on the directory listing, BEFORE anything is
+#: opened, so an ignored symlink is never dereferenced — which is why
+#: the rule has to be here and not in a post-copy sweep.
 _STATIC_ATTEMPT_IGNORES = ("__pycache__", "auth.json", "*.token",
                            "credentials.json", "*.pem")
 

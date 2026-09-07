@@ -410,10 +410,13 @@ def incoming_verdict(prior_run: "Path | None", leg: str = "resumed"
 
 
 # The attempts tree travels whole, minus the per-spawn provider HOME.
-# The home holds a COPY OF THE OPERATOR'S `auth.json` (`codex_cli.
-# _spawn_home`) and, here, the staged rollouts as well — a credential
-# that outlives its attempt is exactly what `_preserve_transcript`
-# refuses to let happen, and `_out/` is the part of a run that survives.
+# The home REACHES the operator's `auth.json` — a symlink to it since
+# 2026-09-04, a copy where the OS refuses one (`codex_cli.
+# _place_credential`) — and, here, the staged rollouts as well. A
+# credential that outlives its attempt is exactly what
+# `_preserve_transcript` refuses to let happen, and `_out/` is the part
+# of a run that survives; the copiers dereference a symlink, so the
+# exclusion is what keeps the LIVE token out of the record.
 # The rollouts are collected separately, from `.asterism/codex_sessions/`.
 #
 # That rule used to live here as this module's OWN copier, twelve lines

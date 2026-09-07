@@ -52,6 +52,11 @@ def test_provider_infra_set_pinned():
         # handshake past codex's 30s under a CPU-oversubscription
         # spike) — named so it cools instead of feeding the breaker.
         "local_overload",
+        # 09-04 (#235): the operator's refresh token is spent. A ~3s
+        # death that the duration rule called `spawn_fast_fail`, ten of
+        # which exit the daemon — named so it cools and says `codex
+        # login` instead.
+        "codex_auth_stale",
     }
 
 
@@ -92,6 +97,8 @@ def test_non_agent_set_pinned():
         "provider_network",
         # 08-25: an overloaded machine teaches it nothing too.
         "local_overload",
+        # 09-04: nor does a credential the operator has to re-issue.
+        "codex_auth_stale",
         # A provider config error teaches the agent nothing — the fix is
         # an operator edit to the CLI's permission/model settings.
         "provider_misconfigured",
@@ -116,6 +123,9 @@ def test_target_cooldown_set_pinned():
         # 08-18: one beat before the same target re-fires while the
         # network-park probe decides.
         "provider_network",
+        # 09-04: one beat while the operator is fetched — the adapter has
+        # already re-synced and retried, so nothing faster helps.
+        "codex_auth_stale",
         # #125: ghost queue rows (no loadable Manifest) must not be
         # re-dispatched in a tight T4-pumped loop.
         "problem_not_found",

@@ -209,6 +209,111 @@ def test_spawn_failure_names_a_local_overload_death(tmp_path: Path) -> None:
         assert "not charged" in detail
 
 
+#: VERBATIM from codex 0.153.0, the 2026-09-04 01:49Z incident that
+#: circuit-broke the flagship fleet
+#: (`.asterism/codex_sessions/1182ed9c-…/_spawn.0.stderr`). Both prose
+#: spellings and the machine-readable code, in the order the CLI prints
+#: them — a hand-written approximation is exactly the thing this corpus
+#: exists to stop being.
+_SPENT_REFRESH_TOKEN_STDERR = (
+    "rc=1\n"
+    "Your access token could not be refreshed because your refresh token "
+    "was already used. Please log out and sign in again.\n"
+    "2026-09-04T01:49:21.603009Z ERROR codex_login::auth::manager: Failed "
+    "to refresh token: 401 Unauthorized: {\n"
+    '  "error": {\n'
+    '    "message": "Your refresh token has already been used to generate '
+    'a new access token. Please try signing in again.",\n'
+    '    "type": "invalid_request_error",\n'
+    '    "param": null,\n'
+    '    "code": "refresh_token_reused"\n'
+    "  }\n"
+    "}\n"
+)
+
+
+def test_spawn_failure_names_a_spent_credential(tmp_path: Path) -> None:
+    """stderr naming a SPENT refresh token → `codex_auth_stale`, whatever
+    the duration says (#235, 2026-09-04).
+
+    The duration is the whole reason this needs its own branch: the death
+    lands in about three seconds, so the fast-fail rule claimed it, and
+    ten consecutive fast-fails exit the daemon. A rotated token therefore
+    read as "claude.exe is persistently broken" and took the fleet down
+    for a fault whose entire remedy is one operator command — which the
+    detail now names."""
+    (tmp_path / "_spawn.stderr").write_text(
+        _SPENT_REFRESH_TOKEN_STDERR, encoding="utf-8")
+    for dur in (3.0, 210.0):
+        reason, detail = _pipeline._spawn_failure(
+            rc=1, attempts_dir=tmp_path, spawn_dur=dur)
+        assert reason == "codex_auth_stale"
+        assert "not charged" in detail
+        assert "codex login" in detail
+
+
+def test_each_spelling_of_a_spent_token_is_matched() -> None:
+    """Three spellings ride in one output and any of them may arrive
+    alone: the human sentence, the API's own message, and the code. The
+    OAuth2 standard's `invalid_grant` is included for the day codex
+    surfaces the raw grant error instead of its prose."""
+    from Tooling.state import failures
+    for line in (
+        "your refresh token was already used. Please log out",
+        '"message": "Your refresh token has already been used to generate',
+        '"code": "refresh_token_reused"',
+        '{"error":"invalid_grant","error_description":"..."}',
+    ):
+        assert failures.is_credential_failure(line)
+
+
+def test_an_ordinary_expired_access_token_is_not_a_dead_credential() -> None:
+    """The line the markers must NOT cross. An expired ACCESS token is
+    the ordinary case a refresh fixes, and it appears in the very same
+    incident log — matching it would relabel every transient auth blip as
+    a credential the operator has to go and repair by hand."""
+    from Tooling.state import failures
+    assert not failures.is_credential_failure(
+        "failed to refresh available models: unexpected status 401 "
+        "Unauthorized: Provided authentication token is expired. Please "
+        "try signing in again., auth error code: token_expired")
+    assert not failures.is_credential_failure("")
+    assert not failures.is_credential_failure(None)
+
+
+def test_a_spent_credential_feeds_neither_dispatcher_breaker() -> None:
+    """The exemption, pinned at the branch rather than inferred from the
+    fall-through. `codex_auth_stale` cools its target like its two
+    siblings, and the dispatcher arm that handles it must touch neither
+    counter — the fast-fail one is what exited the daemon on 09-04, and
+    the unclassified one is the trap a future re-spelling would fall
+    into."""
+    from pathlib import Path as _P
+    from Tooling.state.failures import (NON_AGENT_REASONS,
+                                        PROVIDER_INFRA_REASONS,
+                                        TARGET_COOLDOWN_REASONS,
+                                        DEATH_NOTE_REASONS)
+    assert "codex_auth_stale" in PROVIDER_INFRA_REASONS  # ⇒ no attempts++
+    assert "codex_auth_stale" in TARGET_COOLDOWN_REASONS
+    assert "codex_auth_stale" in NON_AGENT_REASONS
+    # No death note: the audience for a credential error is the operator.
+    assert "codex_auth_stale" not in DEATH_NOTE_REASONS
+
+    src = (_P(__file__).resolve().parents[1] / "Tooling" / "core"
+           / "dispatcher" / "loop.py").read_text(encoding="utf-8")
+    head = 'elif reason == "codex_auth_stale":'
+    assert head in src, "the dispatcher no longer names this reason"
+    arm = src.split(head, 1)[1].split("elif reason ==", 1)[0]
+    # The comments in that arm NAME both counters (that is their point),
+    # so the pin is on what executes.
+    code = "\n".join(ln for ln in arm.splitlines()
+                     if not ln.strip().startswith("#"))
+    assert "consec_fast_fails" not in code
+    assert "consec_unclassified" not in code
+    # …and it must still say what the operator has to do.
+    assert "codex login" in code
+
+
 def test_spawn_timeout_outranks_the_network_prose(tmp_path: Path) -> None:
     """rc=124 is the framework's own SIGKILL — unambiguous, and it wins
     over any stderr prose (a timed-out worker may well have logged a

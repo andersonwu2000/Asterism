@@ -537,6 +537,361 @@ def test_the_home_carries_exactly_the_credential_and_the_envelope(
         encoding="utf-8")
 
 
+# ------------------------------- the credential is SHARED, never forked
+#
+# #235, verified in the field 2026-09-04 01:50Z. An OpenAI refresh token
+# is single-use: a spawn that refreshes writes the new one back into the
+# file it read, and that file used to be a private copy in a directory
+# about to be deleted. The operator's own file kept the spent token, so
+# every later spawn died in ~3s on "your refresh token was already used"
+# — read as `spawn_fast_fail`, ten of which exit the daemon.
+
+
+def _operator_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                   token: str = "r0") -> Path:
+    op = tmp_path / "op"
+    op.mkdir(exist_ok=True)
+    (op / "auth.json").write_text(
+        json.dumps({"auth_mode": "chatgpt",
+                    "tokens": {"refresh_token": token}}), encoding="utf-8")
+    monkeypatch.setattr(codex_cli, "operator_codex_home", lambda: op)
+    return op
+
+
+@pytest.mark.skipif(__import__("os").name == "nt",
+                    reason="a Windows symlink needs a privilege a spawn "
+                           "cannot assume; that arrangement is the "
+                           "copy + write-back tested below")
+def test_the_spawn_shares_the_operators_credential_by_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fix itself: the spawn's `auth.json` IS the operator's file, so
+    a rotation lands where the next spawn will read it — the same thing
+    several `codex exec` sharing one CODEX_HOME already do. Everything
+    else about the home stays per-spawn; only the one file that must not
+    be forked is shared."""
+    import os
+    op = _operator_home(tmp_path, monkeypatch)
+    home = codex_cli._spawn_home(_req(tmp_path), "m", "xhigh")
+    assert home is not None
+    link = home / "auth.json"
+    assert link.is_symlink()
+    assert Path(os.readlink(link)) == op / "auth.json"
+    # …and a write through it reaches the operator's file, which is the
+    # entire property the copy did not have.
+    link.write_text('{"tokens": {"refresh_token": "rotated"}}',
+                    encoding="utf-8")
+    assert "rotated" in (op / "auth.json").read_text(encoding="utf-8")
+    # The envelope is still this spawn's own.
+    assert (home / "config.toml").is_file()
+
+
+def test_the_posix_branch_asks_for_a_link_to_the_operators_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DECISION, checkable on a box that grants no symlinks (this
+    one, and every unprivileged Windows agent that will run the suite):
+    on POSIX the adapter must ask for a link pointing at the operator's
+    own `auth.json`, not copy it. The test above proves the resulting
+    link really is shared, where the OS allows one to be made."""
+    import types
+    op = _operator_home(tmp_path, monkeypatch)
+    asked: list = []
+    # A stand-in `os` for this module alone. Setting the real
+    # `os.name` would re-point `pathlib.Path` at PosixPath and every path
+    # in the process with it.
+    monkeypatch.setattr(codex_cli, "os", types.SimpleNamespace(
+        name="posix",
+        symlink=lambda src, dst: asked.append((Path(src), Path(dst)))))
+    home = tmp_path / "home"
+    home.mkdir()
+    codex_cli._place_credential(op / "auth.json", home)
+    assert asked == [(op / "auth.json", home / "auth.json")]
+    # …and NOTHING was copied: the whole point is that no second file
+    # holding the refresh token exists.
+    assert not (home / "auth.json").exists()
+
+
+def test_a_box_that_refuses_a_symlink_still_gets_a_working_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows needs SeCreateSymbolicLink or developer mode, and some
+    filesystems refuse links outright. An adapter that failed to spawn
+    there would be a worse bug than the one being fixed, so the copy is
+    the documented fallback — and `_return_rotated_credential` is its
+    other half."""
+    op = _operator_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(codex_cli.os, "symlink",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            OSError(1314, "A required privilege is not "
+                                          "held by the client")))
+    home = codex_cli._spawn_home(_req(tmp_path), "m", "xhigh")
+    assert home is not None
+    auth = home / "auth.json"
+    assert auth.is_file() and not auth.is_symlink()
+    assert auth.read_bytes() == (op / "auth.json").read_bytes()
+
+
+def test_placing_the_credential_twice_replaces_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-sync before the retry runs over whatever the last attempt
+    left — including a DANGLING symlink, which `exists()` reports as
+    absent and `os.symlink` would then refuse with FileExistsError."""
+    op = _operator_home(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "auth.json").write_text("stale copy", encoding="utf-8")
+    codex_cli._place_credential(op / "auth.json", home)
+    codex_cli._place_credential(op / "auth.json", home)
+    assert (home / "auth.json").read_text(
+        encoding="utf-8") == (op / "auth.json").read_text(encoding="utf-8")
+
+
+def _copied_home(tmp_path: Path, body: str, *, newer: bool = True) -> Path:
+    """The Windows arrangement, on any platform: a real file, not a link."""
+    import os
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    auth = home / "auth.json"
+    auth.write_text(body, encoding="utf-8")
+    ref = (tmp_path / "op" / "auth.json").stat().st_mtime
+    os.utime(auth, (ref + 10, ref + 10) if newer else (ref - 10, ref - 10))
+    return home
+
+
+def test_the_windows_copy_returns_a_rotated_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without this, a Windows spawn buries the only live refresh token
+    in the directory `WorkArea.__exit__` is about to rmtree — which is
+    the whole incident, one platform at a time."""
+    op = _operator_home(tmp_path, monkeypatch, token="r0")
+    home = _copied_home(tmp_path, json.dumps(
+        {"auth_mode": "chatgpt", "tokens": {"refresh_token": "r1"}}))
+    codex_cli._return_rotated_credential(home)
+    back = json.loads((op / "auth.json").read_text(encoding="utf-8"))
+    assert back["tokens"]["refresh_token"] == "r1"
+
+
+def test_an_unchanged_copy_is_not_written_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary case — every spawn that never had to refresh. Writing
+    anyway would churn the operator's file and move its mtime, which is
+    the tie-breaker the concurrent case depends on."""
+    op = _operator_home(tmp_path, monkeypatch)
+    before = (op / "auth.json").stat().st_mtime
+    home = _copied_home(tmp_path, (op / "auth.json").read_text(
+        encoding="utf-8"))
+    codex_cli._return_rotated_credential(home)
+    assert (op / "auth.json").stat().st_mtime == before
+
+
+def test_a_newer_operator_file_wins_over_this_spawns_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sibling spawn (or the operator's own `codex login`) rotated
+    after we took our copy: ours is the stale one now, and writing it
+    back would spend their live token — the original bug, inverted."""
+    op = _operator_home(tmp_path, monkeypatch, token="fresh")
+    home = _copied_home(tmp_path, json.dumps(
+        {"tokens": {"refresh_token": "ours"}}), newer=False)
+    codex_cli._return_rotated_credential(home)
+    assert "fresh" in (op / "auth.json").read_text(encoding="utf-8")
+
+
+def test_an_empty_or_unparseable_copy_is_never_written_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A truncated or half-written `auth.json` handed back to the
+    operator's home is a signed-out machine — a worse outage than the one
+    being fixed. The gate is SHAPE, never content: a JSON object carrying
+    a refresh token or an API key."""
+    op = _operator_home(tmp_path, monkeypatch, token="good")
+    for junk in ("", "   ", "{not json", "{}", "[]", "null",
+                 '{"tokens": {}}', '{"tokens": {"refresh_token": ""}}'):
+        home = _copied_home(tmp_path, junk)
+        codex_cli._return_rotated_credential(home)
+        assert "good" in (op / "auth.json").read_text(encoding="utf-8")
+    # …and an API-key credential, which carries no `tokens` map at all,
+    # IS a valid shape.
+    home = _copied_home(tmp_path, json.dumps({"OPENAI_API_KEY": "sk-x"}))
+    codex_cli._return_rotated_credential(home)
+    assert "sk-x" in (op / "auth.json").read_text(encoding="utf-8")
+
+
+def test_the_write_back_is_atomic_and_leaves_no_debris(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tmp + `os.replace`, so the status reader (a separate process) sees
+    the old credential or the new one and never a half-written one. A
+    failed replace must leave neither a partial file nor a stray tmp
+    carrying the token."""
+    op = _operator_home(tmp_path, monkeypatch, token="r0")
+    home = _copied_home(tmp_path, json.dumps(
+        {"tokens": {"refresh_token": "r1"}}))
+    seen: list = []
+    real_replace = codex_cli.os.replace
+
+    def _watch(src, dst):
+        # The destination still holds the ORIGINAL at this point — the
+        # new bytes are entirely in the tmp file.
+        seen.append(Path(dst).read_text(encoding="utf-8"))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(codex_cli.os, "replace", _watch)
+    codex_cli._return_rotated_credential(home)
+    assert seen and "r0" in seen[0]
+    assert "r1" in (op / "auth.json").read_text(encoding="utf-8")
+
+    # …and a replace that fails takes the tmp file with it.
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(codex_cli.os, "replace", _boom)
+    _copied_home(tmp_path, json.dumps({"tokens": {"refresh_token": "r2"}}))
+    codex_cli._return_rotated_credential(home)
+    assert sorted(p.name for p in op.iterdir()) == ["auth.json"]
+    assert "r1" in (op / "auth.json").read_text(encoding="utf-8")
+
+
+def test_a_shared_credential_is_never_written_back_over_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On POSIX the spawn writes THROUGH the link, so there is nothing to
+    carry — the write-back is the copy arrangement's other half, not a
+    second mechanism running beside it."""
+    op = _operator_home(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    try:
+        codex_cli.os.symlink(op / "auth.json", home / "auth.json")
+    except OSError:
+        pytest.skip("this box does not grant symlinks")
+    codex_cli._return_rotated_credential(home)
+    assert (home / "auth.json").is_symlink()
+    assert "r0" in (op / "auth.json").read_text(encoding="utf-8")
+
+
+# ---------------------------------- one retry, then the operator is told
+
+def _spent_stderr() -> str:
+    """Verbatim from the incident — see `tests/test_spawn_fast_fail.py`
+    for the full capture."""
+    return ("Your access token could not be refreshed because your "
+            "refresh token was already used. Please log out and sign in "
+            "again.")
+
+
+def _stub_launches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                   outcomes: "list[tuple[int, str | None]]") -> list:
+    """Let `spawn` reach `_run_proc` with no codex on the box.
+
+    Each launch consumes one outcome, so the LENGTH of the returned list
+    is the assertion: how many times the adapter went back."""
+    _operator_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(codex_cli, "resolve_codex_executable",
+                        lambda: "codex.cmd")
+    monkeypatch.setattr(codex_cli, "create_capped_job", lambda *a, **k: None)
+    monkeypatch.setattr(codex_cli, "assign_to_job", lambda *a, **k: False)
+    monkeypatch.setattr(codex_cli.subprocess, "Popen",
+                        lambda *a, **kw: object())
+    from Tooling.llm import claude_cli
+    monkeypatch.setattr(claude_cli, "track_proc", lambda *a, **k: None)
+    monkeypatch.setattr(claude_cli, "untrack_proc", lambda *a, **k: None)
+    calls: list = []
+
+    def _fake(self, req, proc, prompt, home, **kw):
+        rc, body = outcomes[len(calls)]
+        calls.append(str(home))
+        if body is not None:
+            codex_cli._write_spawn_stderr(req.attempts_dir, body, rc)
+        return rc
+
+    monkeypatch.setattr(codex_cli.CodexCliProvider, "_run_proc", _fake)
+    return calls
+
+
+def _ws_req(tmp_path: Path) -> "LLMRequest":
+    """The real on-disk shape — `<ws>/.attempts/<pid>/` — because the
+    degraded ledger is found by walking up to the `.attempts` anchor."""
+    att = tmp_path / ".attempts" / "pid1"
+    att.mkdir(parents=True)
+    return _req(tmp_path, attempts_dir=att)
+
+
+def test_a_spent_credential_buys_one_retry_and_can_recover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worth taking because the operator's file may have moved UNDER us:
+    on Windows a sibling spawn's write-back puts a live token there in
+    the seconds this one spent dying. A recovered retry is an ordinary
+    success and must degrade nothing."""
+    from Tooling.core import degraded
+    calls = _stub_launches(tmp_path, monkeypatch,
+                           [(1, _spent_stderr()), (0, None)])
+    assert codex_cli.CodexCliProvider().spawn(_ws_req(tmp_path)) == 0
+    assert len(calls) == 2
+    assert degraded.snapshot(tmp_path) == {}
+
+
+def test_a_second_spent_credential_names_codex_login_in_daemon_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twice in a row is not a race: the credential really is spent, and
+    no copy of the file revives it. `daemon status` renders the degraded
+    ledger, so the hourly patrol sees the one command that fixes this
+    without reading a run log."""
+    from Tooling.core import degraded
+    calls = _stub_launches(
+        tmp_path, monkeypatch,
+        [(1, _spent_stderr()), (1, _spent_stderr()), (1, "never reached")])
+    codex_cli.CodexCliProvider().spawn(_ws_req(tmp_path))
+    assert len(calls) == 2, "one retry, not a loop"
+    entry = degraded.snapshot(tmp_path)["codex_auth_stale"]
+    assert entry["count"] == 1
+    assert "codex login" in entry["last_detail"]
+
+
+def test_an_ordinary_death_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry is bought by the credential marker alone. Any other
+    failure keeps its single spawn — a free extra attempt per death is
+    exactly the kind of quiet budget leak this project audits for."""
+    calls = _stub_launches(tmp_path, monkeypatch,
+                           [(1, "lake build failed"), (0, None)])
+    assert codex_cli.CodexCliProvider().spawn(_ws_req(tmp_path)) == 1
+    assert len(calls) == 1
+
+
+def test_the_adapter_and_the_classifier_read_one_predicate() -> None:
+    """The adapter decides whether to re-sync and retry; the pipeline
+    decides whether the row is `codex_auth_stale`. Two spellings of "is
+    this the credential?" is how they come to disagree — so there is one,
+    in the leaf module both can import."""
+    import inspect
+    from Tooling.state import failures
+    src = inspect.getsource(codex_cli._died_on_a_spent_credential)
+    assert "is_credential_failure" in src
+    assert failures.is_credential_failure(_spent_stderr())
+
+
+def test_zen_has_no_credential_to_re_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The zen flavour authenticates by API key and must have NO
+    auth.json at all — a ChatGPT credential there routes codex to the
+    subscription backend and 400s (measured 2026-08-22). So the retry,
+    which would place one, must not fire for it."""
+    calls = _stub_launches(tmp_path, monkeypatch,
+                           [(1, _spent_stderr()), (0, None)])
+    provider = codex_cli.CodexCliProvider(flavor="zen")
+    assert provider.spawn(_ws_req(tmp_path)) == 1
+    assert len(calls) == 1
+
+
 # --------------------------------------------------- the liveness clock
 
 def test_the_tool_clock_is_real_but_the_stream_clock_is_not() -> None:
