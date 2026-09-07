@@ -55,7 +55,18 @@ def in_flight_lines(conn: sqlite3.Connection, problem: str,
     """One entry per root this group has in flight: an Inject whose
     outcome is still NULL, whose produced goal exists AND is still live
     (`LIVE_ROOT_STATUSES`). Tallies count the root's descendants by
-    status (`db.descendant_ids`)."""
+    status (`db.descendant_ids`).
+
+    `running` is whether a worker is actually on the line, from the one
+    predicate that decides it for every surface
+    (`db.decision_step_is_running`). It ANNOTATES the roster and does
+    not filter it: a line nobody is working is exactly what criteria 3
+    and 4 exist to rule on, so dropping it would hide the stall from
+    the audit that exists to find it. What it fixes is the sentence —
+    this section said "still have running" of every entry while the
+    decision replay called the same step PARKED with no worker and no
+    wake coming (2026-09-07, g10941, reported mid-round by the judge
+    reading both)."""
     sql = ("SELECT d.id AS decision_id, d.batch_id, d.created_at,"
            " d.produced_goal_id, d.target_id, g.slug, g.status"
            " FROM strategist_decisions d"
@@ -96,6 +107,8 @@ def in_flight_lines(conn: sqlite3.Connection, problem: str,
             "decision_id": int(r["decision_id"]),
             "batch_id": str(r["batch_id"]), "age_days": age_days,
             "descendants": len(kids), "tallies": tallies,
+            "running": db.decision_step_is_running(
+                conn, int(r["decision_id"])),
         })
     return out
 
@@ -117,14 +130,27 @@ def read_roots_snapshot(attempts_dir: Path) -> "list[dict] | None":
     return obj if isinstance(obj, list) else None
 
 
+#: The two readings of a line, in the words the rest of the Context
+#: already uses for them. NOT a heading-level claim: the old preamble
+#: said "still have running" of the whole roster, which is a sentence
+#: about workers written over a roster of unsettled roots — and the
+#: decision replay was contradicting it, entry by entry, in the same
+#: file. The state now rides the entry it is true of.
+_LINE_RUNNING = "a worker is on this line"
+_LINE_PARKED = ("NO worker on this line: nothing is computing and no "
+                "batch-done wake is coming for it — it moves only if "
+                "you move it")
+
+
 def render_lines_section(lines: "list[dict]") -> "list[str]":
     """`## Lines in flight` — what criteria 3 and 4 are ruled on, one
     line per root. Post-mortems are lazy: `inspect({"decl": slug})`."""
     if not lines:
         return []
     out = ["## Lines in flight", "",
-           "One line per root you dispatched and still have running — "
+           "One line per root you dispatched that is not settled yet — "
            "criteria 3 and 4 are ruled on EACH of these, by `goal_id`. "
+           "Each says whether a worker is actually on it. "
            "Failure records per node: `inspect({\"decl\": \"<slug>\"})`.",
            ""]
     for ln in lines:
@@ -136,7 +162,8 @@ def render_lines_section(lines: "list[dict]") -> "list[str]":
             f"descendant(s): proved {t['proved']}, attempting "
             f"{t['attempting']}, open {t['open']}, "
             f"shelved {t['shelved']}, disproved {t['disproved']}, "
-            f"pending review {t['pending_strategist_review']}")
+            f"pending review {t['pending_strategist_review']} — "
+            + (_LINE_RUNNING if ln.get("running") else _LINE_PARKED))
     out.append("")
     return out
 

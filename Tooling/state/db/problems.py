@@ -1075,6 +1075,29 @@ def open_batch_steps(conn: sqlite3.Connection,
     return steps
 
 
+def decision_step_is_running(conn: sqlite3.Connection,
+                             decision_id: int) -> bool:
+    """Is work MOVING on one batch step, by its decision id?
+
+    The same classifier `open_batch_steps` hands its callers, reachable
+    by a reader that already has the decision row from a query of its
+    own. `pipeline/strategist/audit.in_flight_lines` is that reader,
+    and until 2026-09-07 it had no way to ask: it gated its roster on
+    the produced goal's STATUS, so an `attempting` goal with nothing
+    under it and no worker read as "still have running" in `## Lines in
+    flight` while the decision replay, 125 lines away in the same
+    Context, called the same goal's Inject PARKED with no worker and no
+    wake coming. Both sentences were about g10941, and an Adversary
+    reported the pair mid-round. One predicate, two surfaces — the
+    `_bucket` precedent, moved up a level.
+
+    A decision that is settled, unbatched or not a batch kind has no
+    step to be running: False, not an error."""
+    row = conn.execute(
+        _OPEN_STEP_SQL + " AND d.id = ?", (int(decision_id),)).fetchone()
+    return row is not None and _step_is_running(conn, row)
+
+
 def batch_has_running_step(conn: sqlite3.Connection,
                            batch_id: str) -> bool:
     """True iff this batch still has a step whose work is MOVING — the
