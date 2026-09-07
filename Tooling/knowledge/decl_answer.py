@@ -66,6 +66,109 @@ def _strategy_gate_line(strats: "list[dict]", goal_status: str) -> str:
             f"or an unfinished step above it), NOT on a missing proof.")
 
 
+#: What a goal is doing when nothing needs explaining: BFS will pick it
+#: up, a worker holds it, or the kernel took it. Everything else — a
+#: park, a review queue, a refutation, a freeze — is a state somebody
+#: DECIDED, and the decision left a row.
+_MOVING_OR_DONE = frozenset({"open", "attempting", "proved"})
+
+#: Per-part budget for the reason block. Generous when the caller typed
+#: the whole name (that is the audit, and the decisive text is usually
+#: an agent's paragraph, not a sentence — the Strategist's own decline
+#: digest measured median 1,250 / p90 2,348), tight on a substring
+#: shortlist: a shortlist is for picking a name, not for reading six
+#: post-mortems, and six full ones would eat the 12,000-char answer the
+#: signatures also have to fit in.
+_REASON_CHARS = 1_000
+_REASON_CHARS_SHORTLIST = 300
+
+
+def _elide_middle(text: str, budget: int) -> str:
+    """Keep both ends of `text`, drop the middle, say how much went.
+
+    A head-only cut hides whatever the writer put LAST, and agents put
+    the ask last: "so re-state this sub-goal with (hUW : …) added" is
+    the sentence the reader needs. Sibling of `phase2_context/
+    outcomes._elide_middle` and of `lsp/gateway.rpc._echo_removed`,
+    which do the same for the Strategist's decline digest and for the
+    region an edit removed — the shape recurs because the failure
+    does."""
+    if len(text) <= budget:
+        return text
+    half = (budget - 40) // 2
+    return (f"{text[:half].rstrip()} … [{len(text) - 2 * half} chars "
+            f"elided] … {text[-half:].lstrip()}")
+
+
+def _prose(s: "str | None") -> str:
+    """One line of an agent's own words. `--` goes because a decline is
+    written as Lean comments (`-- decline: return_to_nl`) and the
+    marker is transport, not reasoning — the same normalisation the
+    Strategist's decline digest applies to the same column."""
+    return " ".join(str(s or "").replace("--", " ").split())
+
+
+def _reason_parts(conn, gid: int, status: str) -> "list[tuple[str, str]]":
+    """WHY this goal is not proved, from the rows that know — the
+    question `inspect`'s own description promised and never answered.
+
+    Three tables hold three halves of it and the tool showed none:
+    `strategist_decisions` carries the park (a ConfirmShelve's prose is
+    the Strategist saying what would have to change), `goal_events` the
+    transition that put the goal where it is, and `dead_attempts` the
+    last worker's own account. On 2026-09-07 a Strategist audited
+    g10944 through this query, got status + file + an elided statement,
+    and had to go find `.drafts/backward_g10944_patch.lean` to learn
+    that a `j = 0, M = 3` counterexample had refuted it; four hours
+    later another one asked the same query about a shelved goal and was
+    told nothing about the shelf at all.
+
+    Returns `(head, prose)` pairs — never rendered text — because the
+    per-part budget is not known until the answer knows how many
+    declarations it is showing."""
+    try:
+        park = conn.execute(
+            "SELECT actor, brief, reason, created_at"
+            " FROM strategist_decisions"
+            " WHERE target_id = ? AND decision_kind = 'ConfirmShelve'"
+            " ORDER BY id DESC LIMIT 1", (gid,)).fetchone()
+        event = conn.execute(
+            "SELECT event, reason, at FROM goal_events"
+            " WHERE goal_id = ? AND to_status = ?"
+            " ORDER BY id DESC LIMIT 1", (gid, status)).fetchone()
+        dead = conn.execute(
+            "SELECT failure_reason, failure_detail, proposal_md, ts"
+            " FROM dead_attempts WHERE target_id = ? AND target_kind = 'Goal'"
+            " ORDER BY id DESC LIMIT 1", (gid,)).fetchone()
+        n_dead = int(conn.execute(
+            "SELECT COUNT(*) FROM dead_attempts"
+            " WHERE target_id = ? AND target_kind = 'Goal'",
+            (gid,)).fetchone()[0])
+    except Exception:  # noqa: BLE001 — a DB that answers less, not none
+        return []
+    parts: "list[tuple[str, str]]" = []
+    if park is not None:
+        # `reason` is where a ConfirmShelve's prose lands and `brief`
+        # where some kinds put theirs; take whichever this row has
+        # rather than assuming the column.
+        parts.append((
+            f"parked by ConfirmShelve ({park['actor'] or 'strategist'}, "
+            f"{str(park['created_at'])[:10]})",
+            _prose(park["reason"] or park["brief"])))
+    elif event is not None:
+        parts.append((f"entered `{status}` by `{event['event']}` "
+                      f"({str(event['at'])[:10]})", _prose(event["reason"])))
+    if dead is not None:
+        # `proposal_md` carries the mathematics (the counterexample, the
+        # missing hypothesis); `failure_detail` for a decline is only
+        # the routing enum, so it is the fallback and not the answer.
+        parts.append((
+            f"last of {n_dead} recorded attempt(s) "
+            f"[{dead['failure_reason']}] ({str(dead['ts'])[:10]})",
+            _prose(dead["proposal_md"] or dead["failure_detail"])))
+    return parts
+
+
 def _wrapper_target(ws: Path, lp: str, stok: str, strats: "list[dict]"
                     ) -> "tuple[list[str], str, str]":
     """Where `def slug := @…sNNN` actually points — from the RECORD.
@@ -201,6 +304,12 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
         # `attempting` with everything under it proved — a succeeded
         # strategy against an unsettled goal, which is a fact of the
         # tables and of nothing else.
+        # WHY a goal that is neither moving nor done is where it is —
+        # collected here, beside the strategies, because the connection
+        # closes before anything is rendered (see `_reason_parts`).
+        reasons_of: "dict[int, list[tuple[str, str]]]" = {
+            int(r["id"]): _reason_parts(conn, int(r["id"]), str(r["status"]))
+            for r in rows if str(r["status"]) not in _MOVING_OR_DONE}
         strategies_of: "dict[int, list[dict]]" = {}
         for r in rows:
             strategies_of[int(r["id"])] = [
@@ -265,6 +374,7 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
     out: "list[str]" = []
     if note:
         out.append(note)
+    budget = _REASON_CHARS if len(rows) == 1 else _REASON_CHARS_SHORTLIST
     for r in rows:
         out.append(f"{r['slug']}  [{r['status']}]  {r['lean_path']}")
         slug, lp, stmt = str(r["slug"]), r["lean_path"], r["statement"]
@@ -272,6 +382,20 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
         gate = _strategy_gate_line(strats, str(r["status"]))
         if gate:
             out.append(gate)
+        parts = reasons_of.get(int(r["id"]))
+        if parts is not None:
+            # An EMPTY block would reproduce the silence one layer down,
+            # so a goal the record says nothing about says that instead.
+            if not parts:
+                out.append("    why this goal is not proved: nothing on "
+                           "record — no park reason, no decline, no "
+                           "failed attempt.")
+            else:
+                out.append("    why this goal is not proved — from this "
+                           "run's record:")
+                out += [f"      {head}"
+                        + (f" — {_elide_middle(body, budget)}" if body else "")
+                        for head, body in parts]
         target = alias_of.get(slug)
         if target is not None:
             tslug, lp, stmt, tstatus = target

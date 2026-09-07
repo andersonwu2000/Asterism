@@ -30,6 +30,7 @@ Nothing may be written to stdout — that is the protocol channel.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 
 from mcp.server.fastmcp import FastMCP
 
@@ -460,9 +461,11 @@ def inspect(queries: list = None) -> str:
          {"find":  "*deficit*.lean"},
          {"size":  "proofs/*.lean"}]
 
-    Batch freely: each query gets its own full budget, and a second
-    question never shrinks the answer to the first. Queries that would
-    overflow one reply are deferred by name — resend just those.
+    Batch freely: no question shrinks the answer to another — each is
+    answered whole against its own per-query cap. The reply as a whole
+    still has ONE delivery budget, so a question whose answer would not
+    fit beside the ones already in it is named as deferred and need
+    only be resent.
 
     READ BY THE SECTION. `sections` takes heading text (`## Programme`
     → "Programme") and returns that heading with everything under it.
@@ -502,7 +505,15 @@ def inspect(queries: list = None) -> str:
     # (an unmeasured backend) means no ceiling, never a guessed one.
     raw = os.environ.get("ASTERISM_INSPECT_DELIVERY_CHARS", "").strip()
     delivery = int(raw) if raw.isdigit() and int(raw) > 0 else None
-    return workspace_query.run_queries(queries, delivery_chars=delivery)
+    # A reply that carries no file at all is an ERROR on the wire, not
+    # an answer — see `_install_error_flag`. The verdict comes from
+    # `run_queries`, which is where a refusal is decided; this side only
+    # carries it to the transport.
+    report: dict = {}
+    text = workspace_query.run_queries(queries, delivery_chars=delivery,
+                                       report=report)
+    _ANSWER_IS_REFUSAL.set(bool(report.get("refused")))
+    return text
 
 
 @_seat_tool(structured_output=False)
@@ -1247,6 +1258,79 @@ def _prime_change_notice() -> None:
 
 
 _notice.install(mcp, _change_notice, suppress=_suppress_change_notice)
+
+
+# ── "this answer is not a file" reaches the wire (2026-09-07) ─────────
+#
+# `inspect` refuses reads it cannot honour — the operator-private fence,
+# a path that is not there, a whole file or a raw read over the reply
+# budget — and every one of those came back `isError=false`, because a
+# tool returning a string is a SUCCESS to FastMCP whatever the string
+# says. A Theorist read `raw read is 12,794 chars — over the 12,000-char
+# reply budget` out of `report.md` with the flag clear and reported that
+# checking it alone would mistake the refusal for the document.
+#
+# The verdict is not re-derived from the prose here: `run_queries` fills
+# a `report` dict, because it is the place that DECIDES a refusal and a
+# second definition matching the wording would go stale the first time
+# the wording moved. The ContextVar is the carry — the tool returns one
+# string and the flag rides beside it, request-local, exactly as
+# `spawn_guard`'s attempt-dir and tool-cwd do on this same path.
+#
+# ONE WRAP PER SERVER, and it goes on AFTER `change_notice`'s so this is
+# the outer one: the notice must be appended to the answer BEFORE the
+# answer becomes a result object, and a refusal is still news-carrying.
+_ANSWER_IS_REFUSAL: "ContextVar[bool]" = ContextVar(
+    "asterism_answer_is_refusal", default=False)
+
+
+def _as_error_result(result):
+    """The SAME answer, stamped `isError` — never a message instead of
+    it. Raising would have been shorter and is what FastMCP turns into
+    an error result, but it replaces the content with `str(exc)`, and
+    the refusal's text IS the way back in (which fence, which budget,
+    which narrower ask to send). This module also holds a standing rule
+    against raising at all: on the Antigravity CLI a raising MCP tool
+    stamps the whole envelope `status: ERROR` and the run exits 1 (see
+    `_ARG_HELP`).
+
+    `structured_output=False` on every tool here, so what arrives is a
+    list of content blocks — the shape `change_notice.append` already
+    documents. Anything else is handed back untouched: a flag is never
+    worth losing an answer over."""
+    from mcp import types as _t
+    blocks = result[0] if isinstance(result, tuple) else result
+    if isinstance(blocks, str):
+        blocks = [_t.TextContent(type="text", text=blocks)]
+    if not isinstance(blocks, list):
+        return result
+    return _t.CallToolResult(content=list(blocks), isError=True)
+
+
+def _install_error_flag(server) -> None:
+    """Make a refusal read as one on the wire, for every tool at once."""
+    manager = getattr(server, "_tool_manager", None)
+    if manager is None or getattr(manager, "_asterism_error_flag", False):
+        return
+    inner = manager.call_tool
+
+    async def call_tool(name, arguments, *args, **kwargs):
+        # Reset per call, so a refusal never leaks onto the next tool's
+        # answer — the tools that never set it are covered by the same
+        # line.
+        token = _ANSWER_IS_REFUSAL.set(False)
+        try:
+            result = await inner(name, arguments, *args, **kwargs)
+            refused = _ANSWER_IS_REFUSAL.get()
+        finally:
+            _ANSWER_IS_REFUSAL.reset(token)
+        return _as_error_result(result) if refused else result
+
+    manager.call_tool = call_tool
+    manager._asterism_error_flag = True
+
+
+_install_error_flag(mcp)
 _prime_change_notice()
 
 

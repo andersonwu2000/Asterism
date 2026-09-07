@@ -178,10 +178,16 @@ def test_a_truncated_read_says_where_to_resume_with_no_overlap(
                          per_query_chars=2000)
     assert "truncated" in out
     assert '"lines": "' in out, out[-400:]
-    # The resume point is the line after the last one delivered.
-    last_shown = max(int(ln[:5]) for ln in out.splitlines()
-                     if ln[:5].strip().isdigit())
-    assert f'"{last_shown + 1}-"' in out
+    # The resume point is the first line the reader does NOT have
+    # WHOLE. It used to be the line after the last one on screen, and
+    # the last one on screen is where the cut landed — so its tail was
+    # dropped in silence (2026-09-07, the sibling of the grep footer
+    # that said "Continue from line 4" after truncating near line 339).
+    import re as _re
+    resume = int(_re.search(r'"lines": "(\d+)-"', out).group(1))
+    kept = out.split("… [1] truncated", 1)[0]
+    assert f"line {resume - 1}\n" in kept, kept[-200:]
+    assert f"line {resume}\n" not in kept, kept[-200:]
 
 
 def test_sections_survive_a_file_that_starts_mid_document(

@@ -761,20 +761,27 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
     return hits + notes
 
 
-def _last_grep_anchor(kept: "list[str]") -> str:
-    """`file:line` of the last delivered hit, for the `after` handle.
+def _last_grep_anchor(rows: "list[str]") -> "tuple[str, int] | None":
+    """`(file, line)` of the last delivered hit, for the `after` handle.
 
     NON-greedy on purpose: the hit carries the matched line verbatim, so
     a `foo:12:` inside the CONTENT is a second `:<digits>:` on the same
     row and a greedy match walked to the rightmost one — handing back a
     resume point the next call refuses as "outside this search". The
     leftmost match is the real prefix, absolute Windows paths (`D:/…`)
-    included: `D` is followed by no digits, so the scan runs on."""
-    for ln in reversed(kept):
-        m = re.match(r"(.+?):(\d+):", ln)
+    included: `D` is followed by no digits, so the scan runs on.
+
+    Anchored at column 0, and that is the second half of the same rule:
+    only a HIT row starts there (a workspace path never begins with a
+    space), while a `context` block's neighbour rows are the file's own
+    text under a two-space indent. Without the anchor the scan could
+    take a neighbour row's `foo.lean:99:` for a hit prefix and hand
+    back a resume point in a file this search never opened."""
+    for ln in reversed(rows):
+        m = re.match(r"(\S.*?):(\d+):", ln)
         if m:
-            return f"{m.group(1)}:{m.group(2)}"
-    return ""
+            return m.group(1), int(m.group(2))
+    return None
 
 
 def _sections(lines: "list[str]") -> "list[tuple[str, int, int, int]]":
@@ -806,13 +813,17 @@ def _numbered(lines: "list[str]", a: int, b: int) -> "list[str]":
             for n in range(max(1, a), min(len(lines), b) + 1)]
 
 
-#: A raw answer is byte-faithful file content and carries NO decoration,
-#: so anything that is NOT content (a refusal, a miss, an ambiguity)
-#: must say so in-band — this prefix is how `run_queries` tells the two
-#: apart and keeps the label on the non-content case. Without it, a
-#: refusal shipped undecorated reads as file content and gets written
-#: back verbatim.
-RAW_REFUSAL = "raw read refused: "
+#: A read that answers with a refusal, a miss or an ambiguity instead of
+#: the file says so IN BAND with this prefix, and `run_queries` strips it
+#: before the reader ever sees it. It began as a `raw`-only marker — a
+#: byte-faithful answer carries no decoration, so a refusal shipped
+#: undecorated reads as file content and gets written back verbatim —
+#: and now leads BOTH modes, because "this answer is not content" is a
+#: property of the answer and not of the flag that asked for it. That is
+#: what lets one caller stamp `isError` on a reply that carries no file
+#: at all (2026-09-07: a refused raw read arrived `isError=false`, so an
+#: agent checking the flag alone read the refusal as the document).
+NOT_CONTENT = "not content: "
 
 
 def _strip_parenthetical(s: str) -> str:
@@ -877,15 +888,17 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     """
     spec = str(q.get("read") or "")
     p = _resolve(spec, cwd)
-    raw_flag = bool(q.get("raw"))
     root = _denied(p.resolve(), deny)
+    # The fence and the miss are marked in BOTH modes: what makes them
+    # not-content is that no file came back, which the `raw` flag does
+    # not change. The prefix never reaches the reader either way.
     if root is not None:
         msg = (f"{p} is operator-private (under {root}) — Context.md, "
                f"BRIEF.md carry what you are meant to know")
-        return [RAW_REFUSAL + msg] if raw_flag else [msg]
+        return [NOT_CONTENT + msg]
     if not p.is_file():
         msg = f"no file at {p}; {_nearest_existing(p, cwd)}"
-        return [RAW_REFUSAL + msg] if raw_flag else [msg]
+        return [NOT_CONTENT + msg]
     lines = _read_text(p).splitlines()
     secs = _sections(lines)
     raw = bool(q.get("raw"))
@@ -971,7 +984,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             if raw and (len(hits) > 1 or matched_by):
                 # raw is a byte-faithful round-trip surface: an answer
                 # that needs a disclosure note cannot be pure content.
-                return [RAW_REFUSAL + (
+                return [NOT_CONTENT + (
                     f"section {name!r} matched "
                     + (f"{len(hits)} headings" if len(hits) > 1
                        else f"{text!r} only via its suffix")
@@ -1014,7 +1027,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
                 f"{'' if len(secs) == 1 else 's'}; `outline: true` "
                 f"lists them." + ("".join(f"\n  {c}" for c in close)))
             if raw:
-                return [RAW_REFUSAL + miss_note]
+                return [NOT_CONTENT + miss_note]
             chosen.append(miss_note)
         return chosen or [f"{len(lines)} lines, no sections matched"]
 
@@ -1026,7 +1039,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             b = int(hi) if hi else len(lines)
         except ValueError:
             msg = f"bad `lines` {rng!r} — use \"380-420\", \"-40\" or \"40-\""
-            return [RAW_REFUSAL + msg] if raw else [msg]
+            return [NOT_CONTENT + msg]
         return _render(a, b)
     # Whole file. The byte budget in `run_queries` bounds it and says
     # where to resume; an explicit `max` still caps by line for a caller
@@ -1052,9 +1065,15 @@ def outline(path: "Path | str") -> "list[str]":
 
     Absolute path, no deny roots: the caller has already decided this
     file is readable (it wrote it), and the read fence is a property of
-    a SPAWN's request, not of the framework rendering its own dossier."""
-    return _q_read({"read": str(path), "outline": True},
-                   Path(path).parent, ())
+    a SPAWN's request, not of the framework rendering its own dossier.
+
+    `NOT_CONTENT` is stripped here for the same reason `run_queries`
+    strips it: it is `_q_read`'s in-band signal to ITS caller, and this
+    caller renders straight into a prompt — a missing file must read as
+    "no file at …", never as "not content: no file at …"."""
+    return [ln[len(NOT_CONTENT):] if ln.startswith(NOT_CONTENT) else ln
+            for ln in _q_read({"read": str(path), "outline": True},
+                              Path(path).parent, ())]
 
 
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
@@ -1148,32 +1167,72 @@ def _rel(p: Path, cwd: Path) -> str:
         return p.as_posix()
 
 
-def _resume_hint(text: str, kept: str, q: dict) -> str:
-    """Where to pick up, with NO overlap and nothing to count by hand.
+#: A numbered output row — `_numbered`'s `f"{n:>5}  "`, and the copy of
+#: it a `context` grep block carries under a two-space indent. The sniff
+#: this replaces read `ln[:5]`, a slice that lands INSIDE a three-digit
+#: number as soon as the row is indented: a grep truncated near source
+#: line 339 read its own output as line 3 and answered "Continue from
+#: line 4 with `lines`" (2026-09-07) — a line nobody asked about, in a
+#: parameter grep does not take.
+_NUMBERED_ROW = re.compile(r"[ \t]*(\d+)  ")
 
-    The numbered output makes this exact: the last line that survived
-    the cut is the last one the reader has, so the next request starts
-    at the one after it. A hint that says "re-run this query alone"
-    (the old one) is not a continuation — it re-sends everything the
-    reader already paid for."""
-    last = 0
-    for ln in kept.splitlines():
-        head = ln[:5].strip()
-        if head.isdigit():
-            last = int(head)
-    if not last:
-        if "grep" in q:
-            anchor = _last_grep_anchor(kept.splitlines())
-            if anchor:
-                return (f'Continue with no overlap: resend the same '
-                        f'grep with `after: "{anchor}"`.')
+
+def _resume_hint(text: str, kept: str, q: dict) -> str:
+    """Where to pick up, with nothing lost and nothing to count by hand.
+
+    THE CUT LANDS MID-ROW, so the last row of `kept` is one the reader
+    has only part of, and naming the row after it drops that tail in
+    silence — truncation is a VIEW, never a loss. Everything below
+    reads the WHOLE rows and resumes at the first one that is not.
+
+    `grep` resumes by its own `after` handle and never by `lines`:
+    `lines` is not a continuation grep accepts, and the numbers in a
+    context block belong to the FILE rather than to the answer. That
+    branch used to be reachable only when no numbered row parsed at
+    all, which is exactly what the old sniff got wrong — see
+    `_NUMBERED_ROW`.
+    """
+    rows = kept.splitlines()
+    partial = rows.pop() if rows and not kept.endswith("\n") else ""
+    if "grep" in q:
+        anchor = _last_grep_anchor(rows)
+        if anchor is None:
+            return "Narrow the query."
+        rel, line = anchor
+        # A context block spans several rows, so the cut may have
+        # clipped the last one. Step back ONE hit rather than over it:
+        # a repeated hit costs a few rows, a skipped hit costs the
+        # reader the thing it was grepping for.
+        if q.get("context"):
+            line -= 1
+        return (f'Continue with no loss: resend the same grep with '
+                f'`after: "{rel}:{line}"`.')
+    resume = 0
+    for ln in rows:
+        m = _NUMBERED_ROW.match(ln)
+        if m:
+            resume = int(m.group(1)) + 1
+    whole = resume > 0
+    m = _NUMBERED_ROW.match(partial)
+    if m:
+        # Started, not finished: ask for THIS line again, not the next.
+        resume = int(m.group(1))
+    if not resume:
         return "Narrow the query."
+    if not whole:
+        # Nothing arrived whole, so no `lines` window advances — and
+        # handing back the query that just overflowed is the "re-run
+        # this alone" non-answer this hint exists to replace.
+        return (f"Continue from line {resume}: that single line is "
+                f"longer than this reply's budget, so no `lines` window "
+                f"continues it — `grep` the file for what you need "
+                f"from it.")
     if "read" in q:
-        return (f'Continue from line {last + 1}: '
-                f'{{"read": {str(q["read"])!r}, "lines": "{last + 1}-"}} '
+        return (f'Continue from line {resume}: '
+                f'{{"read": {str(q["read"])!r}, "lines": "{resume}-"}} '
                 f'— or name a section with `sections` / map it with '
                 f'`outline: true`.')
-    return f"Continue from line {last + 1} with `lines`."
+    return f"Continue from line {resume} with `lines`."
 
 
 def _big_section_refusal(q: dict, size: int, budget: int) -> str:
@@ -1292,7 +1351,8 @@ def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
 def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                 per_query_chars: int = PER_QUERY_CHARS,
                 max_queries: int = MAX_QUERIES,
-                delivery_chars: "int | None" = None) -> str:
+                delivery_chars: "int | None" = None,
+                report: "dict | None" = None) -> str:
     """Answer each query, labelled, in one string.
 
     EVERY QUERY GETS THE WHOLE BUDGET. It used to get `8000 //
@@ -1320,6 +1380,16 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     query is always answered even alone over the ceiling. None = a
     backend nobody has measured; no ceiling is applied
     (`llm/capabilities.mcp_result_delivery_chars` owns the numbers).
+
+    `report`, when given, is filled with what the STRING cannot carry:
+    `report["refused"]` is True when this reply delivered no file at
+    all — every answer in it a refusal. The transport above turns that
+    into `isError` (2026-09-07: "raw read is 12,794 chars — over the
+    12,000-char reply budget" arrived `isError=false`, so an agent
+    checking the flag alone took the refusal for the document). It is
+    computed HERE because here is where a refusal is decided; a caller
+    matching the prose would be a second definition of one, and would
+    go stale the first time the wording moved.
     """
     if cwd is None:
         # The shim runs tools in-process: ITS cwd is the repo root,
@@ -1341,8 +1411,13 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     budget_deferred: "list[tuple[int, object]]" = []
     blocks: "list[str]" = []
     srcs: "list[tuple[int, object]]" = []  # blocks[i] answers srcs[i]
+    #: blocks[i] delivered a refusal rather than a file. Parallel to
+    #: `blocks`, and popped with it below: a deferred answer is not a
+    #: refused one, and the reply's own verdict is about what it KEPT.
+    refusals: "list[bool]" = []
     joined = 0  # len("\n\n".join(blocks))
     for n, q in enumerate(queries[:max_queries], 1):
+        refused = False
         if not isinstance(q, dict):
             block = f"[{n}] not a query object: {q!r}"
         else:
@@ -1361,18 +1436,25 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                                  "query in the call — its answer is "
                                  "byte-faithful content with no labels. "
                                  "Send it alone.")
+                        refused = True
                         break
                     try:
                         body = fn(q, here, deny)
                     except Exception as exc:  # noqa: BLE001 — one bad query
                         body = [f"failed: {type(exc).__name__}: {exc}"]
                     text = "\n".join(body)
+                    # The in-band marker is stripped ONCE, for both
+                    # modes, and what it said is kept as the block's
+                    # verdict — see `NOT_CONTENT`.
+                    if text.startswith(NOT_CONTENT):
+                        text = text[len(NOT_CONTENT):]
+                        refused = True
                     if raw_read:
                         # Byte-faithful or refused — never decorated,
                         # never clipped (a truncated round-trip corrupts
                         # the file on write-back).
-                        if text.startswith(RAW_REFUSAL):
-                            block = head + "\n" + text[len(RAW_REFUSAL):]
+                        if refused:
+                            block = head + "\n" + text
                         elif len(text) > per_query_chars:
                             block = (head + f"\nraw read is "
                                      f"{len(text):,} chars — over the "
@@ -1381,6 +1463,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                                      f"Read a `sections`/`lines` slice "
                                      f"(still raw), or drop `raw` to "
                                      f"browse with the map.")
+                            refused = True
                         else:
                             block = text
                         break
@@ -1392,6 +1475,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                             # with the map, never clip (2026-08-18).
                             text = _whole_read_refusal(
                                 q, here, deny, len(text), per_query_chars)
+                            refused = True
                         elif (key == "read" and q.get("sections")
                               and len(text) > 2 * per_query_chars):
                             # A section MORE than twice the budget is a
@@ -1404,6 +1488,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                             # sniffing, so it covers every future giant.
                             text = _big_section_refusal(
                                 q, len(text), per_query_chars)
+                            refused = True
                         else:
                             kept = text[:per_query_chars]
                             text = (kept + f"\n… [{n}] truncated at "
@@ -1421,6 +1506,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
             continue
         blocks.append(block)
         srcs.append((n, q))
+        refusals.append(refused)
         joined += sep + len(block)
     while True:
         # Sorted: a deferral can sit between two delivered answers now,
@@ -1446,5 +1532,12 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
         # The deferral note itself needs room: hand back the last
         # delivered answer, whole, rather than cutting anything.
         budget_deferred.append(srcs.pop())
+        refusals.pop()
         joined -= len(blocks.pop()) + 2
+    if report is not None:
+        # ALL of them, not any: one refused query beside a delivered
+        # one is a reply that still carries a file, and stamping the
+        # whole call an error there would throw away the answers the
+        # agent has to keep.
+        report["refused"] = bool(refusals) and all(refusals)
     return "\n\n".join(blocks + ([note] if note else []))
