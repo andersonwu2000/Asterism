@@ -1945,6 +1945,17 @@ REFUSED_DOCS_BLURB = (
     "reviewer, so its results are attempts and are not established")
 
 
+#: `agent/<document-stem>/review_r<n>/` — what a theory REVIEWER wrote,
+#: copied out of its round dir so the landed document's citations still
+#: resolve (`pipeline/theorist/preserve`). They are reached THROUGH the
+#: document that cites them, never listed as documents of their own:
+#: each has no `theory_documents` row, so the roster would have shown
+#: `review_notes.md` as an accepted programme document carrying no
+#: verdict mark at all — prior work of this programme, to build on and
+#: never re-derive, which is precisely what it is not.
+_REVIEW_ROUND_DIR = re.compile(r"review_r\d+")
+
+
 def _section_owner_notes(intent: intent_mod.ProblemIntent,
                          workspace: Path, conn=None) -> list[str]:
     """The documents written FOR this Project — the person's and the
@@ -1978,8 +1989,10 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
     the same lazy layer CATALOG.md and PAST_*.md are, and absent
     entirely when neither half has anything. Papers are skipped; §3.9
     parks them under `_docs/<area>/papers/<id>/` and `## Paper` is their
-    surface. The Project resolves exactly as the paper section resolves
-    it, so the two can never point into different roots."""
+    surface. Reviewer files are skipped for the same reason and by the
+    same rule (`_REVIEW_ROUND_DIR`). The Project resolves exactly as the
+    paper section resolves it, so the two can never point into different
+    roots."""
     project = _paper_project(intent, conn)
     if not project:
         return []
@@ -2002,7 +2015,9 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
         rows: list[str] = []
         refused: list[str] = []
         for p in sorted(base.rglob("*")):
-            if "papers" in p.relative_to(base).parts:
+            parts = p.relative_to(base).parts
+            if "papers" in parts or any(_REVIEW_ROUND_DIR.fullmatch(seg)
+                                        for seg in parts):
                 continue
             if (p.suffix.lower() not in OWNER_NOTE_EXTENSIONS
                     or not p.is_file()):

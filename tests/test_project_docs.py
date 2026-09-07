@@ -293,6 +293,28 @@ def test_the_roster_lists_what_the_programme_wrote_too(ws: Path) -> None:
     assert "body" not in "\n".join(lines)
 
 
+def test_the_roster_skips_the_reviewer_files_kept_beside_a_document(
+        ws: Path) -> None:
+    """`preserve` (2026-09-08) copies what a theory REVIEWER wrote into
+    `agent/<document-stem>/review_r<n>/` so the document's citations
+    still resolve once the round dir is deleted. They are reached
+    through that document, never listed as documents of their own —
+    each carries no `theory_documents` row, so the roster would have
+    shown `review_notes.md` as an accepted programme document with no
+    verdict mark at all."""
+    pd.write(ws, "Erdos", "agent/g7_20260908-1200_t10.md",
+             "# T10 remains open\n\nbody\n", area=pd.AREA_AGENT)
+    kept = (pd.root(ws, "Erdos") / "agent" / "g7_20260908-1200_t10"
+            / "review_r4")
+    kept.mkdir(parents=True)
+    (kept / "review_notes.md").write_text(
+        "# Reviewer notes\n\nthe theorem it proved past the stop\n",
+        encoding="utf-8")
+    lines = _owner_notes(ws)
+    assert any("g7_20260908-1200_t10.md" in ln for ln in lines), lines
+    assert not any("review_notes.md" in ln for ln in lines), lines
+
+
 def test_an_agent_document_carries_its_group_date_and_verdict(
         ws: Path) -> None:
     """The three facts an agent document's own prose does not have.
