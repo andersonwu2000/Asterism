@@ -168,8 +168,23 @@ def _clean(entry) -> tuple:
             str(entry.get("why") or "").strip())
 
 
+def _ancestor_slugs(conn, goal_id: "int | None") -> "set[str]":
+    """Slugs of every STRICT ancestor of `goal_id` — the names this node
+    may NOT cite. Best-effort: no conn / no goal (a mint has none yet) /
+    a DB hiccup all mean "no known ancestor", which only ever keeps a
+    candidate that the commit gate would still catch."""
+    if conn is None or goal_id is None:
+        return set()
+    try:
+        from ..state import db as _db
+        return set(_db.strict_ancestor_slugs(conn, int(goal_id)))
+    except Exception:  # noqa: BLE001 — the filter is best-effort
+        return set()
+
+
 def _verify(blocks, workspace: Path, problem_dir: Path,
-            conn=None, exclude_slug: str = "", problem: str = "") -> list:
+            conn=None, exclude_slug: str = "", problem: str = "",
+            goal_id: "int | None" = None) -> list:
     """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
     each a list of `{name, why}`. Per source:
       - in_problem: keep names whose decl appears in the problem's `proofs/`
@@ -182,7 +197,16 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
         signatures; keep unverified if the lookup is unavailable.
     Each block is capped at `_MAX_PER_BLOCK`. Output is a flat list ordered
     in_problem → library → mathlib (cleanest cite first), each entry
-    `{name, source, why[, signature]}`."""
+    `{name, source, why[, signature]}`.
+
+    An ANCESTOR of `goal_id` never appears (owner ruling 2026-09-07):
+    this goal is part of its proof, so citing it closes a dependency
+    cycle and `backward._cited_dependency_guards` refuses the commit as
+    `ancestor_cycle`. The list carried a status marker but no ancestry,
+    so two reports on one goal (g10945) spent their work turn on a
+    candidate the commit gate was always going to reject. Dropping the
+    item — rather than annotating it — is the ruling: there is no use
+    for a name that cannot be cited from here."""
     if not isinstance(blocks, dict):
         return []
 
@@ -196,6 +220,7 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
     # files (the agent should have grep-found them; guards padded/invented names).
     ip = _block("in_problem")
     if ip:
+        ancestors = _ancestor_slugs(conn, goal_id)
         hay = ""
         try:
             parts = []
@@ -236,6 +261,13 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
             if exclude_slug and name.rsplit(".", 1)[-1] == exclude_slug:
                 continue
             short = name.rsplit(".", 1)[-1]
+            # Ancestor exclusion (see the docstring): an unciteable name
+            # is not a candidate, so it is dropped rather than listed
+            # with a caveat.
+            if short in ancestors:
+                print(f"[presearch] dropped ancestor candidate "
+                      f"`{name}` (g{goal_id})", flush=True)
+                continue
             if (not hay) or (short and short in hay):
                 item = {"name": name, "source": "in_problem", "why": why}
                 if short in status_map:
@@ -372,7 +404,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
                    exclude_slug=slug, problem=problem,
                    workspace=workspace, problem_dir=problem_dir,
                    attempts_dir=attempts_dir, prompt_dir=prompt_dir,
-                   conn=conn)
+                   conn=conn, goal_id=gid)
 
 
 def ensure_mint_presearch(*, decision_id: int, statement: str, slug: str,
@@ -403,7 +435,7 @@ def ensure_mint_presearch(*, decision_id: int, statement: str, slug: str,
 def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
             problem: str, workspace: Path, problem_dir: Path,
             attempts_dir: Path, prompt_dir: Path,
-            conn=None) -> Path | None:
+            conn=None, goal_id: "int | None" = None) -> Path | None:
     try:
         if cache.is_file() and cache.read_text(encoding="utf-8").strip():
             return cache  # once-per-node cache hit (across dispatches/retries)
@@ -517,7 +549,8 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         if not isinstance(raw, dict):
             return None
         verified = _verify(raw, workspace, problem_dir, conn=conn,
-                           exclude_slug=exclude_slug, problem=problem)
+                           exclude_slug=exclude_slug, problem=problem,
+                           goal_id=goal_id)
         # Ran-but-dry is INFORMATION (agent_feedback: an absent section is
         # indistinguishable from "presearch never ran", so provers re-search
         # from scratch). Cache an explicit dry section; infra failures above
@@ -525,21 +558,11 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         section = _render_section(verified) if verified else _DRY_SECTION
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(section, encoding="utf-8")
-        # The one mute seat gets its questionnaire (owner call
-        # 2026-08-22): every other seat files self-reports and
-        # presearch's environment had never received tuning pressure
-        # from inside. Best-effort like everything here.
-        try:
-            from . import _feedback
-            n_cand = sum(len(v) for v in verified.values())                 if isinstance(verified, dict) else 0
-            _feedback.attempt_feedback(
-                kind="presearch", seat="presearch", sid=sid,
-                slug=label,
-                outcome=(f"candidates:{n_cand}" if n_cand else "dry"),
-                problem_dir=problem_dir, attempts_dir=sandbox,
-                workspace=workspace, problem_label=problem)
-        except Exception:  # noqa: BLE001 — feedback never breaks dispatch
-            pass
+        # The tail questionnaire that used to run here (owner call
+        # 2026-08-22, "the one mute seat") is retired: the presearch seat
+        # carries the `feedback` MCP tool and files mid-run, which is the
+        # only way this seat was ever going to be heard from — half its
+        # spawns die before any tail (`[presearch-death]` above).
         return cache
     except Exception as exc:  # noqa: BLE001 — never break dispatch
         print(f"[presearch] {label}: skipped — {exc}", flush=True)

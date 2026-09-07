@@ -406,3 +406,47 @@ def test_cold_start_preflag_renders_only_for_fresh_problems(tmp_path, monkeypatc
     p = run(warm_dir)
     assert "Cold start" not in p
     assert "__COLD_START__" not in p
+
+
+def test_verify_never_lists_an_ancestor(tmp_path):
+    """FB-6 (owner ruling 2026-09-07): an ANCESTOR of this goal is not a
+    candidate. This goal is part of its proof, so `backward.
+    _cited_dependency_guards` refuses the citation as an ancestor cycle
+    — two reports on g10945 spent a work turn on a name the commit gate
+    was always going to reject. The item is DROPPED, not annotated."""
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('p','t')")
+    ids = {}
+    for slug in ("grandparent", "parent", "me", "cousin"):
+        ids[slug] = _dbm.insert_goal(
+            conn, problem="p", slug=slug,
+            lean_path=f"Problems/p/proofs/L_{slug}.lean",
+            statement=f"P {slug}", origin="backward")
+    # grandparent --s--> parent --s--> me ;  grandparent --s--> cousin
+    for parent, child in (("grandparent", "parent"), ("parent", "me"),
+                          ("grandparent", "cousin")):
+        sid = _dbm.insert_strategy(
+            conn, goal_id=ids[parent],
+            lean_path=f"Problems/p/proofs/L_{parent}.lean",
+            scratch_path="", created_by="t")
+        _dbm.link_subgoal(conn, strategy_id=sid, subgoal_id=ids[child],
+                          position=0)
+    conn.commit()
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_all.lean").write_text(
+        "theorem grandparent : True := by sorry\n"
+        "theorem parent : True := by sorry\n"
+        "theorem cousin : True := trivial\n", encoding="utf-8")
+    blocks = {"in_problem": [{"name": "grandparent"}, {"name": "parent"},
+                             {"name": "cousin"}]}
+    names = [e["name"] for e in _presearch._verify(
+        blocks, tmp_path, pdir, conn=conn, problem="p",
+        goal_id=ids["me"])]
+    assert names == ["cousin"], names
+    # No goal_id (a mint has no goal yet) → nothing to exclude.
+    names = [e["name"] for e in _presearch._verify(
+        blocks, tmp_path, pdir, conn=conn, problem="p")]
+    assert set(names) == {"grandparent", "parent", "cousin"}
