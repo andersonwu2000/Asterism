@@ -78,6 +78,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "adversary.dossier": "how the judge's package reaches it: `files` (default — the prompt names the projection's files) or `inline` (the small always-read files verbatim in the prompt, a table of contents for the big ones) (ASTERISM_ADVERSARY_DOSSIER; files)",
     "theorist.timeout_sec": "theory author spawn cap — hang guard, not a work budget (ASTERISM_THEORIST_TIMEOUT_SEC; 10800)",
     "theorist.rounds": "revision rounds a fired theory verdict may buy, on the author's own session (ASTERISM_THEORIST_ROUNDS; 3)",
+    "theorist.reviewer_continuity": "the reviewer keeps ONE session across a review's rounds — round 2+ resumes the round-1 reviewer instead of a fresh one per round (ASTERISM_THEORIST_REVIEWER_CONTINUITY; false)",
     "theory_reviewer.timeout_sec": "theory reviewer spawn cap — hang guard, not a work budget (ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC; 7200)",
     "theory_reviewer.dossier": "how the reviewer's package reaches it: `files` (default — the prompt names the projection's files) or `inline` (the small always-read files verbatim in the prompt, a table of contents for the big ones) (ASTERISM_THEORY_REVIEWER_DOSSIER; files)",
     "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",

@@ -126,6 +126,62 @@ def dossier_mode() -> str:
         key="theory_reviewer.dossier", seat="theorist")
 
 
+# ---------------------------------------------------------------------
+# whose reviewer rules round 2 (`theorist.reviewer_continuity`)
+# ---------------------------------------------------------------------
+
+_TRUE = ("true", "1", "yes", "on")
+
+
+def reviewer_continuity() -> bool:
+    """Does the reviewer keep ONE session across this review's rounds?
+
+    Default FALSE — a fresh reviewer per round is the shipped design,
+    and it is what `_remember_thread`'s own comment says the per-round
+    projection is for. The flag exists because the rubric changed under
+    it (`4d8c9bcf`): a document is a DELTA now, so round 2's reviewer
+    re-derives only what round 2 added and the rest it cites — and a
+    reviewer that already re-derived round 1 itself is the one that can
+    tell a citation from a claim without paying for the document twice.
+    Measured before it is switched on anywhere."""
+    from ...core import config
+    return str(config.get(
+        "theorist.reviewer_continuity", default=False,
+        env_var="ASTERISM_THEORIST_REVIEWER_CONTINUITY"
+    )).strip().lower() in _TRUE
+
+
+def carry_prior_round(attempts_dir: Path, proj: Path, *, round_no: int,
+                      session_id: str) -> str:
+    """Stage the reviewer's own earlier session into THIS round's
+    projection, so its cold spawn continues the conversation instead of
+    opening one. Returns the thread carried, or "" — and "" is a working
+    answer, not a failure: the round then runs exactly as it does today.
+
+    Walks BACKWARDS from the previous round because a round can be
+    missing one: a reviewer that died before recording a thread leaves a
+    projection with no session map, and the conversation to continue is
+    then the last one that ruled. Every earlier round's projection is
+    still on disk — `build_review_projection` clears only the round it
+    is building — and a re-dispatched run carries them in with the rest
+    of `review/` (`checkpoint.carry`)."""
+    from ... import agent
+    for k in range(int(round_no) - 1, 0, -1):
+        src = projection_dir(attempts_dir, k)
+        thread = agent.carry_session(
+            kind="theory_reviewer", src_attempts_dir=src,
+            dst_attempts_dir=proj, session_id=session_id)
+        if thread:
+            print(f"[theorist] review r{round_no}: continuing the "
+                  f"reviewer's own session from r{k} (thread {thread})",
+                  flush=True)
+            return thread
+    print(f"[theorist] review r{round_no}: no reviewer session to "
+          f"continue (seat not resumable, or no earlier round recorded "
+          f"one) — this round rules cold", flush=True)
+    return ""
+
+
 def dossier_sections(proj: Path, *, proofs_dir: Path,
                      papers_dir: Path) -> str:
     """`## Dossier (inline)` + `## Table of contents`, for `inline` mode.
@@ -293,13 +349,22 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
            workspace: Path, problem: str, group_id: "int | None",
            objective: str, situation: str, report_body: str,
            dialogue: "list[dict]", pipeline_id: str, final_round: bool,
-           quota_park=None) -> "tuple[dict | None, str, int]":
-    """One review round: fresh reviewer, projection-isolated.
+           quota_park=None, reviewer_sid: str = ""
+           ) -> "tuple[dict | None, str, int]":
+    """One review round: projection-isolated, and by default a fresh
+    reviewer.
 
     `final_round` says whether a revision is owed AFTER this round, and
     it has no default ON PURPOSE: it selects one of criterion 3's two
     push halves and the renderer is fail-open, so a caller that forgot
     it would show the reviewer both. Every caller must decide.
+
+    `reviewer_sid` is the review's own session id, minted once by the
+    caller (`theorist.reviewer_continuity`): round 1 rules under it cold
+    and rounds after it CONTINUE that conversation. Empty — today's
+    default — mints a fresh id per cold spawn, which is a fresh
+    reviewer per round. Either way the round is built and prompted
+    identically: same projection, same dossier, same criterion-3 half.
 
     Returns (verdict, err, rc): rc != 0 → provider failure; rc == 0 with
     err → the reviewer produced no usable ruling; else the verdict is
@@ -339,13 +404,26 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
                                        problem=problem)
     last_err = ""
     infra_tries = 0
+    # The reviewer's own earlier rounds, staged into THIS round's
+    # projection — nothing on round 1, and nothing at all when the flag
+    # is off (no `reviewer_sid`) or the seat cannot carry a session.
+    carried = (carry_prior_round(attempts_dir, proj, round_no=round_no,
+                                 session_id=reviewer_sid)
+               if reviewer_sid and round_no > 1 else "")
     # A refused verdict goes back to the SAME reviewer, carrying the
     # parser's message (2026-09-06, the judge's `479fd579` one seat
     # over): the retry used to mint a blind fresh reviewer and `last_err`
     # was only printed, so one shape error could burn every try. A
     # non-empty `retry_ctx` IS the resume; the sid is re-minted only for
     # a cold spawn.
-    sid = ""
+    #
+    # `fixed_sid` is the review's session when continuity is on AND this
+    # round can actually use it — round 1 (which mints the conversation)
+    # or a round whose predecessor was carried in. A round that asked
+    # for continuity and got nothing falls back to a per-spawn id rather
+    # than re-pinning one the provider has already seen.
+    fixed_sid = reviewer_sid if (round_no <= 1 or carried) else ""
+    sid = fixed_sid
     retry_ctx = ""
     spawn_kw = dict(
         kind="theory_reviewer", prompt_path=prompt_path,
@@ -379,10 +457,17 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         from ...state import failures as _failures
         from . import _rc_reason
         while True:
-            if not retry_ctx:
+            if not retry_ctx and not fixed_sid:
                 sid = str(uuid.uuid4())
+            # `continuation` resumes AND sends this round's rendered
+            # prompt — the adapter's `is_retry` branch would replace it
+            # with "your previous output was rejected", which is the
+            # verdict-shape retry below and not this. It stays set
+            # across an infra re-spawn: what died was the provider call,
+            # not the staged conversation.
             rc = agent.spawn_llm(
                 session_id=sid, is_retry=bool(retry_ctx),
+                continuation=bool(carried) and not retry_ctx,
                 retry_context=retry_ctx or None, **spawn_kw)
             if rc == 0 or not _failures.is_infra(
                     _rc_reason(rc, "theory_reviewer", proj)):
