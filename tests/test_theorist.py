@@ -2323,3 +2323,225 @@ def test_a_resumed_run_keeps_reviewing_in_the_same_session(
     assert state["continuation"] == [True]
     assert _ck.load(workspace / ".attempts" / "th-2")["reviewer_sid"] == (
         dead_sid)
+
+
+# ---------------------------------------------------------------------
+# the reviewer's own files, preserved beside the document
+# ---------------------------------------------------------------------
+
+def _round(attempts: Path, n: int) -> Path:
+    from Tooling.pipeline.theorist import review as _review
+    d = _review.projection_dir(attempts, n)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _fill_round(attempts: Path, n: int, *, reviewer: "dict[str, str]"):
+    """One round dir as a real one looks: the framework's projection,
+    the provider's private residue, and whatever the reviewer wrote."""
+    from Tooling.pipeline.theorist import review as _review
+    d = _round(attempts, n)
+    for name in sorted(_review.projection_files()):
+        (d / name).write_text(f"framework {name}", encoding="utf-8")
+    # The two framework names that carry a number, and the private class.
+    (d / "PROGRAMME_G7.md").write_text("welded", encoding="utf-8")
+    (d / f"verdict_r{n}_raw.json").write_text("{}", encoding="utf-8")
+    (d / "_theory_review_prompt.md").write_text("prompt", encoding="utf-8")
+    (d / "_mcp_tools.json").write_text("{}", encoding="utf-8")
+    (d / "_codex_home").mkdir(exist_ok=True)
+    (d / "_codex_home" / "auth.json").write_text("SECRET", encoding="utf-8")
+    # A credential dropped at the top level, which no `_` rule catches.
+    (d / "auth.json").write_text("SECRET", encoding="utf-8")
+    for name, body in reviewer.items():
+        (d / name).write_text(body, encoding="utf-8")
+    return d
+
+
+def test_only_the_reviewers_own_files_leave_the_round_dir(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The round dir holds three kinds of file and exactly one of them
+    is evidence: the framework's projection is reproducible from the DB,
+    the provider's home holds a copy of the operator's credential, and
+    what is left is what the reviewer wrote."""
+    from Tooling.pipeline.theorist import preserve as _preserve
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_round(attempts, 1, reviewer={
+        "review_notes.md": "the descent", "reviewer_checks.py": "print(1)"})
+    _fill_round(attempts, 2, reviewer={"review_notes.md": "round two"})
+
+    got = _preserve.preserve(workspace, project="p", attempts_dir=attempts,
+                             doc_stem="g1_20260908-0000_a_title")
+    assert sorted(got) == [(1, "review_notes.md"), (1, "reviewer_checks.py"),
+                           (2, "review_notes.md")]
+    base = workspace / "Problems" / "p" / "_docs" / "agent"
+    kept = base / "g1_20260908-0000_a_title"
+    assert got[(1, "reviewer_checks.py")] == (
+        "Problems/p/_docs/agent/g1_20260908-0000_a_title/review_r1/"
+        "reviewer_checks.py")
+    assert (kept / "review_r1" / "reviewer_checks.py").read_text(
+        encoding="utf-8") == "print(1)"
+    assert (kept / "review_r2" / "review_notes.md").read_text(
+        encoding="utf-8") == "round two"
+    assert sorted(p.name for p in (kept / "review_r1").iterdir()) == [
+        "review_notes.md", "reviewer_checks.py"]
+    # Nothing else travelled — least of all the credential.
+    assert not list(kept.rglob("auth.json"))
+    assert not list(kept.rglob("report.md"))
+    assert not list(kept.rglob("verdict*.json"))
+    assert not list(kept.rglob("PROGRAMME*.md"))
+
+
+def _citing_report(pid: str) -> str:
+    """A document that cites the reviewer's files the way the landed
+    ones actually do: an absolute path out of the tool output, its
+    backslash twin, and the bare relative form."""
+    return (
+        "# Cited work\n\n## Abstract\n\nIt reduces MAIN.\n\n"
+        f"See [R1](D:/Asterism/.attempts/{pid}/review/r1/review_notes.md) "
+        f"and D:\\Asterism\\.attempts\\{pid}\\review\\r1\\reviewer_checks.py, "
+        "and review/r2/review_notes.md.\n\n"
+        "## Theorems and proofs\n\nTheorem 1. ...\n\n"
+        "## Load-bearing work\n\nX.\n\n## Leads\n\nA.\n")
+
+
+def _reviewing_script(*, verdicts, report):
+    """`_script`, with a reviewer that writes notes and checks into its
+    own round dir before ruling."""
+    fake, state = _script(verdicts=verdicts, report=report)
+
+    def spawn(**kw):
+        if kw.get("kind") == "theory_reviewer":
+            d = kw["attempts_dir"]
+            (d / "review_notes.md").write_text("the descent",
+                                               encoding="utf-8")
+            (d / "reviewer_checks.py").write_text("print(1)",
+                                                  encoding="utf-8")
+        return fake(**kw)
+
+    return spawn, state
+
+
+def test_the_landed_document_cites_the_files_that_survived_with_it(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point: the attempts dir is deleted at pipeline end, so
+    a citation of `.attempts/<pid>/review/r<n>/<file>` is a pointer to
+    nothing the moment the run finishes (union_closed g694, 2026-09-07,
+    reported by a Strategist and a Theorist within four minutes).
+
+    Body, provenance header and reservations all name the copy — in
+    every spelling a reviewer or an author has written one."""
+    did = _theorize(conn, workspace)
+    reservation = ("proved in review/r2/review_notes.md under 'Further "
+                   "theorem'")
+    fake, _ = _reviewing_script(
+        verdicts=[_fired("1"), _clear_with_reservations(reservation)],
+        report=_citing_report("th-1"))
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "success", r.failure_detail
+    row = conn.execute(
+        "SELECT path, verdict_json FROM theory_documents").fetchone()
+    stem = Path(row["path"]).name[:-3]
+    kept = f"Problems/p/_docs/agent/{stem}"
+    text = (workspace / row["path"]).read_text(encoding="utf-8")
+
+    assert ".attempts" not in text
+    assert f"{kept}/review_r1/review_notes.md" in text
+    assert f"{kept}/review_r1/reviewer_checks.py" in text
+    assert f"{kept}/review_r2/review_notes.md" in text
+    # The header's reservations line, and the verdict every other
+    # surface reads, carry the same rewrite.
+    assert f"reservations: proved in {kept}/review_r2/review_notes.md" in text
+    assert f"{kept}/review_r2/review_notes.md" in row["verdict_json"]
+    assert "review/r2/review_notes.md" not in row["verdict_json"]
+    # And the Strategist's own copy of it.
+    detail = conn.execute(
+        "SELECT outcome_detail FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()[0]
+    assert f"{kept}/review_r2/review_notes.md" in detail
+    for n in (1, 2):
+        assert (workspace / kept / f"review_r{n}"
+                / "review_notes.md").is_file()
+
+
+def test_a_document_that_cites_no_review_file_is_landed_unchanged(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rewrite is a substitution on citations it can resolve, not a
+    pass over the prose: a document that names none is byte-identical to
+    what its author wrote."""
+    did = _theorize(conn, workspace)
+    fake, _ = _reviewing_script(verdicts=[_clear()], report=_REPORT)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    assert _run(conn, workspace, pintent, did).outcome == "success"
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    text = (workspace / path).read_text(encoding="utf-8")
+    assert text.endswith(_REPORT.rstrip("\n") + "\n")
+
+
+def test_the_refused_road_preserves_the_reviews_files_too(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused document lands as the record of what was tried (owner
+    ruling 2026-09-06) and its header carries the fired ruling — which
+    is exactly the text most likely to cite the reviewer's own working
+    file. Same preservation, same rewrite."""
+    did = _theorize(conn, workspace)
+    fired = _clear(**{"2": ["fired: the check in review/r1/"
+                            "reviewer_checks.py does not reproduce"]})
+    fake, _ = _reviewing_script(verdicts=[fired] * 4,
+                                report=_citing_report("th-1"))
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+    r = _run(conn, workspace, pintent, did)
+    assert r.outcome == "failed" and r.failure_reason == "theory_rejected"
+    path = conn.execute("SELECT path FROM theory_documents").fetchone()[0]
+    stem = Path(path).name[:-3]
+    kept = f"Problems/p/_docs/agent/{stem}"
+    text = (workspace / path).read_text(encoding="utf-8")
+    assert "status: rejected" in text and ".attempts" not in text
+    assert f"criterion 2: fired: the check in {kept}/review_r1/" in text
+    assert (workspace / kept / "review_r1" / "reviewer_checks.py").is_file()
+
+
+def test_re_landing_the_same_review_preserves_it_again_unchanged(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Landing runs twice on one wall — a re-dispatch that reached the
+    `landing` phase, or simply the next wake. The second pass must not
+    fail on a directory that already exists, and a body it has already
+    rewritten must come out of it untouched: the preserved path spells
+    the round `review_r<n>`, which is not the `review/r<n>` the rewrite
+    looks for."""
+    from Tooling.pipeline.theorist import landing as _landing
+    from Tooling.pipeline.theorist import preserve as _preserve
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_round(attempts, 1, reviewer={
+        "review_notes.md": "the descent", "reviewer_checks.py": "print(1)"})
+    _fill_round(attempts, 2, reviewer={"review_notes.md": "round two"})
+    body = _citing_report("th-1")
+    args = dict(problem="p", group_id=1, pipeline_id="th-1", rounds=1,
+                verdict=_clear_with_reservations(
+                    "see review/r1/review_notes.md"),
+                attempts_dir=attempts)
+
+    first, v1 = _landing.land(workspace, conn, body=body, **args)
+    second, _v2 = _landing.land(workspace, conn, body=body, **args)
+    assert first != second                     # `_free_name` took the next
+    once = (workspace / first).read_text(encoding="utf-8")
+    stem = Path(first).name[:-3]
+    kept = f"Problems/p/_docs/agent/{stem}/review_r1/review_notes.md"
+    assert kept in once and ".attempts" not in once
+    assert v1["reservations"] == [f"see {kept}"]
+    assert (workspace / kept).read_text(encoding="utf-8") == "the descent"
+
+    # The rewrite applied to its own output changes nothing.
+    third, _v3 = _landing.land(workspace, conn, body=once, **args)
+    assert kept in (workspace / third).read_text(encoding="utf-8")
+    assert _preserve.rewrite(
+        once, {(1, "review_notes.md"): "elsewhere.md"}) == once

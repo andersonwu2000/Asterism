@@ -34,4 +34,4 @@ Update it as you think. Four sections, in this order:
 3. `## Load-bearing work` — for each route, what you tried and where it stops; what a counterexample would have to look like. An attempt that fails and says precisely why is accepted as a result; an open statement that is only named and not advanced is not.
 4. `## Leads` — the ways out you see and the next step on each, with the reason and the test it survived (a case analysis, a construction, a computation).
 
-Nothing from the record or the notes is presented as new. LaTeX for mathematics. The document goes to a reviewer.
+Nothing from the record or the notes is presented as new. LaTeX for mathematics. The document goes to a reviewer. If the reviewer left files under `review/r<n>/` (notes, checks), read them before revising.

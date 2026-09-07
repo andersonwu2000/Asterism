@@ -227,6 +227,33 @@ def projection_dir(attempts_dir: Path, round_no: int) -> Path:
     return attempts_dir / PROJECTION_DIRNAME / f"r{round_no}"
 
 
+#: The framework's own names in a round dir, so that everything ELSE in
+#: it is the reviewer's own writing — which is what `preserve` copies
+#: out before the attempts dir is deleted. Assembled from the constants
+#: `build_review_projection` actually writes through, never a second
+#: literal list: a projection file missing here would be preserved as
+#: the reviewer's proof and cited in the landed document as one.
+#:
+#: Two framework names carry a NUMBER and so cannot be members of a set:
+#: `PROGRAMME_G<gid>.md` (written by the batch-outcome render inside
+#: `round_materials.refresh`) and `verdict_r<n>_raw*.json` (the refused
+#: verdicts `verdict.keep_rejected_verdict` moves aside).
+PROJECTION_NAME_PATTERNS = (r"PROGRAMME_G\d+\.md",
+                            r"verdict_r\d+_raw\d*\.json")
+
+
+def projection_files() -> "frozenset[str]":
+    """Every file name the FRAMEWORK puts in a round dir, by name.
+
+    `_`-prefixed names are not here and do not need to be — the rendered
+    prompt, the tools config, the rubric, the provider home and its
+    stderr all lead with one, and `preserve` drops that whole class."""
+    from ..round_materials import ROUND_FILES
+    return frozenset(DOSSIER_INLINE_ORDER + DOSSIER_OUTLINED
+                     + DOSSIER_ROSTERS + ROUND_FILES
+                     + (VERDICT_BASENAME,))
+
+
 def request_body(objective: str, situation: str) -> str:
     """The request, as the reviewer reads it. Its own file rather than a
     section of the report: criterion 1 asks whether the document

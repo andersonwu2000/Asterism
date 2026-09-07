@@ -468,7 +468,6 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             f"the resumed run carries no {REPORT_BASENAME}")
     _mark(_checkpoint.PHASE_LANDING, turn, body)
     accepted = bool(verdict) and verdict.get("verdict") == "pass"
-    verdict_json = json.dumps(verdict or {}, ensure_ascii=False)
     status = (_landing.STATUS_ACCEPTED if accepted
               else _landing.STATUS_REJECTED)
     # BOTH roads land (owner ruling 2026-09-06). A refused document is
@@ -477,11 +476,19 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     # used to survive only inside a `dead_attempts` artifacts blob,
     # which is a record nobody reads. The header and the filename carry
     # the refusal, so nothing on the shelf reads as an accepted result.
-    path = _landing.land(
+    #
+    # The RULING comes back from the landing as well: the reviewer's
+    # notes and checks are copied beside the document there, and every
+    # citation of one is rewritten to the copy (`preserve`). So the
+    # verdict recorded below, the reservations the Strategist reads and
+    # the header on disk all name the same surviving file — which is why
+    # `verdict_json` is taken AFTER this call and not before it.
+    path, verdict = _landing.land(
         workspace, conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, body=body, rounds=turn,
-        verdict=verdict, status=status,
+        verdict=verdict, attempts_dir=attempts_dir, status=status,
         resumed_from=(resumed.source_pipeline_id if resumed else ""))
+    verdict_json = json.dumps(verdict or {}, ensure_ascii=False)
     _landing.record(
         conn, problem=problem, group_id=group_id,
         pipeline_id=pipeline_id, decision_id=decision_id,

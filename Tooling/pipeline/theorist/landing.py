@@ -34,6 +34,13 @@ the same, so a wake that died before any ruling still has its
 `report.md` in that column; MEASURED 2026-09-05 through `_run_pipeline`,
 artifacts = `['report.md']` with the directory already gone. That road
 lands nothing — nobody reviewed it — and `path` stays NULL for it.
+
+WHICH IS WHY THE REVIEWER'S OWN FILES LEAVE WITH THE DOCUMENT. The
+reviewer writes notes and checks into its round dir, and the document it
+accepts cites them by that path; `preserve` copies them beside the
+landed file and rewrites every citation to where the copy is, because
+the alternative is what shipped until 2026-09-08 — an accepted document
+pointing at proofs the pipeline deleted on its way out.
 """
 from __future__ import annotations
 
@@ -195,16 +202,27 @@ def header(*, group_id: "int | None", pipeline_id: str, rounds: int,
 
 def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
          group_id: "int | None", pipeline_id: str, body: str,
-         rounds: int, verdict: "dict | None",
-         status: str = STATUS_ACCEPTED, resumed_from: str = "") -> str:
+         rounds: int, verdict: "dict | None", attempts_dir: Path,
+         status: str = STATUS_ACCEPTED,
+         resumed_from: str = "") -> "tuple[str, dict | None]":
     """Write the reviewed document into the Project's shelf; returns its
-    workspace-relative path.
+    workspace-relative path and the ruling AS THE SHELF NOW CARRIES IT.
 
     BOTH roads land (owner ruling 2026-09-06). Same shelf, same naming:
     a refused document is the record of what was tried on that wall, and
-    the header is where a reader learns which kind it is holding."""
+    the header is where a reader learns which kind it is holding.
+
+    The ruling comes back because landing is where it stops being a
+    pointer into a working directory: `attempts_dir` holds the reviewer's
+    own notes and checks, this copies them beside the document, and every
+    citation of one — in the body, in the header, in the reservations the
+    Strategist reads — is rewritten to where the copy actually is
+    (`preserve`). `attempts_dir` has no default on purpose: a caller that
+    could forget it is a caller that lands a document citing files that
+    are about to be deleted."""
     from ...state import project_docs as _project_docs
     from ...state import projects as _projects
+    from . import preserve as _preserve
     project = (_projects.project_of(conn, problem)
                or problem.split(".", 1)[0])
     rejected = status == STATUS_REJECTED
@@ -212,6 +230,14 @@ def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
         _project_docs.root(Path(workspace), project)
         / _project_docs.AREA_AGENT,
         document_name(group_id=group_id, body=body, status=status))
+    # The name is settled before this because the preserved files are
+    # its siblings — the document's own stem is the directory they land
+    # under, and it is what makes two documents' reviews tellable apart.
+    preserved = _preserve.preserve(
+        Path(workspace), project=project, attempts_dir=Path(attempts_dir),
+        doc_stem=name[:-3] if name.endswith(".md") else name)
+    body = _preserve.rewrite(body, preserved)
+    verdict = _preserve.rewrite_verdict(verdict, preserved)
     rel = _project_docs.write(
         workspace, project, f"agent/{name}",
         header(group_id=group_id, pipeline_id=pipeline_id, rounds=rounds,
@@ -222,8 +248,8 @@ def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
                resumed_from=resumed_from)
         + "\n\n" + body.rstrip("\n") + "\n",
         area=_project_docs.AREA_AGENT)
-    return (_project_docs.root(Path(workspace), project) / rel
-            ).relative_to(Path(workspace)).as_posix()
+    return ((_project_docs.root(Path(workspace), project) / rel
+             ).relative_to(Path(workspace)).as_posix(), verdict)
 
 
 def record(conn: sqlite3.Connection, *, problem: str,
