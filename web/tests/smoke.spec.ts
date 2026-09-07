@@ -898,14 +898,15 @@ test('timeline: a revision row opens onto the judge that ruled on it', async ({
   await expect(block).toBeVisible({ timeout: 30000 })
   if ((await block.getAttribute('data-verdict')) === 'none') return
 
-  // the rubric's five criteria, named and in its own order
+  // the rubric's four criteria, named and in its own order (criterion 5
+  // retired 2026-09-07 with the copied `proof` field)
   const crit = page.locator('[data-criterion]')
-  await expect(crit).toHaveCount(5)
+  await expect(crit).toHaveCount(4)
   expect(
     await crit.evaluateAll((els) =>
       els.map((e) => e.getAttribute('data-criterion')),
     ),
-  ).toEqual(['1', '2', '3', '4', '5'])
+  ).toEqual(['1', '2', '3', '4'])
 
   // a criterion is a LIST: however many bullets the judge wrote, that
   // many render. The one-string schema bound in 4,495 of 4,495 rounds
