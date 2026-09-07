@@ -570,24 +570,26 @@ def run(workspace: Path, *, once: bool = False,
                                        f"failure")
                         elif reason == "codex_auth_stale":
                             # NEITHER breaker, stated rather than left to
-                            # the fall-through (#235, 2026-09-04). The
-                            # spawn died in ~3s on a spent refresh token,
-                            # so before it had a name it fed
-                            # `consec_fast_fails` and the tenth one
-                            # exited the daemon — the loudest possible
-                            # answer to a fault whose whole remedy is one
-                            # operator command. The adapter already
-                            # re-synced the auth file and retried; a row
-                            # reaching here means the credential itself
-                            # is spent, so the cooldown paces the target
-                            # and the message names the way out.
+                            # the fall-through (#235). Before it had a
+                            # name this failure reached BOTH of them: a
+                            # ~3s spent-token death fed `consec_fast_fails`
+                            # (2026-09-04), and a revoked-token death that
+                            # ran longer fed `consec_unclassified` — five
+                            # spawns in 2.5 minutes and the daemon exited
+                            # rc=2 (flagship, 2026-09-07). Two counters,
+                            # one halt, and one remedy that no amount of
+                            # re-dispatching reaches. The adapter has
+                            # already done whatever could be done, so the
+                            # cooldown just paces the target and the
+                            # message names the way out.
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s — codex "
                                   f"refused the operator's credential (a "
-                                  f"spent refresh token). Neither breaker "
-                                  f"is charged: run `codex login` as the "
-                                  f"operator. `daemon status` carries it "
-                                  f"as degraded.", flush=True)
+                                  f"spent or revoked refresh token). "
+                                  f"Neither breaker is charged: run "
+                                  f"`codex login` as the operator. "
+                                  f"`daemon status` carries it as "
+                                  f"degraded.", flush=True)
                         elif reason == "unclassified_spawn_failure":
                             st.consec_unclassified += 1
                             print(f"[cooldown] {kind} {tk}={tid} cooled "

@@ -173,14 +173,17 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "local_overload": _T("provider_infra", agent_visible=False,
                          cooldown_scope="target"),
     # The spawn's stderr says the OPERATOR'S CREDENTIAL was refused for a
-    # reason no retry of the same file can fix: OpenAI refresh tokens are
-    # SINGLE-USE, and codex reports a consumed one as "your refresh token
-    # was already used". Named 2026-09-04 (#235): the adapter used to copy
-    # `~/.codex/auth.json` into every per-spawn CODEX_HOME, so the rotated
-    # token landed in the doomed copy and the operator's file kept the
-    # spent one — every later spawn died in ~3s, which the duration
-    # heuristic read as `spawn_fast_fail`, and ten of those exit the
-    # daemon. It is not the agent's failure, not the machine's and not a
+    # reason no retry of the same file can fix — the token was SPENT
+    # (OpenAI refresh tokens are single-use) or REVOKED. Named 2026-09-04
+    # (#235): the adapter used to copy `~/.codex/auth.json` into every
+    # per-spawn CODEX_HOME, so the rotated token landed in the doomed copy
+    # and the operator's file kept the spent one — every later spawn died
+    # in ~3s, which the duration heuristic read as `spawn_fast_fail`, and
+    # ten of those exit the daemon. Widened 2026-09-07 when the flagship
+    # met the REVOKED spelling, fell through to
+    # `unclassified_spawn_failure` instead, and exited rc=2 after five
+    # spawns in 2.5 minutes — the same halt through the other breaker.
+    # It is not the agent's failure, not the machine's and not a
     # transport's: it is one file, and the way out is `codex login`.
     # Same no-charge traits as its two siblings; a named reason never
     # feeds a breaker. No death note — the audience is the operator.
@@ -482,51 +485,112 @@ def is_local_overload_failure(stderr: "str | None") -> bool:
     return any(m in low for m in _LOCAL_OVERLOAD_STDERR_MARKERS)
 
 
-#: A SPENT credential in a dead spawn's stderr — the provider answering
-#: "this refresh token has been used already", which no amount of
-#: retrying the same file can undo. Captured verbatim from codex 0.153.0
-#: on 2026-09-04 (`.asterism/codex_sessions/1182ed9c-…/_spawn.0.stderr`),
-#: which carries all three of the first three spellings in one file:
+#: A DEAD credential in a dead spawn's stderr — codex's auth manager
+#: answering "this refresh token is not usable", which no retry of the
+#: same file can undo. TWO incidents, two spellings, ONE family, and the
+#: second is why the family is matched rather than the first spelling:
 #:
-#:   Your access token could not be refreshed because your refresh token
-#:   was already used. Please log out and sign in again.
-#:   … 401 Unauthorized: {"error": {"message": "Your refresh token has
-#:   already been used to generate a new access token. …",
-#:   "code": "refresh_token_reused"}}
+#:   2026-09-04, local, codex 0.153.0 — the token was SPENT
+#:   (`.asterism/codex_sessions/1182ed9c-…/_spawn.0.stderr`):
+#:     Your access token could not be refreshed because your refresh
+#:     token was already used. Please log out and sign in again.
+#:     … 401 Unauthorized: {"error": {"message": "Your refresh token has
+#:     already been used to generate a new access token. …",
+#:     "code": "refresh_token_reused"}}
 #:
-#: `invalid_grant` is the OAuth2 standard's name for the same refusal and
-#: is included for the day codex surfaces the raw grant error instead of
-#: its own prose. What is deliberately NOT here: `token_expired` and
-#: `401 Unauthorized` on their own — an expired ACCESS token is the
-#: ordinary case a refresh fixes, and matching it would relabel every
-#: transient auth blip as a dead credential.
+#:   2026-09-07 21:33Z, FLAGSHIP, codex 0.153.0 — the token was REVOKED:
+#:     ERROR codex_login::auth::manager: Failed to refresh token: Your
+#:     access token could not be refreshed because your refresh token
+#:     was revoked. Please log out and sign in again.
+#:     … responses_websocket: failed to connect to websocket: HTTP
+#:     error: 401 Unauthorized
+#:
+#: THE FIRST VERSION OF THIS LIST NAMED ONLY THE SPENT SPELLINGS, and the
+#: revoked one therefore fell through to `unclassified_spawn_failure`:
+#: five spawns burned in 2.5 minutes and the daemon exited rc=2 — the
+#: exact outcome #235 was written to prevent, one word over. So the
+#: table matches the auth manager's SENTENCE SHAPE ("could not be
+#: refreshed", "please log out and sign in again") as well as the two
+#: named causes, and `credential_resync_may_help` below decides which
+#: half is worth a retry. A marker list that has to be exactly right
+#: about the vendor's noun is a list that fails the next time the noun
+#: changes.
+#:
+#: `invalid_grant` is the OAuth2 standard's name for the same refusal,
+#: for the day codex surfaces the raw grant error instead of its prose.
+#: What is deliberately NOT here: `token_expired` and `401 Unauthorized`
+#: on their own — an expired ACCESS token is the ordinary case a refresh
+#: fixes, and both ride in the very same incident logs.
 _CREDENTIAL_STDERR_MARKERS: "tuple[str, ...]" = (
+    "could not be refreshed",
+    "refresh token was revoked",
     "refresh token was already used",
     "refresh token has already been used",
     "refresh_token_reused",
+    "please log out and sign in again",
     "invalid_grant",
+)
+
+
+#: The half of the family a RE-SYNC can plausibly fix. A single-use token
+#: reported as ALREADY USED means somebody else spent it, and on a copy-
+#: based platform that somebody may have written the live one back to the
+#: operator's file while this spawn was dying — so one retry is worth ~3
+#: seconds. Every other spelling (revoked, or an unnamed "could not be
+#: refreshed") has no such story: the file is dead, and a retry only
+#: buys a second identical death. Positive list on purpose — an
+#: unrecognised credential refusal gets NO retry, because the cost of
+#: guessing wrong is the spawn burn this whole entry exists to stop.
+_CREDENTIAL_CONSUMED_MARKERS: "tuple[str, ...]" = (
+    "refresh token was already used",
+    "refresh token has already been used",
+    "refresh_token_reused",
 )
 
 
 def is_credential_failure(stderr: "str | None") -> bool:
     """True iff a spawn's stderr says the operator's credential itself is
-    spent — the classification hook for `codex_auth_stale` (2026-09-04,
-    #235).
+    dead — spent or revoked. The classification hook for
+    `codex_auth_stale` (2026-09-04, #235; widened 2026-09-07 after the
+    revoked spelling escaped it).
 
-    Checked BEFORE the network and duration heuristics: this death is
-    fast (~3s on the captured evidence), so the duration rule would call
-    it `spawn_fast_fail` and ten in a row exit the daemon — which is
-    exactly what the flagship fleet did on 2026-09-04. stderr is the only
-    evidence read; the rc is a bare 1 and says nothing.
+    Checked above the DURATION heuristics, which is the whole point: this
+    death lands anywhere from ~3s to a couple of minutes, so it has been
+    read as `spawn_fast_fail` on one box and `unclassified_spawn_failure`
+    on the other, and both of those exit the daemon on repetition. stderr
+    is the only evidence read; the rc is a bare 1 and says nothing.
+
+    Checked BELOW `is_network_failure`, deliberately. "could not be
+    refreshed" is a sentence codex can also produce when the refresh call
+    could not reach the server at all, and a named transport failure is
+    unambiguous evidence about the transport — so a stderr carrying both
+    is a network park (bounded, self-healing), not an accusation that the
+    operator's credential is dead.
 
     ONE predicate for two readers on purpose: `pipeline._spawn_failure`
-    names the failure, and `codex_cli` decides whether to re-sync the
-    auth file and retry. Two spellings of "is this the credential?" is
-    how the adapter and the classifier come to disagree."""
+    names the failure, and `codex_cli` decides what to do about it. Two
+    spellings of "is this the credential?" is how the adapter and the
+    classifier come to disagree."""
     if not stderr:
         return False
     low = stderr.lower()
     return any(m in low for m in _CREDENTIAL_STDERR_MARKERS)
+
+
+def credential_resync_may_help(stderr: "str | None") -> bool:
+    """Of a credential failure, is it the kind ONE re-sync could clear?
+
+    True only for the single-use-token-already-spent spellings, where a
+    sibling spawn may hold the live token and may already have written it
+    back. False for a revoked token and for any credential refusal this
+    module cannot name — there is no retry that succeeds against those,
+    and attempting one is exactly the spawn burn that took the flagship
+    down on 2026-09-07. Asked by `codex_cli` alone; the failure_reason is
+    the same either way."""
+    if not stderr:
+        return False
+    low = stderr.lower()
+    return any(m in low for m in _CREDENTIAL_CONSUMED_MARKERS)
 
 
 def rc_to_reason(rc: int, *, rc_contract: "str | None" = None) -> str:

@@ -398,22 +398,6 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
             if rc >= 0x40000000 else \
             f"agent rc={rc} (provider CLI runtime crashed)"
         reason = "system_killed"
-    elif _failures.is_credential_failure(stderr_tail):
-        # The provider refused the OPERATOR'S CREDENTIAL, not this
-        # request: an OpenAI refresh token is single-use and codex says
-        # so verbatim. Ranked above the transport and duration rules
-        # because this death is FAST (~3s) — the duration heuristic
-        # called it `spawn_fast_fail`, and ten of those exit the daemon,
-        # which is how a rotated token took the flagship fleet down on
-        # 2026-09-04 (#235). The adapter has already re-synced the auth
-        # file and retried once by the time this is read, so reaching
-        # here means the credential really is spent and `codex login` is
-        # the only way out — `daemon status` carries it as `degraded`.
-        base = (f"agent rc={rc} (the provider refused the operator's "
-                f"credential in {spawn_dur:.0f}s — a spent refresh "
-                f"token, not the agent; not charged. Run `codex login` "
-                f"as the operator)")
-        reason = "codex_auth_stale"
     elif _failures.is_network_failure(stderr_tail):
         # Transport evidence outranks the duration heuristics below: a
         # dead network kills a spawn fast OR slow (37s-454s in the 08-17
@@ -426,6 +410,27 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
                 f"not charged; the daemon probes connectivity and parks "
                 f"until it returns)")
         reason = "provider_network"
+    elif _failures.is_credential_failure(stderr_tail):
+        # The provider refused the OPERATOR'S CREDENTIAL, not this
+        # request: the refresh token is spent (single-use, #235,
+        # 2026-09-04) or revoked (the flagship, 2026-09-07). Ranked above
+        # the DURATION rules, which is what matters — the same failure
+        # has been read as `spawn_fast_fail` on one box (~3s deaths) and
+        # `unclassified_spawn_failure` on the other (5 deaths in 2.5
+        # minutes), and each of those exits the daemon on repetition.
+        # Ranked BELOW the transport rule on purpose: "could not be
+        # refreshed" is also what codex says when the refresh call never
+        # reached the server, and a network park is bounded and
+        # self-healing where a credential verdict sends someone to a
+        # keyboard. The adapter has already done whatever could be done
+        # — one re-sync and retry for a spent token, nothing at all for a
+        # revoked one — so reaching here means `codex login` is the only
+        # way out. `daemon status` carries it as `degraded`.
+        base = (f"agent rc={rc} (the provider refused the operator's "
+                f"credential in {spawn_dur:.0f}s — a spent or revoked "
+                f"refresh token, not the agent; not charged. Run "
+                f"`codex login` as the operator)")
+        reason = "codex_auth_stale"
     elif _failures.is_local_overload_failure(stderr_tail):
         # The MACHINE could not serve the spawn's startup (MCP
         # handshake > codex's fixed 30s, local route timeout) — a

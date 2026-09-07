@@ -1140,43 +1140,72 @@ def _write_spawn_stderr(attempts_dir: Path, body: str, rc: int) -> None:
         pass
 
 
-def _died_on_a_spent_credential(attempts_dir) -> bool:
-    """Did this spawn die because the operator's refresh token was
-    already spent? (#235)
+def _spawn_stderr_text(attempts_dir) -> str:
+    """This leg's own account of how it died, as the classifier will read
+    it. Empty when there is none."""
+    try:
+        return (Path(attempts_dir) / SPAWN_STDERR).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _died_on_a_dead_credential(attempts_dir) -> bool:
+    """Did this spawn die because the operator's refresh token is spent
+    or revoked? (#235)
 
     Asked of the FILE the classifier will read and through the SAME
     predicate it will use (`state.failures.is_credential_failure`), not
     of a second copy of the marker list kept here: the adapter's decision
-    to re-sync and retry and the pipeline's decision to call the row
+    about a retry and the pipeline's decision to call the row
     `codex_auth_stale` must never be able to disagree. `state.failures`
     is a leaf module — it imports nothing from Tooling — so reaching it
     from the llm layer costs no cycle."""
     from ..state.failures import is_credential_failure
-    try:
-        return is_credential_failure(
-            (Path(attempts_dir) / SPAWN_STDERR).read_text(
-                encoding="utf-8", errors="replace"))
-    except OSError:
-        return False
+    return is_credential_failure(_spawn_stderr_text(attempts_dir))
 
 
-#: What the operator has to do, in the one wording every channel repeats
-#: — the spawn log, the dead_attempt detail, and `daemon status`.
-_RELOGIN_HINT = ("codex refused the operator's credential twice in a row: "
-                 "the refresh token is spent and no copy of the file can "
-                 "revive it. Run `codex login` as the operator; every "
-                 "codex seat is down until then.")
+def _resync_may_help(attempts_dir) -> bool:
+    """Is this the half of the family one re-sync could clear?
+
+    Same file, same leaf module (`credential_resync_may_help`): a token
+    reported ALREADY USED may have a live successor in the operator's
+    file, a REVOKED one has no successor at all. The distinction is worth
+    a branch because getting it wrong is measured in spawns — five of
+    them in 2.5 minutes on the flagship, 2026-09-07."""
+    from ..state.failures import credential_resync_may_help
+    return credential_resync_may_help(_spawn_stderr_text(attempts_dir))
+
+
+#: What the operator has to do. Two roads reach it and each says which
+#: one it took, but the ACTION is one sentence in one wording, repeated
+#: verbatim by the spawn log and `daemon status` — an operator should not
+#: have to notice that two channels are describing the same command.
+_RELOGIN_ACTION = ("Run `codex login` as the operator; every codex seat "
+                   "is down until then.")
+#: The spent-token road: tried twice, across a re-sync, and still refused.
+_SPENT_HINT = ("codex refused the operator's credential twice in a row: "
+               "the refresh token is spent and no copy of the file can "
+               "revive it. " + _RELOGIN_ACTION)
+#: The revoked road: not tried twice, because there is nothing to try.
+#: The token was withdrawn at the far end — a second spawn against the
+#: same file buys an identical death and nothing else, which is what
+#: burned five of them on the flagship (2026-09-07).
+_REVOKED_HINT = ("codex says the operator's refresh token was REVOKED (or "
+                 "refused it for a reason no re-sync can address), so no "
+                 "retry was spent on it. " + _RELOGIN_ACTION)
 
 
 def _resync_credential(home: Path) -> bool:
     """Re-place the credential from the operator's home, for one retry.
 
-    The retry is worth taking because the operator's file may have moved
-    UNDER us in the seconds this spawn was dying: on Windows a sibling
-    spawn's `_return_rotated_credential` writes a fresh token there, and
-    on POSIX a symlink that was somehow stale is simply re-made. If it
-    has not moved, the retry costs ~3s and the second death is the
-    evidence that this is a real credential problem rather than a race."""
+    The retry is worth taking ONLY on the spent-token spelling, and only
+    because the operator's file may have moved UNDER us in the seconds
+    this spawn was dying: on Windows a sibling spawn's
+    `_return_rotated_credential` writes a fresh token there, and on POSIX
+    a symlink that was somehow stale is simply re-made. If it has not
+    moved, the retry costs ~3s and the second death is the evidence that
+    this is a real credential problem rather than a race."""
     auth_src = operator_codex_home() / _AUTH_FILENAME
     if not auth_src.is_file():
         return False
@@ -1189,8 +1218,8 @@ def _resync_credential(home: Path) -> bool:
     return True
 
 
-def _record_credential_degraded(attempts_dir) -> None:
-    """Surface a spent credential where the hourly patrol already looks.
+def _record_credential_degraded(attempts_dir, detail: str) -> None:
+    """Surface a dead credential where the hourly patrol already looks.
 
     `daemon status` renders `core.degraded`'s ledger, so an operator sees
     `degraded: codex_auth_stale` without grepping a run log — which is
@@ -1203,7 +1232,7 @@ def _record_credential_degraded(attempts_dir) -> None:
                      if p.name == ATTEMPTS_DIRNAME), None)
         if root is None:
             return
-        degraded.record(root, "codex_auth_stale", _RELOGIN_HINT)
+        degraded.record(root, "codex_auth_stale", detail)
     except Exception:  # noqa: BLE001 — the ledger is best-effort
         pass
 
@@ -1455,34 +1484,47 @@ class CodexCliProvider:
                 untrack_proc(proc)
 
         rc = _launch_once()
-        # ONE RETRY ON A SPENT CREDENTIAL (#235). The refresh token is
-        # single-use, and on Windows every spawn still works from a copy
-        # — so a sibling spawn that rotated and wrote back may have put a
-        # live token in the operator's file in the seconds this one spent
-        # dying. Re-place the credential and go again: the death is ~3s,
-        # so the retry is cheap, and a SECOND one is the evidence that
-        # this is a real credential problem rather than a race. Not for
-        # zen, which authenticates by API key and must have no auth.json
-        # at all (a ChatGPT credential there routes it to the
-        # subscription backend and 400s).
+        # A DEAD CREDENTIAL GETS AT MOST ONE RETRY, AND ONLY WHEN A RETRY
+        # HAS A STORY (#235). Not for zen, which authenticates by API key
+        # and must have no auth.json at all (a ChatGPT credential there
+        # routes it to the subscription backend and 400s).
         if (rc == 0 or self.flavor == "zen" or is_shutdown_requested()
-                or not _died_on_a_spent_credential(req.attempts_dir)):
+                or not _died_on_a_dead_credential(req.attempts_dir)):
             return rc
+        # REVOKED — or any credential refusal the marker table cannot
+        # name. There is no live successor to the token at the far end,
+        # so a second spawn against the same file buys an identical death
+        # and nothing else. The flagship spent five of them in 2.5
+        # minutes on 2026-09-07 and then exited rc=2; going straight to
+        # the operator is the whole lesson of that incident.
+        if not _resync_may_help(req.attempts_dir):
+            print(f"[llm:codex] {_REVOKED_HINT}", flush=True)
+            _record_credential_degraded(req.attempts_dir, _REVOKED_HINT)
+            return rc
+        # SPENT — the token is single-use, and on Windows every spawn
+        # still works from a copy, so a sibling that rotated and wrote
+        # back may have put a live token in the operator's file in the
+        # seconds this one spent dying. Re-place the credential and go
+        # again: the death is ~3s, so the retry is cheap, and a SECOND
+        # one is the evidence that this is a real credential problem
+        # rather than a race.
         print("[llm:codex] the spawn died on a spent refresh token — "
               "re-syncing the operator's credential and retrying once",
               flush=True)
         if not _resync_credential(home):
-            print(f"[llm:codex] {_RELOGIN_HINT}", flush=True)
-            _record_credential_degraded(req.attempts_dir)
+            print(f"[llm:codex] {_SPENT_HINT}", flush=True)
+            _record_credential_degraded(req.attempts_dir, _SPENT_HINT)
             return rc
         # The first leg's record is already preserved under
         # `.asterism/codex_sessions/`; clearing here keeps this file the
         # RETRY's own account, which is what the classifier reads.
         clear_spawn_stderr(req.attempts_dir)
         rc = _launch_once()
-        if _died_on_a_spent_credential(req.attempts_dir):
-            print(f"[llm:codex] {_RELOGIN_HINT}", flush=True)
-            _record_credential_degraded(req.attempts_dir)
+        if _died_on_a_dead_credential(req.attempts_dir):
+            hint = (_SPENT_HINT if _resync_may_help(req.attempts_dir)
+                    else _REVOKED_HINT)
+            print(f"[llm:codex] {hint}", flush=True)
+            _record_credential_degraded(req.attempts_dir, hint)
         return rc
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,

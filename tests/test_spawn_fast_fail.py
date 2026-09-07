@@ -252,19 +252,101 @@ def test_spawn_failure_names_a_spent_credential(tmp_path: Path) -> None:
         assert "codex login" in detail
 
 
-def test_each_spelling_of_a_spent_token_is_matched() -> None:
-    """Three spellings ride in one output and any of them may arrive
-    alone: the human sentence, the API's own message, and the code. The
-    OAuth2 standard's `invalid_grant` is included for the day codex
-    surfaces the raw grant error instead of its prose."""
+#: VERBATIM from the FLAGSHIP, 2026-09-07 21:33Z, same codex 0.153.0 —
+#: the spelling the first version of the marker table did not know.
+_REVOKED_REFRESH_TOKEN_STDERR = (
+    "rc=1\n"
+    "2026-09-07T21:33:04.118221Z ERROR codex_login::auth::manager: Failed "
+    "to refresh token: Your access token could not be refreshed because "
+    "your refresh token was revoked. Please log out and sign in again.\n"
+    "2026-09-07T21:33:04.402913Z ERROR codex_api::endpoint::"
+    "responses_websocket: failed to connect to websocket: HTTP error: "
+    "401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses\n"
+)
+
+
+def test_spawn_failure_names_a_revoked_credential(tmp_path: Path) -> None:
+    """THE SECOND SPELLING, and the one that proved the first list was
+    the wrong shape (flagship, 2026-09-07 21:33Z).
+
+    `codex_auth_stale` matched only "already used" / `refresh_token_reused`,
+    so a REVOKED token fell through to `unclassified_spawn_failure` — five
+    spawns burned in 2.5 minutes and the daemon exited rc=2. Same halt as
+    the 09-04 incident, reached through the OTHER breaker, for a fault
+    with the same one-command remedy."""
+    (tmp_path / "_spawn.stderr").write_text(
+        _REVOKED_REFRESH_TOKEN_STDERR, encoding="utf-8")
+    for dur in (2.0, 30.0, 210.0):
+        reason, detail = _pipeline._spawn_failure(
+            rc=1, attempts_dir=tmp_path, spawn_dur=dur)
+        assert reason == "codex_auth_stale"
+        assert "not charged" in detail
+        assert "codex login" in detail
+
+
+def test_every_spelling_in_the_family_is_matched() -> None:
+    """Any of these may arrive alone: the auth manager's own sentence
+    (which names the cause in a word the vendor may change again), the
+    API's message, the machine-readable code, and the OAuth2 standard's
+    name for the same refusal. The table matches the SENTENCE SHAPE as
+    well as the causes, because being exactly right about the vendor's
+    noun is what failed on 09-07."""
     from Tooling.state import failures
     for line in (
+        # 09-04, spent
         "your refresh token was already used. Please log out",
         '"message": "Your refresh token has already been used to generate',
         '"code": "refresh_token_reused"',
         '{"error":"invalid_grant","error_description":"..."}',
+        # 09-07, revoked
+        "your access token could not be refreshed because your refresh "
+        "token was revoked. Please log out and sign in again.",
+        # the shape alone — a third cause we have not met yet
+        "Your access token could not be refreshed because your refresh "
+        "token is no longer valid.",
+        "Please log out and sign in again.",
     ):
-        assert failures.is_credential_failure(line)
+        assert failures.is_credential_failure(line), line
+
+
+def test_only_a_consumed_token_is_worth_a_retry() -> None:
+    """The retry split. A SPENT single-use token may have a live
+    successor sitting in the operator's file (a sibling spawn rotated and
+    wrote it back), so one re-sync is worth ~3 seconds. A REVOKED one has
+    no successor anywhere, and an unnamed refusal has no story at all —
+    retrying either is precisely the spawn burn this reason exists to
+    stop, so the list is POSITIVE and the default is "do not"."""
+    from Tooling.state import failures
+    assert failures.credential_resync_may_help(_SPENT_REFRESH_TOKEN_STDERR)
+    assert not failures.credential_resync_may_help(
+        _REVOKED_REFRESH_TOKEN_STDERR)
+    # An unnamed credential refusal is still a credential failure, and
+    # still not worth a retry.
+    unnamed = ("Your access token could not be refreshed because your "
+               "refresh token is no longer valid.")
+    assert failures.is_credential_failure(unnamed)
+    assert not failures.credential_resync_may_help(unnamed)
+    assert not failures.credential_resync_may_help("")
+    assert not failures.credential_resync_may_help(None)
+
+
+def test_a_named_transport_failure_outranks_the_credential_prose(
+    tmp_path: Path,
+) -> None:
+    """The ordering the widened table forced. "could not be refreshed" is
+    also what codex says when the refresh call never reached the server,
+    so a stderr that ALSO names a transport failure is a network park —
+    bounded, self-healing, and re-probed — rather than an accusation that
+    the operator's credential is dead, which sends someone to a keyboard.
+    The credential rules still outrank the DURATION rules, which is the
+    ranking both incidents actually turned on."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=1\nYour access token could not be refreshed: error sending "
+        "request for url (https://chatgpt.com/backend-api/codex)",
+        encoding="utf-8")
+    reason, _ = _pipeline._spawn_failure(
+        rc=1, attempts_dir=tmp_path, spawn_dur=4.0)
+    assert reason == "provider_network"
 
 
 def test_an_ordinary_expired_access_token_is_not_a_dead_credential() -> None:

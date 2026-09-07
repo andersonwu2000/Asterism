@@ -777,11 +777,20 @@ def test_a_shared_credential_is_never_written_back_over_itself(
 # ---------------------------------- one retry, then the operator is told
 
 def _spent_stderr() -> str:
-    """Verbatim from the incident — see `tests/test_spawn_fast_fail.py`
-    for the full capture."""
+    """Verbatim from the 2026-09-04 incident — see
+    `tests/test_spawn_fast_fail.py` for the full capture. SPENT: a
+    sibling may hold the live successor, so this one buys a retry."""
     return ("Your access token could not be refreshed because your "
             "refresh token was already used. Please log out and sign in "
             "again.")
+
+
+def _revoked_stderr() -> str:
+    """Verbatim from the flagship, 2026-09-07 21:33Z. REVOKED: there is
+    no successor anywhere, so this one buys nothing."""
+    return ("ERROR codex_login::auth::manager: Failed to refresh token: "
+            "Your access token could not be refreshed because your "
+            "refresh token was revoked. Please log out and sign in again.")
 
 
 def _stub_launches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -866,16 +875,60 @@ def test_an_ordinary_death_is_not_retried(
     assert len(calls) == 1
 
 
+def test_a_revoked_credential_spends_no_retry_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE 2026-09-07 LESSON. A revoked token has no live successor
+    anywhere, so the re-sync has nothing to find and the second spawn is
+    a second identical death — the flagship spent five of them in 2.5
+    minutes before the daemon gave up. One launch, straight to the
+    operator, and the ledger says which road it took."""
+    from Tooling.core import degraded
+    calls = _stub_launches(
+        tmp_path, monkeypatch,
+        [(1, _revoked_stderr()), (0, "must never be reached")])
+    assert codex_cli.CodexCliProvider().spawn(_ws_req(tmp_path)) == 1
+    assert len(calls) == 1, "a revoked token must not buy a retry"
+    entry = degraded.snapshot(tmp_path)["codex_auth_stale"]
+    assert entry["count"] == 1
+    assert "codex login" in entry["last_detail"]
+    assert "REVOKED" in entry["last_detail"]
+
+
+def test_an_unnamed_credential_refusal_also_skips_the_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default the positive list buys. A refusal whose CAUSE this
+    project has not met — the vendor rewording "revoked" once more — is
+    still a credential failure and still gets no retry: guessing that a
+    re-sync helps costs a spawn every time, and guessing that it does not
+    costs nothing but one operator message."""
+    from Tooling.core import degraded
+    calls = _stub_launches(
+        tmp_path, monkeypatch,
+        [(1, "Your access token could not be refreshed because your "
+             "refresh token is no longer valid. Please log out and sign "
+             "in again."),
+         (0, "must never be reached")])
+    codex_cli.CodexCliProvider().spawn(_ws_req(tmp_path))
+    assert len(calls) == 1
+    assert "codex login" in degraded.snapshot(
+        tmp_path)["codex_auth_stale"]["last_detail"]
+
+
 def test_the_adapter_and_the_classifier_read_one_predicate() -> None:
-    """The adapter decides whether to re-sync and retry; the pipeline
-    decides whether the row is `codex_auth_stale`. Two spellings of "is
-    this the credential?" is how they come to disagree — so there is one,
-    in the leaf module both can import."""
+    """The adapter decides what to do; the pipeline decides whether the
+    row is `codex_auth_stale`. Two spellings of "is this the credential?"
+    is how they come to disagree — so there is one, in the leaf module
+    both can import, and the retry split rides the same way."""
     import inspect
     from Tooling.state import failures
-    src = inspect.getsource(codex_cli._died_on_a_spent_credential)
-    assert "is_credential_failure" in src
+    assert "is_credential_failure" in inspect.getsource(
+        codex_cli._died_on_a_dead_credential)
+    assert "credential_resync_may_help" in inspect.getsource(
+        codex_cli._resync_may_help)
     assert failures.is_credential_failure(_spent_stderr())
+    assert failures.is_credential_failure(_revoked_stderr())
 
 
 def test_zen_has_no_credential_to_re_sync(
