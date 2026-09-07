@@ -905,12 +905,13 @@ def test_the_projection_carries_the_request_and_declares_its_rubric(
 
 
 # ---------------------------------------------------------------------
-# `theory_reviewer.dossier` — the package in the prompt (ruling 09-07)
+# the dossier in the prompt (ruling 09-07; the `files` half retired
+# 09-08 — inline is the only road)
 #
-# The batch judge's flag, one seat over (`tests/test_adversary.py`, same
-# section name). `files` is production and must not move a byte;
-# `inline` puts the always-read files IN the prompt, invariant-first so
-# one review's rounds share a cacheable prefix, and maps the rest.
+# The batch judge's, one seat over (`tests/test_adversary.py`, same
+# section name): the always-read files ride IN the prompt,
+# invariant-first so one review's rounds share a cacheable prefix, and
+# the rest are mapped.
 # ---------------------------------------------------------------------
 
 _NOTE_AGENT = "g1_20260906-0100_the_wall_is_not_settled_here.md"
@@ -932,17 +933,16 @@ def _shelve_notes(workspace: Path) -> Path:
 
 
 def _dossier_prompt(workspace: Path, conn: sqlite3.Connection,
-                    monkeypatch: pytest.MonkeyPatch, *, mode: str,
-                   attempts_name: str, report: str = _REPORT,
-                   dialogue=(), round_no: int = 1) -> str:
-    """One review round under `mode`; returns the prompt file's text.
+                    monkeypatch: pytest.MonkeyPatch, *,
+                    attempts_name: str, report: str = _REPORT,
+                    dialogue=(), round_no: int = 1) -> str:
+    """One review round; returns the prompt file's text.
 
     The RAW file, not the rendered one — `_rendered_review` below
     applies the pass the provider applies, and the two are different
     questions (what the framework wrote vs what the model reads)."""
     from Tooling.pipeline.theorist import review as _review
 
-    monkeypatch.setenv("ASTERISM_THEORY_REVIEWER_DOSSIER", mode)
     attempts = workspace / ".attempts" / attempts_name
     attempts.mkdir(parents=True)
     seen: dict = {}
@@ -963,39 +963,32 @@ def _dossier_prompt(workspace: Path, conn: sqlite3.Connection,
         dialogue=list(dialogue), pipeline_id=attempts_name,
         final_round=False)
     assert rc == 0 and verdict is not None, err
-    flags = dict(seen["prompt_flags"])
-    assert (flags["dossier_inline"], flags["dossier_files"]) == \
-        (mode == "inline", mode == "files"), \
-        "both names travel, always — the renderer is fail-open"
     return Path(seen["prompt_path"]).read_text(encoding="utf-8")
 
 
-def _rendered_review(text: str, *, mode: str) -> str:
+def _rendered_review(text: str) -> str:
     """The prompt as the MODEL sees it: the conditional blocks resolved
     the way the provider adapter resolves them."""
     from Tooling.agent import render_prompt_template
     from Tooling.pipeline.theorist.review import round_prompt_flags
     return render_prompt_template(
         text, flags={**round_prompt_flags(False),
-                     "dossier_inline": mode == "inline",
-                     "dossier_files": mode == "files",
                      "native_file_tools": False, "mcp_only_reads": True})
 
 
-def test_the_reviewers_files_mode_is_byte_for_byte_the_prompt_of_today(
+def test_the_reviewers_rubric_leads_the_prompt_verbatim(
     workspace: Path, conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default mode changes NOTHING. The daemon hot-swaps this code
-    within a minute of it being saved, onto a board mid-review, so
-    `files` has to be the rubric with the placeholders substituted and
-    the per-spawn manifest after it — nothing between, nothing added."""
+    """Cheapest-to-cache first: the rubric is the same text for every
+    review, so it opens the prompt with only its two workspace
+    placeholders substituted — nothing before it, nothing spliced in."""
     from Tooling.pipeline import PROMPT_DIR
     from Tooling.pipeline import adversary as adv
 
     _shelve_notes(workspace)
-    text = _dossier_prompt(workspace, conn, monkeypatch, mode="files",
-                           attempts_name="rev-files")
+    text = _dossier_prompt(workspace, conn, monkeypatch,
+                           attempts_name="rev-head")
     pdir = workspace / "Problems" / "p"
     head = ((PROMPT_DIR / "theorist" / "review.md")
             .read_text(encoding="utf-8")
@@ -1004,23 +997,16 @@ def test_the_reviewers_files_mode_is_byte_for_byte_the_prompt_of_today(
             .replace(adv.PAPERS_DIR_PLACEHOLDER,
                      (pdir / "_docs").resolve().as_posix()))
     assert text.startswith(head), "the rubric, verbatim, first"
-    assert text[len(head):].startswith(_REVIEW_MANIFEST_HEAD), \
-        "and the per-spawn manifest immediately after it"
-    # No inlined body rides — this is a directory the reviewer opens, as
-    # it always was.
-    assert _REPORT not in text
-    # …and what the MODEL reads carries neither section nor its wording.
-    model_sees = _rendered_review(text, mode="files")
-    assert "## Dossier (inline)" not in model_sees
-    assert "## Table of contents" not in model_sees
-    assert "INLINED VERBATIM" not in model_sees
+    # And the sentence that tells the reviewer the bytes are here is not
+    # a conditional any more — the model reads it on every round.
+    assert "INLINED VERBATIM" in _rendered_review(text)
 
 
-def test_the_reviewers_inline_dossier_ships_the_document_and_maps_the_rest(
+def test_the_reviewers_dossier_ships_the_document_and_maps_the_rest(
     workspace: Path, conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`inline`: charter / request / Programme / the document verbatim
+    """Charter / request / Programme / the document verbatim
     in the fixed invariant-first order; an outline for TREE.md and the
     dialogue; the way IN (never a map) for CATALOG.md and the proofs
     dir; and the shelf listed BY NAME, since criterion 1 is decided
@@ -1029,7 +1015,7 @@ def test_the_reviewers_inline_dossier_ships_the_document_and_maps_the_rest(
 
     _shelve_notes(workspace)
     text = _dossier_prompt(
-        workspace, conn, monkeypatch, mode="inline",
+        workspace, conn, monkeypatch,
         attempts_name="rev-inline", round_no=2,
         dialogue=[{"round": 1, "criticisms": ["[criterion 1] restated"]}])
     proj = (workspace / ".attempts" / "rev-inline" / "review" / "r2")
@@ -1062,10 +1048,10 @@ def test_the_reviewers_inline_dossier_ships_the_document_and_maps_the_rest(
     assert text.index(_REVIEW_MANIFEST_HEAD) > text.index("## Dossier (inline)")
     assert "### " not in text[text.index(_REVIEW_MANIFEST_HEAD):]
     # And the rubric's own `## What you see` says so.
-    assert "INLINED VERBATIM" in _rendered_review(text, mode="inline")
+    assert "INLINED VERBATIM" in _rendered_review(text)
 
 
-def test_the_reviewers_inline_prefix_is_identical_across_rounds(
+def test_the_reviewers_dossier_prefix_is_identical_across_rounds(
     workspace: Path, conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1077,10 +1063,10 @@ def test_the_reviewers_inline_prefix_is_identical_across_rounds(
     the request and the Programme — and the request in particular is the
     one thing that CANNOT change inside a review."""
     _shelve_notes(workspace)
-    a = _dossier_prompt(workspace, conn, monkeypatch, mode="inline",
+    a = _dossier_prompt(workspace, conn, monkeypatch,
                         attempts_name="rev-p1", report=_REPORT)
     b = _dossier_prompt(
-        workspace, conn, monkeypatch, mode="inline",
+        workspace, conn, monkeypatch,
         attempts_name="rev-p2", round_no=2,
         report=_REPORT + "\n## Leads\n\nA second route.\n",
         dialogue=[{"round": 1, "criticisms": ["[criterion 1] restated"]}])
@@ -1139,19 +1125,6 @@ def test_the_roster_the_shelf_and_the_proofs_dir_get_the_way_in(
     # The proofs dir: entry count and the queries, never a listing.
     assert f"### proofs dir `{proofs.as_posix()}` — 1 entr(ies)" in text
     assert "a.lean" not in text.split("### proofs dir")[1]
-
-
-def test_an_unreadable_reviewer_dossier_mode_runs_the_default(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
-) -> None:
-    """A config typo must not discard a finished document. It degrades
-    to `files` and says so."""
-    from Tooling.pipeline import dossier as _dossier
-    from Tooling.pipeline.theorist import review as _review
-
-    monkeypatch.setenv("ASTERISM_THEORY_REVIEWER_DOSSIER", "INLINED")
-    assert _review.dossier_mode() == _dossier.FILES
-    assert "is not one of" in capsys.readouterr().out
 
 
 def test_the_author_reads_its_group_under_the_theory_trigger(
@@ -2002,9 +1975,9 @@ def test_a_single_round_cap_makes_the_first_review_the_final_one(
     _run(conn, workspace, pintent, did)
 
     assert state["review"] == 1
-    # Criterion 3's pair only — the dossier pair rides in the same dict
-    # (`theory_reviewer.dossier`) and is a different question.
+    # Criterion 3's pair, and nothing else rides in that dict.
     flags = state["review_flags"][0]
+    assert sorted(flags) == ["final_round", "more_rounds"]
     assert (flags["more_rounds"], flags["final_round"]) == (False, True)
 
 
@@ -2181,148 +2154,59 @@ def test_the_notes_roster_says_an_accepted_document_left_reservations(
 
 
 # ---------------------------------------------------------------------
-# `theorist.reviewer_continuity` — whose reviewer rules round 2
+# a fresh reviewer per round
 # ---------------------------------------------------------------------
 
-_THREAD = "0199aa11-2b3c-4d5e-8f01-234567890abc"
-
-
-def _codex_seat(monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
-    """A codex-backed reviewer seat, and the flag. Both through the
-    ENVIRONMENT, which is the top of `config.get`'s own chain — so the
-    test moves the switch a run would actually read rather than a
-    private variable."""
-    monkeypatch.setenv("ASTERISM_THEORY_REVIEWER_PROVIDER", "codex")
-    monkeypatch.setenv("ASTERISM_THEORIST_REVIEWER_CONTINUITY",
-                       "true" if on else "false")
-
-
-def _codex_artefacts(attempts_dir: Path, sid: str) -> Path:
-    """The two things a real codex spawn leaves behind, and the two
-    things a resume is made of: the framework-sid -> thread map, and the
-    thread's rollout under that spawn's own `CODEX_HOME`.
-
-    `carry_session` finds nothing without them, so a test that faked the
-    carry would be asserting that a flag was passed rather than that a
-    conversation was moved."""
-    d = Path(attempts_dir)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "_codex_sessions.json").write_text(
-        json.dumps({sid: _THREAD}), encoding="utf-8")
-    day = d / "_codex_home" / "sessions" / "2026" / "09" / "07"
-    day.mkdir(parents=True, exist_ok=True)
-    roll = day / f"rollout-2026-09-07T00-00-00-{_THREAD}.jsonl"
-    roll.write_text("{}\n", encoding="utf-8")
-    return roll
-
-
-def _codex_script(*, verdicts, report=_REPORT):
-    """`_script` with a reviewer that leaves a codex session behind."""
-    fake, state = _script(verdicts=verdicts, report=report)
-    state["continuation"] = []
-
-    def spawn(**kw):
-        rc = fake(**kw)
-        if kw.get("kind") != "theory_reviewer":
-            return rc
-        state["continuation"].append(bool(kw.get("continuation")))
-        _codex_artefacts(kw["attempts_dir"], kw.get("session_id"))
-        return rc
-
-    return spawn, state
-
-
-def test_the_flag_is_off_by_default_and_each_round_gets_a_fresh_reviewer(
+def test_every_round_gets_a_fresh_reviewer(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Today's path, held: two rounds, two reviewers, no continuation —
-    and the checkpoint records no review session, because there is none
-    to carry."""
+    """Two rounds, two reviewers, and no session travels between them.
+
+    `theorist.reviewer_continuity` bought one conversation for a whole
+    review; it was retired on 2026-09-08 (owner ruling) and the shipped
+    design is back to being the only one. The per-round projection is
+    what makes it work — a resume is per-DIRECTORY on every backend, so
+    a fresh dir with a fresh id is a cold reviewer by construction."""
     from Tooling.pipeline.theorist import checkpoint as _ck
-    _codex_seat(monkeypatch, on=False)
     did = _theorize(conn, workspace)
-    fake, state = _codex_script(verdicts=[_fired("1"), _clear()])
+    fake, state = _script(verdicts=[_fired("1"), _clear()])
     monkeypatch.setattr(agent, "spawn_llm", fake)
 
     r = _run(conn, workspace, pintent, did)
     assert r.outcome == "success", r.failure_detail
     assert state["review"] == 2
     assert len(set(state["review_sids"])) == 2
-    assert state["continuation"] == [False, False]
-    assert _ck.load(workspace / ".attempts" / "th-1")["reviewer_sid"] == ""
+    # The checkpoint carries the AUTHOR's session and no reviewer's.
+    data = _ck.load(workspace / ".attempts" / "th-1")
+    assert data["author_sid"] == state["author_sids"][0]
+    assert "reviewer_sid" not in data
 
 
-def test_reviewer_continuity_carries_round_ones_session_into_round_two(
+def test_a_checkpoint_from_the_continuity_era_still_adopts(
     workspace: Path, conn: sqlite3.Connection,
     pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Flag on: ONE reviewer session for the whole review. Round 2 is
-    pinned to round 1's id, spawns as a continuation, and finds round
-    1's rollout staged under its own projection — the three things a
-    resume is, all of which a fresh projection would otherwise drop."""
+    """A run frozen by a build that wrote `reviewer_sid` must still be
+    picked up: the checkpoint is read key by key, so a field nothing
+    asks for any more is a field that costs nothing."""
     from Tooling.pipeline.theorist import checkpoint as _ck
-    _codex_seat(monkeypatch, on=True)
-    did = _theorize(conn, workspace)
-    fake, state = _codex_script(verdicts=[_fired("1"), _clear()])
-    monkeypatch.setattr(agent, "spawn_llm", fake)
-
-    r = _run(conn, workspace, pintent, did)
-    assert r.outcome == "success", r.failure_detail
-    assert state["review"] == 2
-    assert len(set(state["review_sids"])) == 1
-    # Round 1 opens the conversation cold; only round 2 continues it.
-    assert state["continuation"] == [False, True]
-
-    sid = state["review_sids"][0]
-    assert _ck.load(workspace / ".attempts" / "th-1")["reviewer_sid"] == sid
-    r2 = workspace / ".attempts" / "th-1" / "review" / "r2"
-    assert json.loads(
-        (r2 / "_codex_sessions.json").read_text(encoding="utf-8")
-    )[sid] == _THREAD
-    staged = list((r2 / "_codex_home" / "sessions").rglob("rollout-*.jsonl"))
-    assert [p.name for p in staged] == [
-        f"rollout-2026-09-07T00-00-00-{_THREAD}.jsonl"]
-    # The dossier is untouched by the resume: round 2 is built and
-    # prompted exactly as a cold reviewer's would be.
-    assert (r2 / "report.md").is_file() and (r2 / "dialogue.md").is_file()
-    assert state["review_flags"][1]["more_rounds"] is True
-    assert state["review_flags"][1]["final_round"] is False
-
-
-def test_a_resumed_run_keeps_reviewing_in_the_same_session(
-    workspace: Path, conn: sqlite3.Connection,
-    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The checkpoint carries the review's session across a
-    re-dispatch, and the successor's round 2 continues it — the
-    reviewer's own r1 projection travels in with the rest of `review/`.
-    Without the id the successor would mint a second reviewer
-    conversation halfway through one review; the author's own session
-    has been carried for exactly this reason since 2026-09-06."""
-    from Tooling.pipeline.theorist import checkpoint as _ck
-    _codex_seat(monkeypatch, on=True)
     gid = groups_mod.ensure_top_group(conn, "p")
     did = _theorize(conn, workspace)
-    dead_sid = "rev-sid-from-the-dead-run"
     src = _frozen(workspace, "th-dead", decision_id=did, group_id=gid,
-                  phase="awaiting_revision", round_no=1,
-                  verdicts=[_fired("1")])
-    _codex_artefacts(src / "review" / "r1", dead_sid)
+                  phase="awaiting_review", round_no=1, verdicts=[])
     data = json.loads((src / _ck.CHECKPOINT_BASENAME).read_text(
         encoding="utf-8"))
-    data["reviewer_sid"] = dead_sid
+    data["reviewer_sid"] = "rev-sid-from-the-retired-flag"
     (src / _ck.CHECKPOINT_BASENAME).write_text(json.dumps(data),
                                                encoding="utf-8")
 
-    fake, state = _codex_script(verdicts=[_clear()])
+    fake, state = _script(verdicts=[_clear()])
     monkeypatch.setattr(agent, "spawn_llm", fake)
     r = _run(conn, workspace, pintent, did, pipeline_id="th-2")
     assert r.outcome == "success", r.failure_detail
-    assert state["review_sids"] == [dead_sid]
-    assert state["continuation"] == [True]
-    assert _ck.load(workspace / ".attempts" / "th-2")["reviewer_sid"] == (
-        dead_sid)
+    assert state["author"] == 0, "the frozen document was not re-authored"
+    assert state["review"] == 1
 
 
 # ---------------------------------------------------------------------

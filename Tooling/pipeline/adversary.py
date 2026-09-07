@@ -273,19 +273,8 @@ PAPERS_DIR_PLACEHOLDER = "{papers_dir}"
 
 
 # ---------------------------------------------------------------------
-# how the dossier reaches the judge (`adversary.dossier`)
+# how the dossier reaches the judge
 # ---------------------------------------------------------------------
-
-#: `files` — the prompt NAMES the projection's files and the judge opens
-#: what it wants. Every round the framework has ever run took this road,
-#: and it is the default.
-DOSSIER_FILES = _dossier.FILES
-#: `inline` — the small always-read files ride IN the prompt, verbatim,
-#: and the big sparsely-read ones arrive as the table of contents the
-#: judge would otherwise buy with an `outline` call. What that buys, and
-#: the 332-session measurement it was decided on, is in `dossier.py`.
-DOSSIER_INLINE = _dossier.INLINE
-DOSSIER_MODES = _dossier.MODES
 
 #: Inlined FIRST, in this order, and round-INVARIANT: the same bytes for
 #: every round of one debate. That is the whole reason the order is
@@ -320,18 +309,9 @@ DOSSIER_OUTLINED = ("TREE.md", "ADJUDICATIONS.md", "BATCHES.md",
 DOSSIER_ROSTERS = ("CATALOG.md",)
 
 
-def dossier_mode() -> str:
-    """`files` (today) or `inline`, from `adversary.dossier`."""
-    from ..core import config
-    return _dossier.normalize(
-        config.get("adversary.dossier", default=DOSSIER_FILES,
-                   env_var="ASTERISM_ADVERSARY_DOSSIER"),
-        key="adversary.dossier", seat="adversary")
-
-
 def dossier_sections(proj: Path, *, proofs_dir: Path,
                      papers_dir: Path) -> str:
-    """`## Dossier (inline)` + `## Table of contents`, for `inline` mode.
+    """`## Dossier (inline)` + `## Table of contents`.
 
     Everything the judge is otherwise sent to `inspect` for, resolved by
     the builder that already knows the answer. The two sections sit
@@ -946,21 +926,17 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
                   "for it)\n\nThe other paths the prompt names, and "
                   "which one of each to read:\n"
                 + "\n".join(_ext_lines) + "\n")
-    # Rubric, then (in `inline` mode) the dossier and its table of
-    # contents, then the per-spawn manifest LAST — cheapest-to-cache
-    # first. In `files` mode the middle is empty and this is byte for
-    # byte the prompt every round has been written since the manifest
-    # landed; the `#if dossier_inline` block in the rubric is dropped by
-    # the template renderer on the flag below.
-    mode = dossier_mode()
+    # Rubric, then the dossier and its table of contents, then the
+    # per-spawn manifest LAST — cheapest-to-cache first. The rubric is
+    # the same text for every problem, the dossier the same for every
+    # round of one debate down to `### decisions.md`, and the manifest is
+    # the one part that is this spawn's alone.
     rubric = (prompt_src.read_text(encoding="utf-8")
               .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
               .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix()))
-    dossier = (dossier_sections(proj, proofs_dir=proofs_dir,
-                                papers_dir=papers_dir)
-               if mode == DOSSIER_INLINE else "")
+    dossier = dossier_sections(proj, proofs_dir=proofs_dir,
+                               papers_dir=papers_dir)
     prompt_path.write_text(rubric + dossier + manifest, encoding="utf-8")
-    prompt_flags = _dossier.prompt_flags(mode)
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
     # produced no usable ruling twice is a wake-level failure), plus a
@@ -993,7 +969,6 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             problem_dir=proj, attempts_dir=proj,
             session_id=sid, is_retry=bool(retry_ctx),
             retry_context=retry_ctx or None, timeout_sec=timeout_sec,
-            prompt_flags=prompt_flags,
             # Loogle over MCP, not a shell — the judge checks "Mathlib
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.

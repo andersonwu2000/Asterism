@@ -127,11 +127,11 @@ def test_a_config_flag_is_registered_and_read_as_yaml(monkeypatch):
     `"true"` is a different setting from the boolean, and the arm would
     have no way to say which it meant."""
     args = _parse(["lab", "run", "standard", "traps", "--root", "R",
-                   "--config", "adversary.dossier=inline",
+                   "--config", "theorist.rounds=1",
                    "--config", "dispatch.pool=3"], monkeypatch)
-    assert args.config == ["adversary.dossier=inline", "dispatch.pool=3"]
+    assert args.config == ["theorist.rounds=1", "dispatch.pool=3"]
     assert lab_cli.config_overrides(args.config) == {
-        "adversary.dossier": "inline", "dispatch.pool": 3}
+        "theorist.rounds": 1, "dispatch.pool": 3}
     assert lab_cli.config_overrides(["a.b=true"]) == {"a.b": True}
     assert lab_cli.config_overrides(None) == {}
 
@@ -143,7 +143,7 @@ def test_a_config_override_must_be_a_dotted_key_equals_value(tmp_path,
     rc = lab_cli.cmd_lab(argparse.Namespace(
         lab_action="run", root=str(tmp_path), exp="standard", arm="all",
         reps=None, keep=False, seats=None,
-        config=["adversary.dossier"]))
+        config=["theorist.rounds"]))
     assert rc == 1
     assert "section.key=value" in capsys.readouterr().err
     rc = lab_cli.cmd_lab(argparse.Namespace(

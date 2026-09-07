@@ -41,8 +41,7 @@ from pathlib import Path
 
 from . import checkpoint as _checkpoint
 from . import landing as _landing
-from .review import (projection_dir, review as review_round,
-                     reviewer_continuity)
+from .review import projection_dir, review as review_round
 from .verdict import (REPORT_BASENAME, RIGOUR_DEFECTIVE, fired_criteria,
                       parse_theory_verdict, reservations_of,
                       rigour_is_defective)
@@ -260,18 +259,6 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     prompt_path = PROMPT_DIR / "theorist" / "theory.md"
     report_path = attempts_dir / REPORT_BASENAME
     sid = str(uuid.uuid4())
-    # The REVIEW's session, when `theorist.reviewer_continuity` is on:
-    # one id for every round, so round k+1 continues the reviewer that
-    # already argued round k instead of opening a conversation that has
-    # to re-read the document, the Programme and its own last ruling.
-    # Minted ONCE here, and taken from the checkpoint on a re-dispatch —
-    # a resumed run that minted a fresh one would split one review
-    # across two reviewer conversations. Empty = today: a fresh reviewer
-    # per round (`review.review` mints its own id per cold spawn).
-    reviewer_sid = ""
-    if reviewer_continuity():
-        reviewer_sid = ((resumed.reviewer_sid if resumed else "")
-                        or str(uuid.uuid4()))
 
     # The resume point, rewritten at every state change below. Its cost
     # is one small file per transition; the cost of NOT having it was
@@ -288,8 +275,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             phase=phase, round_no=round_no, started_at=started_at,
             reviewed_sha=(_checkpoint.digest(reviewed_body)
                           if reviewed_body else ""),
-            resumed_from=(resumed.source_pipeline_id if resumed else ""),
-            reviewer_sid=reviewer_sid)
+            resumed_from=(resumed.source_pipeline_id if resumed else ""))
 
     # Quota-park budget for this run, on the Strategist wake's terms: the
     # queue row's lease is reclaimed on AGE ALONE at LEASE_TTL_SEC even
@@ -439,8 +425,7 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
             workspace=workspace, problem=problem, group_id=group_id,
             objective=objective, situation=situation, report_body=body,
             dialogue=dialogue, pipeline_id=pipeline_id,
-            final_round=final_round, quota_park=_quota_park,
-            reviewer_sid=reviewer_sid)
+            final_round=final_round, quota_park=_quota_park)
         if rrc != 0:
             return _fail_spawn(
                 _rc_reason(rrc, "theory_reviewer",

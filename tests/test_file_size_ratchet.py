@@ -502,10 +502,12 @@ _WATERMARKS = {
     # a second definition of what a review round is. Conscious bump.
     "Tooling/lab/continuity.py": 1080,
     "Tooling/lab/driver.py": 1250,  # +11 2026-09-07 a judge arm may name a LIST of proposal files, one round each (`_judge_sources`) — the shape `rows:` already had  # +20 2026-09-07 `root_proved` — the daemon kind's end-state check; crossed the default cap, so it gets a named watermark
-    # 1000 (the default cap) → 1200 2026-09-07 — `adversary.dossier`:
-    # the judge's package can ride IN its prompt (the small always-read
-    # files verbatim, a table of contents for the big ones) instead of
-    # being a directory it opens file by file. It lives here because the
+    # 1000 (the default cap) → 1200 2026-09-07 — the inline dossier: the
+    # judge's package rides IN its prompt (the small always-read files
+    # verbatim, a table of contents for the big ones) instead of being a
+    # directory it opens file by file (the `adversary.dossier` flag that
+    # chose between the two was retired 2026-09-08). It lives here
+    # because the
     # dossier IS `build_projection`'s output and the two renderings of
     # it must move together: a file added to the projection and not to
     # `DOSSIER_INLINE_ORDER` is a file the inline judge never sees.
@@ -714,19 +716,26 @@ _WATERMARKS = {
     # a CONTRACT and grows only when the rubric moves, the review
     # round is a projection plus a spawn, the landing is a path and a
     # row, and the entry is the loop that joins them.
-    "Tooling/pipeline/theorist/__init__.py": 540,  # +115 2026-09-06 checkpoint + resume: `run_theorist` marks its phase at every state change and picks a re-dispatched request up where it stopped (a reviewer's quota death used to make the next author rewrite the whole document) — conscious bump  # +25 2026-09-06 an infra death is the framework's, not the request's (owner ruling): `_fail_spawn` holds the row open under the re-issue bound, and the run carries a quota-park budget for its review rounds — conscious bump  # +20 2026-09-06 a refused theory document lands too (owner ruling): one landing call for both roads, and the rejection's outcome carries the path, the fired criteria and the rigour flag  # +80 2026-09-05 the three failure roads are told apart at the source (`_fail` takes its headline per road), a spawn that died after writing is reviewed rather than thrown away, and a dead seat is named from its stderr like every other pipeline's  # +40 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump  # +10 2026-09-08 the landing hands back the ruling it rewrote, so the row and the outcome name the preserved file the header names — conscious bump
-    "Tooling/pipeline/theorist/checkpoint.py": 550,  # born 2026-09-06: `_theorize.json`, the theory layer's resume point — its phases, the reconcile that reads the DIR over the field, the dir search/carry, and the predicate both cleanup sweeps ask before deleting a dir  # +20 2026-09-07 `reviewer_sid` on the checkpoint — the review's own session has to survive a re-dispatch the way the author's does — conscious bump
+    "Tooling/pipeline/theorist/__init__.py": 530,  # +115 2026-09-06 checkpoint + resume: `run_theorist` marks its phase at every state change and picks a re-dispatched request up where it stopped (a reviewer's quota death used to make the next author rewrite the whole document) — conscious bump  # +25 2026-09-06 an infra death is the framework's, not the request's (owner ruling): `_fail_spawn` holds the row open under the re-issue bound, and the run carries a quota-park budget for its review rounds — conscious bump  # +20 2026-09-06 a refused theory document lands too (owner ruling): one landing call for both roads, and the rejection's outcome carries the path, the fired criteria and the rigour flag  # +80 2026-09-05 the three failure roads are told apart at the source (`_fail` takes its headline per road), a spawn that died after writing is reviewed rather than thrown away, and a dead seat is named from its stderr like every other pipeline's  # +40 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump  # +10 2026-09-08 the landing hands back the ruling it rewrote, so the row and the outcome name the preserved file the header names — conscious bump  # 540→530 2026-09-08 the reviewer-continuity sid minting is gone with its flag — tighten
+    "Tooling/pipeline/theorist/checkpoint.py": 530,  # born 2026-09-06: `_theorize.json`, the theory layer's resume point — its phases, the reconcile that reads the DIR over the field, the dir search/carry, and the predicate both cleanup sweeps ask before deleting a dir  # 550→530 2026-09-08 `reviewer_sid` off the checkpoint with the flag that needed it (`theorist.reviewer_continuity`, retired) — tighten; an old file carrying the key still loads
     "Tooling/pipeline/theorist/verdict.py": 375,  # +25 2026-09-06 a refused theory document lands too (owner ruling): `fired_criteria` / `rigour_is_defective` / `RIGOUR_DEFECTIVE` — citability follows criterion 2, in one spelling for all three surfaces  # +25 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump  # +25 2026-09-08 criterion 5 (Target) joins this rubric too — the key tuple carries why the other four cannot catch a document that answers a proxy of its objective
-    # 330→450 2026-09-07 — `theory_reviewer.dossier`: the reviewer's
-    # package can ride IN its prompt (the small always-read files
-    # verbatim, a table of contents for the big ones) instead of being a
-    # directory it opens file by file. The block shapes are shared with
+    # 330→450 2026-09-07 — the inline dossier: the reviewer's package
+    # rides IN its prompt (the small always-read files verbatim, a table
+    # of contents for the big ones) instead of being a directory it opens
+    # file by file (the `theory_reviewer.dossier` flag that chose between
+    # the two was retired 2026-09-08). The block shapes are shared with
     # the batch judge (`pipeline/dossier.py`); what lives here is which
     # of THIS projection's files gets which block, and it belongs beside
     # `build_review_projection` for the reason the judge's does: a file
     # added to the projection and not to `DOSSIER_INLINE_ORDER` is a file
     # the inline reviewer never sees. Conscious bump.
-    "Tooling/pipeline/theorist/review.py": 550,  # +25 2026-09-06 a refused verdict resumes the reviewer that wrote it (the judge's `479fd579` one seat over): the sid + retry_context state the loop now carries, and the refusal message it authors — conscious bump  # +25 2026-09-06 the reviewer absorbs the PROVIDER's failures (`_spawn`: quota park + the batch judge's infra budget) so its rc never costs the author's document — conscious bump  # +15 2026-09-06 a refused theory document lands too (owner ruling): the reviewer's dynamic manifest says what `agent/` now holds, since the static prompt calls it the accepted ones  # +35 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump  # +50 2026-09-07 the reviewer's session across a review's rounds (`theorist.reviewer_continuity`, default off): the flag reader, the carry into this round's projection, and the fixed sid the spawn loop pins — conscious bump
+    # 550→500 2026-09-08 — `theorist.reviewer_continuity` retired (owner
+    # ruling): the flag reader, `carry_prior_round` and the fixed sid the
+    # spawn loop pinned are gone, and so is the `theory_reviewer.dossier`
+    # mode read — tighten. `projection_files` arrives in their place: what
+    # the framework wrote into a round dir, so `preserve` can tell it from
+    # what the reviewer did.
+    "Tooling/pipeline/theorist/review.py": 500,  # +25 2026-09-06 a refused verdict resumes the reviewer that wrote it (the judge's `479fd579` one seat over): the sid + retry_context state the loop now carries, and the refusal message it authors — conscious bump  # +25 2026-09-06 the reviewer absorbs the PROVIDER's failures (`_spawn`: quota park + the batch judge's infra budget) so its rc never costs the author's document — conscious bump  # +15 2026-09-06 a refused theory document lands too (owner ruling): the reviewer's dynamic manifest says what `agent/` now holds, since the static prompt calls it the accepted ones  # +35 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump
     "Tooling/pipeline/theorist/landing.py": 285,  # +10 2026-09-06 `resumed from:` in the header — which run holds the earlier rounds' transcripts is archaeology the pipelines row cannot give  # +75 2026-09-06 a refused theory document lands too (owner ruling): the header opens with `status:` and carries the fired ruling, the filename carries `_rejected`, and `_free_name` stops a same-minute twin overwriting the record — conscious bump  # +20 2026-09-07 the review's final round (owner ruling): criterion 3's push half is chosen per round and its `reservations` are carried to the reader — conscious bump  # +30 2026-09-08 the reviewer's own files survive the landing: the preservation is called from here because the document's NAME is the directory they land under, and the ruling comes back rewritten — conscious bump
     # born 2026-09-08: the reviewer's notes and checks, out of the round dir before the pipeline deletes it, and every spelling of a citation of one rewritten to the copy. Its own module rather than more of `landing.py`: what counts as the reviewer's own file is a reading of `build_review_projection`, and the rewrite is a grammar.
     "Tooling/pipeline/theorist/preserve.py": 250,
@@ -822,7 +831,7 @@ _WATERMARKS = {
     # `_thread_rollout`, `_usage_delta`) rather than by subtracting a
     # thread baseline from a per-exec stream figure, which reported every
     # resumed spawn as zero. Conscious bump.
-    "Tooling/llm/codex_cli.py": 1600,  # +100 2026-09-05 DELTA 11 — the NL seats' stream-idle clock, and the renamed provider it can only be set on (measured against 0.153.0; the measurements ARE the docstring)  # +100 2026-09-07 `carry_session` / `owns_sessions_of` — a resume is per-DIRECTORY (thread map + rollout under this spawn's home), so a pipeline whose every round gets a fresh projection needs the adapter to move the conversation into it — conscious bump
+    "Tooling/llm/codex_cli.py": 1500,  # +100 2026-09-05 DELTA 11 — the NL seats' stream-idle clock, and the renamed provider it can only be set on (measured against 0.153.0; the measurements ARE the docstring)  # 1600→1500 2026-09-08 `carry_session` / `owns_sessions_of` removed with their only caller (`theorist.reviewer_continuity`, retired) — tighten
     "Tooling/pipeline/forward.py": 1250,  # +50 2026-09-07 named bricks (v54): `brick_name_defect` — the mint's declaration head must carry the brick's name, refused before the LSP elaboration rather than at landing
     "Tooling/lsp/lifecycle.py": 1200,  # +28 2026-09-03 gateway_live_marker/_pid — the gateway's presence as a file, so no reader proves absence with a connect that hangs; 2026-08-30 wall-aware verify client timeout; SPLIT before the next bump
     "Tooling/llm/antigravity_cli.py": 1150,

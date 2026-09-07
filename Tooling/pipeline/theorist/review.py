@@ -11,13 +11,11 @@ round has been argued. The Project's documents and the landed proofs
 are read IN PLACE on a read-only grant, exactly as the batch judge
 reads them.
 
-HOW that dossier reaches the reviewer is `theory_reviewer.dossier`
-(owner ruling 2026-09-07, the batch judge's flag one seat over):
-`files` — today — names the projection's files and the reviewer opens
-them; `inline` puts the small always-read ones in the prompt verbatim
-and maps the rest. The block shapes are shared (`pipeline/dossier.py`);
-which file gets which is below, because it is a reading of THIS
-projection.
+HOW that dossier reaches the reviewer is settled: the small always-read
+files ride IN the prompt verbatim and the rest arrive as the map
+`inspect` would have answered with. The block shapes are shared
+(`pipeline/dossier.py`); which file gets which is below, because it is a
+reading of THIS projection.
 """
 from __future__ import annotations
 
@@ -75,7 +73,7 @@ AGENT_SHELF_NOTE = (
 
 
 # ---------------------------------------------------------------------
-# how the dossier reaches the reviewer (`theory_reviewer.dossier`)
+# how the dossier reaches the reviewer
 # ---------------------------------------------------------------------
 
 #: Inlined FIRST, in this order, and round-INVARIANT: the same bytes for
@@ -117,74 +115,9 @@ DOSSIER_ROSTERS = ("CATALOG.md",)
 DOSSIER_NOTE_AREAS = ("agent", "user")
 
 
-def dossier_mode() -> str:
-    """`files` (today) or `inline`, from `theory_reviewer.dossier`."""
-    from ...core import config
-    return _dossier.normalize(
-        config.get("theory_reviewer.dossier", default=_dossier.FILES,
-                   env_var="ASTERISM_THEORY_REVIEWER_DOSSIER"),
-        key="theory_reviewer.dossier", seat="theorist")
-
-
-# ---------------------------------------------------------------------
-# whose reviewer rules round 2 (`theorist.reviewer_continuity`)
-# ---------------------------------------------------------------------
-
-_TRUE = ("true", "1", "yes", "on")
-
-
-def reviewer_continuity() -> bool:
-    """Does the reviewer keep ONE session across this review's rounds?
-
-    Default FALSE — a fresh reviewer per round is the shipped design,
-    and it is what `_remember_thread`'s own comment says the per-round
-    projection is for. The flag exists because the rubric changed under
-    it (`4d8c9bcf`): a document is a DELTA now, so round 2's reviewer
-    re-derives only what round 2 added and the rest it cites — and a
-    reviewer that already re-derived round 1 itself is the one that can
-    tell a citation from a claim without paying for the document twice.
-    Measured before it is switched on anywhere."""
-    from ...core import config
-    return str(config.get(
-        "theorist.reviewer_continuity", default=False,
-        env_var="ASTERISM_THEORIST_REVIEWER_CONTINUITY"
-    )).strip().lower() in _TRUE
-
-
-def carry_prior_round(attempts_dir: Path, proj: Path, *, round_no: int,
-                      session_id: str) -> str:
-    """Stage the reviewer's own earlier session into THIS round's
-    projection, so its cold spawn continues the conversation instead of
-    opening one. Returns the thread carried, or "" — and "" is a working
-    answer, not a failure: the round then runs exactly as it does today.
-
-    Walks BACKWARDS from the previous round because a round can be
-    missing one: a reviewer that died before recording a thread leaves a
-    projection with no session map, and the conversation to continue is
-    then the last one that ruled. Every earlier round's projection is
-    still on disk — `build_review_projection` clears only the round it
-    is building — and a re-dispatched run carries them in with the rest
-    of `review/` (`checkpoint.carry`)."""
-    from ... import agent
-    for k in range(int(round_no) - 1, 0, -1):
-        src = projection_dir(attempts_dir, k)
-        thread = agent.carry_session(
-            kind="theory_reviewer", src_attempts_dir=src,
-            dst_attempts_dir=proj, session_id=session_id)
-        if thread:
-            print(f"[theorist] review r{round_no}: continuing the "
-                  f"reviewer's own session from r{k} (thread {thread})",
-                  flush=True)
-            return thread
-    print(f"[theorist] review r{round_no}: no reviewer session to "
-          f"continue (seat not resumable, or no earlier round recorded "
-          f"one) — this round rules cold", flush=True)
-    return ""
-
-
 def dossier_sections(proj: Path, *, proofs_dir: Path,
                      papers_dir: Path) -> str:
-    """`## Dossier (inline)` + `## Table of contents`, for `inline` mode.
+    """`## Dossier (inline)` + `## Table of contents`.
 
     Everything the reviewer is otherwise sent to `inspect` for, resolved
     by the builder that already knows the answer. The two sections sit
@@ -326,9 +259,9 @@ def build_review_projection(*, round_no: int, attempts_dir: Path,
 
 def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
                    papers_dir: Path, present: "list[str]",
-                   dossier: str = "") -> Path:
+                   dossier: str) -> Path:
     """The reviewer's prompt with its two workspace placeholders filled,
-    the inline dossier (empty in `files` mode) and this round's manifest.
+    the inline dossier and this round's manifest.
 
     `{attempts_dir}` and the tool-line conditionals are NOT touched
     here — `render_prompt_template` inside the provider adapter owns
@@ -357,12 +290,11 @@ def _render_prompt(src: Path, dst: Path, *, proofs_dir: Path,
                 # settled prior work would fire criterion 1 on a
                 # document for restating something nothing established.
                 + AGENT_SHELF_NOTE + "\n")
-    # Rubric, then (in `inline` mode) the dossier and its table of
-    # contents, then the per-spawn manifest LAST — cheapest-to-cache
-    # first. In `files` mode the middle is empty and this is byte for
-    # byte the prompt every round has been written since the manifest
-    # landed; the `#if dossier_inline` sentence in the rubric is dropped
-    # by the template renderer on the flag `review` passes.
+    # Rubric, then the dossier and its table of contents, then the
+    # per-spawn manifest LAST — cheapest-to-cache first. The rubric is
+    # the same text for every review, the dossier the same for every
+    # round of one review down to `### report.md`, and the manifest is
+    # the one part that is this spawn's alone.
     dst.write_text(
         src.read_text(encoding="utf-8")
         .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
@@ -376,22 +308,13 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
            workspace: Path, problem: str, group_id: "int | None",
            objective: str, situation: str, report_body: str,
            dialogue: "list[dict]", pipeline_id: str, final_round: bool,
-           quota_park=None, reviewer_sid: str = ""
-           ) -> "tuple[dict | None, str, int]":
-    """One review round: projection-isolated, and by default a fresh
-    reviewer.
+           quota_park=None) -> "tuple[dict | None, str, int]":
+    """One review round: projection-isolated, and a FRESH reviewer.
 
     `final_round` says whether a revision is owed AFTER this round, and
     it has no default ON PURPOSE: it selects one of criterion 3's two
     push halves and the renderer is fail-open, so a caller that forgot
     it would show the reviewer both. Every caller must decide.
-
-    `reviewer_sid` is the review's own session id, minted once by the
-    caller (`theorist.reviewer_continuity`): round 1 rules under it cold
-    and rounds after it CONTINUE that conversation. Empty — today's
-    default — mints a fresh id per cold spawn, which is a fresh
-    reviewer per round. Either way the round is built and prompted
-    identically: same projection, same dossier, same criterion-3 half.
 
     Returns (verdict, err, rc): rc != 0 → provider failure; rc == 0 with
     err → the reviewer produced no usable ruling; else the verdict is
@@ -418,49 +341,32 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
     papers_dir = _project_docs.root(workspace, project).resolve()
     present = sorted(p.name for p in proj.iterdir()
                      if p.is_file() and not p.name.startswith("_"))
-    mode = dossier_mode()
     prompt_path = _render_prompt(
         PROMPT_DIR / "theorist" / "review.md",
         proj / "_theory_review_prompt.md",
         proofs_dir=proofs_dir, papers_dir=papers_dir, present=present,
-        dossier=(dossier_sections(proj, proofs_dir=proofs_dir,
-                                  papers_dir=papers_dir)
-                 if mode == _dossier.INLINE else ""))
+        dossier=dossier_sections(proj, proofs_dir=proofs_dir,
+                                 papers_dir=papers_dir))
     tools_cfg = write_tools_mcp_config(proj, workspace,
                                        seat="theory_reviewer",
                                        problem=problem)
     last_err = ""
     infra_tries = 0
-    # The reviewer's own earlier rounds, staged into THIS round's
-    # projection — nothing on round 1, and nothing at all when the flag
-    # is off (no `reviewer_sid`) or the seat cannot carry a session.
-    carried = (carry_prior_round(attempts_dir, proj, round_no=round_no,
-                                 session_id=reviewer_sid)
-               if reviewer_sid and round_no > 1 else "")
     # A refused verdict goes back to the SAME reviewer, carrying the
     # parser's message (2026-09-06, the judge's `479fd579` one seat
     # over): the retry used to mint a blind fresh reviewer and `last_err`
     # was only printed, so one shape error could burn every try. A
     # non-empty `retry_ctx` IS the resume; the sid is re-minted only for
     # a cold spawn.
-    #
-    # `fixed_sid` is the review's session when continuity is on AND this
-    # round can actually use it — round 1 (which mints the conversation)
-    # or a round whose predecessor was carried in. A round that asked
-    # for continuity and got nothing falls back to a per-spawn id rather
-    # than re-pinning one the provider has already seen.
-    fixed_sid = reviewer_sid if (round_no <= 1 or carried) else ""
-    sid = fixed_sid
+    sid = ""
     retry_ctx = ""
     spawn_kw = dict(
         kind="theory_reviewer", prompt_path=prompt_path,
         problem_dir=proj, attempts_dir=proj, timeout_sec=timeout_sec,
         mcp_config_path=tools_cfg,
-        # Criterion 3's push half, per round, and which dossier wording
-        # the `## What you see` section carries. Both names of each pair
-        # are always given — see `round_prompt_flags`.
-        prompt_flags={**round_prompt_flags(final_round),
-                      **_dossier.prompt_flags(mode)},
+        # Criterion 3's push half, per round. Both names are always
+        # given — see `round_prompt_flags`.
+        prompt_flags=round_prompt_flags(final_round),
         # Read-only, in place — the same grant the batch judge has, and
         # for the same reason: the landed proofs and the Project's
         # documents are ground truth, not the author's narrative, so
@@ -484,17 +390,10 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
         from ...state import failures as _failures
         from . import _rc_reason
         while True:
-            if not retry_ctx and not fixed_sid:
+            if not retry_ctx:
                 sid = str(uuid.uuid4())
-            # `continuation` resumes AND sends this round's rendered
-            # prompt — the adapter's `is_retry` branch would replace it
-            # with "your previous output was rejected", which is the
-            # verdict-shape retry below and not this. It stays set
-            # across an infra re-spawn: what died was the provider call,
-            # not the staged conversation.
             rc = agent.spawn_llm(
                 session_id=sid, is_retry=bool(retry_ctx),
-                continuation=bool(carried) and not retry_ctx,
                 retry_context=retry_ctx or None, **spawn_kw)
             if rc == 0 or not _failures.is_infra(
                     _rc_reason(rc, "theory_reviewer", proj)):

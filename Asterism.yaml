@@ -377,25 +377,6 @@ adversary:
                                # weekly cap is also what stalled the 08-06
                                # run; opus draws on the shared window.
                                # Lowest-volume pipeline — cost negligible.
-  dossier: inline              # 2026-09-07 (owner): lab judge_dossier — same trap
-                               # score both modes, -30% cost on real rounds, turns halved.
-  # dossier: files             # HOW the package reaches the judge.
-                               # `files` (default, and every round the
-                               # framework has ever run): the prompt names
-                               # the projection's files and the judge opens
-                               # what it wants. `inline`: the small
-                               # always-read files (contract / charter /
-                               # user_word / directive / Root / Defs /
-                               # PROGRAMME / Context, then decisions /
-                               # proposal / since) ride IN the prompt
-                               # verbatim, and TREE / ADJUDICATIONS /
-                               # BATCHES / dialogue arrive as the outline
-                               # `inspect` would have answered with.
-                               # Measured over 332 gpt-era judge sessions
-                               # (2026-09-07): 47.8 `inspect` reads per
-                               # session, 31.7 of them on a file that
-                               # session had already read; 10 `outline`
-                               # calls because the judge had no map.
 # ── the theory layer (theory_wake_design.md §1) ──────────────────────
 # Four NL seats, two layers, each layer priced on its own: the THEORY
 # layer (theorist / theory_reviewer) writes and reviews the mathematics
@@ -413,8 +394,6 @@ theorist:
   # model: claude-fable-5-1      # 2026-09-06 claude day (owner); astra kept dying on capacity
 
 theory_reviewer:
-  dossier: inline              # 2026-09-07 (owner): lab theory_dossier — same verdicts on the real
-                               # rounds, -29% cost; revert to `files` if it misbehaves
   # The judge matches its author, the 08-23 shape one layer up: the
   # reviewer re-derives the proofs and reproduces the computations, so
   # it must not sit below the seat it is checking.

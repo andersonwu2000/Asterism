@@ -111,12 +111,6 @@ class Resume:
     provider: str
     model: str
     started_at: str
-    #: The REVIEW's session, when `theorist.reviewer_continuity` is on.
-    #: Carried for the same reason the author's is: it is the id round
-    #: k+1 continues, so a run that resumed at round k and minted a new
-    #: one would open a second reviewer conversation halfway through one
-    #: review. "" when the flag is off, which is the shipped default.
-    reviewer_sid: str = ""
 
     @property
     def author_is_resumable(self) -> bool:
@@ -143,18 +137,21 @@ def write(attempts_dir: Path, *, decision_id: "int | None",
           group_id: "int | None", problem: str, author_sid: str,
           provider: str, model: str, phase: str, round_no: int,
           started_at: str, updated_at: "str | None" = None,
-          reviewed_sha: str = "", resumed_from: str = "",
-          reviewer_sid: str = "") -> Path:
+          reviewed_sha: str = "", resumed_from: str = "") -> Path:
     """Rewrite the checkpoint. Best-effort by nature — a run that cannot
     write its resume point still has to do the work in front of it — but
-    LOUD, because a silent failure here is the incident again."""
+    LOUD, because a silent failure here is the incident again.
+
+    A key this no longer writes is not a key `load` refuses: the file is
+    read by `.get`, so a checkpoint frozen by an older build (one with
+    `reviewer_sid` in it, from the retired `theorist.reviewer_continuity`)
+    still adopts."""
     from ...state.db import now as _now
     data = {
         "decision_id": None if decision_id is None else int(decision_id),
         "group_id": None if group_id is None else int(group_id),
         "problem": problem,
         "author_sid": author_sid,
-        "reviewer_sid": reviewer_sid,
         "provider": provider,
         "model": model,
         "phase": phase,
@@ -399,8 +396,7 @@ def adopt(workspace: Path, attempts_dir: Path, *,
         round_no=round_no, author_sid=str(data.get("author_sid") or ""),
         provider=str(data.get("provider") or ""),
         model=str(data.get("model") or ""),
-        started_at=str(data.get("started_at") or ""),
-        reviewer_sid=str(data.get("reviewer_sid") or ""))
+        started_at=str(data.get("started_at") or ""))
 
 
 def write_dialogue(attempts_dir: Path, dialogue: "list[dict]") -> Path:

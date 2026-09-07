@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     p_lab.add_argument(
         "--config", action="append", default=None, metavar="SECTION.KEY=VALUE",
         help="run: set one Asterism.yaml flag for the whole run, e.g. "
-             "`--config adversary.dossier=inline`. Repeatable; merged "
+             "`--config theorist.rounds=1`. Repeatable; merged "
              "over whatever the arm or the set declares")
     p_lab.add_argument(
         "--root", default=None,

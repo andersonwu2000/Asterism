@@ -58,7 +58,7 @@ asterism lab gc       [--keep-latest 3] [--root R]
   whole run, merged over whatever the arm or the set declares.
   Repeatable.
 * `--config <section>.<key>=<value>` moves one `Asterism.yaml` flag the
-  same way — `--config adversary.dossier=inline`. Repeatable, merged
+  same way — `--config theorist.rounds=1`. Repeatable, merged
   over the arm's or the set's own `config:`. The value is read as YAML,
   so `true` / `3` / `inline` land as the bool, the int and the string.
 
@@ -145,7 +145,7 @@ arms:
     seats:                   # <seat>: provider/model[:effort]
       adversary: codex/gpt-5:xhigh
     config:                  # <dotted Asterism.yaml key>: value
-      adversary.dossier: inline
+      theorist.rounds: 1
     # ...plus the kind's own inputs:
     #   judge_round      group, trigger, and exactly one of
     #                    rows (programme_revisions ids) | proposal (a

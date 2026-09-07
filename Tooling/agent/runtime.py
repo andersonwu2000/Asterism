@@ -355,32 +355,6 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     return rc
 
 
-def carry_session(*, kind: str, src_attempts_dir: Path,
-                  dst_attempts_dir: Path, session_id: str) -> str:
-    """Move one seat's conversation from the directory it ran in to the
-    one it is about to run in. Returns the provider thread carried, or
-    "" when this seat's sessions cannot be carried between directories.
-
-    A resume is per-DIRECTORY on every backend, which is why passing the
-    same `session_id` along is not enough on its own: codex looks its
-    thread up in the attempts dir's own session map and opens the
-    rollout under that spawn's own home, and claude files its transcript
-    under a name derived from the cwd. A pipeline whose every round gets
-    a fresh projection therefore resumes nothing without this.
-
-    Only codex-backed seats are carried today, and the check is asked of
-    the DECLARATION rather than of a list of provider names. A claude
-    session lives in the CLI's own store under a name derived from the
-    cwd — a different staging problem, not solved here. The caller gets
-    "" and spawns cold, which is what it would have done anyway."""
-    from ..llm import capabilities as _caps
-    from ..llm import codex_cli as _codex
-    if not _codex.owns_sessions_of(_caps.provider_for_kind(kind)):
-        return ""
-    return _codex.carry_session(src_attempts_dir, dst_attempts_dir,
-                                session_id=session_id)
-
-
 #: Repo regions where a write DURING a spawn is expected, so a change
 #: there is not evidence of anything: the spawn sandboxes, the
 #: framework's own runtime state, the harvest target, and the benchmark

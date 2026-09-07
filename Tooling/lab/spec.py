@@ -82,7 +82,7 @@ DRIVER_KINDS.update(_CONTINUITY_ARM_KEYS)
 #: `config:` is the third overlay, beside `prompts:` and `seats:`, and
 #: it exists because the two that came first cannot express a framework
 #: FLAG. A behaviour shipped behind `<section>.<key>` in `Asterism.yaml`
-#: — `adversary.dossier`, say — is exactly the kind of thing an arm is
+#: — `theorist.rounds`, say — is exactly the kind of thing an arm is
 #: for, and without this the only ways to move one were to edit the
 #: workspace by hand between build and run (invisible in the record, and
 #: `prompt_hashes` exists precisely because that class of edit is
@@ -164,7 +164,7 @@ def _seat_spec(seat: str, raw: str) -> "dict[str, str]":
 
 
 def config_spec(where: str, raw) -> "dict[str, Any]":
-    """`{"adversary.dossier": "inline"}` — checked here, applied by
+    """`{"theorist.rounds": 1}` — checked here, applied by
     `build._apply_overlay`.
 
     Keys are DOTTED paths into `Asterism.yaml`, spelled the way
@@ -182,7 +182,7 @@ def config_spec(where: str, raw) -> "dict[str, Any]":
             raise LabError(
                 f"{where}: config key {key!r} is not a dotted "
                 f"`<section>.<key>` path into Asterism.yaml (e.g. "
-                f"`adversary.dossier: inline`)")
+                f"`theorist.rounds: 1`)")
         out[text] = value
     return out
 

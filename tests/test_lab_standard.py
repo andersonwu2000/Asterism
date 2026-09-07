@@ -859,14 +859,14 @@ def test_a_set_pins_a_config_flag_and_the_command_line_moves_it(tmp_path):
     body = _YAML.replace(
         "    trigger: inject_batch_done\n",
         "    trigger: inject_batch_done\n"
-        "    config: {adversary.dossier: files}\n")
+        "    config: {theorist.rounds: 3}\n")
     _sets(tmp_path, body=body)
     sets = std.load(tmp_path)
     trap = sets.items[0]
-    assert trap.config == {"adversary.dossier": "files"}
+    assert trap.config == {"theorist.rounds": 3}
     assert sets.items[1].config == {}, "another set inherits nothing"
     plain = std._experiment(sets, trap, None)
-    assert plain.arm(trap.arm).config == {"adversary.dossier": "files"}
+    assert plain.arm(trap.arm).config == {"theorist.rounds": 3}
     moved = std._experiment(sets, trap, None,
-                            {"adversary.dossier": "inline"})
-    assert moved.arm(trap.arm).config == {"adversary.dossier": "inline"}
+                            {"theorist.rounds": 1})
+    assert moved.arm(trap.arm).config == {"theorist.rounds": 1}

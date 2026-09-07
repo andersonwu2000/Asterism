@@ -273,8 +273,8 @@ def test_the_flag_is_passed_explicitly_even_when_it_is_false(
 
     runtime.spawn_llm(kind="adversary", prompt_path=tmp_path / "p.md",
                       problem_dir=tmp_path, attempts_dir=tmp_path,
-                      prompt_flags={"dossier_inline": True})
+                      prompt_flags={"more_rounds": True})
 
     assert "feedback_tool" in seen["flags"]
     assert seen["flags"]["feedback_tool"] is False
-    assert seen["flags"]["dossier_inline"] is True   # caller's own survive
+    assert seen["flags"]["more_rounds"] is True   # caller's own survive

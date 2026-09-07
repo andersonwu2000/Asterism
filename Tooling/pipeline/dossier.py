@@ -1,19 +1,20 @@
-"""How a reviewing seat's package reaches it — `files` or `inline`.
+"""How a reviewing seat's package reaches it: the bytes ride IN the
+prompt.
 
-Two seats project a directory and then have to decide how their spawn
-reads it: the batch judge (`pipeline/adversary.py`, ruling 2026-09-07)
-and the theory reviewer (`pipeline/theorist/review.py`, the same ruling
-one seat over). The MODES and the four BLOCK shapes are the same for
-both, because the question is the same one — "here are the bytes, do
-not spend a turn opening them" against "here is the map, open the one
-section your ruling turns on".
+Two seats project a directory and then have to hand it to their spawn:
+the batch judge (`pipeline/adversary.py`) and the theory reviewer
+(`pipeline/theorist/review.py`). The four BLOCK shapes are the same for
+both, because the question is the same one — the small always-read files
+verbatim ("here are the bytes, do not spend a turn opening them"), the
+big sparsely-read ones as the map `inspect` would have answered with
+("open the one section your ruling turns on").
 
 WHAT IS NOT HERE is which file gets which block. That is each seat's
 reading of its OWN projection: the judge inlines a contract, a proposal
 and a decision list; the reviewer inlines a request and the document
 under review. A shared table would be a third place that has to stay in
 step with two projections, and a file added to a projection but not to
-its inline order is a file the inline reader never sees.
+its inline order is a file the reader never sees.
 
 WHY IT PAYS. Measured over 332 gpt-era judge sessions (2026-09-07):
 47.8 `inspect` reads per session, 31.7 of them on a file the same
@@ -22,57 +23,15 @@ map; 14% of all tool-output bytes were whole-file re-reads. A round is
 ~14 turns and the cached re-send of a growing context is 43% of its
 cost, so a file first read on turn 12 has been re-sent eleven times by
 the end, while the same bytes placed in the prompt are sent once and
-cached.
+cached. The lab arms measured the same verdicts either way at −30% (the
+judge) and −29% (the reviewer), and the two `dossier: files|inline`
+flags were retired on 2026-09-08 (owner ruling): the round that names
+its files and lets the reader open them no longer exists.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
-#: `files` — the prompt NAMES the projection's files and the reader
-#: opens what it wants. Every round the framework has ever run took this
-#: road, and it is the default for both seats.
-FILES = "files"
-#: `inline` — the small always-read files ride IN the prompt, verbatim,
-#: and the big sparsely-read ones arrive as the table of contents the
-#: reader would otherwise buy with an `outline` call.
-INLINE = "inline"
-MODES = (FILES, INLINE)
-
-
-def normalize(raw, *, key: str, seat: str) -> str:
-    """One seat's dossier mode, from the VALUE its own config read
-    returned.
-
-    The value and not the key, on purpose: every seat spells its own
-    key literal in its own `config.get` call, because
-    `tests/test_config_spec_drift` binds CONFIG_SPEC to the code by
-    scanning for exactly that literal. A shared reader taking the key as
-    an argument would blind the registry's two-way gate at precisely the
-    place a typo costs a silently-defaulted flag.
-
-    An unreadable value degrades to `files` with a printed line rather
-    than refusing: this runs inside a wake that already holds a finished
-    proposal or a finished document, and a config typo must not be what
-    discards it."""
-    val = str(raw or "").strip().lower()
-    if val in MODES:
-        return val
-    print(f"[{seat}] {key}={val!r} is not one of {list(MODES)} — "
-          f"running {FILES!r}", flush=True)
-    return FILES
-
-
-def prompt_flags(mode: str) -> "dict[str, bool]":
-    """`dossier_inline` / `dossier_files` for the prompt renderer.
-
-    BOTH names, always — `agent/runtime.render_prompt_template` is
-    fail-open, so a flag it is not given keeps its block, and passing
-    only the true one would leave the other mode's wording in the prompt
-    beside it (the `native_file_tools` / `mcp_only_reads` pair is the
-    same shape and the same reason)."""
-    return {"dossier_inline": mode == INLINE,
-            "dossier_files": mode == FILES}
 
 
 def fence_for(text: str) -> str:

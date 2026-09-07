@@ -587,11 +587,11 @@ def test_a_config_overlay_lands_in_the_workspaces_own_yaml(
     sl = snap_mod.take(live, root, problem=PROBLEM)
     exp = _exp(root, sl.id, arm_body=(
         "    seats: {adversary: codex/gpt-5:xhigh}\n"
-        "    config: {adversary.dossier: inline, dispatch.pool: 3}"))
+        "    config: {theorist.rounds: 1, dispatch.pool: 3}"))
     ws = build_mod.build(root, exp, "a", slice_=sl, base=base, commit=head,
                          rep=1)
     cfg = yaml.safe_load((ws / "Asterism.yaml").read_text(encoding="utf-8"))
-    assert cfg["adversary"]["dossier"] == "inline"
+    assert cfg["theorist"]["rounds"] == 1
     assert cfg["dispatch"]["pool"] == 3
     # The seat overlay rode in the SAME write, and the section it shares
     # with the flag kept both halves.
@@ -602,11 +602,11 @@ def test_a_config_overlay_lands_in_the_workspaces_own_yaml(
         (base / "Asterism.yaml").read_text(encoding="utf-8"))
     assert cfg["strategist"] == archived["strategist"]
     rec = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))
-    assert rec["overlay"]["config"]["adversary.dossier"] == "inline"
+    assert rec["overlay"]["config"]["theorist.rounds"] == 1
     # And the record can be asked what the workspace HELD, not just what
     # the arm declared.
-    assert build_mod.config_now(ws, ["adversary.dossier", "nope.missing"]) \
-        == {"adversary.dossier": "inline", "nope.missing": None}
+    assert build_mod.config_now(ws, ["theorist.rounds", "nope.missing"]) \
+        == {"theorist.rounds": 1, "nope.missing": None}
 
 
 def test_a_command_line_config_wins_over_the_arms(tmp_path):
@@ -615,26 +615,26 @@ def test_a_command_line_config_wins_over_the_arms(tmp_path):
     for the same reason."""
     root = tmp_path / "lab"
     exp = _exp(root, "Erdos.p1_20260101-000000Z", arm_body=(
-        "    config: {adversary.dossier: files, dispatch.pool: 2}\n"))
-    moved = spec_mod.with_config(exp, {"adversary.dossier": "inline"})
-    assert moved.arm("a").config == {"adversary.dossier": "inline",
+        "    config: {theorist.rounds: 3, dispatch.pool: 2}\n"))
+    moved = spec_mod.with_config(exp, {"theorist.rounds": 1})
+    assert moved.arm("a").config == {"theorist.rounds": 1,
                                      "dispatch.pool": 2}
-    assert exp.arm("a").config["adversary.dossier"] == "files", \
+    assert exp.arm("a").config["theorist.rounds"] == 3, \
         "the parsed experiment is not mutated"
     assert spec_mod.with_config(exp, {}) is exp
 
 
 def test_a_dotless_config_key_is_refused_while_the_operator_is_looking(
         tmp_path):
-    """A bare `dossier: inline` would land a top-level key nothing ever
+    """A bare `rounds: 1` would land a top-level key nothing ever
     reads and let the arm report green on the setting it meant to
     change — the failure a hand-written lab.yaml is actually exposed
     to. Refused at load, with the shape it wanted."""
     root = tmp_path / "lab"
     with pytest.raises(lab.LabError) as exc:
         _exp(root, "Erdos.p1_20260101-000000Z",
-             arm_body="    config: {dossier: inline}\n")
-    assert "dotted" in str(exc.value) and "adversary.dossier" in str(exc.value)
+             arm_body="    config: {rounds: 1}\n")
+    assert "dotted" in str(exc.value) and "theorist.rounds" in str(exc.value)
 
 
 def test_a_judge_arm_may_name_several_proposal_files_one_round_each(tmp_path):

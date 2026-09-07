@@ -393,7 +393,7 @@ def _apply_prompts(ws: Path, arm) -> "list[str]":
 
 
 def _set_dotted(cfg: dict, key: str, value) -> None:
-    """`cfg["adversary"]["dossier"] = value` for `"adversary.dossier"`.
+    """`cfg["theorist"]["rounds"] = value` for `"theorist.rounds"`.
 
     Intermediate levels are created, and a level that is NOT a mapping
     is replaced — the alternative is to refuse, and an arm that names a

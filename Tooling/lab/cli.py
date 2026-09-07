@@ -133,7 +133,7 @@ def config_overrides(raw) -> "dict[str, object]":
         if not sep or not key.strip():
             raise LabError(
                 f"--config {entry!r} is not `section.key=value` (e.g. "
-                f"`--config adversary.dossier=inline`)")
+                f"`--config theorist.rounds=1`)")
         try:
             parsed = yaml.safe_load(value)
         except yaml.YAMLError:
