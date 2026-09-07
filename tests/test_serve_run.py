@@ -703,6 +703,73 @@ def test_run_theorist_lane_streams_the_draft_and_the_review(
         "[criterion 2] Theorem 1 is not proved"]
 
 
+def test_tail_ships_a_long_document_whole(tmp_path: Path) -> None:
+    """A theory document is 28-45 KB and the card scrolls, so the card
+    gets ALL of it.
+
+    The old reader kept the LAST 32 KB and dropped the cut first line —
+    a guard sized for a few-KB proof file. Against a report.md it ate
+    the head of the document, and the card opened mid-sentence with
+    nothing saying so (owner, 2026-09-07). Both ends of a 60 KB
+    document must survive the read.
+    """
+    from Tooling.serve.run import _tail
+    doc = tmp_path / "report.md"
+    body = "\n\n".join(f"## Section {i}\n\nparagraph {i} of the argument."
+                       for i in range(1400))
+    doc.write_text(f"# The whole document\n\n{body}\n", encoding="utf-8")
+    assert doc.stat().st_size > 60_000
+    t = _tail(doc)
+    assert t is not None
+    assert t["tail"].startswith("# The whole document")
+    assert t["tail"].rstrip().endswith("paragraph 1399 of the argument.")
+    assert t["clipped"] is False
+    assert t["dropped_bytes"] == 0
+    assert t["size"] == doc.stat().st_size
+
+
+def test_tail_says_so_when_the_runaway_ceiling_clips(tmp_path: Path) -> None:
+    """Past `_MAX_BYTES` the read is a tail again — and SAYS it is.
+
+    A clip that arrives unannounced is a card claiming the agent's
+    document begins mid-sentence. The payload carries the flag and the
+    bytes of head it is not showing, so the card can name the cut."""
+    from Tooling.serve.run import _MAX_BYTES, _tail
+    big = tmp_path / "report.md"
+    line = "x" * 99 + "\n"
+    big.write_text("# head that will be lost\n" + line * 31_000,
+                   encoding="utf-8")
+    size = big.stat().st_size
+    assert size > 3_000_000
+    t = _tail(big)
+    assert t is not None
+    assert t["clipped"] is True
+    assert "head that will be lost" not in t["tail"]
+    # the count is the head the card is NOT showing: the unread bytes
+    # plus the one cut line the reader drops, and nothing else
+    assert size - _MAX_BYTES <= t["dropped_bytes"] <= size - _MAX_BYTES + 200
+    assert t["size"] == size
+
+
+def test_tail_strips_the_prelude_for_lean_only(tmp_path: Path) -> None:
+    """The prelude/`end` strip is LEAN grammar. On a markdown note it
+    ate lines like "end state: …" (self-audit, 2026-07-14), so it stays
+    keyed on the suffix — the whole-document read must not revive it."""
+    from Tooling.serve.run import _tail
+    lean = tmp_path / "L_a.lean"
+    lean.write_text("import Mathlib\nopen Finset\n\n"
+                    "theorem a : 1 = 1 := by rfl\n\nend Problems.p\n",
+                    encoding="utf-8")
+    t = _tail(lean)
+    assert t is not None
+    assert t["tail"] == "theorem a : 1 = 1 := by rfl"
+    md = tmp_path / "note.md"
+    md.write_text("import: the plan\n\nend state: two bricks land\n",
+                  encoding="utf-8")
+    assert _tail(md)["tail"] == ("import: the plan\n\n"
+                                "end state: two bricks land")
+
+
 def test_context_preamble_extraction() -> None:
     """_context_preamble: opens + multi-line variable block ride along;
     docstring prose starting with "open" does not leak in."""

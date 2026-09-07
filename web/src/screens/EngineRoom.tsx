@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format'
+import { compactNumber, duration, goalCode, goalLabel, groupCode, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { emitGoalHover, emitGoalOpen } from '../lib/goalFocus'
@@ -208,18 +208,18 @@ export function CycleLine({
   )
 }
 
-/** serve's tail window (run.py _TAIL_BYTES) — under this size the tail
- * is the whole file and needs no window repair. */
-const TAIL_WINDOW_BYTES = 32768
-
-/** A truncated tail can open INSIDE a code fence; the first ``` below
+/** A CLIPPED tail can open INSIDE a code fence; the first ``` below
  * is then a CLOSER, and a naive prose render inverts code/prose for
- * the whole tail. Heuristic repair: truncated + odd fence count + the
+ * the whole tail. Heuristic repair: clipped + odd fence count + the
  * first fence line is bare (openers usually carry a language tag) ⇒
  * drop the orphaned fence body. A trailing fence the agent is still
- * writing renders as code-in-progress, which is honest. */
-function stableMdTail(tail: string, size: number): string {
-  if (size <= TAIL_WINDOW_BYTES) return tail
+ * writing renders as code-in-progress, which is honest.
+ *
+ * Serve now sends the whole file (run.py `_MAX_BYTES`, 2 MB), so this
+ * only ever runs on a runaway — it used to run on every document past
+ * 32 KB, which is every theory report. */
+function stableMdTail(tail: string, clipped: boolean): string {
+  if (!clipped) return tail
   const lines = tail.split('\n')
   const fenceIdx = lines.findIndex((l) => l.trimStart().startsWith('```'))
   if (fenceIdx < 0) return tail
@@ -298,6 +298,10 @@ function Lane({
   multi?: boolean
 }) {
   const quiet = w.file?.quiet_sec ?? null
+  // serve ships the file whole; a clip is a runaway past its 2 MB
+  // ceiling, and the body then starts mid-sentence — which the card
+  // SAYS, because a silent one reads as the agent's own first line
+  const clipped = w.file?.clipped ?? false
   // the lane's OWN problem outranks the console's lens — a pattern
   // scope runs agents across several problems at once
   const laneProblem = w.problem ?? problem
@@ -428,6 +432,13 @@ function Lane({
               </span>
             )}
           </summary>
+          {clipped && (
+            <div className="mt-1.5 text-[10px] text-ink-faint">
+              this file is past the console's reading ceiling —{' '}
+              {compactNumber(w.file.dropped_bytes ?? 0)} bytes of its head are not
+              shown; the Documents tab reads it whole
+            </div>
+          )}
           {w.path?.endsWith('.md') ? (
             // prose the agent writes FOR humans (proposal, plan note)
             // reads as prose — headings, lists, $TeX$ typeset; the Lean
@@ -435,7 +446,7 @@ function Lane({
             // screenshot, 2026-07-25). Unbalanced $ mid-write simply
             // stays raw (withMath needs the closing $).
             <div className={frameClass({ cap: 'lg', size: 'md', mono: false, className: 'mt-1.5' })}>
-              {renderProse(stableMdTail(w.file.tail, w.file.size), { mode: 'document' })}
+              {renderProse(stableMdTail(w.file.tail, clipped), { mode: 'document' })}
             </div>
           ) : (
             <>

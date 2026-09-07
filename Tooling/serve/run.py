@@ -26,9 +26,12 @@ from ..core import usage_quota
 from ..state import db
 from . import data as _data
 
-#: sanity clip for a runaway file — proof files are a few KB, and the
-#: card scrolls, so this is a guard, not a window
-_TAIL_BYTES = 32768
+#: sanity ceiling for a RUNAWAY file — not a reading window. The card
+#: scrolls, so a document belongs on it whole: at 32 KB this guard was
+#: silently eating the head of every theory report (28–45 KB; owner,
+#: 2026-09-07 — a Theorist's report.md opened mid-sentence). Far above
+#: any real artefact, and when it does fire the payload SAYS so.
+_MAX_BYTES = 2 * 1024 * 1024
 
 #: the file header: imports, opens, namespace/section machinery. The
 #: card shows the MATHEMATICS (owner: 12 lines was too little — strip
@@ -41,21 +44,34 @@ _CLOSER_RE = re.compile(r"^\s*end\b|^\s*$")
 
 
 def _tail(path: Path) -> "dict | None":
-    """The live body of a file being written — whole text minus the
-    prelude and the closing `end`s. None = no file yet (a worker that
-    has not touched disk is still warming up its prompt — that is
-    itself information)."""
+    """The live body of a file being written — the WHOLE text minus the
+    Lean prelude and the closing `end`s. None = no file yet (a worker
+    that has not touched disk is still warming up its prompt — that is
+    itself information).
+
+    Whole, because the card scrolls and a document is read from its
+    first sentence. Only `_MAX_BYTES` clips, and a clip is reported
+    (`clipped` / `dropped_bytes`) so the card can name the cut — a
+    reader must never be left guessing whether a body starts at its
+    beginning."""
     try:
         st = path.stat()
         with open(path, "rb") as f:
-            if st.st_size > _TAIL_BYTES:
-                f.seek(-_TAIL_BYTES, 2)
+            if st.st_size > _MAX_BYTES:
+                f.seek(-_MAX_BYTES, 2)
             raw = f.read()
     except OSError:
         return None
+    clipped = st.st_size > _MAX_BYTES
+    dropped = st.st_size - len(raw) if clipped else 0
+    if clipped:
+        # the first line is almost surely cut mid-way — drop it on the
+        # BYTES, so `dropped` is exact whatever the line endings are
+        cut = raw.find(b"\n")
+        if cut >= 0:
+            dropped += cut + 1
+            raw = raw[cut + 1:]
     lines = raw.decode("utf-8", errors="replace").splitlines()
-    if st.st_size > _TAIL_BYTES and len(lines) > 1:
-        lines = lines[1:]  # first line is almost surely cut mid-way
     # prelude/`end` stripping is LEAN grammar — applied to a markdown
     # plan note it ate lines like "end state: …" (self-audit,
     # 2026-07-14); non-.lean files only lose blank edges
@@ -74,6 +90,10 @@ def _tail(path: Path) -> "dict | None":
         "tail": "\n".join(lines),
         "size": int(st.st_size),
         "quiet_sec": int(quiet),
+        # the body starts where the file does, unless these say it does
+        # not — the card draws the notice off them
+        "clipped": bool(clipped),
+        "dropped_bytes": int(dropped),
     }
 
 

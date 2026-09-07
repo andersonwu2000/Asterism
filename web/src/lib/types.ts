@@ -509,9 +509,20 @@ export interface RunWorker {
    * registry pass that runs first, un-judged) or 'math' (the judged
    * loop that plans the route). Null on other kinds. */
   path: string | null
-  /** tail of the file it is writing — spawn writes go through to the
-   * real path, so this is the live view; null = nothing on disk yet */
-  file: { tail: string; size: number; quiet_sec: number } | null
+  /** the file it is writing, WHOLE — spawn writes go through to the
+   * real path, so this is the live view; null = nothing on disk yet.
+   * `clipped` = serve's runaway ceiling (2 MB) fired and `dropped_bytes`
+   * of head are missing, which the card must say out loud rather than
+   * open mid-sentence. Both optional so a payload from a serve older
+   * than 2026-09-07 — which sent a silent 32 KB window and neither
+   * field — still reads. */
+  file: {
+    tail: string
+    size: number
+    quiet_sec: number
+    clipped?: boolean
+    dropped_bytes?: number
+  } | null
   /** The live argument with a reviewer, read from the worker's own
    * files — it would otherwise be half an hour of silence. A
    * Strategist's is its proposal↔Adversary cycle (research mode,
