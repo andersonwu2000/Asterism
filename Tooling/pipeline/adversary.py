@@ -843,10 +843,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
 
     # NL argumentation layer runs without a work budget (design §0);
     # the cap is a hang guard, same class as strategist.timeout_sec.
-    timeout_sec = config.get(
-        "adversary.timeout_sec", default=7200,
-        env_var="ASTERISM_ADVERSARY_TIMEOUT_SEC", cast=int,
-    )
+    timeout_sec = config.get("adversary.timeout_sec")
     proj = build_projection(
         round_no=round_no, attempts_dir=attempts_dir,
         problem_dir=problem_dir, conn=conn, problem=problem,
@@ -1059,11 +1056,9 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         # the provider layer is not visible here.
         import hashlib
         verdict["_judge"] = {
-            "model": str(config.get("adversary.model", default="?")),
-            "provider": str(config.get("adversary.provider",
-                                       default="?")),
-            "effort": str(config.get("adversary.reasoning_effort",
-                                     default="")),
+            "model": str(config.get("adversary.model") or "?"),
+            "provider": str(config.get("adversary.provider") or "?"),
+            "effort": str(config.get("adversary.reasoning_effort") or ""),
             "rubric_sha": hashlib.sha256(
                 prompt_path.read_bytes()).hexdigest()[:16],
         }

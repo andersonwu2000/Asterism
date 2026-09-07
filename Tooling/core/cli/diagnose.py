@@ -816,13 +816,9 @@ def cmd_config(args: argparse.Namespace) -> int:
     from ...llm import claude_cli as _cc
     rows = [
         ("dispatch.pool",
-         _cfg.get("dispatch.pool", env_var="ASTERISM_POOL", default=12, cast=int)),
-        ("dispatch.budget_sec",
-         _cfg.get("dispatch.budget_sec", env_var="ASTERISM_BUDGET_SEC",
-                  default=1800, cast=int)),
-        ("dispatch.shelve_threshold",
-         _cfg.get("dispatch.shelve_threshold",
-                  env_var="ASTERISM_SHELVE_THRESHOLD", default=8, cast=int)),
+         _cfg.get("dispatch.pool")),
+        ("dispatch.budget_sec", _cfg.get("dispatch.budget_sec")),
+        ("dispatch.shelve_threshold", _cfg.get("dispatch.shelve_threshold")),
         ("formalizer.model", _cc.resolve_model("formalizer")),
     ]
     for k, v in rows:

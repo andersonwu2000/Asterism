@@ -526,10 +526,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     # process isn't the daemon, so read it fresh (heat-ring denominator).
     from ...core import config as _config
     try:
-        shelve_threshold = int(_config.get(
-            "dispatch.shelve_threshold", default=8,
-            env_var="ASTERISM_SHELVE_THRESHOLD", cast=int,
-            workspace=workspace))
+        shelve_threshold = int(_config.get("dispatch.shelve_threshold",
+                                           workspace=workspace))
     except Exception:  # noqa: BLE001 — presentation hint, never fatal
         shelve_threshold = 8
     return {

@@ -4,6 +4,7 @@ kinds stay queued WITHOUT losing their queue position (no lease, no
 discard). Guards: pop_queue's exclude_kinds filter and the
 LEAN_QUEUE_KINDS partition against the queue-kind enum.
 """
+import os
 import re
 from pathlib import Path
 
@@ -67,11 +68,14 @@ def test_pop_queue_exclude_kinds_skips_but_keeps_rows(conn):
     # The Forward row is untouched: still claimable once the filter
     # lifts (gateway ready), and popped first by priority. (pop_queue
     # returns the pre-claim snapshot, so read the lease from the DB.)
+    # The exclusion matches the RAW column — a retired kind is
+    # translated on the way OUT of pop_queue, not in the WHERE clause,
+    # so LEAN_QUEUE_KINDS must keep naming the old spellings.
     row2 = db.pop_queue(conn)
-    assert row2 is not None and row2["kind"] == "Forward"
+    assert row2 is not None and row2["kind"] == "Formalizer"
     assert conn.execute(
-        "SELECT owner_pid FROM queue WHERE id = ?", (row2["id"],)
-    ).fetchone()[0] is not None
+        "SELECT kind, owner_pid FROM queue WHERE id = ?", (row2["id"],)
+    ).fetchone()[:] == ("Forward", os.getpid())
 
 
 def test_pop_queue_exclude_kinds_respects_scope(conn):

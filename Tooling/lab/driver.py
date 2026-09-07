@@ -908,9 +908,7 @@ def run_push_wake(spec: dict, ws: Path, out: Path) -> dict:
             attempts_dir=attempts, workspace=ws, intent=who, group_id=group)
         tools_cfg = write_tools_mcp_config(attempts, ws, seat="strategist",
                                            problem=problem)
-        timeout = config.get("strategist.timeout_sec", default=10800,
-                             env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC",
-                             cast=int)
+        timeout = config.get("strategist.timeout_sec")
         sid = str(uuid.uuid4())
         turns: "list[dict]" = []
         for n, prompt_path in enumerate(prompts, start=1):

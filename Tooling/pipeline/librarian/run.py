@@ -430,11 +430,9 @@ def _classify_trap_budget(n_decls: int) -> int:
     cap-bounded `base + per_decl·N` gives a large layout room without a magic
     flat constant. Other kinds keep the global value (override left None)."""
     from ...core import config as _cfg
-    base = _cfg.get("dispatch.trap_check_sec", default=660,
-                    env_var="ASTERISM_TRAP_CHECK_SEC", cast=int)
-    per_decl = _cfg.get("dispatch.classify_trap_per_decl_sec",
-                        default=4, cast=int)
-    cap = _cfg.get("dispatch.classify_trap_cap_sec", default=2400, cast=int)
+    base = _cfg.get("dispatch.trap_check_sec")
+    per_decl = _cfg.get("dispatch.classify_trap_per_decl_sec")
+    cap = _cfg.get("dispatch.classify_trap_cap_sec")
     return min(cap, base + per_decl * max(0, n_decls))
 
 
@@ -488,10 +486,13 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         from ...core import config as _cfg
         n_kept = len(db.library_decls_for(conn, problem, lifecycle="deduped"))
         trap_override = _classify_trap_budget(n_kept)
-        base = _cfg.get("dispatch.trap_check_sec", default=660,
-                        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int)
-        spawn_to = _cfg.get("dispatch.spawn_timeout_sec", default=960,
-                            env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int)
+        base = _cfg.get("dispatch.trap_check_sec")
+        # The post-trap window this spawn keeps is the one the RESOLVED
+        # spawn cap gives every other kind — it used to be derived from
+        # a local `default=960` that no longer matched any other
+        # reader's, so a classify's tail was budgeted against a spawn
+        # cap nothing was running on.
+        spawn_to = _cfg.get("dispatch.spawn_timeout_sec")
         timeout_override = trap_override + max(0, spawn_to - base)
     from .. import write_tools_mcp_config as _write_tools_cfg
     _t0 = _time.monotonic()

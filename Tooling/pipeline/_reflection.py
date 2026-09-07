@@ -73,12 +73,7 @@ def _reflection_enabled(workspace: Path | None) -> bool:
     in Asterism.yaml (or `ASTERISM_LESSONS_REFLECTION_ENABLED=false` env)
     to disable reflection without redeploying."""
     from ..core import config
-    raw = config.get(
-        "lessons.reflection_enabled",
-        default=True,
-        env_var="ASTERISM_LESSONS_REFLECTION_ENABLED",
-        workspace=workspace,
-    )
+    raw = config.get("lessons.reflection_enabled", workspace=workspace)
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in ("true", "1", "yes", "on")

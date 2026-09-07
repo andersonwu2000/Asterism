@@ -326,9 +326,7 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
     from ...state import db
     from .. import PROMPT_DIR, write_tools_mcp_config
 
-    timeout_sec = config.get(
-        "theory_reviewer.timeout_sec", default=7200,
-        env_var="ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC", cast=int)
+    timeout_sec = config.get("theory_reviewer.timeout_sec")
     proj = build_review_projection(
         round_no=round_no, attempts_dir=attempts_dir, conn=conn,
         workspace=workspace, problem=problem, group_id=group_id,

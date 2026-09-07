@@ -938,19 +938,11 @@ def main() -> None:
         sys.exit(2)
     workspace = Path(workspace_env).resolve()
     from ...core import config as _cfg
-    port = _cfg.get(
-        "gateway.port", default=8765,
-        env_var="ASTERISM_GATEWAY_PORT", cast=int,
-        workspace=workspace,
-    )
+    port = _cfg.get("gateway.port", workspace=workspace)
     # Worker count is locked to dispatch.pool — every spawn claims one
     # dedicated worker for its lifetime (#118, 1:1 binding). No separate
     # gateway.workers knob.
-    w_count = _cfg.get(
-        "dispatch.pool", default=4,
-        env_var="ASTERISM_POOL", cast=int,
-        workspace=workspace,
-    )
+    w_count = _cfg.get("dispatch.pool", workspace=workspace)
     # Adaptive RAM ledger (owner design 2026-08-25): the dispatcher's
     # ledger tick will own the slot count via /warm_target, so the LAUNCH
     # count only decides how fast first_warm opens the Lean plane — start
@@ -977,11 +969,8 @@ def main() -> None:
     # Reserved slots for the serve UI's interactive editor — outside
     # the pipeline pool entirely (pipeline=slot identity holds both
     # ways: spawns never see them, the editor never sees spawn slots).
-    n_interactive = _cfg.get(
-        "gateway.interactive_slots", default=1,
-        env_var="ASTERISM_INTERACTIVE_SLOTS", cast=int,
-        workspace=workspace,
-    )
+    n_interactive = _cfg.get("gateway.interactive_slots",
+                             workspace=workspace)
     # The claim ceiling is DERIVED, never a second hand-tuned constant:
     # the previous literal was chosen against a 780s worker life, and
     # when `spawn_timeout_sec` doubled nobody came back to it (2026-08-11
@@ -989,11 +978,8 @@ def main() -> None:
     # budget covers a main spawn plus its rescue/postmortem successor
     # under the same claim, and anything past that is an anomaly the
     # sweep should report rather than accommodate.
-    _spawn_budget = _cfg.get(
-        "dispatch.spawn_timeout_sec", default=1800,
-        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
+    _spawn_budget = _cfg.get("dispatch.spawn_timeout_sec",
+                             workspace=workspace)
     _state.claim_ceiling_sec = max(2.0 * float(_spawn_budget),
                                    _LEASE_TTL_SEC + 900.0)
 

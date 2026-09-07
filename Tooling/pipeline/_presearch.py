@@ -135,10 +135,7 @@ def _presearch_enabled(workspace: Path | None) -> bool:
     Operator switch: `presearch.enabled: false` (or
     `ASTERISM_PRESEARCH_ENABLED=false`) disables it without redeploying."""
     from ..core import config
-    raw = config.get(
-        "presearch.enabled", default=True,
-        env_var="ASTERISM_PRESEARCH_ENABLED", workspace=workspace,
-    )
+    raw = config.get("presearch.enabled", workspace=workspace)
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
@@ -150,10 +147,7 @@ def _timeout_sec(workspace: Path | None) -> int:
     Library + Mathlib loogle) legitimately takes longer than the old Mathlib-only
     pass — the budget must cover all three plus writing the output."""
     from ..core import config
-    raw = config.get(
-        "presearch.timeout_sec", default=_DEFAULT_TIMEOUT_SEC,
-        env_var="ASTERISM_PRESEARCH_TIMEOUT_SEC", workspace=workspace,
-    )
+    raw = config.get("presearch.timeout_sec", workspace=workspace)
     try:
         return max(60, int(raw))
     except (TypeError, ValueError):

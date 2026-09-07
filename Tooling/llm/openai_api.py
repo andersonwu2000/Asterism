@@ -58,9 +58,7 @@ def _resolve_model(kind: str | None) -> str | None:
     if kind:
         v = config.get(
             f"{kind}.model",
-            env_var=f"ASTERISM_{kind.upper()}_MODEL",
             legacy_env=("ASTERISM_LLM_MODEL",),
-            default=None,
         )
         if v is not None:
             return str(v)

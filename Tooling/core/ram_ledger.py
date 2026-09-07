@@ -48,6 +48,8 @@ import os as _os
 import re
 import time
 
+from . import config as _cfg
+
 #: Absolute roster cap — a runaway-target backstop, far above any real
 #: machine (128 slots ~ 125 GB of workers).
 MAX_SLOTS = 128
@@ -74,8 +76,10 @@ NL_GB_FALLBACK = 0.2
 _SLOT_GB_MIN = SLOT_GB_FALLBACK
 
 #: Default for `gateway.slot_recycle_mb` — the gateway imports THIS
-#: value so the threshold and the price ceiling share one home.
-SLOT_RECYCLE_MB_DEFAULT = 1500
+#: name so the threshold and the price ceiling share one home, and the
+#: number itself comes from the key registry so an unset knob and this
+#: fallback cannot answer differently.
+SLOT_RECYCLE_MB_DEFAULT = int(_cfg.spec_default("gateway.slot_recycle_mb"))
 
 
 def slot_recycle_gb() -> float:
@@ -85,10 +89,7 @@ def slot_recycle_gb() -> float:
     ledger never prices a slot at zero."""
     mb = SLOT_RECYCLE_MB_DEFAULT
     try:
-        from . import config as _cfg
-        mb = int(_cfg.get("gateway.slot_recycle_mb",
-                          default=SLOT_RECYCLE_MB_DEFAULT,
-                          env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
+        mb = int(_cfg.get("gateway.slot_recycle_mb"))
     except Exception:  # noqa: BLE001 — pricing must not halt a tick
         pass
     if mb <= 0:
@@ -233,8 +234,7 @@ def _env_override_gb(name: str) -> "float | None":
     import os
     v = os.environ.get(name)
     if not v:
-        from . import config as _config
-        v = _config._env(name, None)
+        v = _cfg._env(name, None)
     try:
         f = float(v) if v else None
     except (TypeError, ValueError):
@@ -496,7 +496,7 @@ def elab_lanes() -> int:
 #: idle pool parked the cgroup at ~100G inside the pressure hysteresis
 #: band (not hot enough to shed, never calm enough to resume) and
 #: dispatch stayed PAUSED for two hours with 15 Strategist wakes queued.
-IDLE_SPARES_DEFAULT = 4
+IDLE_SPARES_DEFAULT = int(_cfg.spec_default("ledger.idle_spares"))
 
 
 def idle_spares(workspace=None) -> int:
@@ -505,12 +505,9 @@ def idle_spares(workspace=None) -> int:
     the dispatcher's ledger and the gateway's launch count — so the cap
     cannot drift between them; an unparseable value falls back to the
     default instead of taking the daemon down."""
-    from . import config
     try:
-        return max(1, int(config.get(
-            "ledger.idle_spares", default=IDLE_SPARES_DEFAULT,
-            env_var="ASTERISM_IDLE_SPARES", cast=int,
-            workspace=workspace)))
+        return max(1, int(_cfg.get("ledger.idle_spares",
+                                   workspace=workspace)))
     except (TypeError, ValueError):
         return IDLE_SPARES_DEFAULT
 
@@ -563,11 +560,13 @@ class DispatcherLedger:
     #: this headroom of the budget — at the measured 5.4 GB/min
     #: inflation rate (per-worker heap 0.45 -> 2.2 GB per elaboration
     #: pass, 6 lanes) 8 GB buys the pause 90+ seconds of lead.
-    PRESSURE_HEADROOM_GB = 8.0
+    PRESSURE_HEADROOM_GB = float(
+        _cfg.spec_default("ledger.pressure_headroom_gb"))
     #: Extra calm required before the pause lifts / debt forgives
     #: (hysteresis on the cgroup axis; the available axis has its own
     #: band, pressure_low_gb -> pressure_resume_gb).
-    PRESSURE_RELEASE_SLACK_GB = 4.0
+    PRESSURE_RELEASE_SLACK_GB = float(
+        _cfg.spec_default("ledger.pressure_release_slack_gb"))
 
     def __init__(self, budget_gb: float, machine_gb: float,
                  idle_spares: int = IDLE_SPARES_DEFAULT,
@@ -840,7 +839,5 @@ class DispatcherLedger:
 def env_budget_spec(workspace=None) -> "str | None":
     """The configured budget spec (yaml `dispatch.ram_budget`, env
     `ASTERISM_RAM_BUDGET`). Import-cycle-safe accessor."""
-    from . import config
-    spec = config.get("dispatch.ram_budget", default="",
-                      env_var="ASTERISM_RAM_BUDGET", workspace=workspace)
+    spec = _cfg.get("dispatch.ram_budget", workspace=workspace)
     return str(spec) if spec else None

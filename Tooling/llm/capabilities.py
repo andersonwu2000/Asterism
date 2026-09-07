@@ -970,13 +970,7 @@ def provider_for_kind(kind: "str | None",
     if not kind:
         return canonical(os.environ.get("ASTERISM_LLM_PROVIDER", "claude"))
     from ..core import config
-    return canonical(config.get(
-        f"{kind}.provider",
-        env_var=f"ASTERISM_{kind.upper()}_PROVIDER",
-        legacy_env=("ASTERISM_LLM_PROVIDER",),
-        default="claude",
-        workspace=workspace,
-    ))
+    return canonical(config.get(f"{kind}.provider", workspace=workspace))
 
 
 def model_for_kind(kind: "str | None",
@@ -993,9 +987,7 @@ def model_for_kind(kind: "str | None",
     from ..core import config
     return str(config.get(
         f"{kind}.model",
-        env_var=f"ASTERISM_{kind.upper()}_MODEL",
         legacy_env=("ASTERISM_AGENT_MODEL",),
-        default="",
         workspace=workspace,
     ) or "")
 

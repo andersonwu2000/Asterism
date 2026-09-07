@@ -81,11 +81,7 @@ def _gateway_port(workspace: Path | None = None) -> int:
     daemon-side (this module) and gateway-side (lsp_gateway.main) read
     the same config so they always agree."""
     from ..core import config as _cfg
-    return _cfg.get(
-        "gateway.port", default=8765,
-        env_var="ASTERISM_GATEWAY_PORT", cast=int,
-        workspace=workspace,
-    )
+    return _cfg.get("gateway.port", workspace=workspace)
 
 
 def _health_url() -> str:
@@ -416,8 +412,7 @@ def _desired_pool(workspace: Path) -> int | None:
         from ..core import config, ram_ledger
         if ram_ledger.env_budget_spec(workspace):
             return None
-        return config.get("dispatch.pool", default=4, env_var="ASTERISM_POOL",
-                          cast=int, workspace=workspace)
+        return config.get("dispatch.pool", workspace=workspace)
     except Exception:  # noqa: BLE001 — config read is best-effort
         return None
 
@@ -427,9 +422,7 @@ def _interactive_slots(workspace: Path) -> int:
     pool, so warm-time budgets must count it too."""
     try:
         from ..core import config
-        return config.get("gateway.interactive_slots", default=1,
-                          env_var="ASTERISM_INTERACTIVE_SLOTS",
-                          cast=int, workspace=workspace)
+        return config.get("gateway.interactive_slots", workspace=workspace)
     except Exception:  # noqa: BLE001 — config read is best-effort
         return 1
 

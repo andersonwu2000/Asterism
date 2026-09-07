@@ -63,10 +63,8 @@ class IntakeOutcome:
 
 def intake_timeout_sec(workspace: "Path | None" = None) -> int:
     from ..core import config
-    return int(config.get(
-        "dispatch.intake_timeout_sec", default=300,
-        env_var="ASTERISM_INTAKE_TIMEOUT_SEC", cast=int,
-        workspace=workspace))
+    return int(config.get("dispatch.intake_timeout_sec",
+                          workspace=workspace))
 
 
 def run_intake(*, prompt_dir: Path, attempts_dir: Path,

@@ -68,9 +68,7 @@ def env_blocked_kinds(workspace=None) -> "set[str]":
     typo holds nothing. Yaml `dispatch.blocked_kinds` is the canonical
     home (the console sets it, HID §1.4); the env var overrides."""
     from ..quota import DISPATCH_KIND
-    raw = config.get("dispatch.blocked_kinds", default="",
-                     env_var="ASTERISM_BLOCKED_KINDS",
-                     workspace=workspace) or ""
+    raw = config.get("dispatch.blocked_kinds", workspace=workspace) or ""
     canon = {v.lower(): v for v in DISPATCH_KIND.values()}
     out: "set[str]" = set()
     for tok in raw.split(","):

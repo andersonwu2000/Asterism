@@ -169,8 +169,7 @@ class LspClient:
         # Assigned immediately after Popen — lake takes seconds to spawn
         # lean, so the pre-assignment window is not a real gap. Soft:
         # None off-Windows / on refusal, and every use checks for it.
-        cap_mb = _cfg.get("gateway.lean_memory_cap_mb", default=8192,
-                          env_var="ASTERISM_LEAN_MEMORY_CAP_MB", cast=int)
+        cap_mb = _cfg.get("gateway.lean_memory_cap_mb")
         if cap_mb > 0:
             self._job = create_capped_job(cap_mb)
             if self._job is not None and not assign_to_job(

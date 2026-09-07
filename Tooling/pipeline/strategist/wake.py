@@ -218,10 +218,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # framework's verify error / Adversary rebuttal inline.
     # Thinking is legal work (research_mode_design.md §0): the
     # strategist cap is a hang guard, not a work budget.
-    strategist_timeout = config.get(
-        "strategist.timeout_sec", default=10800,
-        env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int,
-    )
+    strategist_timeout = config.get("strategist.timeout_sec")
     sid = str(uuid.uuid4())
     # D8 (2026-07-24): a fresh problem has no prior batches — the
     # meta-analysis / reopen-promise paragraphs render only once
@@ -280,10 +277,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # session-level breakage": p324's session was healthy — 10 minutes
     # of research on disk, one malformed decision.json — and died for
     # want of one "rewrite it" turn).
-    max_rounds = config.get(
-        "strategist.verify_retry", default=6,
-        env_var="ASTERISM_STRATEGIST_VERIFY_RETRY", cast=int,
-    )
+    max_rounds = config.get("strategist.verify_retry")
     decision_path = attempts_dir / "decision.json"
 
     # Quota-park budget for this wake (2026-08-08). A debate that

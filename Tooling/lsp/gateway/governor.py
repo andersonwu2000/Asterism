@@ -222,9 +222,7 @@ def _weight_kill_over_cap() -> int:
     cap_mb = SLOT_RECYCLE_MB_DEFAULT * 5  # unreachable fallback
     try:
         from ...core import config as _cfg
-        cap_mb = int(_cfg.get("gateway.lean_memory_cap_mb", default=8192,
-                              env_var="ASTERISM_LEAN_MEMORY_CAP_MB",
-                              cast=int))
+        cap_mb = int(_cfg.get("gateway.lean_memory_cap_mb"))
     except Exception:  # noqa: BLE001 — a config hiccup must not kill
         return 0
     if cap_mb <= 0:
@@ -547,10 +545,7 @@ def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
     cap_mb = SLOT_RECYCLE_MB_DEFAULT
     try:
         from ...core import config as _cfg
-        cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
-                              default=SLOT_RECYCLE_MB_DEFAULT,
-                              env_var="ASTERISM_SLOT_RECYCLE_MB",
-                              cast=int))
+        cap_mb = int(_cfg.get("gateway.slot_recycle_mb"))
     except Exception:  # noqa: BLE001 — a policy knob may not halt release
         pass
     if cap_mb <= 0 or _state.backend is None:
@@ -685,9 +680,7 @@ def _midlease_residue_mb() -> int:
     cap_mb = SLOT_RECYCLE_MB_DEFAULT
     try:
         from ...core import config as _cfg
-        cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
-                              default=SLOT_RECYCLE_MB_DEFAULT,
-                              env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
+        cap_mb = int(_cfg.get("gateway.slot_recycle_mb"))
     except Exception:  # noqa: BLE001 — policy knob must not break tools
         pass
     return int(max(1, cap_mb) * _MIDLEASE_RESIDUE_FACTOR)

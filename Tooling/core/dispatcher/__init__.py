@@ -56,11 +56,8 @@ def _pipeline_seats() -> "dict[str, tuple[str, str | None]]":
     """
     seats: "dict[str, tuple[str, str | None]]" = {}
     for kind in _QUOTA_SEATS:
-        provider = str(config.get(
-            f"{kind}.provider", default="claude",
-            env_var=f"ASTERISM_{kind.upper()}_PROVIDER") or "claude")
-        model = config.get(f"{kind}.model", default=None,
-                           env_var=f"ASTERISM_{kind.upper()}_MODEL")
+        provider = str(config.get(f"{kind}.provider") or "claude")
+        model = config.get(f"{kind}.model")
         seats[kind] = (provider, str(model) if model else None)
     return seats
 

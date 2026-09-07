@@ -597,14 +597,17 @@ def _find_session_jsonl(sid: str) -> Path | None:
     return None
 
 
-_DEFAULT_TRAP_CHECK_SEC = 660
-_DEFAULT_SILENCE_THRESHOLD_SEC = 300
-# The third way out (2026-08-22): silence on BOTH clocks at this
-# magnitude needs no trap signature — it is the evidence, whatever
-# the parser state says. Both clocks, not the seat's chosen one: the
-# tool clock alone read seven legitimate strategist thinks as silent
-# and killed them (2026-08-07, the incident that demoted silence to
-# an AND-condition), and the stream clock stays live through a think
+# The two watchdog knobs `_watchdog` below reads are declared in
+# `core/config.CONFIG_SPEC` with every other tunable; what the numbers
+# MEAN is measured here, where the clocks are.
+#
+# `dispatch.silent_kill_sec` — the third way out (2026-08-22): silence
+# on BOTH clocks at this magnitude needs no trap signature — it is the
+# evidence, whatever the parser state says. Both clocks, not the seat's
+# chosen one: the tool clock alone read seven legitimate strategist
+# thinks as silent and killed them (2026-08-07, the incident that
+# demoted silence to an AND-condition), and the stream clock stays
+# live through a think
 # on the claude dialect — requiring both is strictly more
 # conservative than either. Before this, a spawn wedged from birth
 # (p358: upstream never sent a status line, 22 min of nothing) sat
@@ -614,13 +617,13 @@ _DEFAULT_SILENCE_THRESHOLD_SEC = 300
 # both clocks silent for its whole span — longest healthy observed
 # 767s (2026-08-22 fleet) — hence 3× that, not a rounder number.
 # 0 disables.
-_DEFAULT_SILENT_KILL_SEC = 2400
-# Grace window for the completion-reclaim branch: how long a clean
-# finish (finalized + end_turn) must PERSIST with the process still
-# alive before the watchdog terminates it. Must exceed normal claude
-# self-exit latency after end_turn (~1-3s) so cleanly-exiting spawns
-# are never cut; small enough to reclaim most of a hung tail.
-_DEFAULT_COMPLETION_GRACE_SEC = 20
+#
+# `dispatch.completion_grace_sec` is the grace window for the
+# completion-reclaim branch: how long a clean finish (finalized +
+# end_turn) must PERSIST with the process still alive before the
+# watchdog terminates it. Must exceed normal claude self-exit latency
+# after end_turn (~1-3s) so cleanly-exiting spawns are never cut; small
+# enough to reclaim most of a hung tail.
 
 #: This provider's canonical name in `llm/capabilities.py`.
 PROVIDER_NAME = "claude"
@@ -734,16 +737,8 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
         # over N decls must not be mistaken for a trap at the global 660s.
         trap_check_sec = trap_check_sec_override
     else:
-        trap_check_sec = _cfg.get(
-            "dispatch.trap_check_sec",
-            default=_DEFAULT_TRAP_CHECK_SEC,
-            env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
-        )
-    silence_threshold_sec = _cfg.get(
-        "dispatch.silence_threshold_sec",
-        default=_DEFAULT_SILENCE_THRESHOLD_SEC,
-        env_var="ASTERISM_SILENCE_THRESHOLD_SEC", cast=int,
-    )
+        trap_check_sec = _cfg.get("dispatch.trap_check_sec")
+    silence_threshold_sec = _cfg.get("dispatch.silence_threshold_sec")
     spawn_start = time.monotonic()
     # Floor on trap_check_sec so misconfigured tiny timeouts don't
     # fire the watchdog immediately. 60s is a safe minimum for any
@@ -751,11 +746,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     trap_check_sec = max(_MIN_TRAP_CHECK_SEC, trap_check_sec)
     trigger_at = spawn_start + trap_check_sec
 
-    completion_grace_sec = _cfg.get(
-        "dispatch.completion_grace_sec",
-        default=_DEFAULT_COMPLETION_GRACE_SEC,
-        env_var="ASTERISM_COMPLETION_GRACE_SEC", cast=int,
-    )
+    completion_grace_sec = _cfg.get("dispatch.completion_grace_sec")
 
     # Rolling poll until the trap-check moment. Each slice also runs the
     # completion-reclaim check (job 1). 2s slices keep the thread cheap
@@ -848,11 +839,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
             verdict = "trap-but-not-silent"
         elif not is_trap and is_silent:
             verdict = "silent-but-not-trap"
-        silent_kill_sec = _cfg.get(
-            "dispatch.silent_kill_sec",
-            default=_DEFAULT_SILENT_KILL_SEC,
-            env_var="ASTERISM_SILENT_KILL_SEC", cast=int,
-        )
+        silent_kill_sec = _cfg.get("dispatch.silent_kill_sec")
         if silent_kill_sec <= 0:
             print(f"[watchdog] sid={sid[:8]} trap_check "
                   f"{int(trap_check_sec)}s reached; {verdict} "
@@ -861,7 +848,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
             return
         # Job (3), the third way out: keep watching BOTH clocks.
         # Silence on both at this magnitude needs no trap signature
-        # (see _DEFAULT_SILENT_KILL_SEC — and why it is both clocks,
+        # (see `dispatch.silent_kill_sec` — and why it is both clocks,
         # not the seat's chosen one). A scaled trap-check override
         # implies at least that much legitimate stillness, so the
         # kill line never undercuts it.
@@ -999,11 +986,9 @@ def resolve_model(kind: str | None) -> str:
     if kind:
         v = config.get(
             f"{kind}.model",
-            env_var=f"ASTERISM_{kind.upper()}_MODEL",
             legacy_env=("ASTERISM_AGENT_MODEL",),
-            default=DEFAULT_MODEL,
         )
-        return str(v)
+        return str(v or DEFAULT_MODEL)
     return os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
 
 

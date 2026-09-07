@@ -39,6 +39,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ...core import config as _config
 from . import checkpoint as _checkpoint
 from . import landing as _landing
 from .review import projection_dir, review as review_round
@@ -85,7 +86,7 @@ RESERVATIONS_HEADING = (
 #: Revision rounds a fired verdict may buy, on the SAME author session.
 #: Three, from the experiment: the author that has not answered the
 #: reviewer by its third revision is not one round away.
-DEFAULT_ROUNDS = 3
+DEFAULT_ROUNDS = int(_config.spec_default("theorist.rounds"))
 
 #: Times the framework re-issues ONE request after an infra death before
 #: it settles with `SPAWN_DIED_DETAIL`. An infra cause is the
@@ -248,12 +249,8 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
         group_id=group_id,
         theory_request={"objective": objective, "situation": situation})
 
-    author_timeout = config.get(
-        "theorist.timeout_sec", default=10800,
-        env_var="ASTERISM_THEORIST_TIMEOUT_SEC", cast=int)
-    rounds = max(0, config.get(
-        "theorist.rounds", default=DEFAULT_ROUNDS,
-        env_var="ASTERISM_THEORIST_ROUNDS", cast=int))
+    author_timeout = config.get("theorist.timeout_sec")
+    rounds = max(0, config.get("theorist.rounds"))
     tools_cfg = write_tools_mcp_config(attempts_dir, workspace,
                                        seat="theorist", problem=problem)
     prompt_path = PROMPT_DIR / "theorist" / "theory.md"

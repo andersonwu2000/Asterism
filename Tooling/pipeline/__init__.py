@@ -130,11 +130,7 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
         log_path = attempts_dir / "_mcp.jsonl"
     token_file = attempts_dir / "_gateway_session.token"
     from ..core import config as _cfg
-    gateway_port = _cfg.get(
-        "gateway.port", default=8765,
-        env_var="ASTERISM_GATEWAY_PORT", cast=int,
-        workspace=workspace,
-    )
+    gateway_port = _cfg.get("gateway.port", workspace=workspace)
     base = f"http://127.0.0.1:{gateway_port}"
 
     # Release any leftover session from a prior retry on this pipeline.
@@ -325,7 +321,8 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
         never ran (claude.exe crashed at startup, prompt parser
         rejected, cwd unreachable, ...). Cascade: no goal-attempt
         increment, dispatcher sets per-target cooldown.
-      - `agent_timeout` — rc=124, SIGKILL'd at WORKER_TIMEOUT_SEC.
+      - `agent_timeout` — rc=124, SIGKILL'd at the resolved
+        `dispatch.spawn_timeout_sec`.
         Pipeline runs a postmortem on this same session before
         returning so next dispatch sees a `.drafts/` progress note.
       - `system_killed` — NTSTATUS-shaped rc (≥ 0x40000000) or the CLI
@@ -382,7 +379,7 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
             stderr_tail = ""
     base = f"agent rc={rc}"
     if rc == SpawnRC.TIMEOUT:
-        # rc=124 is unambiguous: SIGKILL at WORKER_TIMEOUT_SEC. The
+        # rc=124 is unambiguous: SIGKILL at the spawn cap. The
         # wall-clock check below cannot apply (timeout is several
         # minutes); this ordering also defends against artificial
         # spawn_dur values in unit tests.
