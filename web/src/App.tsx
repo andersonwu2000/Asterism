@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RouterProvider, useRoute, navigate, replace } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
-import { parseProjectRoute, projectPath } from './lib/projectRoute'
+import { parseProjectRoute, projectPath, renamedProjectPath } from './lib/projectRoute'
 import { stalePair } from './lib/freshness'
 import { onAssistantRequest } from './lib/focus'
 import Projects from './screens/Projects'
@@ -161,6 +161,20 @@ function Shell() {
     document.title = inboxCount > 0 ? `(${inboxCount}) ${base}` : base
   }, [inboxCount, section, project])
 
+  // A section that has been RENAMED keeps its old addresses working
+  // (`docs` → `workspace`, 2026-09-08). The parser already resolves the
+  // old segment, so the page under it is the right one either way; this
+  // rewrites the address so what the reader copies out of the bar is
+  // the name the menu uses. `replace`, not `navigate`: nobody asked to
+  // move, and Back must leave the section rather than bounce between
+  // two spellings of it.
+  useEffect(() => {
+    const to = renamedProjectPath(route.segments)
+    if (to !== null) replace(to)
+    // `route.path` IS the segments — the array is rebuilt on every parse
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.path])
+
   // Settings is a window, not a place: its open state lives here, and
   // the address is left alone. The one old address still opens it and
   // then gets out of the way (`replace`, so Back does not walk into a
@@ -199,7 +213,7 @@ function Shell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [setChat])
 
-  // a section asking for the Assistant (Documents' "ask the Assistant")
+  // a section asking for the Assistant (Workspace's "ask the Assistant")
   // can publish WHAT is open, but only the shell can open the drawer
   useEffect(() => onAssistantRequest(() => setChat(true)), [setChat])
 

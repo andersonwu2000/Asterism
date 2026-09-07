@@ -3,7 +3,7 @@ import type { DocEntry, TheoryMeta } from './docShelf'
 import { projectPath } from './projectRoute'
 
 /*
- * The Documents tab's address book and its rail's reading of the shelf
+ * The Workspace tab's address book and its rail's reading of the shelf
  * (docs_tab_spec.md §B; human_interface_design.md §1.2 + §3.6).
  *
  * The tab's centre of gravity is the PERSON's own documents. Everything
@@ -69,7 +69,7 @@ export function parseDocAddress(rest: string[]): DocRef | null {
  * it lands on the section itself rather than minting an address that
  * cannot be read back. */
 export function docAddress(project: string, ref: DocRef): string {
-  const base = projectPath(project, 'docs')
+  const base = projectPath(project, 'workspace')
   const tail = ref.path.split('/').map(encodeURIComponent).join('/')
   if (ref.kind === 'doc') return `${base}/${tail}`
   if (ref.task === null) return base
@@ -112,7 +112,7 @@ export type DocPanel = 'render' | 'pdf-render' | 'info' | 'none' | 'viewer' | 'i
 /** Which editor a writable document earns.
  *
  * The console has exactly two tokenizers — `lib/lean` and the markdown
- * painter in `lib/markdown` — and the Documents tab used neither: every
+ * painter in `lib/markdown` — and this tab used neither: every
  * file the person could edit got a bare textarea, while the task page's
  * own markdown was coloured all along (owner, 2026-09-06). The mapping
  * is by LANGUAGE, not by "colour everything": a painter that does not
@@ -214,6 +214,33 @@ export function modeFor(path: string): DocMode {
 
 export function panelFor(path: string): DocPanel {
   return modeFor(path).panel
+}
+
+/** What a rail row IS, in as many kinds as the console draws a mark for
+ * (2026-09-08). Not a second name for the extension — a kind is what
+ * the reader is about to get: something to write in, something to read,
+ * a picture, a folder of them, or something this console has no reading
+ * for. */
+export type DocKind = 'folder' | 'md' | 'lean' | 'tex' | 'pdf' | 'image' | 'other'
+
+/** The kind, from the path and the listing's own file/dir answer.
+ *
+ * The three writing formats are named by their own extension — they are
+ * ROWS of the mode table and the table is what they mean. Everything
+ * else is asked OF the table (`panelFor`) rather than re-listed here: a
+ * second list of image suffixes would drift from the one the shell can
+ * actually show, and a mark promising a picture over a pane that cannot
+ * draw one is the glyph lying about what happens next. */
+export function docKind(path: string, kind: 'file' | 'dir' = 'file'): DocKind {
+  if (kind === 'dir') return 'folder'
+  const e = ext(path)
+  if (e === '.md') return 'md'
+  if (e === '.lean') return 'lean'
+  if (e === '.tex') return 'tex'
+  const panel = panelFor(path)
+  if (panel === 'viewer') return 'pdf'
+  if (panel === 'image') return 'image'
+  return 'other'
 }
 
 export function editorFor(path: string): DocEditor {
@@ -396,6 +423,30 @@ export interface RailRow {
 }
 
 export type RailGroupId = 'yours' | 'papers' | 'agent' | 'engine' | 'proofs'
+
+/** What the strip under a selected row offers, per group (§D6).
+ *
+ * THREE answers, not two. `write` is the person's own area and the only
+ * one that offers rename/move/delete. `refuse` is read-only AND says so
+ * in the place the act would have been — the rail's own rule, so nobody
+ * discovers the absence by trying. `silent` is read-only with nothing
+ * to say: `papers` used to carry "read-only — a paper. Removing one is
+ * not offered here yet.", a sentence about the console's own backlog
+ * that every reader paid for on every paper row (owner, 2026-09-08).
+ *
+ * The distinction is spelt out rather than reusing `write`'s branch for
+ * it: a group with nothing to say is not a group you may write to, and
+ * a `null` standing for both would put rename and delete on the papers
+ * the shelf maintains the first time someone simplified this table. */
+export type RailActs = 'write' | 'silent' | { refuse: string }
+
+export const RAIL_ACTS: Record<RailGroupId, RailActs> = {
+  yours: 'write',
+  papers: 'silent',
+  agent: { refuse: "read-only — the machine's" },
+  engine: { refuse: "read-only — the engine's" },
+  proofs: { refuse: "read-only — the engine's" },
+}
 
 export interface RailGroup {
   id: RailGroupId

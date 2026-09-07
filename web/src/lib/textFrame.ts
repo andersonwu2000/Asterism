@@ -27,7 +27,7 @@
  * `\n{2,}`, which `\r\n\r\n` does not match, and a heading is
  * `^#{1,6}\s+(.*)$` whose `.` refuses a `\r`. Live on 2026-09-06,
  * `user/split_bricks.md` — CRLF on disk, thirteen sections — came out
- * of the Documents render pane as a SINGLE paragraph with every `---`
+ * of the Workspace render pane as a SINGLE paragraph with every `---`
  * and `## Brick n` inline in it, beside a source pane showing the same
  * bytes on their own lines.
  *

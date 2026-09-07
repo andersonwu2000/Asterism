@@ -151,7 +151,7 @@ describe('cycleLine', () => {
       'round 2 — rejected with 2 objections; revising the document',
     )
     expect(cycleLine(at('passed', 2), 'document')).toBe(
-      'round 2 — passed review; landing the document under Documents',
+      'round 2 — passed review; landing the document under Workspace',
     )
   })
 

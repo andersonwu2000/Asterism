@@ -162,7 +162,7 @@ export interface ProblemDetail {
   /** the TOP-LEVEL `.md` / `.lean` files in the task's own directory —
    * exactly what `…/file?path=` can serve at depth 0 (BRIEF, Defs,
    * PROGRAMME, REPORT, Root, TREE). Optional: a serve older than this
-   * field answers without it, and the Documents rail then lists no
+   * field answers without it, and the Workspace rail then lists no
    * engine group rather than inventing names that may not be there. */
   problem_files?: string[]
   /** current Programme rev (research mode); null before bootstrap —
@@ -663,7 +663,7 @@ export interface PaperBoundRef {
 
 /** One paper on a Project's shelf (GET /api/projects/{p}/papers). A
  * paper is one of its Project's documents since §3.9 — the shelf is
- * per-Project, and `path` is where the Documents tab opens it. */
+ * per-Project, and `path` is where the Workspace tab opens it. */
 export interface PaperShelfItem {
   id: string
   source_name: string

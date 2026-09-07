@@ -360,7 +360,7 @@ export type CycleSubject = 'programme' | 'document'
  * next. One rhythm for both subjects (a reader learns it once), the
  * nouns each subject's own: a Theorist card must never say it is
  * drafting a programme, and the two land in different places (the
- * Programme is committed; a document lands under Documents). The
+ * Programme is committed; a document lands under Workspace). The
  * Strategist's phase vocabulary opens on `proposing`, the Theorist's on
  * `drafting`; either word means "no round yet". */
 export function cycleLine(
@@ -381,7 +381,7 @@ export function cycleLine(
       case 'revising':
         return `round ${cycle.round} — rejected with ${objections}; revising the document`
       default:
-        return `round ${cycle.round} — passed review; landing the document under Documents`
+        return `round ${cycle.round} — passed review; landing the document under Workspace`
     }
   }
   switch (cycle.phase) {

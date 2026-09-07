@@ -258,7 +258,7 @@ function SignoffCard({
               /* the report of THIS task, named in the address: the old
                  `docs/proofs/REPORT.md` link named none, so on a shelf
                  running several tasks it silently opened whichever one
-                 the Documents tab defaulted to */
+                 the Workspace tab defaulted to */
               to={docAddress(project, {
                 kind: 'task',
                 task: s.problem,

@@ -417,7 +417,7 @@ export default function Sky({
             onHoverGoals={setRouteHover}
             /* the file belongs to THIS sky's task, and the address now
                says so — the old link named no task and landed on
-               whichever one the Documents tab defaulted to */
+               whichever one the Workspace tab defaulted to */
             onOpenFile={(rel) =>
               navigate(docAddress(project, { kind: 'task', task: problem, path: rel }))
             }

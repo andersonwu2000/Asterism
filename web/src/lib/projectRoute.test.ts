@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  SECTIONS,
   SECTION_LABEL,
   TASK_SECTIONS,
   defaultTask,
@@ -7,6 +8,7 @@ import {
   programmePath,
   projectPath,
   railVisible,
+  renamedProjectPath,
   shelfOrder,
   tasksOf,
 } from './projectRoute'
@@ -27,6 +29,16 @@ function task(name: string, over: Partial<BoardProblem> = {}): BoardProblem {
 }
 
 describe('the menu', () => {
+  it('opens the Project on Workspace, and reads it first (2026-09-08)', () => {
+    // the section was "Documents" and sat last. It is where a person
+    // WRITES — their files, the papers they shelved, the engine's
+    // writing beside them — so it leads the menu and it is what a
+    // Project opens on when the address names no section (owner).
+    expect(SECTIONS[0]).toBe('workspace')
+    expect(SECTION_LABEL.workspace).toBe('Workspace')
+    expect(parseProjectRoute(['p', 'Erdos'])?.section).toBe('workspace')
+  })
+
   it('names the engine in one word, and keeps its address (2026-09-05)', () => {
     // the tab was "Engine room": two words beside five one-word peers,
     // for a surface every sentence in the UI already calls "the
@@ -50,10 +62,10 @@ describe('parseProjectRoute', () => {
     })
   })
 
-  it('defaults to the Tasks section — the shelf is what a Project opens on', () => {
+  it('defaults to the Workspace section — a Project opens on its first page', () => {
     expect(parseProjectRoute(['p', 'Erdos'])).toEqual({
       project: 'Erdos',
-      section: 'tasks',
+      section: 'workspace',
       problem: null,
       goal: null,
       rev: null,
@@ -62,7 +74,10 @@ describe('parseProjectRoute', () => {
   })
 
   it('refuses an unknown section rather than rendering a blank frame', () => {
-    expect(parseProjectRoute(['p', 'Erdos', 'library'])?.section).toBe('tasks')
+    // somewhere real is the same page an address naming no section
+    // opens — not a second, separate answer to "where does a stale
+    // bookmark land?"
+    expect(parseProjectRoute(['p', 'Erdos', 'library'])?.section).toBe('workspace')
   })
 
   it('is null when the route is not a Project route at all', () => {
@@ -71,15 +86,52 @@ describe('parseProjectRoute', () => {
     expect(parseProjectRoute(['p'])).toBeNull()
   })
 
-  it('hands the documents section its whole path — a file is not a task', () => {
-    expect(parseProjectRoute(['p', 'Erdos', 'docs', 'user', 'notes', 'a.md'])).toEqual({
+  it('hands the Workspace its whole path — a file is not a task', () => {
+    expect(parseProjectRoute(['p', 'Erdos', 'workspace', 'user', 'notes', 'a.md'])).toEqual({
       project: 'Erdos',
-      section: 'docs',
+      section: 'workspace',
       problem: null,
       goal: null,
       rev: null,
       rest: ['user', 'notes', 'a.md'],
     })
+  })
+})
+
+describe('the section that was renamed (docs → workspace, 2026-09-08)', () => {
+  // `#/…/docs/…` is in bookmarks, in chat answers and in the Inbox's
+  // own links. The parser resolves it so nothing renders a blank frame
+  // for the frame before the rewrite lands, and `renamedProjectPath`
+  // rewrites the address to the name the menu uses.
+  it('still reads an old address as the Workspace, path and all', () => {
+    expect(parseProjectRoute(['p', 'Erdos', 'docs', 'user', 'a.md'])).toEqual({
+      project: 'Erdos',
+      section: 'workspace',
+      problem: null,
+      goal: null,
+      rev: null,
+      rest: ['user', 'a.md'],
+    })
+  })
+
+  it('rewrites it, carrying the document it named', () => {
+    expect(renamedProjectPath(['p', 'Erdos', 'docs', 'user', 'a.md'])).toBe(
+      '/p/Erdos/workspace/user/a.md',
+    )
+    expect(renamedProjectPath(['p', 'Erdos', 'docs'])).toBe('/p/Erdos/workspace')
+  })
+
+  it('encodes both names, the way every other address does', () => {
+    expect(renamedProjectPath(['p', 'E r', 'docs', 'user', 'a b.md'])).toBe(
+      '/p/E%20r/workspace/user/a%20b.md',
+    )
+  })
+
+  it('leaves a canonical address alone — a rewrite is not a redirect loop', () => {
+    expect(renamedProjectPath(['p', 'Erdos', 'workspace', 'user', 'a.md'])).toBeNull()
+    expect(renamedProjectPath(['p', 'Erdos', 'sky', 'Erdos.p1'])).toBeNull()
+    expect(renamedProjectPath(['p', 'Erdos'])).toBeNull()
+    expect(renamedProjectPath(['settings'])).toBeNull()
   })
 })
 

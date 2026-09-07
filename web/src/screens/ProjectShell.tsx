@@ -196,9 +196,11 @@ export default function ProjectShell({
   }, [project, section, problem, rows])
 
   // the shelf page IS the task list; drawing the column beside it would
-  // draw the same list twice. Documents brings its own file column.
+  // draw the same list twice. Workspace brings its own file column.
   const showRail =
-    railVisible(rows) && section !== 'docs' && !(section === 'tasks' && problem === null)
+    railVisible(rows) &&
+    section !== 'workspace' &&
+    !(section === 'tasks' && problem === null)
   const current = problem ?? (rows.length === 1 ? rows[0].name : null)
 
   return (
@@ -296,7 +298,7 @@ export default function ProjectShell({
               Task updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button>
             </div>
           )}
-          {error && !data && section !== 'docs' ? (
+          {error && !data && section !== 'workspace' ? (
             <div><ErrorState error={error} /><div className="text-center"><button className="cursor-pointer rounded-lg border border-edge px-3 py-2 text-xs text-ink-dim hover:text-ink" onClick={refresh}>Retry</button></div></div>
           ) : section === 'tasks' ? (
             <Tasks project={project} rows={rows} problem={problem} loaded={loaded} />
@@ -362,7 +364,7 @@ export default function ProjectShell({
                 }}
                 /* a theory row landed a FILE — the refused ones land
                    too — and its expansion offers it. The path is
-                   workspace-relative, the Documents tab is
+                   workspace-relative, the Workspace tab is
                    root-relative, and a path this Project's shelf does
                    not hold simply has nowhere to go. */
                 onOpenDocument={(p) => {
@@ -372,7 +374,14 @@ export default function ProjectShell({
               />
             </div>
           ) : (
+            /* `key={project}`, for the reason the task-scoped screens
+               carry `key={current}`: the Workspace holds a strip of
+               open documents and it is one shelf's strip. Walking to
+               another Project used to keep this screen mounted, so the
+               previous shelf's selection survived into an address it
+               does not belong to. */
             <Docs
+              key={project}
               project={project}
               problem={current ?? defaultTask(rows)}
               tasks={rows.map((p) => p.name)}

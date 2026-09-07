@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
  * The question, as the transcript keeps it (assistant_redesign
  * _2026-09-06 §1): a quiet card. Clicking it SELECTS it, and the act
  * that belongs to it appears under it — DESIGN.md 2026-09-04, the
- * Documents rail's grammar: an act lives on the thing's row, never on
+ * Workspace rail's grammar: an act lives on the thing's row, never on
  * hover and never a second time in the header.
  *
  * `edit & re-ask` turns the card into a textarea in place. Sending it

@@ -14,7 +14,7 @@ import type { BoardProblem } from './types'
  * task column has anything to offer.
  */
 
-export const SECTIONS = ['tasks', 'sky', 'groups', 'engine', 'timeline', 'docs'] as const
+export const SECTIONS = ['workspace', 'tasks', 'sky', 'groups', 'engine', 'timeline'] as const
 
 export type Section = (typeof SECTIONS)[number]
 
@@ -23,14 +23,42 @@ export type Section = (typeof SECTIONS)[number]
  * 2026-09-05 — the surface is where the engine is watched, and every
  * sentence in the UI already calls the machine "the engine"; the room
  * was a metaphor spending a second word. The address segment did not
- * change. */
+ * change.
+ *
+ * `workspace` was "Documents" until 2026-09-08 (owner). The section is
+ * where a person WRITES — their own files, the papers they shelved, the
+ * engine's writing beside them — and "Documents" named the drawer
+ * rather than the work. It is also the Project's first page now, so it
+ * leads the menu and it is what an address naming no section opens. */
 export const SECTION_LABEL: Record<Section, string> = {
+  workspace: 'Workspace',
   tasks: 'Tasks',
   sky: 'Sky',
   groups: 'Groups',
   engine: 'Engine',
   timeline: 'Timeline',
-  docs: 'Documents',
+}
+
+/** Segments an older address spelt a section with, and what they mean
+ * now. `docs` is in bookmarks, chat answers and the Inbox, so it keeps
+ * reading — `renamedProjectPath` rewrites it, and the parser below
+ * resolves it in the meantime so nothing renders a blank frame while
+ * the rewrite lands. */
+const RENAMED: Record<string, Section> = { docs: 'workspace' }
+
+/** The canonical address for one minted under an old section name, or
+ * null when the address is already canonical.
+ *
+ * The tail is carried across whole: `#/p/X/docs/user/a.md` names a
+ * document, and a redirect that dropped it would land the reader on the
+ * section with nothing open — which is exactly what the bookmark was
+ * saved to avoid. */
+export function renamedProjectPath(segments: string[]): string | null {
+  if (segments[0] !== 'p' || !segments[1]) return null
+  const to = RENAMED[segments[2] ?? '']
+  if (to === undefined) return null
+  const tail = segments.slice(3).map(encodeURIComponent)
+  return [`/p/${encodeURIComponent(segments[1])}/${to}`, ...tail].join('/')
 }
 
 /** The sections that show ONE task, and therefore carry its name in the
@@ -61,24 +89,25 @@ export interface ProjectRoute {
    * The `revisions` row id, never the rev NUMBER: a killed proposal
    * and the revision that later takes its number are both "rev N". */
   rev: number | null
-  /** everything after the section that is not a task — the documents
-   * path, and nothing else today */
+  /** everything after the section that is not a task — the Workspace's
+   * document path, and nothing else today */
   rest: string[]
 }
 
 /** `null` when these segments are not a Project address at all. An
- * unknown section resolves to Tasks rather than rendering an empty
- * frame: a stale bookmark should land somewhere real. */
+ * unknown section resolves to the Project's first page rather than
+ * rendering an empty frame: a stale bookmark should land somewhere
+ * real, and that is the same page an address naming no section opens. */
 export function parseProjectRoute(segments: string[]): ProjectRoute | null {
   if (segments[0] !== 'p') return null
   const project = segments[1]
   if (!project) return null
-  const raw = segments[2] ?? 'tasks'
+  const raw = segments[2] ?? SECTIONS[0]
   const section = (SECTIONS as readonly string[]).includes(raw)
     ? (raw as Section)
-    : 'tasks'
+    : (RENAMED[raw] ?? SECTIONS[0])
   const tail = segments.slice(3)
-  if (section === 'docs')
+  if (section === 'workspace')
     return { project, section, problem: null, goal: null, rev: null, rest: tail }
   // every other section may carry a task: the three that REQUIRE one
   // (TASK_SECTIONS) and the two where it is a pin the reader set on a

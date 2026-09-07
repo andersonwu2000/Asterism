@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  RAIL_ACTS,
   createFolder,
   defaultView,
   docAddress,
+  docKind,
   docRefFromWorkspacePath,
   editable,
   editorFor,
@@ -16,11 +18,11 @@ import {
   refKey,
   syncedScrollTop,
 } from './docShell'
-import type { PaperRow, RailInput } from './docShell'
+import type { PaperRow, RailGroupId, RailInput } from './docShell'
 import type { DocEntry, TheoryMeta } from './docShelf'
 
 /*
- * The Documents tab's laws (docs_tab_spec.md §B): what the tab can
+ * The Workspace tab's laws (docs_tab_spec.md §B): what the tab can
  * open, how that address is written and read back, which panel a file
  * earns, whose writing it is, and the five groups the rail draws.
  */
@@ -110,25 +112,25 @@ describe('parseDocAddress', () => {
 describe('docAddress', () => {
   it('writes a document ref back as the address that reads it', () => {
     const ref = { kind: 'doc', path: 'user/notes/a.md' } as const
-    expect(docAddress('Erdos', ref)).toBe('/p/Erdos/docs/user/notes/a.md')
+    expect(docAddress('Erdos', ref)).toBe('/p/Erdos/workspace/user/notes/a.md')
     expect(parseDocAddress(['user', 'notes', 'a.md'])).toEqual(ref)
   })
 
   it('writes a task ref with the task in the address', () => {
     expect(
       docAddress('Erdos', { kind: 'task', task: 'Erdos.p1', path: 'proofs/L_x.lean' }),
-    ).toBe('/p/Erdos/docs/task/Erdos.p1/proofs/L_x.lean')
+    ).toBe('/p/Erdos/workspace/task/Erdos.p1/proofs/L_x.lean')
   })
 
   it('encodes each segment, because a separator is structure', () => {
     expect(docAddress('E d', { kind: 'doc', path: 'user/a b/c#d.md' })).toBe(
-      '/p/E%20d/docs/user/a%20b/c%23d.md',
+      '/p/E%20d/workspace/user/a%20b/c%23d.md',
     )
   })
 
   it('a task ref naming no task is not addressable — it lands on the section', () => {
     expect(docAddress('Erdos', { kind: 'task', task: null, path: 'REPORT.md' })).toBe(
-      '/p/Erdos/docs',
+      '/p/Erdos/workspace',
     )
   })
 })
@@ -154,7 +156,7 @@ describe('docRefFromWorkspacePath', () => {
   it('mints an address the tab reads back as the same document', () => {
     const ref = docRefFromWorkspacePath('Erdos', 'Problems/Erdos/_docs/agent/n/a.md')
     expect(ref).not.toBeNull()
-    // the address is `/p/<project>/docs/<rest…>`; the route hands the
+    // the address is `/p/<project>/workspace/<rest…>`; the route hands the
     // tab exactly that tail
     const rest = docAddress('Erdos', ref!).split('/').slice(4).map(decodeURIComponent)
     expect(parseDocAddress(rest)).toEqual(ref)
@@ -701,7 +703,7 @@ describe('moveTargets', () => {
 describe('which editor a document earns', () => {
   it('paints what it has a painter for, and nothing it does not', () => {
     // The console has exactly two tokenizers — the Lean one and the
-    // markdown one — and until now the Documents tab used neither:
+    // markdown one — and until now this tab used neither:
     // every file the person could edit got a bare textarea, while the
     // task page's own markdown was coloured (owner, 2026-09-06).
     expect(editorFor('user/notes.md')).toBe('markdown')
@@ -756,6 +758,76 @@ describe('the document mode table', () => {
 
   it('gives a language it does not know the plain row', () => {
     expect(modeFor('user/a.json')).toEqual(modeFor('user/a.txt'))
+  })
+})
+
+/* The rail's marks (2026-09-08). A column of forty names was forty
+ * identical rows; the kind is one glyph per row now, and this is the
+ * law that picks which. */
+describe('docKind', () => {
+  it('names the three writing formats by their own row of the table', () => {
+    expect(docKind('user/a.md')).toBe('md')
+    expect(docKind('user/a.tex')).toBe('tex')
+    expect(docKind('task/Root.lean')).toBe('lean')
+  })
+
+  it('calls a folder a folder, whatever its name looks like', () => {
+    expect(docKind('user/notes', 'dir')).toBe('folder')
+    // the LISTING decides, never the extension: a folder called `a.md`
+    // is still a folder
+    expect(docKind('user/a.md', 'dir')).toBe('folder')
+  })
+
+  it('asks the mode table what it can show, rather than keeping a second list', () => {
+    expect(docKind('user/papers/x/paper.pdf')).toBe('pdf')
+    for (const p of ['a.png', 'a.jpg', 'a.svg']) expect(docKind(p)).toBe('image')
+    // a suffix the shell has no pane for must not wear a picture's mark
+    expect(panelFor('a.gif')).toBe('none')
+    expect(docKind('a.gif')).toBe('other')
+  })
+
+  it('gives everything else the blank page — the kind it cannot name', () => {
+    expect(docKind('user/a.txt')).toBe('other')
+    expect(docKind('user/Makefile')).toBe('other')
+  })
+})
+
+/* This door writes `user/` and nothing else (§1.2-1). The strip under a
+ * selected row is where that becomes visible, and the table is the ONE
+ * place both the buttons and the keys read it from. */
+describe('RAIL_ACTS', () => {
+  it('offers the write acts on the person`s own area and nowhere else', () => {
+    expect(RAIL_ACTS.yours).toBe('write')
+    const writable = (Object.keys(RAIL_ACTS) as RailGroupId[]).filter(
+      (id) => RAIL_ACTS[id] === 'write',
+    )
+    expect(writable).toEqual(['yours'])
+  })
+
+  it('keeps papers read-only, and stops saying so (2026-09-08)', () => {
+    // the sentence was about this console's backlog ("Removing one is
+    // not offered here yet"), not about the paper. Silence is not the
+    // writable branch: a group with nothing to say must not be a group
+    // rename and delete appear on.
+    expect(RAIL_ACTS.papers).toBe('silent')
+    expect(RAIL_ACTS.papers).not.toBe('write')
+  })
+
+  it('still says read-only where the machine or the engine wrote it', () => {
+    for (const id of ['agent', 'engine', 'proofs'] as const)
+      expect(RAIL_ACTS[id]).toEqual({ refuse: expect.stringContaining('read-only') })
+  })
+
+  it('covers every group the rail can draw — a missing row is a rail that guesses', () => {
+    const drawn = railGroups(
+      input({
+        entries: [dir('user'), file('user/a.md'), file('agent/b.md')],
+        papers: [paper()],
+        task: 'Erdos.p1',
+        taskFiles: { problem_files: ['TREE.md'], proof_files: ['L_x.lean'], hasReport: false },
+      }),
+    ).map((g) => g.id)
+    for (const id of drawn) expect(RAIL_ACTS[id]).toBeDefined()
   })
 })
 

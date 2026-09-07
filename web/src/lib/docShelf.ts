@@ -1,7 +1,7 @@
 import { groupCode } from './format'
 
 /*
- * The Documents shelf's reading of its own list (human_interface_design
+ * The Workspace shelf's reading of its own list (human_interface_design
  * .md §3.6, theory_wake_design.md §4).
  *
  * `user/` is a person's folder and reads like one: alphabetical, the

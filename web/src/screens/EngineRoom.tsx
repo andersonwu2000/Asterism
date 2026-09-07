@@ -170,7 +170,7 @@ export function CycleLine({
       <span
         title={
           subject === 'document'
-            ? 'the review cycle: the theorist argues its document past a reviewer before it lands under Documents'
+            ? 'the review cycle: the theorist argues its document past a reviewer before it lands under Workspace'
             : 'the proposal-review cycle: the strategist argues its research programme past an adversarial reviewer before it can act on it'
         }
       >
@@ -436,7 +436,7 @@ function Lane({
             <div className="mt-1.5 text-[10px] text-ink-faint">
               this file is past the console's reading ceiling —{' '}
               {compactNumber(w.file.dropped_bytes ?? 0)} bytes of its head are not
-              shown; the Documents tab reads it whole
+              shown; the Workspace tab reads it whole
             </div>
           )}
           {w.path?.endsWith('.md') ? (

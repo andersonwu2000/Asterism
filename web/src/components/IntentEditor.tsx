@@ -23,7 +23,7 @@ import type { IntentData, PaperShelfItem, ProblemPaperBinding } from '../lib/typ
  */
 
 /** Where a bound paper READS: its `text.md` in the Project's
- * Documents, which is where the paper lives now (§3.9). */
+ * Workspace, which is where the paper lives now (§3.9). */
 function docHref(project: string, b: ProblemPaperBinding): string {
   const rel = b.path ?? `user/papers/${b.id}`
   return docAddress(project, { kind: 'doc', path: `${rel}/text.md` })

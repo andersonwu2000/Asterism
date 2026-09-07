@@ -206,7 +206,7 @@ describe('renderProse preamble — provenance is not the document', () => {
  * split is `\n{2,}`, which `\r\n\r\n` does not match, and a heading is
  * `^#{1,6}\s+(.*)$` whose `.` refuses `\r`. Live on 2026-09-06:
  * `user/split_bricks.md` (CRLF on disk, 13 sections) rendered as ONE
- * paragraph in the Documents render pane — every `---`, every
+ * paragraph in the Workspace render pane — every `---`, every
  * `## Brick n` and every paragraph break run together as body text,
  * while the source pane beside it showed them on their own lines.
  */

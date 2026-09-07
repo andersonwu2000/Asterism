@@ -8,7 +8,7 @@ import type { ChatSessionSummary } from '../../lib/types'
  * do not float what the page can simply say.
  *
  * The current conversation carries the dot; the SELECTED row carries
- * the acts, and only that row (DESIGN.md 2026-09-04, the Documents
+ * the acts, and only that row (DESIGN.md 2026-09-04, the Workspace
  * rail). Delete confirms in place, in the words of what happens. The
  * keys walk the same grammar as the pointer: ↑↓ Enter F2 Delete Esc.
  */
