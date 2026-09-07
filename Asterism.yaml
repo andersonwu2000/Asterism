@@ -413,6 +413,8 @@ theorist:
   # model: claude-fable-5-1      # 2026-09-06 claude day (owner); astra kept dying on capacity
 
 theory_reviewer:
+  dossier: inline              # 2026-09-07 (owner): lab theory_dossier — same verdicts on the real
+                               # rounds, -29% cost; revert to `files` if it misbehaves
   # The judge matches its author, the 08-23 shape one layer up: the
   # reviewer re-derives the proofs and reproduces the computations, so
   # it must not sit below the seat it is checking.
