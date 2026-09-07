@@ -35,6 +35,7 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
    Try to push past where the author stopped. No revision follows this round, so a line you find goes in `reservations`, written as you would write it for the author — the line, the way out, the next step; it reaches the Strategist with the document.
 <!-- #endif -->
 4. **Leads**: every lead carries its reason and the test it survived (a case analysis, a construction, a computation), and says what a counterexample would have to look like. A conjecture with no reason and no test, or a next step that is a wish, is not allowed.
+5. **Target**: question the objective as posed. If a more essential shape exists — the posed statement a case or a proxy of it — and this document's results reach it, fire: name the shape and which results carry over (criterion 1 permits answering a better objective). If they do not reach it, write the shape in `reservations` for the Strategist. A question the request has already answered is not re-fired without new grounds.
 
 ## Output
 
@@ -45,8 +46,9 @@ Write `{attempts_dir}/verdict.json` — adjudicate every criterion, a list per c
    "1": ["fired: <concrete objection — which statement, and where in the record or the notes it already stands, or why the relation does not hold>"],
    "2": ["clear: <which proof you re-derived and which computation you redid, and what it returned>"],
    "3": ["clear: <the open statement — which new ideas were tried — where your own next step stopped>"],
-   "4": ["clear: <the lead, its reason, its test>"]},
+   "4": ["clear: <the lead, its reason, its test>"],
+   "5": ["clear: <the objective's shape and why it is the essential form — or the more essential shape and why this document does not reach it>"]},
  "reservations": ["<advisory note — for concerns that fire no criterion; on the final round, also the line past the author's stop>"]}
 ```
 
-Any fired = rebut (your fired bullets go verbatim to the author for one revision); all clear = accept. No criterion takes a bare `clear` — each clear carries one concrete sentence for THIS document. This file is a review verdict, not an audit: exactly the four keys above, strings only.
+Any fired = rebut (your fired bullets go verbatim to the author for one revision); all clear = accept. No criterion takes a bare `clear` — each clear carries one concrete sentence for THIS document. This file is a review verdict, not an audit: exactly the five keys above, strings only.

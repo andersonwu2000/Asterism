@@ -92,16 +92,27 @@ def _subjects(text: str) -> "set[str]":
 
 
 def _route_criterion() -> str:
-    """The numbered criterion that judges the ROUTE — found by what its
-    line does, never by its number or its name (both have been
+    """The numbered criterion that judges the DECLARED route — found by
+    what its line does, never by its number or its name (both have been
     reassigned, and the obligation did not move with either). Exactly
     one criterion holds that job; two would mean the rubric has grown a
-    second, unpinned copy of it."""
+    second, unpinned copy of it.
+
+    Anchored on the Roadmap's `Relation:` since 2026-09-08. "The line
+    mentions a route" stopped picking out one criterion when Target
+    (criterion 5) arrived: it asks about the route too — whether its
+    ENDPOINT is the claim's essential form or a proxy — and that is a
+    different job from judging the route the author declared. What is
+    pinned here is the criterion that rules on `Relation:` itself,
+    which is where a route is refused."""
     hits = [n for n in sorted(_criteria_in_prompt())
-            if "route" in _criterion_line(n).lower()]
+            if "`Relation:`" in _criterion_line(n)]
     assert len(hits) == 1, (
-        f"expected exactly one criterion judging the route, found "
-        f"{hits or 'none'}")
+        f"expected exactly one criterion judging the declared route, "
+        f"found {hits or 'none'}")
+    assert "route" in _criterion_line(hits[0]).lower(), (
+        f"criterion {hits[0]} rules on `Relation:` but its line no "
+        f"longer talks about the route it declares")
     return hits[0]
 
 
@@ -394,6 +405,24 @@ def test_the_route_clause_keeps_all_of_its_refusals() -> None:
     assert any("record" in p for p in items), (
         f"a route against the record is no longer one of the refused "
         f"items:\n{refusal}")
+
+
+def test_the_pre_target_four_key_verdict_is_refused_by_name() -> None:
+    """Criterion 5 (Target) joined this rubric on 2026-09-08, and the
+    four keys that were the whole rubric the day before must now be
+    refused — naming the key that is missing, since "malformed" is a
+    gate the judge cannot obey.
+
+    The four are written out rather than sliced off `CRITERIA_KEYS`: the
+    point is that THAT verdict, the one judges wrote all through
+    2026-09-07, stops passing."""
+    import json
+    body = {"criteria": {k: [f"clear: criterion {k} holds for this batch"]
+                         for k in ("1", "2", "3", "4")},
+            "reservations": []}
+    v, err = adversary.parse_verdict(json.dumps(body))
+    assert v is None, "a verdict missing Target must not pass"
+    assert "missing criterion 5" in err, err
 
 
 def test_every_criterion_refuses_a_bare_clear() -> None:

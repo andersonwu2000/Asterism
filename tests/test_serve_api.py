@@ -3218,7 +3218,8 @@ def test_docs_listing_carries_each_theory_document_s_record(
         "rounds": 2,
         "objective": "what breaks the counting?",
         "verdict": _verdict.verdict_lines(ruling)}
-    assert len(_verdict.verdict_lines(ruling)) == 4
+    assert (len(_verdict.verdict_lines(ruling))
+            == len(_verdict.CRITERIA_KEYS))
     # a file with no row carries no record at all — absent, not null
     assert "theory" not in by_path["agent/notes.md"]
     # and the row that landed no file is on no row of the shelf

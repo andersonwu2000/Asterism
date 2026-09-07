@@ -1219,6 +1219,20 @@ def test_a_missing_criterion_names_the_one_that_is_missing() -> None:
     assert "5" not in err
 
 
+def test_the_pre_target_four_key_verdict_is_refused_by_name() -> None:
+    """Criterion 5 (Target) joined this rubric on 2026-09-08 too — it
+    rules on the OBJECTIVE as posed — and the four keys that were the
+    whole rubric the day before must now be refused by name. Written
+    out rather than sliced off `CRITERIA_KEYS`, because what is pinned
+    is that THAT verdict stops passing."""
+    body = {"criteria": {k: [f"clear: criterion {k} holds because ..."]
+                         for k in ("1", "2", "3", "4")},
+            "reservations": []}
+    v, err = _verdict.parse_theory_verdict(json.dumps(body))
+    assert v is None, "a review verdict missing Target must not pass"
+    assert "missing criterion 5" in err, err
+
+
 def test_a_bullet_rendered_as_an_object_is_still_a_bullet() -> None:
     """Refusing this rendering cost arm3h_r2 both of its tries: the
     contract is one bullet per objection, and the bullet's SHAPE is not

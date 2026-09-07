@@ -6,12 +6,12 @@ which is where every rule below was paid for. It is deliberately NOT
 `pipeline.adversary.parse_verdict`: that parser's contract is the batch
 judge's own criteria plus criterion 2's naming rule, held level with
 `prompts/adversary/adversary.md` by its own test. The two key sets
-happen to coincide since 2026-09-07 (the batch judge's criterion 5 was
-retired with the named-brick ruling) and the rules still do not — the
-multi-clear rule below is exactly the difference. Bending one parser to
-serve both rubrics would move the batch judge's contract to serve
-another — and the batch judge is the one gate on the argument layer
-that has no second opinion.
+happen to coincide — both rubrics gained a criterion 5 (Target) on
+2026-09-08, each worded for its own document — and the rules still do
+not: the multi-clear rule below is exactly the difference. Bending one
+parser to serve both rubrics would move the batch judge's contract to
+serve another — and the batch judge is the one gate on the argument
+layer that has no second opinion.
 
 THE RULE THAT COST TWO WHOLE RUNS. A criterion is clear iff EVERY
 bullet in it is a clear. "clear takes exactly one entry" is the batch
@@ -41,8 +41,15 @@ REPORT_BASENAME = "report.md"
 VERDICT_BASENAME = "verdict.json"
 
 #: `prompts/theorist/review.md`'s rubric: Worth / Rigour / Load-bearing
-#: work / Leads.
-CRITERIA_KEYS: "tuple[str, ...]" = ("1", "2", "3", "4")
+#: work / Leads / Target.
+#:
+#: Target (criterion 5, owner ruling 2026-09-08) rules on the OBJECTIVE
+#: as posed: a more essential shape the posed statement is a case or a
+#: proxy of, which this document's results already reach, fires — one
+#: it does not reach goes to `reservations` for the Strategist. The
+#: other four take the objective as given, so a document answering a
+#: proxy perfectly cleared all of them.
+CRITERIA_KEYS: "tuple[str, ...]" = ("1", "2", "3", "4", "5")
 
 #: The rubric DECLARATION dropped beside the reviewer's verdict, so
 #: `validate_json` checks the hand-in against the keys this rubric

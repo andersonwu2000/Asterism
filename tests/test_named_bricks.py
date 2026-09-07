@@ -647,14 +647,19 @@ def test_a_legacy_row_replays_under_the_retired_field(tmp_path):
     assert "Theorem. OLD." in text
 
 
-def test_the_batch_judges_rubric_has_four_criteria():
+def test_the_batch_judges_rubric_has_five_criteria():
+    """The named-brick ruling took criterion 5 out on 2026-09-07; the
+    Target ruling put a DIFFERENT one back on 2026-09-08 (the endpoint's
+    own shape). Pinned on the number, not on what it means — which the
+    prompt says and `test_adversary_criteria_contract.py` holds level."""
     from Tooling.pipeline import adversary
-    assert adversary.CRITERIA_KEYS == ("1", "2", "3", "4")
+    assert adversary.CRITERIA_KEYS == ("1", "2", "3", "4", "5")
     v, err = adversary.parse_verdict(json.dumps({"criteria": {
         "1": ["clear: the chain reaches the charter"],
         "2": ["clear: the Relation is argued"],
         "3": ["clear: every PAST line cites"],
-        "4": ["clear: the Proof is complete"]}}))
+        "4": ["clear: the Proof is complete"],
+        "5": ["clear: the endpoint is the all-n statement itself"]}}))
     assert err == "" and v is not None and v["verdict"] == "pass"
 
 
@@ -662,8 +667,16 @@ def test_the_batch_judges_rubric_has_four_criteria():
     "Tooling/prompts/adversary/adversary.md",
     "Tooling/prompts/adversary/_contract.md",
 ])
-def test_no_residue_of_criterion_five_in_the_batch_judge_path(path):
+def test_no_residue_of_the_retired_criterion_five_in_the_judge_path(path):
+    """What retired on 2026-09-07 was the RULE, not the slot: "every
+    Inject is proven in the ## Proof", which only ever existed because
+    an Inject carried a hand copy of its brick. Criterion 5 is Target
+    now, so the number cannot be what this pins — it pins that the
+    copy-checking rule and the `proof` field it read are gone from both
+    surfaces the judge is handed."""
     root = Path(__file__).resolve().parents[1]
     text = (root / path).read_text(encoding="utf-8")
-    assert "5." not in text.replace("2026-09-05.", "")
-    assert '"5"' not in text
+    assert "must be proven in the ## Proof" not in text
+    assert "Backed by argument" not in text
+    assert "copy each brick" not in text
+    assert "Inject`s `proof`" not in text and "Inject — `proof`" not in text

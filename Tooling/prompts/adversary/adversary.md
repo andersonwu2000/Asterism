@@ -36,6 +36,7 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
 2. **Direction**: `proposal.md`'s ## Roadmap must open with an argued `Relation:` — how the route's endpoint stands to the charter (equivalent or stronger is fine) — and its ### AHEAD is drawn only to the known boundary (the exit or a named open statement), with the open statement handled this batch. Items beyond the open statement, a Relation without argument, or a route that contradicts the record or re-walks it in the same shape, are not allowed.
 3. **Honesty**: every assertion in `proposal.md`'s ### PAST carries a citation — a node or a framework message — and every closure names its dead instance and restart condition. A mathematical claim rests on a complete argument or the kernel's record, and a claim about framework behaviour anywhere in the proposal cites its source. Conjecture treated as fact, or reliance on external circumstances, is not allowed.
 4. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed; a `compute` evaluation (counts, distributions, exhaustive checks) is not an argument.
+5. **Target**: question the endpoint itself. Is the route aimed at the claim's essential form, or at a proxy — one the record shows must be repeated (the next size, case, parameter), or one the charter does not consume? Fire only when you can name a shape that contains the present endpoint and say what in the record makes it reachable now; otherwise a reservation. A question the Argument has already answered is re-fired only on evidence the record added since.
 
 Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. A fired criterion = rebut; a reservation must not be used to patch over one.
 
@@ -62,7 +63,8 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
    "1": ["clear: <each NOW Inject's consumption chain and its endpoint>"],
    "2": ["clear: <the Relation's argument — which item is the open statement, how this batch handles it>"],
    "3": ["clear: <one concrete reason this holds for THIS proposal>"],
-   "4": ["clear: <one concrete reason>"]},
+   "4": ["clear: <one concrete reason>"],
+   "5": ["clear: <the endpoint's shape and why it is the essential form — or which proxy it is and why the Argument's defence holds>"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
@@ -74,6 +76,7 @@ Rules:
 - You review and point directions; never rewrite the proposal or the directive yourself.
 - Check only the Relation, the consumption chains and the open statement the author wrote; do not supply them. A consumer or a route you thought of yourself goes in reservations.
 - A fired line gives the defect AND the way out; the way out comes from the proposal's own AHEAD, the charter, or the record, and names the file path it points to.
+- A criterion 5 line's way out is fixed: re-aim `Relation:` to the named shape, or defend the present shape in `## Argument`.
 - Format defects and redundant Programme content do not rebut — keep them in reservations. A PAST line without its citation is criterion 3.
 - A NOW step already scheduled by the current Programme's AHEAD is fired only by showing where the execution record since then voided it.
 - Validate `{attempts_dir}/verdict.json` with `validate_json` before finishing.

@@ -990,15 +990,31 @@ test('timeline: a revision row opens onto the judge that ruled on it', async ({
   await expect(block).toBeVisible({ timeout: 30000 })
   if ((await block.getAttribute('data-verdict')) === 'none') return
 
-  // the rubric's four criteria, named and in its own order (criterion 5
-  // retired 2026-09-07 with the copied `proof` field)
+  // every criterion THIS revision was ruled on, named and in the
+  // rubric's order — read off the row's own verdict, never written
+  // down here. The rubric is revised (criterion 5 retired 2026-09-07
+  // and a different criterion 5, Target, landed 2026-09-08) while a
+  // timeline row keeps forever the ruling it was actually given, so a
+  // literal count goes red on a real workspace at every revision and
+  // is green only until the next one. What the page owes the reader is
+  // the whole of that row's ruling; the rubric's own order and
+  // completeness are pinned server-side, in
+  // `tests/test_programme_verdict_read.py`.
+  const rowId = await row.getAttribute('data-verdict-row')
+  const ruled = await request.get(
+    `/api/problems/${encodeURIComponent(target as string)}/programme/verdict/${rowId}`,
+  )
+  const ruledKeys: string[] = (
+    ((await ruled.json()).criteria ?? []) as { key: string }[]
+  ).map((c) => c.key)
+  expect(ruledKeys.length).toBeGreaterThan(0)
   const crit = page.locator('[data-criterion]')
-  await expect(crit).toHaveCount(4)
+  await expect(crit).toHaveCount(ruledKeys.length)
   expect(
     await crit.evaluateAll((els) =>
       els.map((e) => e.getAttribute('data-criterion')),
     ),
-  ).toEqual(['1', '2', '3', '4'])
+  ).toEqual(ruledKeys)
 
   // a criterion is a LIST: however many bullets the judge wrote, that
   // many render. The one-string schema bound in 4,495 of 4,495 rounds

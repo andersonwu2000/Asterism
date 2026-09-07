@@ -579,15 +579,19 @@ def build_projection(*, round_no: int, attempts_dir: Path,
 #: `Tooling/prompts/adversary/adversary.md` by
 #: `tests/test_adversary_criteria_contract.py`.
 #:
-#: Criterion 5 ("every Inject is proven in the ## Proof") was RETIRED
-#: 2026-09-07 with the named-brick ruling. It existed because an Inject
-#: carried a hand COPY of its brick, so "does the copy match the Proof"
-#: was a real question a reader had to answer. An Inject now names a
-#: brick and the framework resolves the name — a decision that names
-#: nothing in the `## Proof` is refused at verify, before the judge ever
-#: reads it — so the criterion could only ever fire on a batch that
-#: cannot exist.
-CRITERIA_KEYS = ("1", "2", "3", "4")
+#: Criterion 5 is **Target** (owner ruling 2026-09-08): the ENDPOINT
+#: itself is judged — is the route aimed at the claim's essential form,
+#: or at a proxy the record shows must be repeated at the next size,
+#: case or parameter, or one the charter does not consume. Criteria 1-4
+#: all take the endpoint as given and ask whether the plan reaches it,
+#: so a route walking faultlessly to a proxy cleared every one of them.
+#:
+#: It reuses the NUMBER and nothing else. The criterion 5 that retired
+#: on 2026-09-07 ("every Inject is proven in the ## Proof") does not
+#: come back: an Inject names a brick now, and a decision naming
+#: nothing in the `## Proof` is refused at verify before the judge
+#: reads a word.
+CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 
 #: The criteria whose `clear` must carry its naming (see the check in
 #: `parse_verdict`). Held to `Tooling/prompts/adversary/adversary.md` by
@@ -729,7 +733,8 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     criteria = v.get("criteria")
     if not isinstance(criteria, dict):
         return None, ("verdict.json needs a `criteria` object "
-                      "adjudicating every criterion \"1\"..\"4\"")
+                      "adjudicating every criterion "
+                      f"\"{CRITERIA_KEYS[0]}\"..\"{CRITERIA_KEYS[-1]}\"")
     missing = [k for k in CRITERIA_KEYS if k not in criteria]
     if missing:
         return None, (f"verdict.json `criteria` missing criterion "

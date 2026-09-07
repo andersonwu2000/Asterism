@@ -208,11 +208,12 @@ def _audit_snapshot_here() -> "list[dict] | None":
 #: seated the judge — `{"criteria_keys": [...], "multi_clear": bool}`.
 #:
 #: Ownership again, one layer past `_audit_roots.json`. Shape cannot
-#: answer WHICH rubric a verdict was written against: since 2026-09-07
-#: the batch judge and the theory review both adjudicate criteria
-#: "1".."4", and before that a complete four-criterion review verdict
-#: was told "`criteria` missing criterion 5" — a framework fault worded
-#: as the judge's mistake, about a criterion its prompt does not have.
+#: answer WHICH rubric a verdict was written against: the batch judge
+#: and the theory review adjudicate the same key set (criteria "1".."5"
+#: since 2026-09-08, "1".."4" before it), and when they briefly differed
+#: a complete four-criterion review verdict was told "`criteria` missing
+#: criterion 5" — a framework fault worded as the judge's mistake,
+#: about a criterion its prompt does not have.
 #: The judge cannot act on that: it can only invent one. The rules
 #: still differ (multi-clear, bullet shape), so the declaration, not
 #: the key count, is what decides.
@@ -379,8 +380,8 @@ def validate_json(text: str = "", file: str = "") -> str:
         # The shape guess it replaces ("criterion 3 is a list and
         # there is no criterion 5") also matched a theory-wake verdict,
         # whose rubric is criteria "1".."3" or "1".."4" with string
-        # bullets — and since 2026-09-07 the batch judge's own rubric is
-        # "1".."4" too, so no key count could tell them apart:
+        # bullets — and the batch judge's own rubric has moved through
+        # both of those counts, so no key count could tell them apart:
         # the tool told the arm3h_r2 judge twice to convert criterion 3
         # into `{goal_id, verdict, reason}` objects and add a criterion
         # 4 its rubric does not have, and both tries died on it (the

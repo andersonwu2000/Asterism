@@ -53,6 +53,7 @@ PASS = {
         "2": ["clear - AHEAD 7 closes the MAIN claim"],
         "3": ["clear: every step is complete"],
         "4": ["clear: every step of the Proof is complete"],
+        "5": ["clear: the endpoint is the charter's own statement"],
     },
 }
 
@@ -69,6 +70,7 @@ REBUT = {
         "1": ["clear: the work is needed"],
         "2": ["clear: the entry is named"],
         "4": ["clear: backed"],
+        "5": ["clear: the endpoint is the essential form"],
     },
 }
 
