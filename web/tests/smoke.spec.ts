@@ -102,12 +102,12 @@ test('project shell: six sections, two corner glyphs', async ({ page, request })
   const menu = page.locator('[data-menu] a')
   await expect(menu).toHaveCount(6)
   expect(await menu.allInnerTexts()).toEqual([
+    'Workspace',
     'Tasks',
     'Sky',
     'Groups',
     'Engine',
     'Timeline',
-    'Documents',
   ])
   // the owner's ruling is a NUMBER, so the test counts (1.4-2)
   await expect(page.locator('[data-corner] > *')).toHaveCount(2)
@@ -217,10 +217,10 @@ test('engine: the reviewer\'s objections are not residue ink', async ({
   expect(dim).not.toBe(await inkRgb(page, '--color-ink-faint'))
 })
 
-test('timeline and documents render inside the shell', async ({ page, request }) => {
+test('timeline and the workspace render inside the shell', async ({ page, request }) => {
   const s = await openShelf(page, request, 'timeline')
   await expect(page.locator('[data-menu] a').first()).toBeVisible()
-  await page.goto(at(s.project, 'docs'))
+  await page.goto(at(s.project, 'workspace'))
   // the two root buttons ('proofs' / 'documents') went with the
   // 2026-09-04 rewrite: the tab is ONE rail whose groups are the kinds
   // of writing, and the person's own is the primary one
@@ -228,7 +228,7 @@ test('timeline and documents render inside the shell', async ({ page, request })
   await expect(page.getByRole('treeitem', { name: /yours/ })).toBeVisible()
 })
 
-test('documents: a row can be shown in the file manager, or say why not', async ({
+test('workspace: a row can be shown in the file manager, or say why not', async ({
   page,
   request,
 }) => {
@@ -249,7 +249,7 @@ test('documents: a row can be shown in the file manager, or say why not', async 
         })
       : route.fallback(),
   )
-  await page.goto(at(s.project, 'docs'))
+  await page.goto(at(s.project, 'workspace'))
   await page.getByRole('treeitem', { name: /notes\.md/ }).click()
   const reveal = page.getByRole('button', { name: 'show in Explorer' })
   await expect(reveal).toBeVisible()
@@ -261,7 +261,7 @@ test('documents: a row can be shown in the file manager, or say why not', async 
   await expect(page.getByText(/Read-only smoke test/)).toBeVisible()
 })
 
-test('documents: an editable markdown file wears the shared painter', async ({
+test('workspace: an editable markdown file wears the shared painter', async ({
   page,
   request,
 }) => {
@@ -293,7 +293,7 @@ test('documents: an editable markdown file wears the shared painter', async ({
       },
     }),
   )
-  await page.goto(at(s.project, 'docs'))
+  await page.goto(at(s.project, 'workspace'))
   await page.getByRole('treeitem', { name: /notes\.md/ }).click()
   const box = page.getByLabel('document source')
   await expect(box).toBeVisible()
@@ -304,7 +304,99 @@ test('documents: an editable markdown file wears the shared painter', async ({
   expect(await painted.locator('span').count()).toBeGreaterThan(0)
 })
 
-test('documents: the reader owns the line between writing and reading', async ({
+test('workspace: the rail opens documents as tabs, and a tab closes', async ({
+  page,
+  request,
+}) => {
+  // The shell shows ONE document, so before the strip existed every
+  // walk through the rail replaced what you were reading (owner,
+  // 2026-09-08). The laws are in `lib/docTabs` and tested there; this
+  // is the wiring: rail → strip → shell, on a live page.
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with a Project')
+  const s = shelf as Shelf
+  await page.route('**/api/projects/*/docs', async (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          json: {
+            entries: [
+              { path: 'user', kind: 'dir' },
+              { path: 'user/one.md', kind: 'file', size: 12 },
+              { path: 'user/two.lean', kind: 'file', size: 12 },
+            ],
+          },
+        })
+      : route.fallback(),
+  )
+  await page.route('**/api/projects/*/docs/user/*', async (route) =>
+    route.fulfill({
+      json: { path: 'user/x', encoding: 'utf-8', etag: 'deadbeef', content: 'body\n' },
+    }),
+  )
+  await page.goto(at(s.project, 'workspace'))
+  // nothing open is no strip at all — the shell says it in words
+  await expect(page.locator('[data-doc-tabs]')).toHaveCount(0)
+
+  await page.getByRole('treeitem', { name: /one\.md/ }).click()
+  await page.getByRole('treeitem', { name: /two\.lean/ }).click()
+  const tabs = page.locator('[data-doc-tabs] [role="tab"]')
+  await expect(tabs).toHaveCount(2)
+  // the one on screen is the one the address names
+  await expect.poll(() => page.url()).toContain('/workspace/user/two.lean')
+  await expect(tabs.filter({ hasText: 'two.lean' })).toHaveAttribute('aria-selected', 'true')
+
+  // clicking a row that is already open brings its tab forward rather
+  // than minting a second one
+  await page.getByRole('treeitem', { name: /one\.md/ }).click()
+  await expect(tabs).toHaveCount(2)
+  await expect(tabs.filter({ hasText: 'one.md' })).toHaveAttribute('aria-selected', 'true')
+
+  await page.getByRole('button', { name: 'close one.md' }).click()
+  await expect(tabs).toHaveCount(1)
+  await expect.poll(() => page.url()).toContain('/workspace/user/two.lean')
+})
+
+test('workspace: the render pane says whether it read, and asks nothing', async ({
+  page,
+  request,
+}) => {
+  // The `Check` button opened a report of the same fact the render
+  // below it already shows — there is no compile step for prose, so
+  // there was nothing to press for (owner, 2026-09-08). The one line
+  // stays.
+  const shelf = await firstShelf(request)
+  test.skip(shelf === null, 'needs a workspace with a Project')
+  const s = shelf as Shelf
+  await page.route('**/api/projects/*/docs', async (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          json: {
+            entries: [
+              { path: 'user', kind: 'dir' },
+              { path: 'user/prose.md', kind: 'file', size: 40 },
+            ],
+          },
+        })
+      : route.fallback(),
+  )
+  await page.route('**/api/projects/*/docs/user/prose.md*', async (route) =>
+    route.fulfill({
+      json: {
+        path: 'user/prose.md',
+        encoding: 'utf-8',
+        etag: 'deadbeef',
+        content: '# A heading\n\nprose.\n',
+      },
+    }),
+  )
+  await page.goto(at(s.project, 'workspace'))
+  await page.getByRole('treeitem', { name: /prose\.md/ }).click()
+  const pane = page.locator('[data-render-pane]')
+  await expect(pane.getByText('painted by the console')).toBeVisible()
+  await expect(pane.locator('button')).toHaveCount(0)
+})
+
+test('workspace: the reader owns the line between writing and reading', async ({
   page,
   request,
 }) => {
@@ -337,7 +429,7 @@ test('documents: the reader owns the line between writing and reading', async ({
       },
     }),
   )
-  await page.goto(at(s.project, 'docs'))
+  await page.goto(at(s.project, 'workspace'))
   await page.getByRole('treeitem', { name: /split\.md/ }).click()
   const handle = page.locator('[data-split-handle]')
   await expect(handle).toBeVisible()
@@ -575,7 +667,7 @@ test('the papers page is not reachable from anywhere', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Papers' })).toHaveCount(0)
 })
 
-test("Documents is where a paper is shelved", async ({ page, request }) => {
+test("Workspace is where a paper is shelved", async ({ page, request }) => {
   // §3.9: the drop target and the "paper" affordance live on the
   // Project's own document column, and the areas it writes are named
   // there.
@@ -583,7 +675,7 @@ test("Documents is where a paper is shelved", async ({ page, request }) => {
   test.skip(!shelf, 'needs a workspace with a Project')
   // `docs/shelf` was the second root's address; the tab has one address
   // now and the affordance sits on the `papers` group's header
-  await page.goto(`/#/p/${encodeURIComponent(shelf!.project)}/docs`)
+  await page.goto(`/#/p/${encodeURIComponent(shelf!.project)}/workspace`)
   await expect(page.getByTitle(/shelve a paper/)).toBeVisible()
 })
 
@@ -815,7 +907,7 @@ test('timeline: a row opens the object it names, not a list to find it in', asyn
   await page.goBack()
   await expect(rows).toHaveCount(2)
   await rows.nth(1).locator('[data-event-detail] [role="button"]').click()
-  await expect.poll(() => page.url()).toContain('/docs/agent/theory_note.md')
+  await expect.poll(() => page.url()).toContain('/workspace/agent/theory_note.md')
 })
 
 test('timeline: a revision row opens onto the judge that ruled on it', async ({

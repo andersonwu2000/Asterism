@@ -9,7 +9,7 @@ import { DiagList } from './LeanBlock'
 import { Button } from './ui'
 
 /*
- * The Documents tab's right-hand panels (docs_tab_spec.md §C3): one per
+ * The Workspace tab's right-hand panels (docs_tab_spec.md §C3): one per
  * kind of document, because "what sits beside the text while you write
  * it" is a different question for prose, TeX and Lean
  * (human_interface_design.md §1.2-2, 左編輯、右面板).
@@ -21,19 +21,23 @@ import { Button } from './ui'
  * could not be reused by a shell that owns the view control.
  */
 
-/** The bar every render pane wears: the CHECK, and what it answered.
+/** The bar every render pane wears: what the pane has to say about
+ * itself, and — where there is work to ask for — the button that asks.
  *
  * One shape for prose and for TeX. The two formats must operate alike
  * (owner, 2026-09-06) and "does this read?" is the same question in
- * both — only the thing that answers it differs, so only that differs
- * here. Before this the markdown render had no bar at all, which said
- * markdown could not be wrong. */
+ * both; what differs is whether anything must be RUN to answer it. TeX
+ * has an engine to call, so it has a button. The painter is already
+ * live under the reader's eyes, so prose has only the sentence (owner,
+ * 2026-09-08) — the action is optional here for that reason, not as a
+ * convenience. */
 function PanelBar({
   action,
   status,
   warn = false,
 }: {
-  action: ReactNode
+  /** absent where the answer needs nothing run */
+  action?: ReactNode
   status: string
   /** the answer is bad news — the TeX pane's own idiom for it */
   warn?: boolean
@@ -54,10 +58,13 @@ function PanelBar({
  * being written, not as it was last saved.
  *
  * The check is the painter itself (`lib/prose::proseIssues`): the
- * render below the bar is what the document says, and the bar says
- * whether anything in it fell out of that reading on the way. No
- * compile step, because there is none — the paint is already live, and
- * the button opens the report rather than starting work. */
+ * render below the bar is what the document says, and the bar's one
+ * line says whether every line of it made the journey. Nothing to
+ * press: there is no compile step here, so the button that used to open
+ * a report of the same fact was a second door onto the render already
+ * on screen (owner, 2026-09-08). A count is enough — an unclosed fence
+ * or a formula the typesetter refused is visible in the paint below,
+ * which is where the reader is already looking. */
 export function ProsePanel({
   text,
   scrollRef,
@@ -67,17 +74,10 @@ export function ProsePanel({
    * (`docShell::syncedScrollTop`) */
   scrollRef?: Ref<HTMLDivElement>
 }) {
-  const [open, setOpen] = useState(false)
-  const issues = useMemo(() => proseIssues(text), [text])
-  const n = issues.length
+  const n = useMemo(() => proseIssues(text).length, [text])
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <PanelBar
-        action={
-          <Button size="xs" onClick={() => setOpen((v) => !v)}>
-            {open ? 'Hide' : 'Check'}
-          </Button>
-        }
         warn={n > 0}
         status={
           n === 0
@@ -85,13 +85,6 @@ export function ProsePanel({
             : `${n} line${n === 1 ? '' : 's'} the painter could not read`
         }
       />
-      {open && (
-        <pre className={frameClass({ tone: 'faint', className: 'mx-3 mt-2 shrink-0' })}>
-          {n === 0
-            ? 'Nothing fell out of the reading. Fences all close and every $formula$ typesets.'
-            : issues.map((i) => `line ${i.line} — ${i.detail}`).join('\n')}
-        </pre>
-      )}
       <div ref={scrollRef} className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
         <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
           {renderProse(text, { mode: 'document', frontmatter: true })}

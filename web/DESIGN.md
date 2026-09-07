@@ -101,8 +101,26 @@ the ladder via `::picker(select)` where supported.
   theory layer's product is prose about a wall — neither data nor
   proposition — so it takes the third shape rather than borrowing one.
   `glyphs.tsx` `PAGE` is the one drawing; the theorist lane, the
-  Timeline's theory rows and the Documents shelf's agent list all wear
+  Timeline's theory rows and the Workspace shelf's agent list all wear
   it. It never appears in the sky: a document is not a star.
+- **A file's KIND is what is written on that page** (2026-09-08,
+  `glyphs.tsx` `KindGlyph`, seven marks on `PAGE`'s own 10×11 box). The
+  Workspace rail listed seven kinds of thing and drew none of them, so
+  forty names were forty identical rows. Every file IS the page; a
+  folder is the one non-page, because it holds pages rather than being
+  one. `md` is PAGE unchanged (prose lines); `tex` is the same two
+  lines CENTRED — a typeset page, and alignment is the difference a
+  reader can see at ten pixels; `lean` carries a chevron, code being
+  the one thing on the shelf a machine reads; `pdf` has a folded
+  corner, a finished page never written on here; an image is the one
+  LANDSCAPE frame, since a picture is not a page of text and the
+  silhouette should say so first; and a kind this console has no
+  reading for is a blank page — subtraction outranks addition, so what
+  cannot be named earns the least ink. The mark is decorative
+  (`aria-hidden`): the name beside it already says the kind. A theory
+  document therefore stops wearing PAGE a second time — its `.md` mark
+  IS that page, and the line under the name is what says the theory
+  layer wrote it.
 - **Single ring = a sign-off surface** (root / claim / anchor); bigger
   = more important. No other permanent rings.
 - **A sign-off surface is one the READER signs.** v35 problems run
@@ -212,7 +230,7 @@ the ladder via `::picker(select)` where supported.
   vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word
   layer).
 - **An act lives on the thing's row, and a refusal sits where the act
-  would have been** (2026-09-04, the Documents rail). Rename, move and
+  would have been** (2026-09-04, the Workspace rail). Rename, move and
   delete are offered under the SELECTED row — never on hover, never in
   the header a second time — and a row that cannot be acted on says
   `read-only — the engine's` in that same strip, so the person who
@@ -220,7 +238,27 @@ the ladder via `::picker(select)` where supported.
   refusal renders at the item it concerns (the create row, the renamed
   row, the delete window), not in a banner about something else. Keys
   walk the same grammar as the pointer (arrows, Enter, F2, m, Delete).
-- Drop targets (Documents is the reference): the WHOLE route area
+  A read-only group may also say NOTHING (`docShell.RAIL_ACTS`'s
+  `silent`, 2026-09-08): `papers` used to spend a sentence on this
+  console's own backlog — *"Removing one is not offered here yet"* —
+  which is a fact about us, not about the paper. Silence is a third
+  answer, spelt out in the table rather than folded into the writable
+  one: a group with nothing to say must never become a group the write
+  acts appear on.
+- **A tab strip says what is already open; the rail chooses** (the
+  Workspace, 2026-09-08). The shell shows ONE document, so before the
+  strip every walk through the rail replaced what you were reading.
+  Editor grammar, in this language's ink: the reading tab is INK on
+  the surface plate and the rest are dim — the same way the section
+  menu and the task column say "this is the one you are looking at" —
+  at the control rung's radius, with no shadow, because a lifted tab
+  would claim the strip floats over the document. It scrolls sideways
+  and never wraps: a strip that wrapped would move the document down
+  every time a file was opened. Nothing open draws no strip at all.
+  Keys are the rail's: arrows move the FOCUS, Enter reads, and Delete
+  closes the tab the focus is on — which is what makes closing a tab
+  other than the one you are reading possible at all.
+- Drop targets (the Workspace is the reference): the WHOLE route area
   accepts the drop; while a file is over it, a dashed `border-2
   border-ink-faint` frame at `inset-3 rounded-xl` floats over
   `bg-bg/85` with a two-line center label (display-face verb + quiet

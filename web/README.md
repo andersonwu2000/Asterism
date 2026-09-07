@@ -21,9 +21,68 @@ are exactly two frames and no sidebar.
   two corner glyphs (gear, Assistant). Beside the content, a collapsible
   task column; it is hidden when the shelf holds one task, and on the
   Tasks shelf itself, which IS the list. No section carries a title of
-  its own: the menu has said which one you are reading.
+  its own: the menu has said which one you are reading. An address
+  naming no section opens **Workspace**, the first of the six;
+  `…/docs`, the segment Workspace was called until 2026-09-08, still
+  reads and is rewritten to it, path and all.
 
 ### The six sections
+
+- **Workspace** — one rail, one strip of tabs, one shell; the Project's
+  first page, and **Documents** until 2026-09-08 (the section is where
+  a person WRITES, and the old name said drawer). The rail reads in
+  five groups:
+  `yours` (the Project's `_docs/user/`, primary, always open), then
+  `papers`, `agent` (what the theory layer wrote, newest first — the
+  Assistant writes into `yours` instead, where you can revise it),
+  `engine` (one task's REPORT / PROGRAMME / BRIEF / TREE /
+  Root / Defs, task chosen on the header) and `proofs` — the last four
+  folded by default, with a name filter over all of them. Every row
+  wears its kind as one small mark (`glyphs.tsx` `KindGlyph`: folder,
+  `.md`, `.tex`, `.lean`, pdf, image, and a blank page for a kind this
+  console has no reading for).
+
+  Opening a file gives it a **tab**, above the shell. Clicking a row
+  that is already open brings its tab forward rather than opening a
+  second one; the active tab is what the address names, and navigating
+  to a document's address opens or activates its tab. A tab holding
+  unsaved writing wears the rail's own dirty mark, and closing it loses
+  nothing — the draft store is keyed by path, not by tab. The strip
+  scrolls sideways, is a `tablist` (arrows move the focus, Enter reads,
+  Delete closes the focused tab), and is remembered per Project
+  (`asterism.workspace.tabs.<project>`). With nothing open there is no
+  strip: the shell says so in words.
+
+  Every file opens in the same shell: source on the left, a panel on
+  the right — `.md` renders, `.tex` compiles to a pdf preview (or says
+  there is no engine), `.lean` gets the Info panel on the reserved
+  slot, pdf and images view — behind a `source | split | render`
+  control. Editing is
+  exactly on `yours`: Save (Ctrl+S) with dirty marks, drafts that survive
+  walking the rail, a conflict line when the disk moved on, and the
+  selected row's own strip for `rename · move · delete` (keys: F2, m,
+  Delete; `+ file` / `+ folder` inline, n / N). Rows the engine or the
+  machine wrote say read-only in that same strip; a paper is read-only
+  too and simply says nothing, since the sentence it used to carry was
+  about this console's backlog. "ask the Assistant" hands the open file
+  to the panel. Dropping files anywhere — or `+ paper` — shelves papers
+  under `user/papers/`, extraction and all.
+
+  **The two writing formats operate alike.** `.md` and `.tex` are two
+  rows of ONE mode table (`lib/docShell::modeFor`), not two branches of
+  the shell — the only differences left are differences in the medium,
+  and this is the whole list:
+
+  | | `.md` | `.tex` | `.lean` | `.txt` |
+  |---|---|---|---|---|
+  | view control | `source · split · render` | `source · split · render` | `source · split · info` | source only |
+  | opens on | split (yours) / render | split (yours) / render | split | source |
+  | source painter | the markdown painter | plain (a `#` opens no heading in TeX) | the Lean tokenizer | plain |
+  | right pane | the console's render | the server's compiled pdf | goal at the caret + diagnostics | — |
+  | does it read? | one line — the painter is already live, so there is nothing to press | `Render` — the engine's compile, or its log tail | live, on the reserved slot | — |
+  | render follows the source's scroll | yes, proportional | no — the pane is the browser's own pdf viewer, which takes no instruction from the page | no — the Info panel follows the CARET instead | — |
+  | save | Ctrl+S, dirty mark, `base_etag` conflict line | same | same | same |
+  | undo | the textarea's own | same | same | same |
 
 - **Tasks** — the shelf, and the engine control that acts on it. Tick
   tasks and Run (an explicit list, never a pattern — every Run in the
@@ -49,8 +108,8 @@ are exactly two frames and no sidebar.
   pages; clicking a star opens its panel (routes, subgoals, dead
   attempts) and writes the star into the address (`…/g/<id>`, replaced
   rather than pushed, so a reload or a mailed link opens the same star
-  and Back still leaves the section); a route's file link lands in
-  Documents. The panel is
+  and Back still leaves the section); a route's file link lands in the
+  Workspace. The panel is
   also where a person ACTS on a goal — park it, mark it delivered, hand
   it a proof, hand it to a new group — through the command queue: a
   preview, a live confirm window naming every node that closes, and a
@@ -91,41 +150,6 @@ are exactly two frames and no sidebar.
   into a 404. With no task in the address it is the whole shelf's
   history, each row stamped with its task and paged by `load earlier`;
   naming a task scopes it to that one.
-- **Documents** — one rail, one shell. The rail reads in five groups:
-  `yours` (the Project's `_docs/user/`, primary, always open), then
-  `papers`, `agent` (what the theory layer wrote, newest first — the
-  Assistant writes into `yours` instead, where you can revise it),
-  `engine` (one task's REPORT / PROGRAMME / BRIEF / TREE /
-  Root / Defs, task chosen on the header) and `proofs` — the last four
-  folded by default, with a name filter over all of them. Every file
-  opens in the same shell: source on the left, a panel on the right —
-  `.md` renders, `.tex` compiles to a pdf preview (or says there is no
-  engine), `.lean` gets the Info panel on the reserved slot, pdf and
-  images view — behind a `source | split | render` control. Editing is
-  exactly on `yours`: Save (Ctrl+S) with dirty marks, drafts that survive
-  walking the rail, a conflict line when the disk moved on, and the
-  selected row's own strip for `rename · move · delete` (keys: F2, m,
-  Delete; `+ file` / `+ folder` inline, n / N). Rows outside `yours` say
-  read-only in that same strip. "ask the Assistant" hands the open file
-  to the panel. Dropping files anywhere — or `+ paper` — shelves papers
-  under `user/papers/`, extraction and all.
-
-  **The two writing formats operate alike.** `.md` and `.tex` are two
-  rows of ONE mode table (`lib/docShell::modeFor`), not two branches of
-  the shell — the only differences left are differences in the medium,
-  and this is the whole list:
-
-  | | `.md` | `.tex` | `.lean` | `.txt` |
-  |---|---|---|---|---|
-  | tabs | `source · split · render` | `source · split · render` | `source · split · info` | source only |
-  | opens on | split (yours) / render | split (yours) / render | split | source |
-  | source painter | the markdown painter | plain (a `#` opens no heading in TeX) | the Lean tokenizer | plain |
-  | right pane | the console's render | the server's compiled pdf | goal at the caret + diagnostics | — |
-  | check | `Check` — what the painter could not read (an unclosed fence, math the typesetter refuses) | `Render` — the engine's compile, or its log tail | live, on the reserved slot | — |
-  | render follows the source's scroll | yes, proportional | no — the pane is the browser's own pdf viewer, which takes no instruction from the page | no — the Info panel follows the CARET instead | — |
-  | save | Ctrl+S, dirty mark, `base_etag` conflict line | same | same | same |
-  | undo | the textarea's own | same | same | same |
-
 ### Outside a Project
 
 - **Settings** — the gear, shared by the picker and every Project. It is
