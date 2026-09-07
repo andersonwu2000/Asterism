@@ -27,7 +27,8 @@ dispatch:
                               # subscription, so the budget paces quota,
                               # not just RAM. (Was 26G for the free-
                               # channel Erdős five.)
-  pool: 2                     # 2026-09-06 (owner): the claude board
+  pool: 12                    # 2026-09-07 (owner): gpt day, no five-hour window
+  # pool: 2                   # 2026-09-06 (owner): the claude board
                               # rides the subscription's five-hour
                               # window, and a 3.5 h burst at full width
                               # (2 Strategists + 2 Theorists + 17
@@ -142,8 +143,9 @@ formalizer:
   # 2026-08-25: Erdős five on OpenCode Zen ran here; the full-Erdős
   # boarding moved to the 128GB flagship, and this machine goes back
   # to union_closed on codex (user) — luna keeps the throughput seat.
-  provider: claude
-  model: claude-sonnet-5
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
   # 2026-08-13: back off codex after the smoke run. The seat is proven
   # on codex (Test.provider_probe: brick proved, seven-tool roll-call
   # recorded, intake sentinel written) — restore with
@@ -197,8 +199,9 @@ strategist:
   # resubmission pattern vanished under the opus author (consecutive-
   # proposal sim 0.03-0.82 across four r10 debates), so the disease
   # followed the seat, not the role. Both sides back to gpt (user).
-  provider: claude
-  model: claude-opus-5         # 2026-09-06 claude day (owner)
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner): sol xhigh
   # reasoning_effort: high # codex-only knob; user 2026-08-15: sol does not need xhigh to
                            # hold the NL layer; luna keeps xhigh below.
   # Back on the opus tier 2026-08-06 after the
@@ -253,8 +256,9 @@ presearch:
   # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
   # provider: zen / model: x-preview-f-free (no effort key)
   # 2026-08-25: back to union_closed on codex/luna (user).
-  provider: claude
-  model: claude-sonnet-5       # 2026-09-06 claude day (owner)
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
   # reasoning_effort: medium   # codex-only knob; search task; the codex default (xhigh)
                                # would think the budget away
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
@@ -284,8 +288,10 @@ presearch:
 # is a separate kind="classify"; it shares this default unless given its own
 # entry.)
 librarian:
-  provider: claude
-  model: claude-sonnet-5       # bulk, mechanical-ish per-file polish; the
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
+  # model: claude-sonnet-5       # bulk, mechanical-ish per-file polish; the
                                # highest-volume librarian spawns. Upgraded from
                                # claude-sonnet-4-6 to next-gen sonnet-5
                                # (2026-07-02, CLI-verified). WATCH cost/latency
@@ -328,8 +334,9 @@ adversary:
   # same day (user) — claude's 5h rolling window is friction on a seat
   # that fires every strategist wake. Back to codex/sol, the 08-25
   # judge-matches-author shape.
-  provider: claude
-  model: claude-opus-5         # 2026-09-06 claude day (owner)
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
   # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
   # only because fable's weekly window was spent and the ledger BINDs
   # {strategist, adversary} — a blocked judge stops the pair.
@@ -370,6 +377,25 @@ adversary:
                                # weekly cap is also what stalled the 08-06
                                # run; opus draws on the shared window.
                                # Lowest-volume pipeline — cost negligible.
+  dossier: inline              # 2026-09-07 (owner): lab judge_dossier — same trap
+                               # score both modes, -30% cost on real rounds, turns halved.
+  # dossier: files             # HOW the package reaches the judge.
+                               # `files` (default, and every round the
+                               # framework has ever run): the prompt names
+                               # the projection's files and the judge opens
+                               # what it wants. `inline`: the small
+                               # always-read files (contract / charter /
+                               # user_word / directive / Root / Defs /
+                               # PROGRAMME / Context, then decisions /
+                               # proposal / since) ride IN the prompt
+                               # verbatim, and TREE / ADJUDICATIONS /
+                               # BATCHES / dialogue arrive as the outline
+                               # `inspect` would have answered with.
+                               # Measured over 332 gpt-era judge sessions
+                               # (2026-09-07): 47.8 `inspect` reads per
+                               # session, 31.7 of them on a file that
+                               # session had already read; 10 `outline`
+                               # calls because the judge had no map.
 # ── the theory layer (theory_wake_design.md §1) ──────────────────────
 # Four NL seats, two layers, each layer priced on its own: the THEORY
 # layer (theorist / theory_reviewer) writes and reviews the mathematics
@@ -381,12 +407,15 @@ adversary:
 # layer moves to gpt-6-astra (owner call; smoke-tested through the CLI). The two move together
 # (`quota.BOUND`): a document with no reviewer never lands.
 theorist:
-  provider: claude
-  model: claude-fable-5-1      # 2026-09-06 claude day (owner); astra kept dying on capacity
+  provider: codex
+  model: gpt-6-astra
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
+  # model: claude-fable-5-1      # 2026-09-06 claude day (owner); astra kept dying on capacity
 
 theory_reviewer:
   # The judge matches its author, the 08-23 shape one layer up: the
   # reviewer re-derives the proofs and reproduces the computations, so
   # it must not sit below the seat it is checking.
-  provider: claude
-  model: claude-fable-5-1      # 2026-09-06 claude day (owner)
+  provider: codex
+  model: gpt-6-astra
+  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
