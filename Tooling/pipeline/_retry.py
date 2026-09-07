@@ -223,12 +223,13 @@ class SpawnCtx:
 
     `cold=True` means the agent has no prior session to resume — either
     attempt 0 of a fresh pipeline, a stale_session in-place re-mint,
-    or a fresh-rescue stage 2 / stage 3 (see `inline_prompt`).
+    or a fresh-rescue takeover (see `inline_prompt`).
 
     `inline_prompt` (fresh-rescue): when set, the spawn function should
     skip the normal cold-prompt template loading and pass this string
-    directly as the inline `-p` payload to claude. Used for fresh-
-    rescue stage 2 (ship-or-bail) and stage 3 (postmortem). The
+    directly as the inline `-p` payload to claude. Used for the
+    fresh-rescue takeover (ship-or-bail) and the forced-progress
+    cold spawn. The
     framework also pre-writes `attempts_dir/_broken_session.jsonl` so
     the agent can Read the broken session's history without needing
     add-dir access to `~/.claude/projects/`. The spawn still does
@@ -236,9 +237,10 @@ class SpawnCtx:
     workspace artifacts exist.
 
     `budget_override`: per-spawn timeout override (seconds). Set
-    alongside `inline_prompt` so stage 2 / stage 3 each get the tight
-    rescue / postmortem budget instead of the default 900s spawn
-    budget. None means use the kind's default (spawn_timeout_sec).
+    alongside `inline_prompt` so the takeover and the forced-progress
+    spawn each get the tight rescue / postmortem budget instead of the
+    resolved `dispatch.spawn_timeout_sec`. None means use the kind's
+    default.
     """
     sid: str
     cold: bool
@@ -328,15 +330,17 @@ class _TakeoverOutcome:
     `detail_parts`: forensic strings describing trigger, rc, duration,
         and parse outcome; the caller joins these into `failure_detail`
         when buffering `agent_stuck_thinking`.
-    `stage2_rc`: subprocess rc of the takeover spawn. `stage3_rc` is
-        retained for back-compat (legacy 2-stage path); always None
-        now that the combined path is the only caller.
+    `stage2_rc`: subprocess rc of the takeover spawn — the only spawn
+        there is. (A `stage3_rc` sat beside it until 2026-09-08,
+        written `None` by every caller since the 2-stage path was
+        retired in 2026-05: a field whose value carries no information
+        still has to be read, and every reader had to learn that it
+        never means anything.)
     """
     terminal_result: PipelineResult | None
     last_sid: str
     detail_parts: list
     stage2_rc: int
-    stage3_rc: int | None
 
 
 def _derive_stage2_budget(workspace: Path | None) -> int:
@@ -435,9 +439,10 @@ def _run_fresh_sid_combined_takeover(
     rescue_template: str = "_shared/fresh_rescue_stage2.md",
 ) -> _TakeoverOutcome:
     """Single-stage fresh-sid takeover used by both thinking-trap
-    paths (watchdog STUCK_THINKING and subprocess timeout-trap).
-    Combined budget = stage2 + stage3 (postmortem); one spawn handles
-    ship-or-bail in a single window.
+    paths (watchdog STUCK_THINKING and subprocess timeout-trap). One
+    spawn handles ship-or-bail in a single window, on the stage-2
+    budget alone (see `combined_budget` below — the docstring claimed
+    stage2 + stage3 long after the code stopped adding them).
 
     Why one stage instead of two:
       When parser flags `is_thinking_trap`, the broken jsonl carries
@@ -450,8 +455,7 @@ def _run_fresh_sid_combined_takeover(
       reasoning the agent didn't get to ship — in practice
       `is_thinking_trap=True` means it doesn't.
 
-    Returns _TakeoverOutcome with `stage3_rc=None` always (no stage 3
-    fired). Forensic detail says `combined sid=... rc=... dur=...`.
+    Forensic detail says `combined sid=... rc=... dur=...`.
     """
     broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
     jsonl_copied = _copy_broken_session_jsonl(
@@ -515,7 +519,6 @@ def _run_fresh_sid_combined_takeover(
             last_sid=sid_combined,
             detail_parts=detail_parts,
             stage2_rc=int(rc),
-            stage3_rc=None,
         )
 
     # Forced-progress fallback (residue_thm 2026-05-21 observation):
@@ -586,7 +589,6 @@ def _run_fresh_sid_combined_takeover(
         last_sid=sid_combined,
         detail_parts=detail_parts,
         stage2_rc=int(rc),
-        stage3_rc=None,
     )
 
 

@@ -1101,8 +1101,7 @@ def run(workspace: Path, *, once: bool = False,
             # of this point is unchanged. The \x1f encoding is retired
             # from the PERSISTED queue contract only.
             try:
-                _payload = json.loads(row["payload"]) if row["payload"] \
-                    else {}
+                _payload = json.loads(row.get("payload") or "") or {}
             except (TypeError, ValueError):
                 _payload = {}
             if kind == "Librarian" and _payload.get("file"):
@@ -1116,15 +1115,9 @@ def run(workspace: Path, *, once: bool = False,
             # be read BEFORE the running-dedup check below so the
             # 3-tuple key is complete (Phase 2.5: batch Inject siblings
             # share target+kind but differ by decision_id).
-            try:
-                target_kind = str(row["target_kind"]) or "Goal"
-            except (IndexError, KeyError):
-                target_kind = "Goal"
-            try:
-                _did = row["decision_id"]
-                decision_id = int(_did) if _did is not None else None
-            except (IndexError, KeyError):
-                decision_id = None
+            target_kind = str(row.get("target_kind") or "Goal")
+            _did = row.get("decision_id")
+            decision_id = int(_did) if _did is not None else None
             # Every skip below DISCARDS the claimed row (v17: pop leases,
             # it no longer deletes — an abandoned lease would sit until
             # TTL expiry and block refill dedup meanwhile). Matches the

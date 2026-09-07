@@ -232,3 +232,55 @@ def test_payload_rides_json_and_contains_discriminates():
                target_kind="Problem")
     assert db.queue_contains(conn, kind="Librarian", target_id="p",
                              no_payload=True)
+
+
+# ---------------------------------------------------------------------
+# retired kind names (the Formalizer merge, update_plan_2026_07 #1)
+# ---------------------------------------------------------------------
+
+def test_retired_kinds_are_translated_on_read():
+    """`Builder` / `Backward` / `Forward` are spellings an old DB may
+    still hold — the last one was dispatched 2026-07-18, and
+    `db.null_inject_redispatch_specs` can still enqueue one today from a
+    NULL-outcome Inject decision written back then. pop_queue is the one
+    place that has to know; the dispatcher branches on `Formalizer`
+    alone.
+
+    `Forward` also carries a target_kind: it was the MINT job, and the
+    branch it used to reach routed it that way whatever the column said,
+    so the translation fixes both fields or it would send an old row
+    down the goal path."""
+    conn = _mem()
+    _seed(conn, "p")
+    db.enqueue(conn, kind="Builder", target_id="1", problem="p",
+               priority=9)
+    db.enqueue(conn, kind="Backward", target_id="2", problem="p",
+               priority=8)
+    db.enqueue(conn, kind="Forward", target_id="p", problem="p",
+               target_kind="Problem", priority=7)
+    db.enqueue(conn, kind="Strategist", target_id="p", problem="p",
+               target_kind="Problem", priority=6)
+
+    popped = [db.pop_queue(conn, lease_owner=1) for _ in range(4)]
+    assert [r["kind"] for r in popped] == [
+        "Formalizer", "Formalizer", "Formalizer", "Strategist"]
+    # the mint row keeps the shape the mint branch reads
+    assert popped[2]["target_kind"] == "Problem"
+    assert [r["target_kind"] for r in popped[:2]] == ["Goal", "Goal"]
+    # the stored rows are untouched — this is a read, not a rewrite
+    assert [r[0] for r in conn.execute(
+        "SELECT kind FROM queue ORDER BY priority DESC")] == [
+        "Builder", "Backward", "Forward", "Strategist"]
+
+
+def test_a_forward_row_that_lost_its_target_kind_still_mints():
+    """A row old enough to predate the `target_kind` column defaults to
+    'Goal'. The retired worker branch sent every `Forward` to the mint
+    path regardless, so the translation must too — otherwise the upgrade
+    path hands a problem NAME to `int(target_id)`."""
+    conn = _mem()
+    _seed(conn, "p")
+    db.enqueue(conn, kind="Forward", target_id="p", problem="p",
+               target_kind="Goal")
+    row = db.pop_queue(conn)
+    assert row["kind"] == "Formalizer" and row["target_kind"] == "Problem"

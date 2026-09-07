@@ -23,6 +23,14 @@ from .core import now, scope_sql
 #: rescued it is a silent reordering nobody would look for.
 HUMAN_PRIORITY = 2
 
+#: Kinds the Formalizer merge retired (update_plan_2026_07 #1) -> what
+#: they mean now; `Forward` was the MINT job, hence its target_kind.
+#: Read-time, not a migration: an old NULL-outcome Inject can still
+#: enqueue one (`null_inject_redispatch_specs`). History is untouched.
+_RETIRED_KINDS = {"Builder": ("Formalizer", None),
+                  "Backward": ("Formalizer", None),
+                  "Forward": ("Formalizer", "Problem")}
+
 
 def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
             problem: str,
@@ -32,7 +40,7 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
     """Insert a dispatch queue entry.
 
     Phase 2 — `target_kind` defaults to 'Goal' (matches every pre-Phase 2
-    caller). Forward callers pass `target_kind='Problem'` with
+    caller). Mint-job callers pass `target_kind='Problem'` with
     `target_id=problem_name`. `decision_id` is non-None only when the
     queue entry was emitted by a Strategist Inject decision — the
     spawned pipeline pulls the brief from `strategist_decisions.brief`
@@ -57,8 +65,9 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
 def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
               lease_owner: "int | None" = None,
               exclude_kinds: "tuple[str, ...] | None" = None,
-              ) -> sqlite3.Row | None:
-    """CLAIM the highest-priority unleased row (v17 lease semantics).
+              ) -> "dict | None":
+    """CLAIM the highest-priority unleased row (v17 lease semantics),
+    translating a retired kind name on the way out (`_RETIRED_KINDS`).
 
     The row is NOT deleted: it gets `owner_pid`+`leased_at` stamped and
     stays visible to every in-queue check (`is_in_queue`/`queue_contains`
@@ -102,7 +111,9 @@ def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
     except BaseException:
         conn.rollback()
         raise
-    return row
+    kind, tkind = _RETIRED_KINDS.get(str(row["kind"]), ("", None))
+    return dict(row) if not kind else dict(
+        row, kind=kind, target_kind=tkind or row["target_kind"])
 
 
 def complete_queue_row(conn: sqlite3.Connection, row_id: int) -> None:

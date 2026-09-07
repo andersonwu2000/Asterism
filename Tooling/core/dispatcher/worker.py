@@ -361,14 +361,15 @@ def _run_pipeline(workspace: Path,
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
 
-            # Phase 2 — Strategist + Forward dispatch.
+            # Phase 2 — Strategist + mint dispatch.
             #   Strategist: target_kind='Problem', target_id=problem_name
-            #     (Phase 6 — problem-keyed like Forward; the old root-goal
-            #     key made pure-NL problems unwakeable). decision_id is
-            #     unused (Strategist EMITS decisions).
-            #   Forward:    target_kind='Problem', target_id=problem_name;
+            #     (Phase 6 — problem-keyed like the mint job; the old
+            #     root-goal key made pure-NL problems unwakeable).
+            #     decision_id is unused (Strategist EMITS decisions).
+            #   Formalizer/Problem (the mint job, 'Forward' before the
+            #     merge): target_kind='Problem', target_id=problem_name;
             #     decision_id is the Strategist Inject row that spawned
-            #     this Forward.
+            #     it.
             if task_kind == "Strategist":
                 # v35 — the seat belongs to a group; the row carries its
                 # id. Legacy 'Problem' rows resolve to the top group.
@@ -459,11 +460,11 @@ def _run_pipeline(workspace: Path,
                                   target_kind, r.outcome,
                                   str(r.failure_reason or ""))
 
-            if (task_kind == "Forward"
-                    or (task_kind == "Formalizer"
-                        and target_kind == "Problem")):
+            if task_kind == "Formalizer" and target_kind == "Problem":
                 # Mint job: target = problem name (TEXT); no goal lookup.
-                # 'Forward' = legacy queue rows (pre-merge recovery).
+                # A pre-merge `Forward` row arrives here already spelled
+                # this way — `db.pop_queue` translates the retired kinds
+                # at the load boundary.
                 problem = target_id
                 if not _ensure_intent(conn, intents, problem):
                     db.finish_pipeline(conn, pipeline_id=pipeline_id,
@@ -597,7 +598,7 @@ def _run_pipeline(workspace: Path,
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
-            # Builder / Backward — Goal-targeted.
+            # Formalizer — Goal-targeted.
             goal_id = int(target_id)
             goal = db.get_goal(conn, goal_id)
             if goal is None:
@@ -618,11 +619,12 @@ def _run_pipeline(workspace: Path,
                                   "problem_not_found")
             intent = intents[goal["problem"]]
 
-            if task_kind in ("Formalizer", "Backward", "Builder"):
+            if task_kind == "Formalizer":
                 # Merged worker (update_plan_2026_07 #1): every goal job
                 # runs the staged Formalizer engine (hint pre-pass →
-                # intake → work loop in the strategy frame). 'Backward' /
-                # 'Builder' = legacy queue rows from pre-merge recovery.
+                # intake → work loop in the strategy frame). A pre-merge
+                # `Backward` / `Builder` row arrives already spelled this
+                # way (`db.pop_queue`).
                 r = pipeline.run_backward(
                     conn, goal_id=goal_id, workspace=workspace,
                     intent=intent, pipeline_id=pipeline_id,
