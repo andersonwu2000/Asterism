@@ -50,7 +50,8 @@ from pathlib import Path
 from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
 from . import capabilities
-from .base import MCP_TOOL_TIMEOUT_SEC, LLMRequest, SpawnRC
+from .base import (MCP_TOOL_TIMEOUT_SEC, SPAWN_STDERR, LLMRequest, SpawnRC,
+                   clear_spawn_stderr)
 from .envelope import SEAT_ASTERISM_TOOLS
 from .stream_parser import StreamParser
 
@@ -1132,7 +1133,7 @@ def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
     try:
         body = (stderr + ("\n--- stdout ---\n" + stdout if stdout else ""))
         body = body[:10240]
-        (attempts_dir / "_spawn.stderr").write_text(
+        (attempts_dir / SPAWN_STDERR).write_text(
             f"rc={rc}\n{body}", encoding="utf-8")
     except OSError:
         pass
@@ -1380,6 +1381,10 @@ def _spawn_guard_settings_path() -> Path:
 
 class ClaudeCliProvider:
     def spawn(self, req: LLMRequest) -> int:
+        # This leg's forensics start empty — see `clear_spawn_stderr`.
+        # Only failures write the file, so a stale one left by an
+        # earlier leg in the same attempts dir reads as this leg's.
+        clear_spawn_stderr(req.attempts_dir)
         # Dispatcher abort already fired — skip the CLI invocation so
         # the worker thread can exit through its dead_attempt + cleanup
         # path without burning another `claude` subprocess startup.

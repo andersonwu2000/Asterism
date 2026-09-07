@@ -205,7 +205,7 @@ from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
 from . import capabilities
-from .base import LLMRequest, transcript_dest
+from .base import SPAWN_STDERR, LLMRequest, clear_spawn_stderr, transcript_dest
 
 #: This provider's canonical name in `llm/capabilities.py`, where its
 #: gaps (no usage endpoint, no stream events, uninformative rc,
@@ -273,7 +273,7 @@ _TIMEOUT_MARKERS = (
 #: Files this provider (or the framework) writes into attempts_dir —
 #: never evidence that the AGENT produced something.
 _NON_ARTIFACTS = ("Context.md", "_parser_state.json", "_agy_session.json",
-                  "_spawn.stderr")
+                  SPAWN_STDERR)
 
 _SESSION_MAP = "_agy_session.json"
 
@@ -514,7 +514,7 @@ def _resolve_model(kind: "str | None") -> str:
 def _write_spawn_stderr(attempts_dir: Path, body: str, rc: int) -> None:
     """Forensics mirror of the claude/gemini helper. Best-effort."""
     try:
-        (attempts_dir / "_spawn.stderr").write_text(
+        (attempts_dir / SPAWN_STDERR).write_text(
             f"rc={rc}\n{body[:10240]}", encoding="utf-8")
     except OSError:
         pass
@@ -885,6 +885,10 @@ class AntigravityCliProvider:
         attempts dir, so this cannot sit at either end alone — and the
         paths that most need a transcript are the ones that return
         early: the timeout, and the spawn killed mid-thought."""
+        # This leg's forensics start empty — see `clear_spawn_stderr`.
+        # Only failures write the file, so a stale one left by an
+        # earlier leg in the same attempts dir reads as this leg's.
+        clear_spawn_stderr(req.attempts_dir)
         home_box: "list[Path]" = []
         try:
             return self._spawn_inner(req, home_box)

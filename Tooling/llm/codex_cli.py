@@ -102,8 +102,8 @@ import threading
 import time
 from pathlib import Path
 
-from .base import (MCP_TOOL_TIMEOUT_SEC, LLMRequest, SpawnRC,
-                   transcript_dest, which_launchable)
+from .base import (MCP_TOOL_TIMEOUT_SEC, SPAWN_STDERR, LLMRequest, SpawnRC,
+                   clear_spawn_stderr, transcript_dest, which_launchable)
 from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
 
@@ -951,7 +951,7 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
         attempts = Path(req.attempts_dir)
         dest = transcript_dest(req.attempts_dir, _TRANSCRIPT_DIRNAME)
         rollouts = sorted((home / "sessions").rglob("rollout-*.jsonl"))
-        err = attempts / "_spawn.stderr"
+        err = attempts / SPAWN_STDERR
         if not rollouts and not err.is_file():
             return
         if dest is None:
@@ -1000,7 +1000,7 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
 
 def _write_spawn_stderr(attempts_dir: Path, body: str, rc: int) -> None:
     try:
-        (attempts_dir / "_spawn.stderr").write_text(
+        (attempts_dir / SPAWN_STDERR).write_text(
             f"rc={rc}\n{body[:10240]}", encoding="utf-8")
     except OSError:
         pass
@@ -1056,6 +1056,11 @@ class CodexCliProvider:
         from .claude_cli import (_build_cold_prompt, _load_prompt,
                                  is_shutdown_requested, track_proc,
                                  untrack_proc)
+        # This leg's forensics start empty — see `clear_spawn_stderr`.
+        # One attempts dir hosts several legs and only failures write
+        # the file, so without this a successful leg is preserved
+        # carrying the previous one's death (33082620, 2026-09-07).
+        clear_spawn_stderr(req.attempts_dir)
         if is_shutdown_requested():
             return SpawnRC.SHUTDOWN
         exe = resolve_codex_executable()

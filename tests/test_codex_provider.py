@@ -845,6 +845,58 @@ def test_several_spawns_share_a_dir_without_erasing_each_other(
     assert (dest / "_spawn.1.stderr").read_text(encoding="utf-8") == "second"
 
 
+def test_a_successful_leg_does_not_inherit_the_last_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_write_spawn_stderr` writes only on failure and nothing removed
+    the file, so the leg AFTER a failure was preserved carrying the
+    failure's text: `33082620`'s `_spawn.2/3/4.stderr` all read "rc=124
+    TimeoutExpired" for legs that succeeded (2026-09-07). The spawn
+    clears the file first, so an absent slot is the truthful record."""
+    from Tooling.llm.base import clear_spawn_stderr
+    req, home = _pipeline(tmp_path)
+    # leg 1 dies
+    codex_cli._write_spawn_stderr(req.attempts_dir, "TimeoutExpired", 124)
+    codex_cli._preserve_transcript(req, home)
+    # leg 2 succeeds — the spawn's first act, with no failure to record
+    clear_spawn_stderr(req.attempts_dir)
+    codex_cli._preserve_transcript(req, home)
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME)
+    assert (dest / "_spawn.0.stderr").read_text(
+        encoding="utf-8").startswith("rc=124")
+    assert not (dest / "_spawn.1.stderr").exists()
+    # and the next failing leg gets slot 1, its own text
+    codex_cli._write_spawn_stderr(req.attempts_dir, "boom", 1)
+    codex_cli._preserve_transcript(req, home)
+    assert (dest / "_spawn.1.stderr").read_text(
+        encoding="utf-8") == "rc=1\nboom"
+
+
+def test_every_cli_provider_clears_the_previous_legs_stderr(
+    tmp_path: Path,
+) -> None:
+    """One attempts dir, several spawns, one filename — so the clear
+    belongs at the top of EVERY adapter's spawn, not just the one whose
+    numbered slots made the staleness visible."""
+    import inspect
+    from Tooling.llm import antigravity_cli, claude_cli
+    for provider in (codex_cli.CodexCliProvider,
+                     claude_cli.ClaudeCliProvider,
+                     antigravity_cli.AntigravityCliProvider):
+        src = inspect.getsource(provider.spawn)
+        assert "clear_spawn_stderr(req.attempts_dir)" in src, (
+            f"{provider.__name__}.spawn keeps whatever the previous leg "
+            f"left in _spawn.stderr")
+    # the helper itself: gone, and silent when there was nothing there
+    from Tooling.llm.base import SPAWN_STDERR, clear_spawn_stderr
+    (tmp_path / SPAWN_STDERR).write_text("old", encoding="utf-8")
+    clear_spawn_stderr(tmp_path)
+    assert not (tmp_path / SPAWN_STDERR).exists()
+    clear_spawn_stderr(tmp_path)
+    clear_spawn_stderr(tmp_path / "does" / "not" / "exist")
+
+
 def test_a_spawn_that_left_nothing_creates_no_empty_directory(
     tmp_path: Path,
 ) -> None:

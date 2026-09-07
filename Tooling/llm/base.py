@@ -120,6 +120,30 @@ def transcript_dest(attempts_dir: "Path | str", leaf: str) -> "Path | None":
     return None
 
 
+#: The provider's captured stderr for ONE spawn, in its attempts dir.
+#: Every adapter writes this name and `pipeline._spawn_failure` reads it.
+SPAWN_STDERR = "_spawn.stderr"
+
+
+def clear_spawn_stderr(attempts_dir: "Path | str") -> None:
+    """Drop the previous leg's record at the START of a spawn.
+
+    The adapters write `_spawn.stderr` only on failure and nothing ever
+    removed it, so a SUCCESSFUL leg in the same attempts dir inherited
+    the last failing leg's file: codex's `_preserve_transcript` copies
+    whatever is there into the next numbered slot, and pipeline
+    33082620 ended up with `_spawn.2/3/4.stderr` all reading "rc=124
+    TimeoutExpired" for legs that succeeded (2026-09-07). Absence is
+    the truthful record of a spawn that failed on nothing — an rc=0
+    marker file would be clutter every reader then has to interpret.
+
+    Best-effort: forensics must never fail a spawn."""
+    try:
+        (Path(attempts_dir) / SPAWN_STDERR).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class SpawnRC(IntEnum):
     """Typed names for the rc convention. Pipeline branches on
     `rc == SpawnRC.TIMEOUT` etc. instead of magic numbers, while
