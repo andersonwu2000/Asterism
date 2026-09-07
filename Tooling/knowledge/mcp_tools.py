@@ -1190,6 +1190,65 @@ def _workspace_root():
     return workspace_query.workspace_of(_Path.cwd()) or _Path.cwd()
 
 
+# ── "Changed since you started" (agent/change_notice.py) ─────────────
+#
+# The system prompt is written once and cached, so anything the
+# framework learns after it was built has no way to the agent — except
+# the text of a tool result. `change_notice.install` puts the notice on
+# the END of every result this server returns, in one place: a per-tool
+# decorator would be a list, and the next tool added here would be born
+# silent.
+#
+# This process is ONE SPAWN's (the client starts it per spawn, from the
+# spawn's own cwd), so the baseline is taken at import — see
+# `_prime_change_notice` below — and "since you started" means since
+# this server started. Under the zen shim, where one process serves
+# many spawns, the key below is the spawn's attempts dir and the
+# request-local problem, so no spawn reads another's news.
+
+from ..agent import change_notice as _notice  # noqa: E402
+
+
+def _change_notice():
+    """The watcher for the spawn making THIS call, or None."""
+    from ..llm.spawn_guard import current_problem
+    from . import workspace_query as _wq
+    problem = (current_problem() or "").strip()
+    if not problem:
+        # No declared problem = the operator's own config, or a seat
+        # with no problem to have news about.
+        return None
+    own = _wq._own_attempt_dir()
+    key = f"{problem}\x1f{own.name if own is not None else ''}"
+    return _notice.for_spawn(key, workspace=_workspace_root(),
+                             problem=problem)
+
+
+def _suppress_change_notice(name: str, arguments: dict) -> bool:
+    """`inspect`'s `raw` read is a BYTE-FAITHFUL round trip — its whole
+    purpose is content the agent writes back with `write_file` or hands
+    to `validate_json`. A notice appended there would land inside the
+    file. Suppressing consumes nothing: the news rides the next call."""
+    if name != "inspect":
+        return False
+    queries = (arguments or {}).get("queries") or []
+    return any(isinstance(q, dict) and q.get("raw") for q in queries)
+
+
+def _prime_change_notice() -> None:
+    """Take the baseline now, at server start. Deferring it to the first
+    tool call would silently drop every change made while the agent was
+    still reading — which on a Formalizer is the first several minutes."""
+    try:
+        _change_notice()
+    except Exception:  # noqa: BLE001 — a notice must never cost a spawn
+        pass
+
+
+_notice.install(mcp, _change_notice, suppress=_suppress_change_notice)
+_prime_change_notice()
+
+
 def main() -> None:
     # The two pipes below are the protocol, and until this call they are
     # also what every child of this process inherits. `tex_check` spawns

@@ -237,6 +237,34 @@ from .verify import (
     _verify_sync,
     _verify_session_sync,
 )
+from ...agent import change_notice as _change_notice
+
+
+# ─── "Changed since you started" (agent/change_notice.py) ────────────
+#
+# The notice rides the END of every tool result this server returns,
+# installed in ONE place on the tool manager's dispatch — a decorator
+# per tool would be a list, and the sixth tool added to this server
+# would be born silent with nothing to say so.
+#
+# The BASELINE is per SESSION, not per process: this gateway outlives
+# every spawn it serves, so "since you started" can only mean since
+# `/register` — which is where the watcher is created below, and
+# `/release` is where it is dropped. The resolver is request-local for
+# the same reason: `_current_session` reads the header contextvar the
+# middleware set, so two concurrent spawns never read each other's news.
+
+def _change_notice_here():
+    """The watcher for the spawn making THIS tool call, or None."""
+    token = _session_ctx.get()
+    meta = _current_session()
+    if token is None or meta is None:
+        return None
+    return _change_notice.for_spawn(token, workspace=meta.workspace,
+                                    problem=meta.problem)
+
+
+_change_notice.install(mcp, _change_notice_here)
 
 
 # ─── REST endpoints ─────────────────────────
@@ -272,6 +300,11 @@ async def register(request: Request):
     )
     if err:
         return JSONResponse({"error": err}, status_code=500)
+    # The spawn starts HERE, so this is where its baseline is taken.
+    # Deferring it to the first tool call would silently drop every
+    # change made while the agent was still reading its brief.
+    _change_notice.for_spawn(token, workspace=Path(data["workspace"]),
+                             problem=str(data["problem"]))
     return JSONResponse({"session_token": token}, status_code=200)
 
 
@@ -286,6 +319,10 @@ async def release(request: Request):
     # and the loop then served the abandoned lease request into a
     # 900s orphan. Same class as /verify's 2026-05-12 fix.
     await asyncio.to_thread(_release_session_internal, token)
+    # The session is the spawn; its baseline goes with it. A warm retry
+    # re-registers under a fresh token and gets a fresh baseline, which
+    # is right — it is a new spawn, told what it has not yet seen.
+    _change_notice.forget(token)
     return JSONResponse({"ok": True}, status_code=200)
 
 
