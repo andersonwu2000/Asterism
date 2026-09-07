@@ -42,19 +42,33 @@ from pathlib import Path
 
 from . import LabError
 
-#: The instruction, verbatim from the retired harness. Bare force: the
-#: complete file back, signature untouched, nothing but Lean.
+#: The instruction, the retired harness's bare force with ONE sentence
+#: changed: the answer comes back in the message, in a fence. The old
+#: wording ("no markdown fences") was written for a raw API leg whose
+#: whole response was the answer; a CLI seat prefixes and suffixes prose
+#: whatever it is told, and `extract_lean` wants a fence to cut on.
 PROMPT = (
     "You are a Lean 4 / Mathlib expert. Below is a Lean file whose one "
     "theorem has its proof replaced by `sorry`. Write the complete file "
     "with a full working proof (Lean 4, current Mathlib). Keep imports, "
     "namespace, and the theorem signature EXACTLY as given. Do not add "
-    "axioms, `sorry`, or `admit`. Reply with ONLY the complete Lean "
-    "file, no markdown fences, no commentary.\n\n")
+    "axioms, `sorry`, or `admit`. Reply with the complete Lean file in "
+    "ONE ```lean fence and nothing else — no commentary.\n\n")
 
-#: Where the answer is expected. The old harness read the provider's
-#: message text; a framework seat writes files, so it is asked for one.
+#: Where a file answer is expected, when the seat can write one at all.
+#: The seat is spawned with `mcp_config_path=None`, so it has NO
+#: `write_file` / `apply_edit`, and on a codex backend no native file
+#: tool either — the whole answer arrives as message text. So the file
+#: is an OPTION, never the only channel: asking a seat with no file tool
+#: for a file is how 7/7 answered bricks scored `REJECTED: empty` on
+#: 2026-09-07 while every one of them held a complete Lean file in its
+#: last message.
 ANSWER_BASENAME = "answer.lean"
+
+#: Where each provider preserves the spawn's transcript, relative to the
+#: workspace (`llm.base.transcript_dest`). The message answer is read
+#: back out of it — the spawn API returns an rc, not the prose.
+TRANSCRIPT_LEAVES = ("codex_sessions", "agy_sessions")
 
 _DECL_RE = re.compile(r"^(?:theorem|lemma)\s", re.M)
 _HEAD_RE = re.compile(r"^((?:@\[[^\]]*\]\s*)?(?:theorem|lemma)\s[\s\S]*?):=",
@@ -139,6 +153,90 @@ def extract_lean(text: str) -> str:
     return m.group(1) if m else text
 
 
+def _message_text(obj: object) -> str:
+    """The assistant prose on one transcript line, or "".
+
+    Tolerant by design, because the line shapes differ per provider and
+    a shape this does not know must cost nothing: a codex rollout wraps
+    everything in `payload` and says the last message twice (the
+    `task_complete` event's `last_agent_message`, and the assistant
+    `message` response item); a plain `{role, content}` jsonl says it
+    once. Anything else yields "" and the scan moves on.
+    """
+    if not isinstance(obj, dict):
+        return ""
+    payload = obj.get("payload")
+    payload = payload if isinstance(payload, dict) else obj
+    if payload.get("type") == "task_complete":
+        last = payload.get("last_agent_message")
+        return last.strip() if isinstance(last, str) else ""
+    if payload.get("role") != "assistant":
+        return ""
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "\n".join(c["text"] for c in content
+                         if isinstance(c, dict)
+                         and isinstance(c.get("text"), str)).strip()
+    return ""
+
+
+def final_message(attempts: Path) -> str:
+    """The seat's LAST message, out of the transcript its provider
+    preserved for this spawn, or "".
+
+    `spawn_llm` returns an rc — the prose is not in its return value and
+    the stream parser keeps state, not text. What every adapter DOES
+    keep is the transcript, copied out of the doomed per-spawn home into
+    `<ws>/.asterism/<leaf>/<pipeline id>/` before the home dies, and
+    that is what is read here. A claude seat needs none of this: it has
+    a native `Write` and answers with the file.
+    """
+    from ..llm.base import transcript_dest
+    files: "list[Path]" = []
+    for leaf in TRANSCRIPT_LEAVES:
+        dest = transcript_dest(attempts, leaf)
+        if dest is not None and dest.is_dir():
+            files.extend(dest.rglob("*.jsonl"))
+    text = ""
+    for path in sorted(files, key=lambda p: p.stat().st_mtime):
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    said = _message_text(obj)
+                    if said:
+                        text = said
+        except OSError as exc:
+            print(f"[gauntlet] transcript {path.name} unreadable: {exc}",
+                  flush=True)
+    return text
+
+
+def collect_answer(attempts: Path) -> "tuple[str, str]":
+    """This spawn's answer and WHERE it came from: `file` when the seat
+    wrote one with content, else `message`, else `none`.
+
+    The file wins when both exist — a seat that can write a file has
+    committed to it, and its message is then commentary about the file.
+    """
+    answer = attempts / ANSWER_BASENAME
+    for path in ([answer] if answer.is_file() else []) + [
+            p for p in sorted(attempts.glob("*.lean")) if p != answer]:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if text.strip():
+            return text, "file"
+    text = final_message(attempts)
+    return (text, "message") if text.strip() else ("", "none")
+
+
 def lake_ok(workspace: Path, path: Path,
             timeout: int = COMPILE_TIMEOUT_SEC) -> "tuple[bool, str]":
     """`lake env lean <file>` in the workspace — the same verdict the
@@ -160,7 +258,10 @@ def _spawn_once(workspace: Path, problem: str, brick: Brick,
 
     `mcp_config_path=None` is the whole point: no gateway session, no
     `asterism_tools` — the gauntlet measures what the model produces
-    with nothing but the stub."""
+    with nothing but the stub. Which is also why the answer cannot be
+    demanded as a file: that same flag takes `write_file` away, and a
+    codex seat has no native one to fall back on. The prompt asks for
+    the fence and offers the file; `collect_answer` takes either."""
     from Tooling import agent
     from Tooling.agent import runtime as _rt
     from Tooling.state import db
@@ -171,8 +272,14 @@ def _spawn_once(workspace: Path, problem: str, brick: Brick,
     prompt = attempts / "gauntlet_prompt.md"
     prompt.write_text(
         PROMPT + brick.stub
-        + f"\n\nWrite the complete file to `{ANSWER_BASENAME}` in your "
-          f"working directory.\n", encoding="utf-8")
+        # ABSOLUTE, because cwd is the PROBLEM dir: a bare basename
+        # lands outside the only directory this spawn may write, and
+        # nothing would ever read it back (`render_prompt_template`'s
+        # `{attempts_dir}` exists for the same reason).
+        + f"\n\nIf you have a file-writing tool, also write the complete "
+          f"file to `{(attempts / ANSWER_BASENAME).as_posix()}`. If you "
+          f"do not, the fenced reply is the whole answer.\n",
+        encoding="utf-8")
     t0 = time.monotonic()
     rc = agent.spawn_llm(kind="formalizer", prompt_path=prompt,
                          problem_dir=db.problem_dir(Path(workspace), problem),
@@ -180,15 +287,8 @@ def _spawn_once(workspace: Path, problem: str, brick: Brick,
                          mcp_config_path=None,
                          usage_workspace=Path(workspace),
                          usage_problem=problem, usage_pipeline_id=pid)
-    answer = attempts / ANSWER_BASENAME
-    text = answer.read_text(encoding="utf-8", errors="replace") \
-        if answer.is_file() else ""
-    if not text:
-        for cand in sorted(attempts.glob("*.lean")):
-            if cand.name != prompt.name:
-                text = cand.read_text(encoding="utf-8", errors="replace")
-                break
-    return text, {"pipeline_id": pid, "rc": rc,
+    text, source = collect_answer(attempts)
+    return text, {"pipeline_id": pid, "rc": rc, "answer_source": source,
                   "gen_sec": round(time.monotonic() - t0, 1)}
 
 
@@ -220,6 +320,7 @@ def run(items_dir: Path, ws: Path, out: Path, *, problem: str,
                          **meta})
         print(f"[gauntlet] {brick.slug}: "
               f"{'PROVED' if rows[-1]['ok'] else 'FAIL'} "
+              f"[{rows[-1].get('answer_source', '?')}] "
               f"{rows[-1].get('why', '')[:120]}", flush=True)
     passed = sum(1 for r in rows if r["ok"])
     (work / "results.json").write_text(

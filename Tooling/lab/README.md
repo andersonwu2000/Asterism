@@ -114,6 +114,13 @@ bricks are INPUT (`sets/gauntlet/bricks/*.lean`) rather than a query
 against the live board, and with none there the kind refuses and names
 what it needs.
 
+"No tools" is literal — the seat is spawned with `mcp_config_path=None`,
+so it has no `write_file` and, on a codex backend, no native file tool
+either. The answer is therefore taken from EITHER `answer.lean` in the
+spawn's attempts dir (when the seat could write one) or the seat's last
+message, read back out of the transcript its provider preserved;
+`answer_source: file | message | none` in each brick's row says which.
+
 ## `lab.yaml`
 
 One file per experiment, at `<root>/docs/<exp>/lab.yaml`.

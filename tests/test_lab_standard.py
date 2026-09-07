@@ -557,6 +557,160 @@ def test_the_lean_answer_is_taken_out_of_a_fenced_block_when_there_is_one():
 
 
 # ---------------------------------------------------------------------
+# the gauntlet's answer channel
+#
+# The seat is spawned with `mcp_config_path=None`, which is the point of
+# the exam and also takes `write_file` away; a codex seat has no native
+# file tool behind it. Reading only `answer.lean` therefore scored 7/7
+# answered bricks `REJECTED: empty` on 2026-09-07 while every one of them
+# held a complete Lean file in its last message.
+# ---------------------------------------------------------------------
+
+ONE_LINE = "theorem a : True := trivial"
+
+
+def _attempts(tmp_path: Path, pid: str = "pid1") -> Path:
+    d = tmp_path / "ws" / ".attempts" / pid
+    d.mkdir(parents=True)
+    return d
+
+
+def _rollout(attempts: Path, said: str) -> None:
+    """What a codex spawn leaves behind: the transcript the adapter
+    copied out of the doomed per-spawn home, in the shape the real
+    rollouts have (the message twice — as a response item and inside
+    the closing `task_complete` event)."""
+    ws = attempts.parent.parent
+    dest = ws / ".asterism" / "codex_sessions" / attempts.name
+    dest.mkdir(parents=True, exist_ok=True)
+    lines = [
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "the stub"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": said}]}},
+        {"type": "event_msg",
+         "payload": {"type": "task_complete", "last_agent_message": said}},
+    ]
+    (dest / "rollout-2026-09-07T00-00-00-abc.jsonl").write_text(
+        "\n".join(json.dumps(o) for o in lines) + "\n", encoding="utf-8")
+
+
+def test_a_seat_with_no_file_tool_is_read_out_of_its_last_message(tmp_path):
+    attempts = _attempts(tmp_path)
+    _rollout(attempts, f"Here you go.\n```lean\n{ONE_LINE}\n```\n")
+    text, source = gauntlet_mod.collect_answer(attempts)
+    assert source == "message"
+    assert gauntlet_mod.extract_lean(text).strip() == ONE_LINE
+
+
+def test_the_file_wins_when_the_seat_wrote_one(tmp_path):
+    """A seat that CAN write a file has committed to it; its message is
+    then commentary about the file, not a second answer."""
+    attempts = _attempts(tmp_path)
+    (attempts / gauntlet_mod.ANSWER_BASENAME).write_text(
+        ONE_LINE + "\n", encoding="utf-8")
+    _rollout(attempts, "```lean\ntheorem b : True := trivial\n```\n")
+    text, source = gauntlet_mod.collect_answer(attempts)
+    assert (source, text.strip()) == ("file", ONE_LINE)
+
+
+def test_an_empty_file_does_not_shadow_the_message(tmp_path):
+    """The 2026-09-07 shape exactly: `answer.lean` exists and is one
+    byte, because something touched it and nothing could write it."""
+    attempts = _attempts(tmp_path)
+    (attempts / gauntlet_mod.ANSWER_BASENAME).write_text("\n",
+                                                         encoding="utf-8")
+    _rollout(attempts, f"```lean\n{ONE_LINE}\n```\n")
+    text, source = gauntlet_mod.collect_answer(attempts)
+    assert source == "message"
+    assert gauntlet_mod.extract_lean(text).strip() == ONE_LINE
+
+
+def test_no_file_and_no_message_is_no_answer(tmp_path):
+    assert gauntlet_mod.collect_answer(_attempts(tmp_path)) == ("", "none")
+
+
+def test_the_spawn_returns_the_message_answer_and_names_its_source(
+        tmp_path, monkeypatch):
+    """The bug's own site: `_spawn_once` reads the answer back after a
+    spawn that returns an rc and nothing else."""
+    from Tooling import agent
+
+    def fake_spawn(**kw):
+        _rollout(Path(kw["attempts_dir"]), f"```lean\n{ONE_LINE}\n```\n")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    ws = tmp_path / "ws"
+    (ws / "Problems" / "Lab" / "tiny").mkdir(parents=True)
+    brick = gauntlet_mod.Brick(slug="one", path=ws / "one.lean",
+                               stub="theorem a : True := by\n  sorry\n")
+    text, meta = gauntlet_mod._spawn_once(ws, "Lab.tiny", brick,
+                                          tmp_path / "out")
+    assert meta["answer_source"] == "message" and meta["rc"] == 0
+    assert gauntlet_mod.extract_lean(text).strip() == ONE_LINE
+
+
+def test_the_prompt_asks_for_a_fence_and_gives_the_file_an_absolute_path(
+        tmp_path, monkeypatch):
+    """A seat with no file tool must be asked for something it can do,
+    and the optional file must name the one directory the spawn may
+    write — cwd is the PROBLEM dir, so a bare basename lands elsewhere
+    and is never read back."""
+    from Tooling import agent
+    seen: "list[str]" = []
+
+    def fake_spawn(**kw):
+        seen.append(Path(kw["prompt_path"]).read_text(encoding="utf-8"))
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    ws = tmp_path / "ws"
+    (ws / "Problems" / "Lab" / "tiny").mkdir(parents=True)
+    gauntlet_mod._spawn_once(
+        ws, "Lab.tiny",
+        gauntlet_mod.Brick(slug="one", path=ws / "one.lean", stub="stub\n"),
+        tmp_path / "out")
+    assert "```lean" in seen[0]
+    assert (ws / ".attempts").as_posix() in seen[0], \
+        "the file offer must be an absolute path under .attempts/"
+
+
+def test_a_message_answer_reaches_the_compiler_and_an_empty_one_never_does(
+        tmp_path, monkeypatch):
+    """End to end over `run`: fenced prose compiles, nothing at all is
+    `REJECTED: empty` before `lake env lean` is ever called."""
+    d = tmp_path / "bricks"
+    d.mkdir()
+    (d / "spoke.lean").write_text("theorem a : True := trivial\n",
+                                  encoding="utf-8")
+    (d / "silent.lean").write_text("theorem b : True := trivial\n",
+                                   encoding="utf-8")
+    answers = {"spoke": (f"sure thing\n```lean\n{ONE_LINE}\n```\n",
+                         {"answer_source": "message"}),
+               "silent": ("", {"answer_source": "none"})}
+    compiled: "list[Path]" = []
+
+    def fake_lake_ok(ws, path, timeout=0):
+        compiled.append(Path(path))
+        return True, ""
+
+    monkeypatch.setattr(gauntlet_mod, "lake_ok", fake_lake_ok)
+    out = tmp_path / "out"
+    res = gauntlet_mod.run(d, tmp_path / "ws", out, problem="Lab.tiny",
+                           generate=lambda ws, p, b, o: answers[b.slug])
+    rows = {r["slug"]: r for r in res["bricks"]}
+    assert rows["spoke"]["ok"] and rows["spoke"]["answer_source"] == "message"
+    assert not rows["silent"]["ok"] and rows["silent"]["why"] == "empty"
+    assert res["bricks_passed"] == 1
+    assert [p.name for p in compiled] == ["spoke.lean"]
+    assert (out / "gauntlet" / "spoke.lean").read_text(
+        encoding="utf-8").strip() == ONE_LINE
+
+
+# ---------------------------------------------------------------------
 # the run
 # ---------------------------------------------------------------------
 
