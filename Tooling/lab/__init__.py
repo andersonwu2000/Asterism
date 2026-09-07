@@ -52,6 +52,50 @@ class LabError(Exception):
 #: line. A NAME, never a path: see the module docstring.
 ROOT_ENV = "ASTERISM_LAB_ROOT"
 
+#: What must NEVER travel out of an attempts tree into `_out/`, on top
+#: of the obvious build residue.
+#:
+#: A per-spawn provider HOME holds a COPY OF THE OPERATOR'S CREDENTIAL —
+#: `codex_cli._spawn_home` copies `~/.codex/auth.json` into it, and
+#: `antigravity_cli` does the same for its own — and the home is meant to
+#: die with the attempt (`_preserve_transcript` moves the transcript out
+#: and lets the secret go down with the directory). `_out/` is the part
+#: of a run that SURVIVES, so a copier that took the tree whole undid
+#: that on every codex-seated arm: 16 `auth.json` copies were sitting in
+#: `runs/**/_out/attempts/**/_codex_home/` when this was found
+#: (2026-09-07). `continuity.py` had excluded them since it was written
+#: and `driver.py` never did — which is the whole argument for ONE set
+#: rather than a list per copier.
+#:
+#: Patterns are `shutil.ignore_patterns` globs, matched on the BASENAME
+#: at every level, so the file rules catch a credential dropped anywhere
+#: in the tree rather than only inside a home this list happens to know.
+_STATIC_ATTEMPT_IGNORES = ("__pycache__", "auth.json", "*.token",
+                           "credentials.json", "*.pem")
+
+
+def attempt_copy_ignores() -> "tuple[str, ...]":
+    """The ignore patterns every attempts-tree copy uses.
+
+    The provider home names are ASKED OF THE ADAPTERS that create them,
+    never re-spelled here: a copy of a private constant is the copy that
+    keeps working for a month after the adapter renamed it, silently
+    writing the credential back into the record. Same reason
+    `session_resume._codex_names` imports them rather than typing them.
+    An adapter that cannot be imported contributes nothing and is not
+    fatal — the file rules above still catch the credential itself."""
+    names: "list[str]" = []
+    for mod in ("codex_cli", "antigravity_cli"):
+        try:
+            adapter = __import__(f"Tooling.llm.{mod}", fromlist=[mod])
+        except Exception:                                  # noqa: BLE001
+            continue
+        home = getattr(adapter, "_SPAWN_HOME_DIRNAME", "")
+        if home:
+            names.append(str(home))
+    return _STATIC_ATTEMPT_IGNORES + tuple(sorted(set(names)))
+
+
 #: The framework checkout this code is part of — derived from this
 #: file's own location, so it follows a worktree or a cloud clone. It is
 #: the source of `git archive <commit> Tooling`, and it is NOT the lab

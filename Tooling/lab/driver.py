@@ -67,6 +67,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import attempt_copy_ignores
+
 
 # ---------------------------------------------------------------------
 # entering the pipeline the way the CLI enters it
@@ -166,13 +168,25 @@ def keep_attempts(workspace: Path, out: Path,
                   pipeline_ids: "list[str]") -> "list[str]":
     """Copy each pipeline's attempts tree into `_out/attempts/<id>/`.
 
-    WHOLE, not by whitelist. The artefact that mattered on 2026-09-04
-    was a REFUSED verdict — `theorist/review.py::keep_rejected_verdict`
-    moves one aside as `verdict_r<n>_raw.json` precisely so it survives
-    — and arm3h_r2 unlinked both of its, after which the shape had to be
-    dug out of a codex rollout. A whitelist is a list of the artefacts
-    somebody thought of before the run went wrong."""
+    WHOLE, not by whitelist — minus what may never survive an attempt.
+    The artefact that mattered on 2026-09-04 was a REFUSED verdict
+    (`theorist/review.py::keep_rejected_verdict` moves one aside as
+    `verdict_r<n>_raw.json` precisely so it survives) and arm3h_r2
+    unlinked both of its, after which the shape had to be dug out of a
+    codex rollout. A whitelist is a list of the artefacts somebody
+    thought of before the run went wrong.
+
+    `attempt_copy_ignores` is the ONE exception list, shared with the
+    continuity kinds, and it is not about size: a per-spawn provider
+    home holds a copy of the operator's credential, and `_out/` is the
+    part of a run that survives. This function used to ignore
+    `__pycache__` alone while `continuity.keep_attempts` — the same
+    twelve lines, written later — excluded the homes, so every
+    codex-seated arm that ran through THIS copier wrote an `auth.json`
+    into the record (2026-09-07, 16 of them). Two copiers, two lists,
+    one of them wrong: there is now one list, and one copier."""
     kept: "list[str]" = []
+    ignore = shutil.ignore_patterns(*attempt_copy_ignores())
     for pid in pipeline_ids:
         src = Path(workspace) / ".attempts" / pid
         if not src.is_dir():
@@ -180,8 +194,7 @@ def keep_attempts(workspace: Path, out: Path,
         dst = out / "attempts" / pid
         if dst.exists():
             shutil.rmtree(dst, ignore_errors=True)
-        shutil.copytree(src, dst,
-                        ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(src, dst, ignore=ignore)
         kept.append(f"attempts/{pid}")
     return kept
 

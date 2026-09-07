@@ -997,3 +997,67 @@ def test_gc_drops_nothing_when_a_lab_yaml_will_not_parse(tmp_path):
     (d / "lab.yaml").write_text("arms: {}\n", encoding="utf-8")
     rep = run_mod.gc(root, keep_latest=1)
     assert rep["dropped"] == []
+
+
+# ---------------------------------------------------------------------
+# the attempts tree travels — minus the credentials
+# ---------------------------------------------------------------------
+
+def test_keep_attempts_leaves_the_provider_home_and_its_credential_behind(
+    tmp_path: Path,
+) -> None:
+    """A per-spawn provider home holds a COPY OF THE OPERATOR'S
+    credential and is meant to die with the attempt; `_out/` is the part
+    of a run that survives. This copier used to ignore `__pycache__`
+    alone while `continuity.keep_attempts` — the same twelve lines,
+    written later — excluded the homes, so every arm that went through
+    THIS one wrote an `auth.json` into the record (2026-09-07, 16 of
+    them in `runs/**/_out/attempts/`).
+
+    The artefacts themselves must still travel whole, refused verdicts
+    included, which is why the assertion is two-sided."""
+    ws = tmp_path / "ws"
+    pid = "pipe-1"
+    att = ws / ".attempts" / pid
+    (att / "review" / "r1" / "_codex_home" / "sessions").mkdir(parents=True)
+    (att / "review" / "r1" / "_codex_home" / "auth.json").write_text(
+        '{"tokens": "SECRET"}', encoding="utf-8")
+    (att / "review" / "r1" / "_codex_home" / "config.toml").write_text(
+        "model = 'x'", encoding="utf-8")
+    (att / "_agy_home").mkdir(parents=True)
+    (att / "_agy_home" / "creds").write_text("SECRET", encoding="utf-8")
+    (att / "_gateway_session.token").write_text("SECRET", encoding="utf-8")
+    (att / "report.md").write_text("# the document", encoding="utf-8")
+    (att / "review" / "r1" / "verdict_r1_raw.json").write_text(
+        "{refused}", encoding="utf-8")
+
+    out = tmp_path / "out"
+    kept = driver_mod.keep_attempts(ws, out, [pid])
+    assert kept == [f"attempts/{pid}"]
+    dst = out / "attempts" / pid
+
+    # what must survive: the record, refused artefacts included
+    assert (dst / "report.md").read_text(encoding="utf-8") == "# the document"
+    assert (dst / "review" / "r1" / "verdict_r1_raw.json").is_file()
+
+    # what must not: every provider home, and any credential anywhere
+    assert not (dst / "review" / "r1" / "_codex_home").exists()
+    assert not (dst / "_agy_home").exists()
+    assert not (dst / "_gateway_session.token").exists()
+    leaked = [str(p.relative_to(dst)) for p in dst.rglob("*")
+              if p.is_file() and "SECRET" in p.read_text(
+                  encoding="utf-8", errors="replace")]
+    assert leaked == [], f"credential(s) copied into the record: {leaked}"
+
+
+def test_the_ignore_set_asks_the_adapters_for_their_home_names() -> None:
+    """The home names are read off the adapters that create them, never
+    re-spelled in the lab: a copy of a private constant is the copy that
+    keeps working for a month after the adapter renamed it, quietly
+    writing the credential back into every record."""
+    from Tooling.llm import antigravity_cli as agy
+    from Tooling.llm import codex_cli as codex
+    got = lab.attempt_copy_ignores()
+    assert codex._SPAWN_HOME_DIRNAME in got
+    assert agy._SPAWN_HOME_DIRNAME in got
+    assert "auth.json" in got and "__pycache__" in got

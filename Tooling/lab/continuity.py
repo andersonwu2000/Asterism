@@ -409,29 +409,19 @@ def incoming_verdict(prior_run: "Path | None", leg: str = "resumed"
     return obj
 
 
-#: The attempts tree travels whole, minus the per-spawn CODEX_HOME. The
-#: home holds a COPY OF THE OPERATOR'S `auth.json` (`codex_cli._spawn_
-#: home`) and, here, the staged rollouts as well — a credential that
-#: outlives its attempt is exactly what `_preserve_transcript` refuses
-#: to let happen, and `_out/` is the part of a run that survives. The
-#: rollouts are collected separately, from `.asterism/codex_sessions/`.
-_ATTEMPT_IGNORES = ("__pycache__", "_codex_home")
-
-
-def keep_attempts(workspace: Path, out: Path,
-                  pipeline_ids: "list[str]") -> "list[str]":
-    kept: "list[str]" = []
-    for pid in pipeline_ids:
-        src = Path(workspace) / ".attempts" / pid
-        if not src.is_dir():
-            continue
-        dst = Path(out) / "attempts" / pid
-        if dst.exists():
-            shutil.rmtree(dst, ignore_errors=True)
-        shutil.copytree(src, dst,
-                        ignore=shutil.ignore_patterns(*_ATTEMPT_IGNORES))
-        kept.append(f"attempts/{pid}")
-    return kept
+# The attempts tree travels whole, minus the per-spawn provider HOME.
+# The home holds a COPY OF THE OPERATOR'S `auth.json` (`codex_cli.
+# _spawn_home`) and, here, the staged rollouts as well — a credential
+# that outlives its attempt is exactly what `_preserve_transcript`
+# refuses to let happen, and `_out/` is the part of a run that survives.
+# The rollouts are collected separately, from `.asterism/codex_sessions/`.
+#
+# That rule used to live here as this module's OWN copier, twelve lines
+# that were otherwise identical to `driver.keep_attempts` — which never
+# had the exclusion, so every arm that went through the other one wrote
+# the credential into its record (2026-09-07). The list is now
+# `lab.attempt_copy_ignores` and the copier is the driver's, because two
+# copiers with two lists is exactly how one of them ends up wrong.
 
 
 # ---------------------------------------------------------------------
@@ -642,7 +632,7 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
     finally:
         conn.close()
     result["pipeline_ids"] = pipeline_ids
-    result["artefacts"] = (keep_attempts(ws, out, pipeline_ids)
+    result["artefacts"] = (_driver.keep_attempts(ws, out, pipeline_ids)
                            + copy_inputs(opts, out,
                                          ("report", "dialogue")))
     return result
@@ -854,7 +844,7 @@ def run_judge_review_round(spec: dict, ws: Path, out: Path, *,
     finally:
         conn.close()
     result["pipeline_ids"] = pipeline_ids
-    result["artefacts"] = (keep_attempts(ws, out, pipeline_ids)
+    result["artefacts"] = (_driver.keep_attempts(ws, out, pipeline_ids)
                            + copy_inputs(opts, out,
                                          ("proposal", "decisions",
                                           "dialogue")))
