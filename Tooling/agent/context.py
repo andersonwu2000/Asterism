@@ -1275,6 +1275,16 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
     salvage) gets it too, with a caveat: its patch declares the PRIOR
     strategy's `s<id>` token, which the fresh skeleton has re-minted —
     the material is a clue, never a verbatim copy source.
+
+    A patch that carries a VERDICT (`_drafts.patch_reason_path`) is
+    framed by that verdict instead (owner ruling 2026-09-07). The slot
+    was built for an INTERRUPTED spawn and its prose said so
+    unconditionally, so a patch that had been judged and rejected — a
+    duplicate strategy, a circular decomposition, a build error —
+    reached the next spawn as "interrupted before its patch.lean could
+    be promoted", which reads as an invitation to finish it. Same body,
+    opposite instruction. The verdict's own head (the text before its
+    first em dash) becomes the section's parenthetical tag.
     """
     if kind not in ("builder", "backward"):
         return []
@@ -1291,16 +1301,38 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
         ["NOTE: it declares the previous strategy's `s<id>` name — your "
          "skeleton has a NEW one. Reuse ideas/lemmas, not the header.",
          ""])
+    verdict = _drafts.read_partial_patch_reason(
+        problem_dir=problem_dir, kind=kind, goal_id=goal_id)
+    if verdict:
+        # The framework's own labels lead with a short head before an em
+        # dash ("REFUSED at commit — …"); anything else falls back to a
+        # generic tag rather than spilling a paragraph into the heading.
+        tag = verdict.split("—", 1)[0].strip()
+        if not tag or len(tag) > 60:
+            tag = "judged, not interrupted"
+        head = f"## Your previous patch.lean attempt ({tag})"
+        lead = (
+            "A prior spawn on this goal wrote the patch below. What "
+            "became of it:\n\n"
+            f"> {verdict}\n\n"
+            "It is here as evidence of what has already been tried, "
+            "not as a draft to finish — re-submitting the same shape "
+            "meets the same answer. Address what the line above says "
+            "before reusing any of it.")
+    else:
+        head = "## Your previous patch.lean attempt (unverified)"
+        lead = (
+            "A prior spawn on this goal was interrupted before its "
+            "patch.lean could be promoted to the workspace. The body "
+            "below is what that spawn last wrote. It may be a complete "
+            "proof, a partial sketch, or a wrong direction — and names "
+            "it references may be PROPOSED sub-goals that never landed. "
+            "Treat as a starting point, validate via the LSP before "
+            "relying on it.")
     return [
-        "## Your previous patch.lean attempt (unverified)",
+        head,
         "",
-        "A prior spawn on this goal was interrupted before its "
-        "patch.lean could be promoted to the workspace. The body "
-        "below is what that spawn last wrote. It may be a complete "
-        "proof, a partial sketch, or a wrong direction — and names "
-        "it references may be PROPOSED sub-goals that never landed. "
-        "Treat as a starting point, validate via the LSP before "
-        "relying on it.",
+        lead,
         "",
         *caveat,
         "```lean",

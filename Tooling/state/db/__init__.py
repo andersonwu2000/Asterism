@@ -110,6 +110,7 @@ from .bench import (
 from .reach import (
     ALIVE_CTE_GLOBAL,
     ALIVE_CTE_PER_PROBLEM,
+    goal_is_reachable,
     goals_reachable_excluding,
     open_goals,
     root_proved,
@@ -135,6 +136,7 @@ from .strategies import (
 from .pipelines import (
     record_pipeline_start,
     finish_pipeline,
+    has_running_pipeline_for_goal,
     is_in_queue,
     queue_count,
     descendant_ids, strict_ancestor_ids, strict_ancestor_slugs,

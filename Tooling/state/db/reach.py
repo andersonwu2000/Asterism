@@ -49,6 +49,29 @@ ALIVE_CTE_PER_PROBLEM = (
 )
 
 
+def goal_is_reachable(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """Does a LIVE path from a root / detached seed still reach this goal?
+
+    The same alive walk `open_goals` dispatches on (`ALIVE_CTE_PER_
+    PROBLEM`), asked about one node. A goal that answers False is
+    un-dispatchable however its own status row reads — which is the
+    invariant the cascade's orphan sweep exists to restore, and the
+    predicate the DEFERRED half of that sweep re-checks once the
+    in-flight worker it spared has landed (`transitions.
+    apply_deferred_orphan_shelve`)."""
+    row = conn.execute(
+        "SELECT problem FROM goals WHERE id = ?", (int(goal_id),),
+    ).fetchone()
+    if row is None:
+        return False
+    problem = str(row["problem"])
+    return conn.execute(
+        "WITH RECURSIVE " + ALIVE_CTE_PER_PROBLEM +
+        " SELECT 1 FROM alive WHERE id = ? LIMIT 1",
+        (problem, problem, int(goal_id)),
+    ).fetchone() is not None
+
+
 def goals_reachable_excluding(conn: sqlite3.Connection, *,
                               problem: str,
                               exclude_goal_id: int) -> set[int]:

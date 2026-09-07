@@ -543,14 +543,20 @@ def test_backward_progress_md_with_real_split_does_not_trigger_bail(
         f"reason={r.failure_reason}, detail={r.failure_detail}")
 
 
-def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
+@pytest.mark.parametrize("raced_to,kept", [("shelved", True),
+                                           ("disproved", False)])
+def test_backward_wrapper_draft_on_goal_no_longer_open_follows_the_status(
     conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, raced_to: str, kept: bool,
 ) -> None:
-    """F55 review fix #2 — race-guard `goal_no_longer_open` means a
-    sibling cascade already settled this goal; the in-flight PROPOSAL
-    is moot. Clear the draft so a future re-decomposition (if the goal
-    later reopens) doesn't get misled by stale carry-over."""
+    """FB-3(b), owner ruling 2026-09-07 — the race-guard
+    `goal_no_longer_open` fires when another branch settles this goal
+    mid-spawn, and what happens to the draft depends on WHERE the goal
+    landed. A PARK (`shelved` / `pending_strategist_review`) is
+    reopenable, so the work this spawn had already validated is kept,
+    labelled with the park; a kernel verdict (`proved` / `disproved`)
+    can never use it, so it is cleared. Deleting the park case is how
+    a426e38e and 86e6ed86 were thrown away on g10937."""
     gid = _seed_root_goal(tmp_path, conn)
     # Pre-seed a stale draft as if from a prior attempt
     draft = _bw_drafts_path(tmp_path, gid)
@@ -586,7 +592,7 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
             encoding="utf-8")
         # Race: between spawn return and the inner's status re-check
         # at the race guard, sibling shelved.
-        db.update_goal_status(conn, gid, "shelved")
+        db.update_goal_status(conn, gid, raced_to)
         conn.commit()
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn_with_race)
@@ -599,9 +605,20 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
         pipeline_id="pid-bw-race")
     assert r.outcome == "failed"
     assert r.failure_reason == "goal_no_longer_open"
-    # Wrapper should have CLEARED the stale draft, not overwritten it
-    # with the moot in-flight PROPOSAL.
-    assert not draft.exists()
+    assert draft.exists() is kept
+    from Tooling.pipeline import _drafts
+    problem_dir = tmp_path / "Problems" / "p"
+    reason = _drafts.read_partial_patch_reason(
+        problem_dir=problem_dir, kind="backward", goal_id=gid)
+    if kept:
+        # The patch is kept and says WHY it is here — never as
+        # "interrupted before its patch.lean could be promoted".
+        assert reason is not None and reason.startswith("NOT judged")
+        assert f"`{raced_to}`" in reason
+    else:
+        assert reason is None
+        assert not _drafts.patch_drafts_path(
+            problem_dir, "backward", gid).exists()
 
 
 # ---------------------------------------------------------------------

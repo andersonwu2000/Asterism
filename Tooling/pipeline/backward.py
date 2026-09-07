@@ -489,9 +489,16 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
       - `moot`: goal terminated by parallel cascade → no useful draft.
       - `failed` with `failure_reason == "goal_no_longer_open"`: the
         race-guard fired because a sibling (re)decomposed or shelved
-        this goal mid-spawn. The persisted PROPOSAL.md is moot for any
-        future Backward — clear instead of persisting a stale draft
-        that would mislead a re-decomposition if the goal later reopens.
+        this goal mid-spawn. What happens to the draft depends on where
+        the goal LANDED (owner ruling 2026-09-07): under a kernel
+        verdict (`proved` / `disproved`) nothing here can ever be used
+        again, so clear it; under a PARK (`shelved` /
+        `pending_strategist_review`) the goal is reopenable — a
+        citation, an Inject or a Reopen brings it straight back — and
+        deleting the validated decomposition the racing worker had just
+        finished is how a426e38e and 86e6ed86 were thrown away on
+        g10937, a goal that had already been revived once. Keep it,
+        labelled with the park.
       - anything else (failed / exhausted with retryable reasons):
         persist what the spawn wrote.
     """
@@ -503,25 +510,42 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
                                  intent=intent, pipeline_id=pipeline_id,
                                  decision_id=decision_id)
-    if (result.outcome in ("success", "moot")
-            or result.failure_reason == "goal_no_longer_open"):
+
+    def _drop() -> None:
         _drafts.clear_partial(problem_dir=problem_dir, kind="backward",
                               goal_id=goal_id)
         _drafts.clear_partial_patch(problem_dir=problem_dir, kind="backward",
                                     goal_id=goal_id)
-    else:
+
+    def _keep(label: str) -> None:
         attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
         note = _drafts.persist_partials(attempts_dir=attempts_dir,
                                         problem_dir=problem_dir,
                                         kind="backward", goal_id=goal_id,
-                                        conn=conn)
+                                        conn=conn, label=label)
         if note is None:
             # Even the postmortem left nothing — save the half-finished
             # patch as the only remaining clue (user ruling: note is
             # preferred, patch is the no-note fallback).
             _drafts.salvage_patch_fallback(
                 attempts_dir=attempts_dir, problem_dir=problem_dir,
-                kind="backward", goal_id=goal_id)
+                kind="backward", goal_id=goal_id, label=label)
+
+    if result.outcome in ("success", "moot"):
+        _drop()
+    elif result.failure_reason == "goal_no_longer_open":
+        cur = db.get_goal(conn, goal_id)
+        status = str(cur["status"]) if cur is not None else ""
+        if status in transitions.GOAL_REVIVABLE_PARKS:
+            _keep(f"NOT judged — the spawn that wrote this finished "
+                  f"while g{goal_id} was being parked (`{status}`) by "
+                  f"another branch, so the framework never weighed the "
+                  f"decomposition itself. The park is reopenable, and "
+                  f"if you are reading this the goal came back.")
+        else:
+            _drop()
+    else:
+        _keep("")
     return result
 
 

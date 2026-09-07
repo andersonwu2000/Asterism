@@ -881,6 +881,114 @@ def test_kill_upward_skips_already_terminal_sibling(
     assert db.get_goal(conn, already_shelved)["status"] == "shelved"
 
 
+def _start_pipeline(conn: sqlite3.Connection, *, pid: str,
+                    goal_id: int, kind: str = "Backward") -> None:
+    """A dispatch-time `pipelines` row — the authoritative in-flight
+    signal the sweep now reads."""
+    db.record_pipeline_start(conn, pipeline_id=pid, kind=kind,
+                             target_id=str(goal_id), target_kind="Goal")
+
+
+def test_kill_upward_defers_shelve_of_an_in_flight_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """FB-3: the sweep must not cut down a worker mid-flight. g_sibling
+    has a running pipeline when its shared parent strategy dies, so it
+    keeps its status and the shelve is deferred to the pipeline's end
+    (a426e38e / 86e6ed86 lost their validated decompositions this way)."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="terminating", status="shelved")
+    sibling = _insert_goal(conn, slug="sibling", status="attempting")
+    _link(conn, s1, [terminating, sibling])
+    _start_pipeline(conn, pid="in-flight", goal_id=sibling)
+
+    _propagate_wrong_context(conn, terminating)
+
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (s1,)
+    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, sibling)["status"] == "attempting"
+
+
+def test_deferred_shelve_lands_when_the_worker_does(
+    conn: sqlite3.Connection,
+) -> None:
+    """…and lands at the end of that pipeline: the decomposition the
+    worker committed is kept (its strategy row and sub-goals exist),
+    the goal is then parked because it is still orphaned."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="terminating", status="shelved")
+    sibling = _insert_goal(conn, slug="sibling", status="attempting")
+    _link(conn, s1, [terminating, sibling])
+    _start_pipeline(conn, pid="in-flight", goal_id=sibling)
+    _propagate_wrong_context(conn, terminating)
+
+    # The worker lands its decomposition, then its pipeline cascades.
+    s_new = _insert_strategy(conn, goal_id=sibling, status="proposed")
+    landed = _insert_goal(conn, slug="landed", status="open")
+    _link(conn, s_new, [landed])
+    db.finish_pipeline(conn, pipeline_id="in-flight", status="succeeded",
+                       outcome="success")
+    cascade_one(conn, pipeline_id="in-flight", kind="Backward",
+                target_id=str(sibling), target_kind="Goal",
+                outcome="success")
+
+    assert db.get_goal(conn, sibling)["status"] == "shelved"
+    # The work itself survives as rows — a revive brings it back.
+    assert conn.execute(
+        "SELECT count(*) AS n FROM strategy_subgoals WHERE strategy_id=?",
+        (s_new,)).fetchone()["n"] == 1
+
+
+def test_deferred_shelve_does_not_fire_when_the_goal_is_owed_again(
+    conn: sqlite3.Connection,
+) -> None:
+    """The deferral is re-derived, never banked: if a live path reached
+    the goal again while its worker ran (a second parent strategy, a
+    cross-branch citation), the shelve simply does not happen."""
+    root = _insert_goal(conn, slug="root", origin="root", status="open")
+    s_root = _insert_strategy(conn, goal_id=root, status="proposed")
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    _link(conn, s_root, [parent_g])
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="terminating", status="shelved")
+    sibling = _insert_goal(conn, slug="sibling", status="attempting")
+    _link(conn, s1, [terminating, sibling])
+    _start_pipeline(conn, pid="in-flight", goal_id=sibling)
+    _propagate_wrong_context(conn, terminating)
+    # A cross-branch strategy on a LIVE goal cites the sibling.
+    s_other = _insert_strategy(conn, goal_id=root, status="proposed")
+    _link(conn, s_other, [sibling], link_kind="cited")
+
+    db.finish_pipeline(conn, pipeline_id="in-flight", status="succeeded",
+                       outcome="success")
+    cascade_one(conn, pipeline_id="in-flight", kind="Backward",
+                target_id=str(sibling), target_kind="Goal",
+                outcome="success")
+
+    assert db.get_goal(conn, sibling)["status"] == "attempting"
+
+
+def test_deferred_shelve_spares_a_goal_whose_parent_is_only_stalled(
+    conn: sqlite3.Connection,
+) -> None:
+    """A `stalled` parent is NOT a dead one. That is the shape around a
+    goal a citation just revived, and shelving there would undo the
+    revive at the next cascade."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="stalled")
+    revived = _insert_goal(conn, slug="revived", status="open")
+    _link(conn, s1, [revived])
+
+    cascade_one(conn, pipeline_id="pid", kind="Backward",
+                target_id=str(revived), target_kind="Goal",
+                outcome="failed", failure_reason="lake_build_error")
+
+    assert db.get_goal(conn, revived)["status"] == "open"
+
+
 def test_cascade_one_terminal_goal_guard_blocks_late_worker(
     conn: sqlite3.Connection,
 ) -> None:

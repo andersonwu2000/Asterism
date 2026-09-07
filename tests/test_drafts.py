@@ -454,3 +454,61 @@ def test_prior_patch_section_surfaces_for_backward_with_caveat(tmp_path):
         "theorem b : True := by\n  exact trivial\n", encoding="utf-8")
     btext = "\n".join(ctx._section_prior_patch("builder", problem_dir, 5))
     assert "NEW one" not in btext
+
+
+def test_a_labelled_patch_is_not_offered_as_an_interrupted_draft(tmp_path):
+    """Owner ruling 2026-09-07: the slot's one framing — "a prior spawn
+    was interrupted before its patch.lean could be promoted" — is true
+    only of a spawn that DIED. A patch the framework judged carries its
+    verdict in the sidecar, and the section leads with that instead."""
+    from Tooling.pipeline import _drafts
+    from Tooling.agent import context as ctx
+    attempts, problem_dir = _mk_dirs(tmp_path)
+    (attempts / "patch.lean").write_text(
+        "theorem s4 : True := by\n  exact trivial\n  exact trivial\n",
+        encoding="utf-8")
+    verdict = ("REFUSED at commit — `duplicate_strategy`: waits on "
+               "the same goal set as s27301")
+    out = _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="backward", goal_id=5, label=verdict)
+    assert out is not None
+    assert _drafts.read_partial_patch_reason(
+        problem_dir=problem_dir, kind="backward", goal_id=5) == verdict
+
+    text = "\n".join(ctx._section_prior_patch("backward", problem_dir, 5))
+    assert "attempt (REFUSED at commit)" in text
+    assert verdict in text
+    assert "interrupted before its patch.lean" not in text
+    assert "not as a draft to finish" in text
+
+    # No label -> the original interruption framing, unchanged.
+    _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="backward", goal_id=6)
+    plain = "\n".join(ctx._section_prior_patch("backward", problem_dir, 6))
+    assert "interrupted before its patch.lean" in plain
+    assert "REFUSED" not in plain
+
+    # Success clears both halves - a verdict must never outlive its patch.
+    _drafts.clear_partial_patch(problem_dir=problem_dir, kind="backward",
+                                goal_id=5)
+    assert not _drafts.patch_reason_path(problem_dir, "backward", 5).exists()
+    assert _drafts.read_partial_patch_reason(
+        problem_dir=problem_dir, kind="backward", goal_id=5) is None
+
+
+def test_persist_partials_carries_the_label_into_the_note(tmp_path):
+    """The note slot takes the same verdict, so the next spawn reads it
+    without opening a second file."""
+    from Tooling.pipeline import _drafts
+    attempts, problem_dir = _mk_dirs(tmp_path)
+    (attempts / "_progress.md").write_text("blocked on the foot lemma",
+                                           encoding="utf-8")
+    out = _drafts.persist_partials(
+        attempts_dir=attempts, problem_dir=problem_dir, kind="backward",
+        goal_id=5, label="NOT judged — the goal was parked mid-spawn")
+    assert out is not None
+    body = out.read_text(encoding="utf-8")
+    assert body.startswith("**NOT judged")
+    assert "blocked on the foot lemma" in body

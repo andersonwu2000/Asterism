@@ -69,12 +69,20 @@ def drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
 
 def persist_partials(*, attempts_dir: Path, problem_dir: Path,
                      kind: str, goal_id: int,
-                     conn: sqlite3.Connection | None = None) -> Path | None:
+                     conn: sqlite3.Connection | None = None,
+                     label: str = "") -> Path | None:
     """Capture kind's partial outputs from `attempts_dir` into the
     per-goal drafts file. Idempotent — overwrites any prior draft so the
     most recent attempt's draft is what next spawn sees. Returns the
     drafts path on write, None when nothing was captured (no source
     files, all empty, or unknown kind).
+
+    `label` (2026-09-07) says WHAT HAPPENED to the spawn that wrote the
+    note, in the note itself. A draft is read by the next spawn as
+    context about its own goal, and "your predecessor ran out of time"
+    and "your predecessor's patch was REFUSED at commit for X" call for
+    opposite next moves; carrying the note without the verdict made
+    every draft read like the first.
     """
     sources = PARTIAL_PERSIST.get(kind)
     if not sources:
@@ -102,6 +110,8 @@ def persist_partials(*, attempts_dir: Path, problem_dir: Path,
         bodies.append(f"### {name}\n\n```\n{text}\n```")
     if not bodies:
         return None
+    if label.strip():
+        bodies.insert(0, f"**{label.strip()}**")
     out = drafts_path(problem_dir, kind, goal_id)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n\n".join(bodies) + "\n", encoding="utf-8")
@@ -247,6 +257,20 @@ def patch_drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
             / f"{kind}_g{goal_id}_{_PATCH_DRAFT_KIND_SUFFIX}.lean")
 
 
+def patch_reason_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
+    """Sidecar to `patch_drafts_path`: WHY the framework is still
+    holding that patch.
+
+    A separate file rather than a header comment inside the .lean, so
+    the draft stays a copy-pasteable Lean body — the context section
+    reads this to choose its framing (`context._section_prior_patch`).
+    Absent = the plain interruption case the slot was built for (a
+    killed spawn, a daemon Stop-Process), which is what the section
+    says when there is no reason to give."""
+    return (problem_dir / ".drafts"
+            / f"{kind}_g{goal_id}_{_PATCH_DRAFT_KIND_SUFFIX}.reason.txt")
+
+
 def read_partial_patch(*, problem_dir: Path,
                        kind: str, goal_id: int) -> str | None:
     """Companion to `read_partial` for the patch.lean drafts slot."""
@@ -259,13 +283,49 @@ def read_partial_patch(*, problem_dir: Path,
         return None
 
 
+def read_partial_patch_reason(*, problem_dir: Path,
+                              kind: str, goal_id: int) -> str | None:
+    """The salvaged patch's verdict line, or None when it was simply
+    interrupted."""
+    p = patch_reason_path(problem_dir, kind, goal_id)
+    if not p.exists():
+        return None
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def _write_patch_reason(problem_dir: Path, kind: str, goal_id: int,
+                        label: str) -> None:
+    """Set (or clear) the salvaged patch's verdict sidecar. Always
+    called beside a patch write so a stale verdict can never outlive
+    the patch it described."""
+    p = patch_reason_path(problem_dir, kind, goal_id)
+    if not label.strip():
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(label.strip() + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def clear_partial_patch(*, problem_dir: Path,
                         kind: str, goal_id: int) -> None:
-    """Drop the salvaged patch on pipeline success."""
-    try:
-        patch_drafts_path(problem_dir, kind, goal_id).unlink()
-    except FileNotFoundError:
-        pass
+    """Drop the salvaged patch — and its verdict sidecar — on pipeline
+    success."""
+    for p in (patch_drafts_path(problem_dir, kind, goal_id),
+              patch_reason_path(problem_dir, kind, goal_id)):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _patch_is_substantive(text: str) -> bool:
@@ -293,7 +353,8 @@ def _patch_is_substantive(text: str) -> bool:
 
 
 def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
-                           kind: str, goal_id: int) -> Path | None:
+                           kind: str, goal_id: int,
+                           label: str = "") -> Path | None:
     """LAST-RESORT patch salvage for the in-daemon timeout path.
 
     Design (user ruling 2026-07-06): the postmortem note is the PREFERRED
@@ -305,6 +366,14 @@ def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
     half-finished patch is the only clue left; persist it to the same
     `.drafts/<kind>_g<gid>_patch.lean` slot the startup orphan salvage
     uses, so `context._section_prior_patch` surfaces it for free.
+
+    `label` (2026-09-07) is the patch's VERDICT, stored in the sidecar
+    `patch_reason_path` and rendered by `context._section_prior_patch`.
+    Empty means the slot's original case — a spawn that was interrupted
+    before it ever submitted. A patch the framework REFUSED at commit
+    must never be handed on under that framing: the next spawn read
+    "interrupted before its patch.lean could be promoted", re-submitted
+    the same shape, and met the same refusal.
 
     Returns the drafts path on write, None when there is nothing
     substantive to save."""
@@ -325,12 +394,14 @@ def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
         out.write_text(text, encoding="utf-8")
     except OSError:
         return None
+    _write_patch_reason(problem_dir, kind, goal_id, label)
     # Neutral label: this salvage runs for ANY worker that ended without
     # a postmortem note (fast declines and gate aborts included) — the
     # old "timeout fallback" text misread a 2m46s decline as a timeout
     # (2026-07-12).
     print(f"[patch-salvage] no postmortem note → kept "
-          f"{out.name} (g{goal_id})", flush=True)
+          f"{out.name} (g{goal_id})"
+          f"{f' [{label.strip()}]' if label.strip() else ''}", flush=True)
     return out
 
 
@@ -399,6 +470,10 @@ def salvage_orphan_patches(conn: "_sqlite3.Connection",
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
             out.write_text(text, encoding="utf-8")
+            # A patch rescued from an orphan attempts dir IS the plain
+            # interruption case, so any verdict a previous salvage left
+            # in the sidecar is now wrong — clear it with the write.
+            _write_patch_reason(problem_dir, kind, goal_id, "")
             salvaged += 1
             print(f"[patch-salvage] orphan {d.name} → "
                   f"{out.relative_to(workspace).as_posix()} "

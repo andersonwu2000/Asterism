@@ -48,6 +48,38 @@ def finish_pipeline(conn: sqlite3.Connection, *, pipeline_id: str,
             f"record_pipeline_start was never called for this dispatch")
 
 
+def has_running_pipeline_for_goal(conn: sqlite3.Connection,
+                                  goal_id: int) -> bool:
+    """Is a worker PROCESS alive on this goal right now?
+
+    The authoritative cross-process in-flight signal: `record_pipeline_
+    start` INSERTs (and commits) the row at DISPATCH time and
+    `finish_pipeline` stamps `finished_at`, so an unfinished row means a
+    worker is out there — visible from a worker thread, unlike the
+    dispatcher's in-memory `running` set, which lives in one process's
+    loop frame.
+
+    Both arms of "on this goal" count, mirroring
+    `db.problems._subtree_has_running_worker` scoped to a single node: a
+    Goal-kind row (Backward / Builder on the goal itself) and a
+    Strategy-kind row on one of its strategies (a Verify), which has no
+    goal-kind row to be found by.
+
+    The cascade sweep reads it before shelving a goal (2026-09-07): a
+    `parent_needs_fix` from one sub-goal used to shelve its in-flight
+    siblings mid-run, and the worker that then landed its decomposition
+    got `goal_no_longer_open` with its validated work discarded."""
+    return conn.execute(
+        "SELECT 1 FROM pipelines p WHERE p.finished_at IS NULL"
+        "   AND ((p.target_kind = 'Goal'"
+        "         AND CAST(p.target_id AS INTEGER) = ?)"
+        "     OR (p.target_kind = 'Strategy'"
+        "         AND CAST(p.target_id AS INTEGER) IN ("
+        "               SELECT s.id FROM strategies s"
+        "                WHERE s.goal_id = ?)))"
+        " LIMIT 1", (int(goal_id), int(goal_id))).fetchone() is not None
+
+
 def is_in_queue(conn: sqlite3.Connection, *, target_id: str,
                 kind: str) -> bool:
     """True if a (target_id, kind) row exists in queue — LEASED ROWS COUNT

@@ -118,6 +118,15 @@ GOAL_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS | {"shelved"}
 #: read it are asking "is this settled against us?", not "is this
 #: disproved?", and a kernel-witnessed second verdict would join it.
 GOAL_FAILED_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS - {"proved"}
+#: Stopped, but REOPENABLE — a citation, an Inject, a Delegate or a
+#: Reopen puts a live path back and the goal is dispatched again. Named
+#: because the answer to "may this goal come back?" decides more than
+#: display: work salvaged from a worker that raced one of these parks
+#: (a partial patch, a postmortem note) is still worth carrying into the
+#: NEXT spawn on the goal, while the same work under a kernel verdict is
+#: dead weight (2026-09-07 — `pipeline.run_backward`).
+GOAL_REVIVABLE_PARKS: frozenset[str] = frozenset({
+    "shelved", "pending_strategist_review"})
 STRATEGY_TERMINALS: frozenset[str] = frozenset({"succeeded", "dead", "superseded"})
 
 # ---------------------------------------------------------------------------
@@ -279,6 +288,12 @@ EVENTS: frozenset[str] = frozenset({
     # ConfirmShelve, and so a later reader knows the statement itself
     # was never judged.
     "wrong_context_park",
+    # …and the DEFERRED half of that cascade's sibling sweep: a goal the
+    # sweep spared because a worker was still running on it, parked at
+    # the end of that pipeline instead (2026-09-07). Its own event so a
+    # reader can tell "cut down mid-flight" — which is what this stops —
+    # from "landed, then parked because it was still orphaned".
+    "orphan_sweep_deferred",
     # backward pipeline
     "skeleton_failed", "moot_retain", "agent_failed",
     "backward_alias_proved", "backward_sorryfree_proved", "backward_revive",
@@ -1531,10 +1546,29 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int) -> None:
         ).fetchall():
             sib_id = int(sib["id"])
             sib_status = str(sib["status"])
-            if sib_status in ("open", "attempting",
-                              "pending_strategist_review"):
-                _set_goal_terminal_and_propagate(conn, sib_id, "shelved")
-                _propagate_shelve(conn, sib_id)
+            if sib_status not in ("open", "attempting",
+                                  "pending_strategist_review"):
+                continue
+            # …BUT NOT A SIBLING WHOSE WORKER IS STILL RUNNING. The
+            # comment above says the intent is not to cut down a
+            # parallel worker mid-flight, and the guard that was meant
+            # to carry it (`has_live_sibling`, further down) reads
+            # STRATEGY rows — which say nothing about a Backward that is
+            # mid-spawn on a sub-goal. So a `parent_needs_fix` from one
+            # child shelved its in-flight siblings, and the workers that
+            # then landed came back `goal_no_longer_open` with their
+            # validated decompositions discarded (05068f36 moot,
+            # a426e38e and 86e6ed86; g10937 had already been revived
+            # once). DEFER instead: the shelve is re-evaluated at that
+            # pipeline's end by `apply_deferred_orphan_shelve`, and
+            # applies only if the goal is still orphaned then.
+            if db.has_running_pipeline_for_goal(conn, sib_id):
+                print(f"[sweep-defer] g{sib_id} ({sib_status}) has a "
+                      f"worker in flight — its shelve waits for that "
+                      f"pipeline to land", flush=True)
+                continue
+            _set_goal_terminal_and_propagate(conn, sib_id, "shelved")
+            _propagate_shelve(conn, sib_id)
 
     # For each affected parent goal: increment attempts unconditionally.
     # Every cascade reaching this branch is rooted in a strong signal
@@ -1574,6 +1608,58 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int) -> None:
         else:
             apply_goal_transition(
                 conn, gid, "open", event="reopen_after_cascade")
+
+
+def apply_deferred_orphan_shelve(conn: sqlite3.Connection,
+                                 goal_id: int) -> bool:
+    """The second half of `_kill_upward_chain`'s sibling sweep: the
+    shelve it DEFERRED because a worker was still running on this goal.
+
+    Runs at the end of that pipeline (`cascade_one`), after the worker's
+    own outcome has landed — so a decomposition that finished in the
+    meantime is committed normally and only then is the goal parked.
+    Nothing is persisted between the two halves: the condition is
+    re-derived from the graph, which is what makes "only if the parent
+    strategy is still dead" true by construction rather than by
+    bookkeeping.
+
+    Three conditions, all necessary:
+      * the goal is still in a LIVE status (a worker that proved it, or
+        a park that already landed, is not this function's business);
+      * some strategy that links it as a sub-goal is `dead` — that is
+        the sweep's own trigger, restated. A parent that is merely
+        `stalled` is NOT it: a stalled parent is the ordinary shape
+        around a goal a citation just revived, and shelving there would
+        undo the revive on the spot;
+      * no live path from a root / detached seed still reaches it —
+        i.e. the kill really did orphan it, and no sibling strategy,
+        cross-branch citation or Reopen has re-attached it since.
+
+    Returns True when it shelved."""
+    row = conn.execute(
+        "SELECT status FROM goals WHERE id = ?", (int(goal_id),),
+    ).fetchone()
+    if row is None or str(row["status"]) not in (
+            "open", "attempting", "pending_strategist_review"):
+        return False
+    dead_parent = conn.execute(
+        "SELECT 1 FROM strategy_subgoals ss JOIN strategies s"
+        "   ON s.id = ss.strategy_id"
+        " WHERE ss.subgoal_id = ? AND s.status = 'dead' LIMIT 1",
+        (int(goal_id),),
+    ).fetchone()
+    if dead_parent is None:
+        return False
+    if db.goal_is_reachable(conn, int(goal_id)):
+        return False
+    print(f"[sweep-defer] g{goal_id}: worker landed, still orphaned "
+          f"(parent strategy dead, no live path to root) — applying the "
+          f"deferred shelve", flush=True)
+    _set_goal_terminal_and_propagate(
+        conn, int(goal_id), "shelved", event="orphan_sweep_deferred",
+        reason="parent strategy died while this worker was in flight")
+    _propagate_shelve(conn, int(goal_id))
+    return True
 
 
 def _reconcile_goal_after_strategy_loss(
@@ -1642,6 +1728,34 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
                 outcome: str, failure_reason: str = "",
                 decision_id: int | None = None) -> None:
+    """Apply state transitions for one finished pipeline, then land any
+    shelve the orphan sweep deferred while this worker was in flight.
+
+    The wrapper is where the deferral closes: `_kill_upward_chain`'s
+    sibling sweep spares a goal with a running pipeline, and the goal's
+    own pipeline ending is exactly the moment to re-ask whether it is
+    still orphaned. Running it AFTER the outcome arms means a
+    decomposition that landed in the meantime is committed first — the
+    work is kept, the goal is parked, and a citation or Inject can
+    revive it. See `apply_deferred_orphan_shelve`."""
+    _cascade_one(conn, pipeline_id=pipeline_id, kind=kind,
+                 target_id=target_id, target_kind=target_kind,
+                 outcome=outcome, failure_reason=failure_reason,
+                 decision_id=decision_id)
+    if target_kind == "Goal":
+        try:
+            apply_deferred_orphan_shelve(conn, int(target_id))
+        except (ValueError, sqlite3.Error) as exc:
+            # A malformed target id or a DB hiccup must not turn a
+            # completed cascade into a worker exception.
+            print(f"[sweep-defer] g{target_id}: deferred-shelve check "
+                  f"skipped — {type(exc).__name__}: {exc}", flush=True)
+
+
+def _cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
+                 kind: str, target_id: str, target_kind: str,
+                 outcome: str, failure_reason: str = "",
+                 decision_id: int | None = None) -> None:
     """Apply state transitions for one finished pipeline.
 
     Each worker_kind has a fixed target_kind:
