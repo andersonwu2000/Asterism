@@ -130,12 +130,7 @@ def feedback_enabled(workspace: Path | None) -> bool:
     FALSE — this is a developer-only channel, off unless explicitly turned
     on. Accepts "true" / "1" / "yes" / "on" (case-insensitive)."""
     from ..core import config
-    raw = config.get(
-        "feedback.enabled",
-        default=False,
-        env_var="ASTERISM_FEEDBACK_ENABLED",
-        workspace=workspace,
-    )
+    raw = config.get("feedback.enabled", workspace=workspace)
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
@@ -146,7 +141,7 @@ def _resolve_model(kind: str, workspace: Path | None) -> str:
     Best-effort: returns '?' if unresolvable."""
     from ..core import config
     try:
-        m = config.get(f"{kind.lower()}.model", default="?", workspace=workspace)
+        m = config.get(f"{kind.lower()}.model", workspace=workspace)
         return str(m) if m else "?"
     except Exception:  # noqa: BLE001 — metadata is best-effort
         return "?"

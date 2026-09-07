@@ -384,9 +384,7 @@ def _run_pipeline(workspace: Path,
                 trigger, pending_id = _derive_strategist_trigger(
                     conn, problem, group_id=group_id,
                     routine_interval_min=config.get(
-                        "strategist.interval_min", default=120.0,
-                        env_var="ASTERISM_STRATEGIST_INTERVAL_MIN",
-                        cast=float, workspace=workspace),
+                        "strategist.interval_min", workspace=workspace),
                     since_iso=DAEMON_START_ISO)
                 _warn_consecutive_strategist(conn, problem, trigger)
 

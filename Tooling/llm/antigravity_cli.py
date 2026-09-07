@@ -505,10 +505,8 @@ def _resolve_model(kind: "str | None") -> str:
         return os.environ.get("ASTERISM_AGY_MODEL", DEFAULT_MODEL)
     return str(config.get(
         f"{kind}.model",
-        env_var=f"ASTERISM_{kind.upper()}_MODEL",
         legacy_env=("ASTERISM_AGY_MODEL",),
-        default=DEFAULT_MODEL,
-    ))
+    ) or DEFAULT_MODEL)
 
 
 def _write_spawn_stderr(attempts_dir: Path, body: str, rc: int) -> None:

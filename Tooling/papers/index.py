@@ -63,7 +63,7 @@ def generate_index(workspace: Path, pid: str, *, prompt_dir: Path,
 
     from ..core import config
     from .. import agent
-    timeout = int(config.get("paper_index.timeout_sec", default=1200))
+    timeout = int(config.get("paper_index.timeout_sec"))
     agent.spawn_llm(
         kind="paper_index", prompt_path=prompt_file,
         problem_dir=pdir, attempts_dir=sandbox,

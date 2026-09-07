@@ -8,8 +8,6 @@ internal split.
 from __future__ import annotations
 
 from .runtime import (
-    POSTMORTEM_TIMEOUT_SEC,
-    WORKER_TIMEOUT_SEC,
     WorkArea,
     attempts_dir_for,
     new_pipeline_id,
@@ -18,8 +16,6 @@ from .runtime import (
 )
 
 __all__ = [
-    "POSTMORTEM_TIMEOUT_SEC",
-    "WORKER_TIMEOUT_SEC",
     "WorkArea",
     "attempts_dir_for",
     "new_pipeline_id",

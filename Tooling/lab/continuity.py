@@ -604,9 +604,7 @@ def run_theory_review_round(spec: dict, ws: Path, out: Path, *,
                 problem_dir=problem_dir, attempts_dir=attempts,
                 session_id=staged["session_id"], is_retry=True,
                 retry_context=rebuttal,
-                timeout_sec=config.get(
-                    "theorist.timeout_sec", default=10800,
-                    env_var="ASTERISM_THEORIST_TIMEOUT_SEC", cast=int),
+                timeout_sec=config.get("theorist.timeout_sec"),
                 mcp_config_path=tools_cfg)
             body = ""
             rpath = attempts / _review.REPORT_BASENAME
@@ -808,9 +806,7 @@ def run_judge_review_round(spec: dict, ws: Path, out: Path, *,
                 problem_dir=problem_dir, attempts_dir=attempts,
                 session_id=staged["session_id"], is_retry=True,
                 retry_context=rebuttal,
-                timeout_sec=config.get(
-                    "strategist.timeout_sec", default=10800,
-                    env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int),
+                timeout_sec=config.get("strategist.timeout_sec"),
                 mcp_config_path=tools_cfg)
             body = ""
             ppath = attempts / "proposal.md"

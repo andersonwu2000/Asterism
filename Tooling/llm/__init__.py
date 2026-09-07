@@ -35,12 +35,7 @@ def get_provider(kind: str | None = None) -> Provider:
       4. 'claude' (default)
     """
     if kind:
-        name = config.get(
-            f"{kind}.provider",
-            env_var=f"ASTERISM_{kind.upper()}_PROVIDER",
-            legacy_env=("ASTERISM_LLM_PROVIDER",),
-            default="claude",
-        )
+        name = config.get(f"{kind}.provider")
     else:
         # No kind context (legacy path) — only env+default chain.
         name = os.environ.get("ASTERISM_LLM_PROVIDER", "claude")

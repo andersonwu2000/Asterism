@@ -16,21 +16,6 @@ from ..core import config
 from .. import llm
 
 
-WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
-                          # spawns hit the prior 600s wall while making
-                          # real progress (esp. measure-theory leaves
-                          # like cantorxi_next_*_vol). 900s gives Sonnet
-                          # room to finish; fewer-but-longer spawns
-                          # paired with shelve_threshold=4 keeps total
-                          # cost on stuck goals bounded.
-
-# Postmortem spawn after a main-spawn timeout. Uses --resume so
-# session memory is intact; agent writes a short state + blocker note
-# (`_progress.md`) and exits. 120s was empirically too tight for
-# Sonnet to write a usable note on dense root-level state; 180s gives
-# ~50% more breathing room for the same pattern.
-POSTMORTEM_TIMEOUT_SEC = 180
-
 #: The theory layer's resume point, spelled here because this module
 #: cannot import the pipeline package (which imports THIS one) at module
 #: level. `pipeline.theorist.checkpoint.CHECKPOINT_BASENAME` is the SoT;
@@ -43,22 +28,17 @@ def spawn_timeout_sec(*, is_postmortem: bool = False) -> int:
     read by `spawn_llm` when the caller names no timeout and by
     `render_prompt_template` when nobody hands it the request's value.
 
-    The constants above are only this knob's DEFAULT. Reading them as if
-    they were the answer is what made every prompt on the fleet say "15
-    minutes" while `dispatch.spawn_timeout_sec: 1800` had the killer
-    waiting 30 (2026-09-07: three spawns axed mid-edit, their work lost
-    to `stale_validation` salvage)."""
+    There is nothing else to read. `WORKER_TIMEOUT_SEC` /
+    `POSTMORTEM_TIMEOUT_SEC` used to sit here as the defaults, and
+    reading a constant as if it were the answer is what made every
+    prompt on the fleet say "15 minutes" while
+    `dispatch.spawn_timeout_sec: 1800` had the killer waiting 30
+    (2026-09-07: three spawns axed mid-edit, their work lost to
+    `stale_validation` salvage). Both defaults live in
+    `core/config.CONFIG_SPEC` now, with every other knob's."""
     if is_postmortem:
-        return int(config.get(
-            "dispatch.postmortem_timeout_sec",
-            default=POSTMORTEM_TIMEOUT_SEC,
-            env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-        ))
-    return int(config.get(
-        "dispatch.spawn_timeout_sec",
-        default=WORKER_TIMEOUT_SEC,
-        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
-    ))
+        return int(config.get("dispatch.postmortem_timeout_sec"))
+    return int(config.get("dispatch.spawn_timeout_sec"))
 
 
 _PROMPT_COND_RE = re.compile(
@@ -109,10 +89,7 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
     text = _PROMPT_COND_RE.sub(_cond, text)
     if timeout_sec is None:
         timeout_sec = spawn_timeout_sec(is_postmortem=is_postmortem)
-    interval_min = config.get(
-        "strategist.interval_min", default=120.0,
-        env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
-    )
+    interval_min = config.get("strategist.interval_min")
     # A caller that forgets to pass it degrades to the old wording
     # rather than showing the agent a raw placeholder.
     where = (Path(attempts_dir).as_posix() if attempts_dir is not None

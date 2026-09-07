@@ -343,19 +343,10 @@ def _derive_stage2_budget(workspace: Path | None) -> int:
     """Stage 2 budget = spawn_timeout - trap_check_sec. Replaces the
     retired `dispatch.rescue_timeout_sec` config (2026-05-10 v4)."""
     from ..core import config as _cfg
-    from ..agent import WORKER_TIMEOUT_SEC
-    spawn_timeout = _cfg.get(
-        "dispatch.spawn_timeout_sec",
-        default=WORKER_TIMEOUT_SEC,
-        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
-    trap_check_sec = _cfg.get(
-        "dispatch.trap_check_sec",
-        default=660,
-        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
-        workspace=workspace,
-    )
+    spawn_timeout = _cfg.get("dispatch.spawn_timeout_sec",
+                             workspace=workspace)
+    trap_check_sec = _cfg.get("dispatch.trap_check_sec",
+                              workspace=workspace)
     # Mirror watchdog's floor; never let stage 2 go negative.
     return max(60, spawn_timeout - trap_check_sec)
 
@@ -413,13 +404,8 @@ def _force_progress_fresh_cold(
     # legacy postmortem budget; cap from
     # `dispatch.postmortem_timeout_sec` so operators can shorten via
     # config if desired.
-    from ..agent import POSTMORTEM_TIMEOUT_SEC
-    budget = _cfg.get(
-        "dispatch.postmortem_timeout_sec",
-        default=POSTMORTEM_TIMEOUT_SEC,
-        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
+    budget = _cfg.get("dispatch.postmortem_timeout_sec",
+                      workspace=workspace)
     prompt = _build_force_progress_prompt(
         attempts_dir, trapped_jsonl_dest, jsonl_copied)
     fresh_sid = str(uuid.uuid4())

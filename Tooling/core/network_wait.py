@@ -67,9 +67,7 @@ def channel_url_for(kind: "str | None" = None) -> "str | None":
         if not any(_caps.provider_for_kind(k) == "zen" for k in kinds):
             return None
         from . import config
-        return str(config.get("zen.base_url",
-                              env_var="ASTERISM_ZEN_BASE_URL",
-                              default="http://127.0.0.1:8898/v1"))
+        return str(config.get("zen.base_url"))
     except Exception:  # noqa: BLE001 — a probe list must never raise
         return None
 

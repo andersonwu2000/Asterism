@@ -115,9 +115,7 @@ def run(workspace: Path, *, once: bool = False,
     if process_group.assign_self_to_kill_on_close_job():
         print("[daemon] process tree bound to kill-on-close job", flush=True)
 
-    pool_size = config.get(
-        "dispatch.pool", default=4,
-        env_var="ASTERISM_POOL", cast=int, workspace=workspace)
+    pool_size = config.get("dispatch.pool", workspace=workspace)
     # The gateway RAM-clamps ITS worker pool with this same formula; a
     # daemon dispatching the un-clamped yaml value floods the smaller
     # slot pool and the register 500s read as gateway death (2026-07-19
@@ -144,15 +142,10 @@ def run(workspace: Path, *, once: bool = False,
                 _budget_gb, _machine_gb,
                 idle_spares=ram_ledger.idle_spares(workspace),
                 pressure_headroom_gb=config.get(
-                    "ledger.pressure_headroom_gb",
-                    default=ram_ledger.DispatcherLedger.PRESSURE_HEADROOM_GB,
-                    env_var="ASTERISM_PRESSURE_HEADROOM_GB",
-                    cast=float, workspace=workspace),
+                    "ledger.pressure_headroom_gb", workspace=workspace),
                 pressure_release_slack_gb=config.get(
                     "ledger.pressure_release_slack_gb",
-                    default=ram_ledger.DispatcherLedger.PRESSURE_RELEASE_SLACK_GB,
-                    env_var="ASTERISM_PRESSURE_RELEASE_SLACK_GB",
-                    cast=float, workspace=workspace))
+                    workspace=workspace))
             print(f"[dispatcher] RAM ledger active — budget "
                   f"{_budget_gb:.1f} GB of {_machine_gb:.1f} GB; "
                   f"Lean width follows the ledger's target_slots"
@@ -175,17 +168,14 @@ def run(workspace: Path, *, once: bool = False,
         owner=f"daemon-{os.getpid()}",
         ram_fit=lambda n: ram_ledger.build_threads_fit(
             n, machine_gb=_machine_for_builds)))
-    budget_sec = config.get(
-        "dispatch.budget_sec", default=1800,
-        env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
+    budget_sec = config.get("dispatch.budget_sec", workspace=workspace)
     # One work unit's worth of time — what a relaunched gateway must
     # outlive (or beat with a finished pipeline) to earn its self-heal
     # credit back. Same field the spawns themselves are capped by, so
     # the two cannot drift into disagreeing about what "long enough to
     # be doing something" means.
-    spawn_budget_sec = config.get(
-        "dispatch.spawn_timeout_sec", default=1800,
-        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int, workspace=workspace)
+    spawn_budget_sec = config.get("dispatch.spawn_timeout_sec",
+                                  workspace=workspace)
     # Quota-wait switch (user 2026-07-14): on = a CONFIRMED-exhausted
     # subscription window pauses dispatch until resets_at instead of
     # exiting (breaker consult + sleep-to-reset). Off = quota bursts
@@ -193,8 +183,7 @@ def run(workspace: Path, *, once: bool = False,
     # (user 2026-07-18): an unattended run riding window after window
     # is opt-in — Settings toggle / yaml / env.
     quota_wait_enabled = str(config.get(
-        "dispatch.quota_wait", default="false",
-        env_var="ASTERISM_QUOTA_WAIT", workspace=workspace,
+        "dispatch.quota_wait", workspace=workspace,
     )).strip().lower() in ("true", "1", "yes", "on")
     # `--once` runs are operator-attended experiments — finishing (with
     # the quota failure visible) beats silently parking for hours.
@@ -206,18 +195,13 @@ def run(workspace: Path, *, once: bool = False,
     # internal small-retry-budget constant (librarian hole-fill + the
     # undispatched legacy builder module).
     thresholds.set_thresholds(
-        shelve=config.get(
-            "dispatch.shelve_threshold", default=8,
-            env_var="ASTERISM_SHELVE_THRESHOLD", cast=int,
-            workspace=workspace))
+        shelve=config.get("dispatch.shelve_threshold",
+                          workspace=workspace))
     # Phase 2 — T1 (wall-clock routine) interval in minutes. Default 60
     # per `docs/archive/design/phase2/pipelines.md` §5. Picked by `strategist_triggers`
     # each tick. Override via env var or Asterism.yaml for calibration.
-    strategist_interval_min = config.get(
-        "strategist.interval_min", default=120.0,
-        env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
-        workspace=workspace,
-    )
+    strategist_interval_min = config.get("strategist.interval_min",
+                                         workspace=workspace)
     # In ledger mode the executor is a thread-count backstop, not the
     # admission mechanism — sized to what the budget could ever admit
     # (Lean ceiling at zero NL demand + the NL hard cap).
@@ -236,9 +220,7 @@ def run(workspace: Path, *, once: bool = False,
     # (`verify.olean_warm=false`) the gate answers "built" at once: the
     # pre-2026-08-30 shape, for debugging only.
     from ...pipeline._olean_warm import PromotionGate
-    _olean_warm_raw = config.get(
-        "verify.olean_warm", default=True,
-        env_var="ASTERISM_OLEAN_WARM", workspace=workspace)
+    _olean_warm_raw = config.get("verify.olean_warm", workspace=workspace)
     olean_warm_enabled = (
         _olean_warm_raw if isinstance(_olean_warm_raw, bool)
         else str(_olean_warm_raw).strip().lower() in ("true", "1", "yes", "on"))
@@ -403,8 +385,7 @@ def run(workspace: Path, *, once: bool = False,
     # lock-waiting successor that boots on current code with the same
     # scope. `--once` runs finish on their own and never hand off.
     handoff_enabled = (not once) and (
-        str(config.get("dispatch.handoff_on_code_change", default="true",
-                       env_var="ASTERISM_HANDOFF_ON_CODE_CHANGE",
+        str(config.get("dispatch.handoff_on_code_change",
                        workspace=workspace)).strip().lower()
         in ("true", "1", "yes", "on"))
     drifting = False

@@ -104,6 +104,7 @@ from pathlib import Path
 
 from .base import (MCP_TOOL_TIMEOUT_SEC, SPAWN_STDERR, LLMRequest, SpawnRC,
                    clear_spawn_stderr, transcript_dest, which_launchable)
+from ..core import config as _config
 from ..core.process_group import (assign_to_job, create_capped_job,
                                   no_window_creationflags)
 
@@ -115,7 +116,8 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 #: `low | medium | high | xhigh | max` for the 5.6 family. The default
 #: sits high because a formalizer's failure mode is giving up on a proof,
 #: not spending too long on one.
-DEFAULT_REASONING_EFFORT = "xhigh"
+DEFAULT_REASONING_EFFORT = str(
+    _config.spec_default("<kind>.reasoning_effort"))
 
 #: `attempts_dir/<this>` — this spawn's private CODEX_HOME (DELTA 7).
 _SPAWN_HOME_DIRNAME = "_codex_home"
@@ -152,21 +154,15 @@ def resolve_codex_executable() -> "str | None":
 
 
 def _resolve_model(kind: "str | None") -> str:
-    from ..core import config
     if not kind:
         return DEFAULT_MODEL
-    return str(config.get(f"{kind}.model",
-                          env_var=f"ASTERISM_{kind.upper()}_MODEL",
-                          default=DEFAULT_MODEL))
+    return str(_config.get(f"{kind}.model") or DEFAULT_MODEL)
 
 
 def _resolve_effort(kind: "str | None") -> str:
-    from ..core import config
     if not kind:
         return DEFAULT_REASONING_EFFORT
-    return str(config.get(f"{kind}.reasoning_effort",
-                          env_var=f"ASTERISM_{kind.upper()}_REASONING_EFFORT",
-                          default=DEFAULT_REASONING_EFFORT))
+    return str(_config.get(f"{kind}.reasoning_effort"))
 
 
 def operator_codex_home() -> Path:
@@ -458,10 +454,7 @@ def _render_config(req: LLMRequest, model: str, effort: str,
         # `web_search` tool type; the shim fixes both and adds the
         # per-request nonce that defuses Zen's poisonable prefix cache.
         # Start the shim first: `python -m Tooling.llm.zen_shim`.
-        from ..core import config as _config
-        base = _config.get("zen.base_url",
-                           env_var="ASTERISM_ZEN_BASE_URL",
-                           default="http://127.0.0.1:8898/v1")
+        base = _config.get("zen.base_url")
         # This spawn's attempts dir travels IN THE URL PATH
         # (`/a/<relpath>/v1`): the shim used to recover it by regexing
         # the request text, and codex only carries those paths on SOME
@@ -1173,10 +1166,7 @@ class CodexCliProvider:
         if self.flavor == "zen":
             key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
             if not key:
-                from ..core import config as _config
-                key = str(_config.get("zen.api_key",
-                                      env_var="OPENCODE_ZEN_API_KEY",
-                                      default="") or "")
+                key = str(_config.get("zen.api_key") or "")
             if not key:
                 print("[llm:codex] zen flavor but no OPENCODE_ZEN_API_KEY"
                       " (env or .env) — spawn will fail auth", flush=True)

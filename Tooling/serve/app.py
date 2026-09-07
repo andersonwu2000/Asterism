@@ -447,18 +447,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             seats = []
             for seat in _cfg.UI_SEATS:
                 try:
-                    prov = _cfg.get(
-                        f"{seat}.provider",
-                        env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
-                        legacy_env=("ASTERISM_LLM_PROVIDER",),
-                        default="claude", workspace=workspace)
+                    prov = _cfg.get(f"{seat}.provider", workspace=workspace)
                 except Exception:  # noqa: BLE001 — display garnish only
                     continue
                 if _caps.canonical(prov) == name:
-                    seats.append({"seat": seat, "model": str(_cfg.get(
-                        f"{seat}.model",
-                        env_var=f"ASTERISM_{seat.upper()}_MODEL",
-                        default="", workspace=workspace) or "") or None})
+                    model = _cfg.get(f"{seat}.model", workspace=workspace)
+                    seats.append({"seat": seat,
+                                  "model": str(model or "") or None})
             if cap.auth_flow == _caps.AUTH_API_KEY and cap.env_key:
                 extra["env_key"] = cap.env_key
                 extra["key_present"] = _env_key_present(cap.env_key)
@@ -502,10 +497,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                      "librarian", "scholar", "explainer",
                      "theorist", "theory_reviewer"):
             try:
-                prov = _cfg.get(f"{role}.provider",
-                                env_var=f"ASTERISM_{role.upper()}_PROVIDER",
-                                legacy_env=("ASTERISM_LLM_PROVIDER",),
-                                default="claude", workspace=workspace)
+                prov = _cfg.get(f"{role}.provider", workspace=workspace)
             except Exception:  # noqa: BLE001 — display garnish only
                 continue
             # `agy` is a legal spelling of the same seat (llm.get_provider
@@ -514,8 +506,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             if _caps.canonical(prov) == "antigravity":
                 try:
                     model = _cfg.get(f"{role}.model",
-                                     env_var=f"ASTERISM_{role.upper()}_MODEL",
-                                     default="", workspace=workspace)
+                                     workspace=workspace) or ""
                 except Exception:  # noqa: BLE001
                     model = ""
                 roles.append({"role": role, "model": str(model) or None})

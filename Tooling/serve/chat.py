@@ -68,6 +68,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..core import config as _config
 from ..llm import explainer
 from ..state import db
 from . import chat_sessions
@@ -95,7 +96,7 @@ _KEEPALIVE_SEC = 15.0
 #: dead. It is an IDLE clock: a turn that keeps calling tools is
 #: working, however long it takes, and the wall clock this replaced
 #: killed answers that were visibly making progress.
-_IDLE_SEC_DEFAULT = 600
+_IDLE_SEC_DEFAULT = int(_config.spec_default("explainer.idle_sec"))
 
 _REPLAY_HEADER = (
     "[Earlier in this conversation — replayed because the engine's session\n"
@@ -683,11 +684,8 @@ def register(app: FastAPI, workspace: Path) -> None:
         """`explainer.model` when set, else the SEATED backend's own
         default. A stored claude alias would be an invalid slug on
         another provider, so the fallback must move with the seat."""
-        from ..core import config
-        return str(config.get("explainer.model",
-                              env_var="ASTERISM_EXPLAINER_MODEL",
-                              default=backend.default_model,
-                              workspace=workspace))
+        return str(_config.get("explainer.model", workspace=workspace)
+                   or backend.default_model)
 
     def _groups() -> "list[dict]":
         """The picker's offer: the machine's catalog, filtered to
@@ -698,11 +696,7 @@ def register(app: FastAPI, workspace: Path) -> None:
                 if g["provider"] in explainer.BACKENDS]
 
     def _idle_sec() -> int:
-        from ..core import config
-        return int(config.get("explainer.idle_sec",
-                              env_var="ASTERISM_EXPLAINER_IDLE_SEC",
-                              default=_IDLE_SEC_DEFAULT, cast=int,
-                              workspace=workspace))
+        return int(_config.get("explainer.idle_sec", workspace=workspace))
 
     @app.get("/api/chat/state")
     def chat_state() -> dict:

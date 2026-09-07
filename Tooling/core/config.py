@@ -19,11 +19,15 @@ Asterism.yaml is optional; the file's absence is identical to writing
 an empty `{}`.
 
 The key registry is CONFIG_SPEC below — the single source of truth for
-every dotted key the codebase reads (the prose field map that used to sit
-here had drifted: six live keys missing, one dead key listed). A typo'd
-key silently returns the default, so the registry is bound to the code by
-tests/test_config_spec_drift.py in BOTH directions: an unregistered
-`config.get` key fails CI, and a registered key nobody reads fails too.
+every dotted key the codebase reads, and since 2026-09-08 for its
+DEFAULT, CAST and ENV VAR as well: a reader spells `config.get(key)` and
+nothing else, so a key cannot mean 900 seconds here and 1800 there. A
+typo'd key silently returns the default, so the registry is bound to the
+code by tests/test_config_spec_drift.py in BOTH directions (an
+unregistered `config.get` key fails CI, and a registered key nobody
+reads fails too) and by tests/test_config_call_sites.py, which fails any
+production caller that carries its own `default=` / `cast=` / `env_var=`
+for a registered key.
 
 Provider-specific knobs (openai base url / claude
 tools) stay env-only — they're cross-cutting toggles that don't
@@ -33,66 +37,262 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 
 _CONFIG_FILENAME = "Asterism.yaml"
 
+
+class Key(NamedTuple):
+    """One tunable's whole truth: what it means, what it resolves to
+    when nothing sets it, how a string form is read, and which env var
+    overrides it.
+
+    Until 2026-09-08 the registry held only prose and every reader
+    supplied its own `default=` / `cast=` / `env_var=`, so a key had as
+    many defaults as it had call sites: `dispatch.spawn_timeout_sec`
+    read 900 in the registry, 1800 in the dispatcher AND the gateway,
+    960 in the librarian — four answers, and nothing could say which
+    one a run would use. The fields below ARE the answer now;
+    `config.get(key)` with no other argument resolves exactly what is
+    written here.
+
+    `env` may carry `{KIND}`, replaced by the key's own first segment,
+    so the per-pipeline families declare their env var once for every
+    seat (`<kind>.model` → ASTERISM_FORMALIZER_MODEL, …).
+
+    `legacy_env` holds only the aliases a key ALWAYS honours. A
+    provider-specific compat spelling (ASTERISM_AGY_MODEL on
+    antigravity, ASTERISM_LLM_MODEL on the openai adapter) stays at its
+    adapter's call site: those are facts about a backend, not about the
+    key, and folding them in here would make every seat honour every
+    backend's old name.
+    """
+    description: str
+    default: Any = None
+    cast: "Callable[[str], Any] | None" = None
+    env: "str | None" = None
+    legacy_env: "tuple[str, ...]" = ()
+
+
+#: The per-pipeline families, declared ONCE for every seat. The three
+#: `adversary.*` rows below share these very objects (the judge stamps
+#: its own seat into the verdict, so it reads them by literal name) —
+#: sharing the object is what keeps the stamp and the spawn from
+#: disagreeing about which model the seat is on.
+_KIND_MODEL = Key(
+    "per-pipeline model override; unset = the provider adapter's own "
+    "default", env="ASTERISM_{KIND}_MODEL")
+_KIND_PROVIDER = Key(
+    "per-pipeline LLM provider", default="claude",
+    env="ASTERISM_{KIND}_PROVIDER", legacy_env=("ASTERISM_LLM_PROVIDER",))
+_KIND_EFFORT = Key(
+    "per-pipeline reasoning depth, codex only. claude carries no such "
+    "knob — its thinking budget is set per spawn from the wall-clock "
+    "budget.", default="xhigh", env="ASTERISM_{KIND}_REASONING_EFFORT")
+
 # ── CONFIG_SPEC — the key registry (task #10) ──────────────────────────
-# key → one-line doc "(env fallback; default)". `<kind>` is the dynamic
-# per-pipeline placeholder (builder/backward/forward/strategist/…).
+# key → Key(...). `<kind>` is the dynamic per-pipeline placeholder
+# (formalizer/strategist/librarian/…); a concrete `formalizer.model`
+# resolves against the `<kind>.model` row.
 # Adding a `config.get` call with a new key? Register it here — the drift
 # test fails otherwise (typo → silent-default is the bug class this
 # kills). Removing a call? Delete the entry (reverse direction fails too).
-CONFIG_SPEC: "dict[str, str]" = {
-    "dispatch.pool": "worker pool == gateway workers, 1:1 #118 (ASTERISM_POOL; 4)",
-    "ledger.idle_spares": "warm-pool idle spares above in-use slots — the pool follows demand, not the calm clock (ASTERISM_IDLE_SPARES; 4)",
-    "ledger.pressure_headroom_gb": "pressure band: pause dispatch when the cgroup footprint climbs within this many GB of the budget — scale DOWN on small-budget machines (ASTERISM_PRESSURE_HEADROOM_GB; 8.0)",
-    "ledger.pressure_release_slack_gb": "pressure band: extra calm below the pause line before dispatch resumes (ASTERISM_PRESSURE_RELEASE_SLACK_GB; 4.0)",
-    "dispatch.ram_budget": "adaptive RAM ledger budget, '28G' or '85%' — splits the worker economy: Lean slots follow target_slots(budget - NL reserve), NL kinds admit on measured available RAM; unset = legacy static dispatch.pool semantics (ASTERISM_RAM_BUDGET; '')",
-    "dispatch.blocked_kinds": "operator hold — comma list of queue kinds this machine must not dispatch, e.g. 'Formalizer,Librarian'; unknown names are ignored, so a typo holds nothing (ASTERISM_BLOCKED_KINDS; '')",
-    "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
-    "dispatch.intake_timeout_sec": "Formalizer intake turn spawn cap (ASTERISM_INTAKE_TIMEOUT_SEC; 300)",
-    "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
-    "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree OR Asterism.yaml/.env changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
-    "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; false — riding further windows is opt-in, user 2026-07-18)",
-    "dispatch.spawn_timeout_sec": "main spawn SIGKILL cap (ASTERISM_SPAWN_TIMEOUT_SEC; 900)",
-    "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
-    "dispatch.trap_check_sec": "watchdog thinking-trap check point (ASTERISM_TRAP_CHECK_SEC; 660)",
-    "dispatch.silence_threshold_sec": "watchdog silence AND-condition (ASTERISM_SILENCE_THRESHOLD_SEC; 300)",
-    "dispatch.silent_kill_sec": "watchdog silent-kill: joint silence on BOTH clocks that kills without a trap signature (ASTERISM_SILENT_KILL_SEC; 2400; 0=off)",
-    "dispatch.completion_grace_sec": "watchdog completion-reclaim grace (ASTERISM_COMPLETION_GRACE_SEC; 120)",
-    "dispatch.classify_trap_cap_sec": "librarian classify trap cap ceiling (3600)",
-    "dispatch.classify_trap_per_decl_sec": "classify trap budget per kept decl (12)",
-    "gateway.port": "LSP gateway HTTP port (ASTERISM_GATEWAY_PORT; 8765)",
-    "gateway.interactive_slots": "reserved gateway slots for the serve UI editor (ASTERISM_INTERACTIVE_SLOTS; 1)",
-    "gateway.lean_memory_cap_mb": "per-process commit cap on the lake/lean tree via Job Object, 0 disables (ASTERISM_LEAN_MEMORY_CAP_MB; 8192)",
-    "gateway.slot_recycle_mb": "private-bytes above which an IDLE, UNCLAIMED slot restarts its worker; far below the job cap on purpose — that one caps one elaboration, this one caps accumulation across many (ASTERISM_SLOT_RECYCLE_MB; 1500)",
-    "strategist.interval_min": "T1 routine wake cadence (ASTERISM_STRATEGIST_INTERVAL_MIN; 120.0)",
-    "strategist.verify_retry": "strategist verify/Adversary revision rounds per wake (ASTERISM_STRATEGIST_VERIFY_RETRY; 6)",
-    "strategist.timeout_sec": "strategist wake spawn cap — hang guard, not a work budget (ASTERISM_STRATEGIST_TIMEOUT_SEC; 10800)",
-    "adversary.provider": "judge seat backend — spawn resolution + provenance stamp (survey P1, 2026-08-29)",
-    "adversary.model": "judge seat model — spawn resolution + provenance stamp (survey P1)",
-    "adversary.reasoning_effort": "judge effort knob (codex seats) — also stamped into provenance (survey P1)",
-    "adversary.timeout_sec": "adversary spawn cap — hang guard, not a work budget (ASTERISM_ADVERSARY_TIMEOUT_SEC; 7200)",
-    "theorist.timeout_sec": "theory author spawn cap — hang guard, not a work budget (ASTERISM_THEORIST_TIMEOUT_SEC; 10800)",
-    "theorist.rounds": "revision rounds a fired theory verdict may buy, on the author's own session (ASTERISM_THEORIST_ROUNDS; 3)",
-    "theory_reviewer.timeout_sec": "theory reviewer spawn cap — hang guard, not a work budget (ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC; 7200)",
-    "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
-    "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",
-    "feedback.enabled": "dev-mode agent feedback questionnaire (ASTERISM_FEEDBACK_ENABLED; False)",
-    "presearch.enabled": "target-1 per-node pre-search toggle (True)",
-    "presearch.timeout_sec": "pre-search agent budget (ASTERISM_PRESEARCH_TIMEOUT_SEC)",
-    "library.require_signoff": "Ingest pauses for approve-ingest (True)",
-    "paper_index.timeout_sec": "paper-map one-shot spawn budget (1200)",
-    "explainer.model": "serve chat-explainer spawn model (teammate serve/chat.py; registered here to keep the drift gate green)",
-    "explainer.idle_sec": "Assistant turn IDLE deadline — seconds of SILENCE from the explainer before the turn is killed, not a budget for the whole answer; also agy's --print-timeout, which has no stream and whose whole-answer clock IS its idle clock (ASTERISM_EXPLAINER_IDLE_SEC; 600)",
-    "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
-    "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
-    "<kind>.reasoning_effort": "per-pipeline reasoning depth, codex only (ASTERISM_<KIND>_REASONING_EFFORT; 'xhigh'). claude carries no such knob — its thinking budget is set per spawn from the wall-clock budget.",
-    "zen.base_url": "zen-flavor codex upstream — the local shim that translates /responses to OpenRouter and self-executes tools (ASTERISM_ZEN_BASE_URL; http://127.0.0.1:8898/v1)",
-    "zen.api_key": "yaml fallback for the zen seat's key when OPENCODE_ZEN_API_KEY is unset; the shim itself reads OPENROUTER_API_KEY from .env (OPENCODE_ZEN_API_KEY; '')",
+CONFIG_SPEC: "dict[str, Key]" = {
+    "dispatch.pool": Key(
+        "worker pool == gateway workers, 1:1 #118",
+        4, int, "ASTERISM_POOL"),
+    "ledger.idle_spares": Key(
+        "warm-pool idle spares above in-use slots — the pool follows "
+        "demand, not the calm clock",
+        4, int, "ASTERISM_IDLE_SPARES"),
+    "ledger.pressure_headroom_gb": Key(
+        "pressure band: pause dispatch when the cgroup footprint climbs "
+        "within this many GB of the budget — scale DOWN on small-budget "
+        "machines",
+        8.0, float, "ASTERISM_PRESSURE_HEADROOM_GB"),
+    "ledger.pressure_release_slack_gb": Key(
+        "pressure band: extra calm below the pause line before dispatch "
+        "resumes",
+        4.0, float, "ASTERISM_PRESSURE_RELEASE_SLACK_GB"),
+    "dispatch.ram_budget": Key(
+        "adaptive RAM ledger budget, '28G' or '85%' — splits the worker "
+        "economy: Lean slots follow target_slots(budget - NL reserve), NL "
+        "kinds admit on measured available RAM; unset = legacy static "
+        "dispatch.pool semantics",
+        "", None, "ASTERISM_RAM_BUDGET"),
+    "dispatch.blocked_kinds": Key(
+        "operator hold — comma list of queue kinds this machine must not "
+        "dispatch, e.g. 'Formalizer,Librarian'; unknown names are ignored, "
+        "so a typo holds nothing",
+        "", None, "ASTERISM_BLOCKED_KINDS"),
+    "dispatch.budget_sec": Key(
+        "daemon wall budget", 1800, int, "ASTERISM_BUDGET_SEC"),
+    "dispatch.intake_timeout_sec": Key(
+        "Formalizer intake turn spawn cap",
+        300, int, "ASTERISM_INTAKE_TIMEOUT_SEC"),
+    "dispatch.shelve_threshold": Key(
+        "attempts before shelve", 8, int, "ASTERISM_SHELVE_THRESHOLD"),
+    "dispatch.handoff_on_code_change": Key(
+        "daemon drains + hands off to a fresh daemon when the source tree "
+        "OR Asterism.yaml/.env changes under it",
+        True, None, "ASTERISM_HANDOFF_ON_CODE_CHANGE"),
+    "dispatch.quota_wait": Key(
+        "confirmed-exhausted subscription window pauses dispatch until "
+        "resets_at instead of exiting (off: riding further windows is "
+        "opt-in, user 2026-07-18)",
+        False, None, "ASTERISM_QUOTA_WAIT"),
+    # 900s = 15 min. Phase 2 LSP cantor_xi had six spawns hit the prior
+    # 600s wall while making real progress; fewer-but-longer spawns
+    # paired with the shelve threshold keep the cost of a stuck goal
+    # bounded. The production Asterism.yaml overrides it to 1800 (the
+    # 2026-08-11 union_closed reading: 29 of 55 goal-level deaths were
+    # the clock, not the mathematics) — the yaml is where that decision
+    # lives, and every reader now derives from the resolved value.
+    "dispatch.spawn_timeout_sec": Key(
+        "main spawn SIGKILL cap",
+        900, int, "ASTERISM_SPAWN_TIMEOUT_SEC"),
+    # 180s: the postmortem --resumes the dead session and writes a short
+    # state + blocker note. 120 was empirically too tight to write a
+    # usable note on dense root-level state.
+    "dispatch.postmortem_timeout_sec": Key(
+        "postmortem spawn cap",
+        180, int, "ASTERISM_POSTMORTEM_TIMEOUT_SEC"),
+    "dispatch.trap_check_sec": Key(
+        "watchdog thinking-trap check point",
+        660, int, "ASTERISM_TRAP_CHECK_SEC"),
+    "dispatch.silence_threshold_sec": Key(
+        "watchdog silence AND-condition",
+        300, int, "ASTERISM_SILENCE_THRESHOLD_SEC"),
+    "dispatch.silent_kill_sec": Key(
+        "watchdog silent-kill: joint silence on BOTH clocks that kills "
+        "without a trap signature; 0=off",
+        2400, int, "ASTERISM_SILENT_KILL_SEC"),
+    "dispatch.completion_grace_sec": Key(
+        "watchdog completion-reclaim grace",
+        20, int, "ASTERISM_COMPLETION_GRACE_SEC"),
+    "dispatch.classify_trap_cap_sec": Key(
+        "librarian classify trap cap ceiling", 2400, int),
+    "dispatch.classify_trap_per_decl_sec": Key(
+        "classify trap budget per kept decl", 4, int),
+    "gateway.port": Key(
+        "LSP gateway HTTP port", 8765, int, "ASTERISM_GATEWAY_PORT"),
+    "gateway.interactive_slots": Key(
+        "reserved gateway slots for the serve UI editor",
+        1, int, "ASTERISM_INTERACTIVE_SLOTS"),
+    "gateway.lean_memory_cap_mb": Key(
+        "per-process commit cap on the lake/lean tree via Job Object, "
+        "0 disables",
+        8192, int, "ASTERISM_LEAN_MEMORY_CAP_MB"),
+    "gateway.slot_recycle_mb": Key(
+        "private-bytes above which an IDLE, UNCLAIMED slot restarts its "
+        "worker; far below the job cap on purpose — that one caps one "
+        "elaboration, this one caps accumulation across many",
+        1500, int, "ASTERISM_SLOT_RECYCLE_MB"),
+    "strategist.interval_min": Key(
+        "T1 routine wake cadence",
+        120.0, float, "ASTERISM_STRATEGIST_INTERVAL_MIN"),
+    "strategist.verify_retry": Key(
+        "strategist verify/Adversary revision rounds per wake",
+        6, int, "ASTERISM_STRATEGIST_VERIFY_RETRY"),
+    "strategist.timeout_sec": Key(
+        "strategist wake spawn cap — hang guard, not a work budget",
+        10800, int, "ASTERISM_STRATEGIST_TIMEOUT_SEC"),
+    # The judge seat, read by literal name for the verdict's provenance
+    # stamp (survey P1, 2026-08-29) as well as by the spawn resolver.
+    "adversary.provider": _KIND_PROVIDER,
+    "adversary.model": _KIND_MODEL,
+    "adversary.reasoning_effort": _KIND_EFFORT,
+    "adversary.timeout_sec": Key(
+        "adversary spawn cap — hang guard, not a work budget",
+        7200, int, "ASTERISM_ADVERSARY_TIMEOUT_SEC"),
+    "theorist.timeout_sec": Key(
+        "theory author spawn cap — hang guard, not a work budget",
+        10800, int, "ASTERISM_THEORIST_TIMEOUT_SEC"),
+    "theorist.rounds": Key(
+        "revision rounds a fired theory verdict may buy, on the author's "
+        "own session",
+        3, int, "ASTERISM_THEORIST_ROUNDS"),
+    "theory_reviewer.timeout_sec": Key(
+        "theory reviewer spawn cap — hang guard, not a work budget",
+        7200, int, "ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC"),
+    "verify.olean_warm": Key(
+        "background olean warmer kill switch #103",
+        True, None, "ASTERISM_OLEAN_WARM"),
+    "lessons.reflection_enabled": Key(
+        "reflection spawn kill switch",
+        True, None, "ASTERISM_LESSONS_REFLECTION_ENABLED"),
+    "feedback.enabled": Key(
+        "dev-mode agent feedback questionnaire",
+        False, None, "ASTERISM_FEEDBACK_ENABLED"),
+    "presearch.enabled": Key(
+        "target-1 per-node pre-search toggle",
+        True, None, "ASTERISM_PRESEARCH_ENABLED"),
+    # No cast: the reader owns the coercion because it also owns the
+    # 60s floor and the fall-back-to-default on a malformed value.
+    "presearch.timeout_sec": Key(
+        "pre-search agent budget",
+        420, None, "ASTERISM_PRESEARCH_TIMEOUT_SEC"),
+    "library.require_signoff": Key(
+        "Ingest pauses for approve-ingest", True),
+    "paper_index.timeout_sec": Key(
+        "paper-map one-shot spawn budget", 1200, int),
+    "explainer.model": Key(
+        "serve chat-explainer spawn model (teammate serve/chat.py); "
+        "unset = the chosen explainer backend's own default",
+        env="ASTERISM_EXPLAINER_MODEL"),
+    "explainer.idle_sec": Key(
+        "Assistant turn IDLE deadline — seconds of SILENCE from the "
+        "explainer before the turn is killed, not a budget for the whole "
+        "answer; also agy's --print-timeout, which has no stream and "
+        "whose whole-answer clock IS its idle clock",
+        600, int, "ASTERISM_EXPLAINER_IDLE_SEC"),
+    "<kind>.model": _KIND_MODEL,
+    "<kind>.provider": _KIND_PROVIDER,
+    "<kind>.reasoning_effort": _KIND_EFFORT,
+    "zen.base_url": Key(
+        "zen-flavor codex upstream — the local shim that translates "
+        "/responses to OpenRouter and self-executes tools",
+        "http://127.0.0.1:8898/v1", None, "ASTERISM_ZEN_BASE_URL"),
+    "zen.api_key": Key(
+        "yaml fallback for the zen seat's key when OPENCODE_ZEN_API_KEY "
+        "is unset; the shim itself reads OPENROUTER_API_KEY from .env",
+        "", None, "OPENCODE_ZEN_API_KEY"),
 }
+
+
+def _spec_for(key_path: str) -> "Key | None":
+    """The registry row a key resolves against — its own, or the
+    `<kind>.<leaf>` family row for the per-pipeline keys (there is no
+    `formalizer.model` row; there is one row for every seat)."""
+    spec = CONFIG_SPEC.get(key_path)
+    if spec is not None:
+        return spec
+    _, dot, leaf = key_path.partition(".")
+    return CONFIG_SPEC.get(f"<kind>.{leaf}") if dot else None
+
+
+def spec_default(key_path: str) -> Any:
+    """The registry's default for a key.
+
+    For the handful of module constants that ARE a key's default and are
+    ALSO read for something else (`ram_ledger.SLOT_RECYCLE_MB_DEFAULT`
+    prices a slot as well as seeding the knob): they read it from here
+    instead of restating the number, so the constant cannot drift away
+    from what an unset key resolves to."""
+    spec = _spec_for(key_path)
+    return spec.default if spec is not None else None
+
+
+def _env_name(key_path: str, spec: "Key | None") -> "str | None":
+    """The env var this key reads, with `{KIND}` filled in from the
+    key's own first segment."""
+    if spec is None or not spec.env:
+        return None
+    if "{KIND}" not in spec.env:
+        return spec.env
+    return spec.env.replace("{KIND}", key_path.split(".", 1)[0].upper())
+
 
 # Module-level cache so reading the file once per daemon-run avoids
 # repeated yaml.safe_load() on hot paths (every spawn_llm reads model;
@@ -205,23 +405,50 @@ def _env(name: str, workspace: "Path | None") -> "str | None":
     return v if v else None
 
 
+#: "the caller said nothing", as distinct from "the caller said None"
+#: — `default=None` is a real answer for the model keys, so the two
+#: cannot share a sentinel.
+_UNSET: Any = object()
+
+
 def get(
     key_path: str,
     *,
-    default: Any = None,
-    env_var: str | None = None,
-    legacy_env: Sequence[str] = (),
-    cast: Callable[[str], Any] | None = None,
+    default: Any = _UNSET,
+    env_var: "str | None" = _UNSET,
+    legacy_env: Sequence[str] = _UNSET,
+    cast: "Callable[[str], Any] | None" = _UNSET,
     workspace: Path | None = None,
 ) -> Any:
     """Resolve a single field via env → yaml → legacy_env → default.
 
     `key_path`: dotted path into Asterism.yaml, e.g. 'dispatch.pool'.
+
+    Everything else comes from CONFIG_SPEC by default, and a registered
+    key should be READ AS `get(key)` — the whole point of the registry
+    is that the default, the cast and the env var are properties of the
+    KEY, not of whoever happens to be reading it. The arguments remain
+    for the two cases a registry cannot cover: a provider-specific
+    compat alias (`legacy_env`), and a test pinning a value explicitly.
+    `tests/test_config_call_sites.py` holds production callers to the
+    registry.
+
     `cast`: applied to env-var strings AND yaml values (in case yaml
-            stores e.g. '4' as a string). None means no transform.
+            stores e.g. '4' as a string). None means no transform; the
+            default is never cast (it is already the right type).
     `legacy_env`: ordered list of additional env vars consulted after
                   yaml but before default; first non-empty wins.
     """
+    spec = _spec_for(key_path)
+    if default is _UNSET:
+        default = spec.default if spec is not None else None
+    if cast is _UNSET:
+        cast = spec.cast if spec is not None else None
+    if env_var is _UNSET:
+        env_var = _env_name(key_path, spec)
+    if legacy_env is _UNSET:
+        legacy_env = spec.legacy_env if spec is not None else ()
+
     # 1. primary env var (process env, then the workspace .env file)
     if env_var:
         v = _env(env_var, workspace)
@@ -490,34 +717,18 @@ _STR_VALIDATORS: "dict[str, Callable[[str], tuple[str, str | None]]]" = {
     **{f"{_s}.reasoning_effort": _check_effort for _s in UI_SEATS},
 }
 
-#: the env var the ENGINE reads for a key. `resolved` claims to be
-#: "what a run would actually use", and the env var is the top of that
-#: chain — a row that skips it shows the yaml while the daemon runs on
-#: the environment, which is two answers to one question. The `.model`
-#: / `.provider` rows have resolved this way since 2026-08-14; the
-#: dispatch knobs joined them 2026-09-03.
-_UI_ENV_VAR = {
-    "dispatch.pool": "ASTERISM_POOL",
-    "ledger.idle_spares": "ASTERISM_IDLE_SPARES",
-    "dispatch.budget_sec": "ASTERISM_BUDGET_SEC",
-    "dispatch.shelve_threshold": "ASTERISM_SHELVE_THRESHOLD",
-    "dispatch.quota_wait": "ASTERISM_QUOTA_WAIT",
-    "dispatch.blocked_kinds": "ASTERISM_BLOCKED_KINDS",
-    "dispatch.ram_budget": "ASTERISM_RAM_BUDGET",
-}
-
-#: engine-side defaults for UI bool keys (must mirror the reader's
-#: `config.get(..., default=…)` — the Settings select shows what a run
-#: would actually do when the key is unset)
-_UI_BOOL_DEFAULTS = {
-    "dispatch.quota_wait": False,  # riding further windows is opt-in
-}
-
-
 def ui_settings(workspace: Path) -> "list[dict[str, object]]":
     """Snapshot of every UI-editable key: yaml value (None = unset) +
     resolved value (env > yaml > default chain, i.e. what a run would
-    actually use)."""
+    actually use).
+
+    "What a run would actually use" is a claim only CONFIG_SPEC can
+    make good on, so every row here resolves through the bare
+    `get(key)` the engine itself uses. This page used to keep its own
+    env-var table beside the registry's, and the copy had holes: a
+    `.model` row read the yaml while the daemon ran on
+    ASTERISM_<SEAT>_MODEL — two answers to one question, on the page
+    whose whole job is answering it."""
     _reset_cache()
     data = load(workspace)
     out: list[dict[str, object]] = []
@@ -525,17 +736,7 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
         cur: object = data
         for part in key.split("."):
             cur = cur.get(part) if isinstance(cur, dict) else None
-        resolved = get(key, workspace=workspace,
-                       env_var=_UI_ENV_VAR.get(key),
-                       cast=int if typ is int else None)
-        if key.endswith(".provider"):
-            # resolve it the way the ENGINE resolves it, or this row and
-            # the model row beside it — which asks with the default —
-            # would disagree about the same seat on the same page
-            resolved = get(key,
-                           env_var=f"ASTERISM_{key.split('.')[0].upper()}_PROVIDER",
-                           legacy_env=("ASTERISM_LLM_PROVIDER",),
-                           default="claude", workspace=workspace)
+        resolved = get(key, workspace=workspace)
         if typ is bool and resolved is not None:
             # env/.env supplies a string, yaml a real bool — one shape out
             resolved = str(resolved).strip().lower() in (
@@ -559,10 +760,7 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             # the very failure a select was introduced to prevent, one
             # level up (2026-08-14).
             seat = key.split(".", 1)[0]
-            prov = get(f"{seat}.provider",
-                       env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
-                       legacy_env=("ASTERISM_LLM_PROVIDER",),
-                       default="claude", workspace=workspace)
+            prov = get(f"{seat}.provider", workspace=workspace)
             choices = models_for(prov)
             # the resolved value (env/yaml may name anything) is always
             # a legal choice — never render a select that can't show
@@ -574,31 +772,20 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             row["choices"] = choices
             row["provider"] = prov
         elif key.endswith(".reasoning_effort"):
-            # resolved the way the ENGINE resolves it (llm/codex_cli
-            # `_resolve_effort`), and marked with whether the seat's
-            # CURRENT backend reads it at all — a control that does
-            # nothing is a promise the page must not make silently
+            # marked with whether the seat's CURRENT backend reads the
+            # knob at all — a control that does nothing is a promise the
+            # page must not make silently
             seat = key.split(".", 1)[0]
-            from ..llm.codex_cli import DEFAULT_REASONING_EFFORT
-            resolved = get(key,
-                           env_var=f"ASTERISM_{seat.upper()}_REASONING_EFFORT",
-                           default=DEFAULT_REASONING_EFFORT,
-                           workspace=workspace)
-            prov = get(f"{seat}.provider",
-                       env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
-                       legacy_env=("ASTERISM_LLM_PROVIDER",),
-                       default="claude", workspace=workspace)
-            row["resolved"] = resolved
+            prov = get(f"{seat}.provider", workspace=workspace)
             row["choices"] = list(EFFORT_CHOICES)
             row["provider"] = prov
             row["applies"] = reads_effort(prov)
         elif typ is bool:
             # booleans render as a two-way select, never a free-text box.
-            # Unset resolves to the ENGINE's default (mirrored below) —
-            # showing "false" for an engine that defaults true is a lie.
+            # Unset resolves to the ENGINE's default (CONFIG_SPEC's, the
+            # one the run reads) — showing "false" for an engine that
+            # defaults true is a lie.
             row["choices"] = ["true", "false"]
-            if resolved is None:
-                resolved = _UI_BOOL_DEFAULTS.get(key, False)
             row["resolved"] = "true" if resolved else "false"
         out.append(row)
     return out

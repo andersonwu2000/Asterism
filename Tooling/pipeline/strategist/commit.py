@@ -852,7 +852,7 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
                             f"library:false — opted out of Library; "
                             f"no harvest")
     require_signoff = (not signoff_optout) and _as_bool(_config.get(
-        "library.require_signoff", default=True, workspace=workspace))
+        "library.require_signoff", workspace=workspace))
 
     # Terminal stamp + gate flag: one atomic publication. Even when the
     # problem opts out of harvest the Strategist's terminal judgment
