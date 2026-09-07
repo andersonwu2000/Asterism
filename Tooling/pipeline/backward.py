@@ -733,7 +733,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     from ._hooks import make_goal_hooks
     (backward_postmortem, backward_reflection,
-     backward_feedback, backward_death) = make_goal_hooks(
+     backward_death) = make_goal_hooks(
         # label `backward`; the work spawn below is dispatched as
         # `formalizer`, and the tail turns resume ITS session.
         kind="backward", seat="formalizer",
@@ -897,7 +897,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 parse_fn=backward_parse,
                 postmortem_fn=backward_postmortem,
                 reflection_fn=backward_reflection,
-                feedback_fn=backward_feedback,
                 death_fn=backward_death,
                 decision_id=decision_id,
                 initial_sid=intake_sid,

@@ -59,9 +59,9 @@ from .leantext import (
     _summarize_goal,
 )
 from .server import _offload_to_thread, mcp
-from .terse import _cap_region, _terse_report
 from .sessions import _acquire_slot, _current_session
 from .state import SessionMetadata, _log_for, _state, _ts_now
+from .terse import _cap_region, _terse_report
 from .wall import (  # noqa: F401 — re-exported: verify/__init__ bind rpc.<name>
     _await_elaboration,
     _elab_wall_for,
