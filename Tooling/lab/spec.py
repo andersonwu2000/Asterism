@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import LabError, docs_dir
 
@@ -77,7 +78,16 @@ from .continuity import ARM_KEYS as _CONTINUITY_ARM_KEYS  # noqa: E402
 DRIVER_KINDS.update(_CONTINUITY_ARM_KEYS)
 
 #: Arm keys every kind takes.
-_COMMON_ARM_KEYS = ("kind", "prompts", "seats", "notes")
+#:
+#: `config:` is the third overlay, beside `prompts:` and `seats:`, and
+#: it exists because the two that came first cannot express a framework
+#: FLAG. A behaviour shipped behind `<section>.<key>` in `Asterism.yaml`
+#: — `adversary.dossier`, say — is exactly the kind of thing an arm is
+#: for, and without this the only ways to move one were to edit the
+#: workspace by hand between build and run (invisible in the record, and
+#: `prompt_hashes` exists precisely because that class of edit is
+#: invisible) or to fork a prompt file that is not what changed.
+_COMMON_ARM_KEYS = ("kind", "prompts", "seats", "config", "notes")
 
 #: What `stop:` may say. `once` (the default) is the daemon's own
 #: "exit when the queue empties"; these are the conditions a run that
@@ -98,6 +108,9 @@ class Arm:
     #: `<seat>` -> `provider/model[:effort]`, written into the
     #: workspace's own `Asterism.yaml`.
     seats: "dict[str, str]" = field(default_factory=dict)
+    #: `<dotted Asterism.yaml key>` -> value, merged into the
+    #: workspace's own `Asterism.yaml` beside the seats.
+    config: "dict[str, Any]" = field(default_factory=dict)
     #: The kind's own inputs, already validated for that kind.
     options: dict = field(default_factory=dict)
 
@@ -150,6 +163,30 @@ def _seat_spec(seat: str, raw: str) -> "dict[str, str]":
     return out
 
 
+def config_spec(where: str, raw) -> "dict[str, Any]":
+    """`{"adversary.dossier": "inline"}` — checked here, applied by
+    `build._apply_overlay`.
+
+    Keys are DOTTED paths into `Asterism.yaml`, spelled the way
+    `core.config.get` reads them, so an arm names the flag by the same
+    string the production code does and nobody has to translate a
+    section/key pair back and forth. A bare key with no dot is refused:
+    every knob the framework reads lives under a section, so a dotless
+    one is a typo that would land a top-level key nothing ever reads and
+    let the arm report green on the setting it meant to change."""
+    out: "dict[str, Any]" = {}
+    for key, value in dict(raw or {}).items():
+        text = str(key).strip()
+        if not text or "." not in text or text.startswith(".") \
+                or text.endswith(".") or ".." in text:
+            raise LabError(
+                f"{where}: config key {key!r} is not a dotted "
+                f"`<section>.<key>` path into Asterism.yaml (e.g. "
+                f"`adversary.dossier: inline`)")
+        out[text] = value
+    return out
+
+
 def _refuse_unknown(where: str, got, allowed: "tuple[str, ...]") -> None:
     extra = sorted(set(got) - set(allowed))
     if extra:
@@ -180,11 +217,12 @@ def _parse_arm(name: str, raw: dict, base: Path) -> Arm:
         prompts[str(rel).replace("\\", "/").lstrip("/")] = path
     seats = {str(k): _seat_spec(str(k), v)
              for k, v in dict(raw.get("seats") or {}).items()}
+    config = config_spec(f"arm {name!r}", raw.get("config"))
 
     options = {k: raw[k] for k in DRIVER_KINDS[kind] if k in raw}
     _check_options(name, kind, options, base)
     return Arm(name=name, kind=kind, prompts=prompts, seats=seats,
-               options=options)
+               config=config, options=options)
 
 
 def _check_options(name: str, kind: str, opts: dict, base: Path) -> None:
@@ -259,14 +297,40 @@ def check_judge_source(name: str, opts: dict, base: Path) -> None:
         raise LabError(
             f"{name}: `rows:` is a list of programme_revisions ids "
             f"(integers), one Adversary round each")
+    # `proposal:` takes a LIST too, one round each — the same shape
+    # `rows:` has always had, and for the same reason: two rounds of one
+    # debate are one arm's question, and splitting them across two arms
+    # would put the variable under test (whatever the arms differ in)
+    # and the round number on the same axis.
+    if rows and isinstance(opts.get("decisions"), list):
+        raise LabError(
+            f"{name}: with `rows:`, `decisions:` is ONE file — the "
+            f"override applied to every replayed revision. A list of "
+            f"decisions belongs with a list of `proposal:` files")
+    # An EMPTY `proposal:` list is already refused above — it is falsy,
+    # so it reads as "no proposal at all", which is what it is.
+    n_props = len(proposal) if isinstance(proposal, list) else 0
+    if isinstance(opts.get("decisions"), list) \
+            and len(opts["decisions"]) != n_props:
+        raise LabError(
+            f"{name}: {len(opts['decisions'])} `decisions:` file(s) for "
+            f"{n_props} `proposal:` file(s) — they are paired positionally, "
+            f"one decisions.json per proposal, and a mismatch would judge "
+            f"a proposal against another round's batch")
     for key in ("proposal", "decisions"):
-        if opts.get(key):
-            path = (base / str(opts[key])).resolve()
+        raw = opts.get(key)
+        if not raw:
+            continue
+        many = isinstance(raw, list)
+        out: "list[str]" = []
+        for entry in (raw if many else [raw]):
+            path = (base / str(entry)).resolve()
             if not path.is_file():
                 raise LabError(
                     f"{name}: no {key} file at {path} — a judge round's "
                     f"inputs are resolved beside the file that names them")
-            opts[key] = str(path)
+            out.append(str(path))
+        opts[key] = out if many else out[0]
 
 
 def with_seats(exp: Experiment, seats: "dict[str, str]") -> Experiment:
@@ -276,12 +340,33 @@ def with_seats(exp: Experiment, seats: "dict[str, str]") -> Experiment:
     on this model", and an arm that pinned the same seat pinned it for
     the experiment's own question, not for this one. MERGED rather than
     replacing, so an arm that moves a DIFFERENT seat keeps it — the
-    same rule `_apply_seats` follows against the archived config."""
+    same rule `_apply_overlay` follows against the archived config."""
     if not seats:
         return exp
     over = {str(k): _seat_spec(str(k), v) for k, v in seats.items()}
-    arms = {name: Arm(name=a.name, kind=a.kind, prompts=a.prompts,
-                      seats={**a.seats, **over}, options=a.options)
+    return _with_arms(exp, lambda a: {"seats": {**a.seats, **over}})
+
+
+def with_config(exp: Experiment, config: "dict[str, Any]") -> Experiment:
+    """`exp` with `config` merged over every arm's — `--config` is the
+    operator saying "this whole run, with this flag", the same way
+    `--seats` says "on this model", and it wins over an arm's own for
+    the same reason."""
+    if not config:
+        return exp
+    over = config_spec("--config", config)
+    return _with_arms(exp, lambda a: {"config": {**a.config, **over}})
+
+
+def _with_arms(exp: Experiment, patch) -> Experiment:
+    """`exp` with `patch(arm)`'s fields replaced on every arm. One
+    rebuilder, because `Arm` and `Experiment` are frozen and a second
+    hand-written copy of their fields is one that silently drops the
+    field added next."""
+    arms = {name: Arm(**{"name": a.name, "kind": a.kind,
+                         "prompts": a.prompts, "seats": a.seats,
+                         "config": a.config, "options": a.options,
+                         **patch(a)})
             for name, a in exp.arms.items()}
     return Experiment(name=exp.name, path=exp.path, snapshot=exp.snapshot,
                       rewind=exp.rewind, code_commit=exp.code_commit,

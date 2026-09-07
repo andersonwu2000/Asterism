@@ -643,3 +643,25 @@ def test_an_unknown_target_names_the_sets_and_items_there_are(tmp_path):
     with pytest.raises(LabError) as exc:
         std.run(tmp_path, "traps/nope", workspace=tmp_path / "live")
     assert "traps/cheap" in str(exc.value)
+
+
+def test_a_set_pins_a_config_flag_and_the_command_line_moves_it(tmp_path):
+    """`config:` inherits down like `seats:` do, so a set pins the flag
+    its items are measured under once rather than per item — and
+    `--config` moves it for one whole run, which is how the same set
+    answers "does this flag change the verdicts" without editing the
+    owner's table."""
+    body = _YAML.replace(
+        "    trigger: inject_batch_done\n",
+        "    trigger: inject_batch_done\n"
+        "    config: {adversary.dossier: files}\n")
+    _sets(tmp_path, body=body)
+    sets = std.load(tmp_path)
+    trap = sets.items[0]
+    assert trap.config == {"adversary.dossier": "files"}
+    assert sets.items[1].config == {}, "another set inherits nothing"
+    plain = std._experiment(sets, trap, None)
+    assert plain.arm(trap.arm).config == {"adversary.dossier": "files"}
+    moved = std._experiment(sets, trap, None,
+                            {"adversary.dossier": "inline"})
+    assert moved.arm(trap.arm).config == {"adversary.dossier": "inline"}

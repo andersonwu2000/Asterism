@@ -271,6 +271,171 @@ PROOFS_DIR_PLACEHOLDER = "{proofs_dir}"
 PAPERS_DIR_PLACEHOLDER = "{papers_dir}"
 
 
+# ---------------------------------------------------------------------
+# how the dossier reaches the judge (`adversary.dossier`)
+# ---------------------------------------------------------------------
+
+#: `files` — the prompt NAMES the projection's files and the judge opens
+#: what it wants. Every round the framework has ever run took this road,
+#: and it is the default.
+DOSSIER_FILES = "files"
+#: `inline` — the small always-read files ride IN the prompt, verbatim,
+#: and the big sparsely-read ones arrive as the table of contents the
+#: judge would otherwise buy with an `outline` call. Measured over 332
+#: gpt-era judge sessions (2026-09-07): 47.8 `inspect` reads per session,
+#: 31.7 of them on a file the same session had already read; 10 `outline`
+#: calls because the judge has no map; 14% of all tool-output bytes were
+#: whole-file re-reads. A judge round is ~14 turns and the cached re-send
+#: of a growing context is 43% of its cost, so a file read on turn 12
+#: has been re-sent eleven times by then, while the same bytes placed in
+#: the prompt are sent once and cached.
+DOSSIER_INLINE = "inline"
+DOSSIER_MODES = (DOSSIER_FILES, DOSSIER_INLINE)
+
+#: Inlined FIRST, in this order, and round-INVARIANT: the same bytes for
+#: every round of one debate. That is the whole reason the order is
+#: fixed rather than alphabetical or directory order — a provider caches
+#: a prompt by its prefix, so anything that changes between rounds has
+#: to sit after everything that does not, or round 2 pays full price for
+#: text round 1 already paid for.
+DOSSIER_INLINE_INVARIANT = ("contract.md", "charter.md", "user_word.md",
+                            "directive.md", "Root.lean", "Defs.lean",
+                            "PROGRAMME.md", "Context.md")
+#: Inlined after them, and round-VARYING: the proposal is rewritten
+#: every round and `since.md` grows as the record moves under the
+#: debate. `decisions.md` rides here rather than above because it is the
+#: proposal's other half — a reader comparing the two wants them
+#: adjacent, and it costs nothing: everything after the first changed
+#: byte is uncached anyway.
+DOSSIER_INLINE_TAIL = ("decisions.md", "proposal.md", "since.md")
+DOSSIER_INLINE_ORDER = DOSSIER_INLINE_INVARIANT + DOSSIER_INLINE_TAIL
+
+#: Mapped, not inlined. Each is big (TREE.md ~40K, ADJUDICATIONS.md
+#: ~30K, dialogue.md ~18K and growing, BATCHES.md ~10K) and read by a
+#: minority of rounds, so what rides is the OUTLINE — the headings, line
+#: ranges and sizes `inspect` would answer with — and the judge reads
+#: the one section its verdict turns on.
+DOSSIER_OUTLINED = ("TREE.md", "ADJUDICATIONS.md", "BATCHES.md",
+                    "dialogue.md")
+
+#: Not even outlined: CATALOG.md is hundreds of sections, so its map IS
+#: a roster and printing it would cost more than the file. What rides is
+#: the size and the way IN — which is exactly what `inspect` itself
+#: answers when asked for the whole map of a roster-sized file.
+DOSSIER_ROSTERS = ("CATALOG.md",)
+
+
+def dossier_mode() -> str:
+    """`files` (today) or `inline`, from `adversary.dossier`.
+
+    An unreadable value degrades to `files` with a printed line rather
+    than refusing: this runs inside a wake that already holds a finished
+    proposal, and a config typo must not be what discards it."""
+    from ..core import config
+    raw = str(config.get("adversary.dossier", default=DOSSIER_FILES,
+                         env_var="ASTERISM_ADVERSARY_DOSSIER")
+              or "").strip().lower()
+    if raw in DOSSIER_MODES:
+        return raw
+    print(f"[adversary] adversary.dossier={raw!r} is not one of "
+          f"{list(DOSSIER_MODES)} — running {DOSSIER_FILES!r}", flush=True)
+    return DOSSIER_FILES
+
+
+def _inline_block(name: str, path: Path) -> "list[str]":
+    """One dossier file as the judge reads it: its name, then its body
+    verbatim in a fence long enough to survive the backticks inside it.
+
+    No line numbers and no banner. The judge quotes this text back in
+    its verdict and the strategist is held to the quotation, so what
+    rides has to be the file's own bytes — the numbered, banner-wrapped
+    shape `inspect` returns is a rendering, and a rendering quoted as
+    evidence is how a citation stops being checkable."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    fence = _fence_for(text)
+    return [f"### {name}", fence, text.rstrip("\n"), fence, ""]
+
+
+def _outline_block(name: str, path: Path) -> "list[str]":
+    """One mapped file: its size, then the outline `inspect` answers
+    with — the same call, so the map in the prompt and the map the tool
+    returns cannot disagree."""
+    from ..knowledge import workspace_query as _wq
+    try:
+        lines = _wq.outline(path)
+        size = path.stat().st_size
+    except OSError as exc:                       # unreadable, not fatal
+        return [f"### {name}", f"(outline unavailable: {exc})", ""]
+    return ([f"### {name} — {size:,} bytes"] + list(lines) + [""])
+
+
+def _roster_block(name: str, path: Path) -> "list[str]":
+    """A roster-sized file: NO outline. Its map is longer than most of
+    the sections anyone wants out of it, so what rides is the way in."""
+    try:
+        size = f"{path.stat().st_size:,} bytes"
+    except OSError:
+        size = "size unknown"
+    return [f"### {name} — {size}",
+            f'A roster — too many sections to map. Name what you want: '
+            f'`inspect([{{"read": "{name}", "outline": true, '
+            f'"outline_prefix": "<prefix>"}}])` or `"outline_grep": '
+            f'"<regex>"` for the headings, `{{"grep": "<name>", "in": '
+            f'"{name}"}}` for one entry\'s text, `{{"decl": "<slug>"}}` '
+            f'for the record\'s own answer about a goal.', ""]
+
+
+def _dir_block(label: str, path: Path) -> "list[str]":
+    """A directory: how many entries, and the queries that reach into
+    it. Never a listing — `{proofs_dir}` is the landed proof files and
+    the judge wants the one file a dispute turns on, not their names."""
+    if not path.is_dir():
+        return [f"### {label} `{path.as_posix()}`",
+                "DOES NOT EXIST — do not probe it.", ""]
+    n = sum(1 for _ in path.iterdir())
+    return [f"### {label} `{path.as_posix()}` — {n} entr(ies)",
+            f'Not inlined and not mapped. `inspect([{{"grep": "<name>", '
+            f'"in": "{path.as_posix()}/*.lean"}}])`, `{{"find": '
+            f'"*<name>*"}}`, `{{"size": "{path.as_posix()}/*"}}`, or '
+            f'`{{"decl": "<slug>"}}` for the record\'s own answer.', ""]
+
+
+def dossier_sections(proj: Path, *, proofs_dir: Path,
+                     papers_dir: Path) -> str:
+    """`## Dossier (inline)` + `## Table of contents`, for `inline` mode.
+
+    Everything the judge is otherwise sent to `inspect` for, resolved by
+    the builder that already knows the answer. The two sections sit
+    BETWEEN the rubric and the per-spawn manifest: the rubric is the
+    same text for every problem, this is the same text for every round
+    of one debate down to `### decisions.md`, and the manifest is the
+    one part that is this spawn's alone."""
+    out: "list[str]" = [
+        "", "## Dossier (inline)", "",
+        "These files are here in full. They are the dossier — do not "
+        "open them, and do not spend a query re-reading one.", ""]
+    for name in DOSSIER_INLINE_ORDER:
+        p = proj / name
+        if p.is_file():
+            out += _inline_block(name, p)
+    out += ["## Table of contents (read on demand)", "",
+            "These are NOT inlined — they are big and most rounds need "
+            "one section of one of them. Read a section with "
+            '`inspect([{"read": "<file>", "sections": ["<heading>"]}])`; '
+            "the line ranges below are what that call answers from.", ""]
+    for name in DOSSIER_OUTLINED:
+        p = proj / name
+        if p.is_file():
+            out += _outline_block(name, p)
+    for name in DOSSIER_ROSTERS:
+        p = proj / name
+        if p.is_file():
+            out += _roster_block(name, p)
+    out += _dir_block("proofs dir", proofs_dir)
+    out += _dir_block("papers dir", papers_dir)
+    return "\n".join(out) + "\n"
+
+
 def build_projection(*, round_no: int, attempts_dir: Path,
                      problem_dir: Path, conn: sqlite3.Connection,
                      problem: str, proposal_body: str, decisions,
@@ -847,12 +1012,27 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
                   "for it)\n\nThe other paths the prompt names, and "
                   "which one of each to read:\n"
                 + "\n".join(_ext_lines) + "\n")
-    prompt_path.write_text(
-        prompt_src.read_text(encoding="utf-8")
-        .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
-        .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix())
-        + manifest,
-        encoding="utf-8")
+    # Rubric, then (in `inline` mode) the dossier and its table of
+    # contents, then the per-spawn manifest LAST — cheapest-to-cache
+    # first. In `files` mode the middle is empty and this is byte for
+    # byte the prompt every round has been written since the manifest
+    # landed; the `#if dossier_inline` block in the rubric is dropped by
+    # the template renderer on the flag below.
+    mode = dossier_mode()
+    rubric = (prompt_src.read_text(encoding="utf-8")
+              .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
+              .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix()))
+    dossier = (dossier_sections(proj, proofs_dir=proofs_dir,
+                                papers_dir=papers_dir)
+               if mode == DOSSIER_INLINE else "")
+    prompt_path.write_text(rubric + dossier + manifest, encoding="utf-8")
+    # BOTH names, always — the template renderer is fail-open, so a flag
+    # it is not given keeps its block, and passing only the true one
+    # would leave the other mode's wording in the prompt beside it (the
+    # `native_file_tools` / `mcp_only_reads` pair is the same shape and
+    # the same reason).
+    prompt_flags = {"dossier_inline": mode == DOSSIER_INLINE,
+                    "dossier_files": mode == DOSSIER_FILES}
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
     # produced no usable ruling twice is a wake-level failure), plus a
@@ -885,6 +1065,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             problem_dir=proj, attempts_dir=proj,
             session_id=sid, is_retry=bool(retry_ctx),
             retry_context=retry_ctx or None, timeout_sec=timeout_sec,
+            prompt_flags=prompt_flags,
             # Loogle over MCP, not a shell — the judge checks "Mathlib
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.

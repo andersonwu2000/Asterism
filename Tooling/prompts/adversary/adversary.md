@@ -9,6 +9,9 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 ## What you see 
 
+<!-- #if dossier_inline -->
+Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it there, do not open it — except `TREE.md`, `CATALOG.md`, `dialogue.md`, `{proofs_dir}` and `{papers_dir}`, which `## Table of contents (read on demand)` maps instead.
+<!-- #endif -->
 - `charter.md` — this group's charter: the claim this judgment settles. The fixed reference point — every "charter" and "MAIN claim" in the criteria mean it. Below it, the charters above this one (ancestral context) and those this chain already handed back; returned charters are context, not verdicts.
 - `user_word.md` (if present) — the user's standing directives, verbatim, binding for every group at every depth. Not part of the claim under judgment; a batch that plainly contradicts them fires criterion 1.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / shelved with anchoring) since it passed. **Check the candidate Argument's account against those results.**

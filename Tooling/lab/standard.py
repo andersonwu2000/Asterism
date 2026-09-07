@@ -68,7 +68,8 @@ SCORECARD_BASENAME = "scorecard.md"
 _TOP_KEYS = ("base", "sets", "notes")
 _BASE_KEYS = ("problems", "reuse_workspace_problems", "notes")
 #: What a set hands down to its items.
-_INHERITED = ("problem", "group", "trigger", "seats", "prompts")
+_INHERITED = ("problem", "group", "trigger", "seats", "prompts",
+              "config")
 _SET_KEYS = ("kind", "items", "expected", "notes") + _INHERITED
 _ITEM_KEYS = ("kind", "expected", "notes") + _INHERITED
 
@@ -116,6 +117,9 @@ class Item:
     expected_path: Path
     seats: "dict[str, dict]" = field(default_factory=dict)
     prompts: "dict[str, Path]" = field(default_factory=dict)
+    #: `<dotted Asterism.yaml key>` -> value. A set pins the flag its
+    #: items are measured under; `--config` moves it for one run.
+    config: "dict" = field(default_factory=dict)
     #: The problem lives in the LIVE workspace, so the scene has to be
     #: taken as a slice; a seeded one is already in the base.
     needs_slice: bool = False
@@ -328,6 +332,8 @@ def _parse_item(set_name: str, key: str, raw, defaults: dict, *,
     return Item(set_name=set_name, key=key, kind=kind, problem=problem,
                 options=options, expected=expected,
                 expected_path=expected_path, seats=seats, prompts=prompts,
+                config=_spec.config_spec(f"{path} {where}",
+                                         merged.get("config")),
                 needs_slice=needs_slice)
 
 
@@ -681,15 +687,20 @@ def cached_slice(root: Path, *, workspace: Path, problem: str):
 
 
 def _experiment(sets: StandardSets, item: Item,
-                seats: "dict[str, str] | None") -> _spec.Experiment:
+                seats: "dict[str, str] | None",
+                config: "dict | None" = None) -> _spec.Experiment:
     """A one-arm `Experiment` for this item, so the standard runner goes
     through the SAME build and record path an experiment does. A second
     builder would be a second definition of what a lab workspace is."""
     merged = dict(item.seats)
     for seat, raw in (seats or {}).items():
         merged[str(seat)] = _spec._seat_spec(str(seat), raw)
+    # `--config` over the item's own, the same way `--seats` goes over:
+    # the run-level flag is the operator asking THIS question of the
+    # whole set, and an item that pinned the key pinned it for its own.
+    cfg = {**item.config, **_spec.config_spec("--config", config)}
     arm = _spec.Arm(name=item.arm, kind=item.kind, prompts=dict(item.prompts),
-                    seats=merged, options=dict(item.options))
+                    seats=merged, config=cfg, options=dict(item.options))
     return _spec.Experiment(name=EXPERIMENT_NAME, path=sets.path,
                             snapshot=None, rewind=None, code_commit=None,
                             reps=1, arms={item.arm: arm})
@@ -710,7 +721,8 @@ def preflight(item: Item) -> None:
 
 
 def run(root: Path, target: str, *, workspace: Path,
-        seats: "dict[str, str] | None" = None, keep: bool = False,
+        seats: "dict[str, str] | None" = None,
+        config: "dict | None" = None, keep: bool = False,
         launch=None) -> "list[dict]":
     """Run and score every item `target` names. Returns one row each."""
     root = Path(root)
@@ -729,7 +741,7 @@ def run(root: Path, target: str, *, workspace: Path,
     for item in items:
         slice_ = (cached_slice(root, workspace=workspace, problem=item.problem)
                   if item.needs_slice else None)
-        exp = _experiment(sets, item, seats)
+        exp = _experiment(sets, item, seats, config)
         rep = _build.next_rep(root, EXPERIMENT_NAME, item.arm)
         kwargs = {} if launch is None else {"launch": launch}
         ws = _run.run_once(

@@ -347,6 +347,9 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
     # kept. Everything that reads the workspace is done by here: the
     # scorers read `_out/` and the record alone, by design
     # (`lab/standard.py` — "the workspace is gone by then").
+    # Read BEFORE the clear, like everything else the record needs: the
+    # workspace's own answer for the keys the arm declared.
+    config_read = _build.config_now(ws, getattr(arm, "config", None) or {})
     leftovers: "list[dict]" = []
     if not keep:
         # The workspace is throwaway BY DESIGN — "runs, then discarded;
@@ -376,8 +379,15 @@ def run_once(root: Path, exp, arm_name: str, *, slice_, base: Path,
         # named the experiment would be read against whichever version
         # of the file is on disk when somebody opens it.
         "options": arm.options,
-        "overlay": {"prompts": sorted(arm.prompts), "seats": arm.seats},
+        "overlay": {"prompts": sorted(arm.prompts), "seats": arm.seats,
+                    # What the arm ASKED for. What the workspace ended
+                    # up holding is `config_read` below, off the driver
+                    # — the same declaration-vs-reality split
+                    # `prompt_sha256` makes for the prompts.
+                    "config": dict(getattr(arm, "config", None) or {})},
         "prompt_sha256": hashes,
+        #: What the workspace HELD for the arm's `config:` keys.
+        "config_read": config_read,
         "seats": result.get("seats") or {},
         "usage": result.get("usage") or {},
         # How many things the agents said about the framework this run

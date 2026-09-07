@@ -559,9 +559,22 @@ def load_file_proposal(opts: dict) -> dict:
 
 def _judge_sources(spec: dict, opts: dict, problem: str) -> "list[dict]":
     """Every proposal this arm puts in front of the judge, in order —
-    one per `rows:` entry, or the single one `proposal:` names."""
+    one per `rows:` entry, or one per `proposal:` file.
+
+    `proposal:` takes a list as well as a single path (checked and
+    paired with `decisions:` in `spec.check_judge_source`), so the
+    rounds of one debate are one arm."""
     if opts.get("proposal"):
-        return [load_file_proposal(opts)]
+        props = opts["proposal"]
+        if not isinstance(props, list):
+            return [load_file_proposal(opts)]
+        decs = opts.get("decisions") or []
+        if not isinstance(decs, list):
+            decs = [decs] * len(props)
+        return [load_file_proposal({"proposal": p,
+                                    "decisions": (decs[i] if i < len(decs)
+                                                  else None)})
+                for i, p in enumerate(props)]
     source_db = Path(spec["source_db"])
     override = None
     if opts.get("decisions"):

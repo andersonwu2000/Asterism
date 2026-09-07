@@ -1038,6 +1038,25 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     return _render(1, len(lines))
 
 
+def outline(path: "Path | str") -> "list[str]":
+    """The map `inspect({"read": …, "outline": true})` returns for one
+    file — headings with their line ranges and sizes, or the roster form
+    when the file has more sections than an outline lists whole.
+
+    Public because a caller can hand the judge that map BEFORE it asks:
+    the Adversary's inline dossier ships the outline of the files it
+    does not inline (`pipeline/adversary.dossier_sections`). It is the
+    same call the agent would make, so what it reads in the prompt and
+    what the tool answers cannot drift — a second implementation there
+    would be a second definition of "this file's map".
+
+    Absolute path, no deny roots: the caller has already decided this
+    file is readable (it wrote it), and the read fence is a property of
+    a SPAWN's request, not of the framework rendering its own dossier."""
+    return _q_read({"read": str(path), "outline": True},
+                   Path(path).parent, ())
+
+
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
     pattern = str(q.get("find") or "*")
     #: What the reader actually typed as the search root — the string the

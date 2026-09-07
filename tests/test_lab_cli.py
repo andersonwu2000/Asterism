@@ -117,3 +117,37 @@ def test_gc_runs_through_the_cli(tmp_path, capsys):
                                             keep_latest=3))
     assert rc == 0
     assert "0 workspace(s) cleared" in capsys.readouterr().out
+
+
+def test_a_config_flag_is_registered_and_read_as_yaml(monkeypatch):
+    """`--config <section>.<key>=<value>` moves one `Asterism.yaml` flag
+    for a whole run, the way `--seats` moves a seat. The VALUE is read
+    as YAML, so `true` and `3` land as the bool and the int an
+    Asterism.yaml would have held — a config value written as the string
+    `"true"` is a different setting from the boolean, and the arm would
+    have no way to say which it meant."""
+    args = _parse(["lab", "run", "standard", "traps", "--root", "R",
+                   "--config", "adversary.dossier=inline",
+                   "--config", "dispatch.pool=3"], monkeypatch)
+    assert args.config == ["adversary.dossier=inline", "dispatch.pool=3"]
+    assert lab_cli.config_overrides(args.config) == {
+        "adversary.dossier": "inline", "dispatch.pool": 3}
+    assert lab_cli.config_overrides(["a.b=true"]) == {"a.b": True}
+    assert lab_cli.config_overrides(None) == {}
+
+
+def test_a_config_override_must_be_a_dotted_key_equals_value(tmp_path,
+                                                             capsys):
+    """Both halves are refused while the operator is still looking at
+    the command line: no `=` at all, and a key with no section."""
+    rc = lab_cli.cmd_lab(argparse.Namespace(
+        lab_action="run", root=str(tmp_path), exp="standard", arm="all",
+        reps=None, keep=False, seats=None,
+        config=["adversary.dossier"]))
+    assert rc == 1
+    assert "section.key=value" in capsys.readouterr().err
+    rc = lab_cli.cmd_lab(argparse.Namespace(
+        lab_action="run", root=str(tmp_path), exp="standard", arm="all",
+        reps=None, keep=False, seats=None, config=["dossier=inline"]))
+    assert rc == 1
+    assert "dotted" in capsys.readouterr().err

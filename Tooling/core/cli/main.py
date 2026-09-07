@@ -145,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
              "`--seats adversary=codex/gpt-5:xhigh`. Repeatable; merged "
              "over whatever the arm or the set declares")
     p_lab.add_argument(
+        "--config", action="append", default=None, metavar="SECTION.KEY=VALUE",
+        help="run: set one Asterism.yaml flag for the whole run, e.g. "
+             "`--config adversary.dossier=inline`. Repeatable; merged "
+             "over whatever the arm or the set declares")
+    p_lab.add_argument(
         "--root", default=None,
         help="the lab's root (snapshots/, runs/, docs/). Falls back to "
              "ASTERISM_LAB_ROOT; there is deliberately no default — the "

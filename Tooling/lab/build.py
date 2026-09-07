@@ -392,14 +392,37 @@ def _apply_prompts(ws: Path, arm) -> "list[str]":
     return applied
 
 
-def _apply_seats(ws: Path, arm) -> None:
-    """Write the arm's seats into the workspace's own `Asterism.yaml`.
+def _set_dotted(cfg: dict, key: str, value) -> None:
+    """`cfg["adversary"]["dossier"] = value` for `"adversary.dossier"`.
+
+    Intermediate levels are created, and a level that is NOT a mapping
+    is replaced — the alternative is to refuse, and an arm that names a
+    key the archived config happens to hold as a scalar would then be a
+    build failure the operator can do nothing about from the lab.yaml."""
+    cur = cfg
+    parts = key.split(".")
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _apply_overlay(ws: Path, arm) -> None:
+    """Write the arm's seats AND its `config:` flags into the
+    workspace's own `Asterism.yaml`.
 
     Merged into the archived config, not written over it: an arm names
     the ONE seat it moves, and a file that replaced the whole config
-    would silently take every other seat back to a built-in default."""
+    would silently take every other seat back to a built-in default.
+    Both overlays land in ONE read-modify-write, because two would mean
+    the second re-reading a file the first had just rewritten — and the
+    order in which that happens is not a thing an arm should depend on.
+    """
     import yaml
-    if not arm.seats:
+    if not arm.seats and not getattr(arm, "config", None):
         return
     path = ws / "Asterism.yaml"
     try:
@@ -412,12 +435,38 @@ def _apply_seats(ws: Path, arm) -> None:
         section = dict(cfg.get(seat) or {})
         section.update(keys)
         cfg[seat] = section
+    for key, value in dict(getattr(arm, "config", None) or {}).items():
+        _set_dotted(cfg, key, value)
     path.write_text(
         "# Written by `asterism lab build` — the archived config with "
-        "this arm's\n# seat overrides merged in. Edited by hand, this "
-        "workspace stops\n# matching its own run_record.\n"
+        "this arm's\n# seat and config overrides merged in. Edited by "
+        "hand, this workspace\n# stops matching its own run_record.\n"
         + yaml.safe_dump(cfg, sort_keys=True, allow_unicode=True),
         encoding="utf-8")
+
+
+def config_now(ws: Path, keys) -> "dict":
+    """What the workspace's own `Asterism.yaml` holds for each dotted
+    key, read out of the file the run actually used.
+
+    The arm's `config:` is what was ASKED FOR; this is what was there.
+    Same split as `run.prompt_hashes` — and the same reason: an overlay
+    whose key the archived config spells differently, or a build whose
+    write never happened, is invisible in the declaration and is a
+    different experiment."""
+    import yaml
+    try:
+        cfg = yaml.safe_load(
+            (Path(ws) / "Asterism.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    out: "dict" = {}
+    for key in list(keys or []):
+        cur = cfg
+        for part in str(key).split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        out[str(key)] = cur
+    return out
 
 
 def _compile_lake_config(ws: Path) -> None:
@@ -495,7 +544,7 @@ def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
     if slice_ is not None:
         _import_slice(ws, slice_)
     prompts = _apply_prompts(ws, arm)
-    _apply_seats(ws, arm)
+    _apply_overlay(ws, arm)
 
     links: "dict[str, str]" = {}
     for rel in LINKED_TREES:
@@ -519,7 +568,8 @@ def build(root: Path, exp, arm_name: str, *, slice_: "Slice | None",
         "slice_manifest": slice_manifest(slice_),
         "commit": commit,
         "built_utc": datetime.now(timezone.utc).isoformat(),
-        "overlay": {"prompts": prompts, "seats": arm.seats},
+        "overlay": {"prompts": prompts, "seats": arm.seats,
+                    "config": dict(getattr(arm, "config", None) or {})},
         "links": links,
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"[lab] built {ws} — slice "

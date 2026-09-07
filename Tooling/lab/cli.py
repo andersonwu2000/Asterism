@@ -114,14 +114,45 @@ def seat_overrides(raw) -> "dict[str, str]":
     return out
 
 
+def config_overrides(raw) -> "dict[str, object]":
+    """`--config section.key=value` -> `{"section.key": value}`.
+
+    The value is read as YAML, so `=true` / `=3` / `=inline` land as the
+    bool, the int and the string an `Asterism.yaml` would have held. A
+    quoted string still works (`--config x.y='"true"'`), and a value
+    YAML cannot parse rides as the literal text rather than refusing —
+    it is a config value, not a schema.
+
+    Split HERE and validated against the one config parser, so a
+    malformed key is refused while the operator is still looking at the
+    command line, not minutes later in a workspace already built."""
+    import yaml
+    out: "dict[str, object]" = {}
+    for entry in list(raw or []):
+        key, sep, value = str(entry).partition("=")
+        if not sep or not key.strip():
+            raise LabError(
+                f"--config {entry!r} is not `section.key=value` (e.g. "
+                f"`--config adversary.dossier=inline`)")
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed = value
+        out[key.strip()] = value if parsed is None else parsed
+    return _spec.config_spec("--config", out)      # refuse the keys here
+
+
 def _cmd_run(args: argparse.Namespace, root) -> int:
     exp_name, arm = _need(args)
     seats = seat_overrides(getattr(args, "seats", None))
+    config = config_overrides(getattr(args, "config", None))
     if exp_name == _standard.EXPERIMENT_NAME:
-        return _cmd_run_standard(args, root, arm, seats)
+        return _cmd_run_standard(args, root, arm, seats, config)
     exp = _spec.load(root, exp_name)
     if seats:
         exp = _spec.with_seats(exp, seats)
+    if config:
+        exp = _spec.with_config(exp, config)
     dirs = _run.run_arm(root, exp, arm, workspace=_workspace(),
                         reps=getattr(args, "reps", None),
                         keep=bool(getattr(args, "keep", False)))
@@ -132,7 +163,8 @@ def _cmd_run(args: argparse.Namespace, root) -> int:
 
 
 def _cmd_run_standard(args: argparse.Namespace, root, target: str,
-                      seats: "dict[str, str]") -> int:
+                      seats: "dict[str, str]",
+                      config: "dict[str, object] | None" = None) -> int:
     """`lab run standard <set|item|all>` — run the sets and SCORE them.
 
     Non-zero when an item missed its expectation: a standard set is run
@@ -140,6 +172,7 @@ def _cmd_run_standard(args: argparse.Namespace, root, target: str,
     runner that always returns 0 makes that answer something a human
     has to read the scrollback for."""
     rows = _standard.run(root, target, workspace=_workspace(), seats=seats,
+                         config=config,
                          keep=bool(getattr(args, "keep", False)))
     n_ok = sum(1 for r in rows if r["score"]["ok"])
     print(f"OK: lab run standard {target} — {n_ok}/{len(rows)} met their "

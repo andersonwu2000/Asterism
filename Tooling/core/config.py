@@ -75,6 +75,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "adversary.model": "judge seat model — spawn resolution + provenance stamp (survey P1)",
     "adversary.reasoning_effort": "judge effort knob (codex seats) — also stamped into provenance (survey P1)",
     "adversary.timeout_sec": "adversary spawn cap — hang guard, not a work budget (ASTERISM_ADVERSARY_TIMEOUT_SEC; 7200)",
+    "adversary.dossier": "how the judge's package reaches it: `files` (default — the prompt names the projection's files) or `inline` (the small always-read files verbatim in the prompt, a table of contents for the big ones) (ASTERISM_ADVERSARY_DOSSIER; files)",
     "theorist.timeout_sec": "theory author spawn cap — hang guard, not a work budget (ASTERISM_THEORIST_TIMEOUT_SEC; 10800)",
     "theorist.rounds": "revision rounds a fired theory verdict may buy, on the author's own session (ASTERISM_THEORIST_ROUNDS; 3)",
     "theory_reviewer.timeout_sec": "theory reviewer spawn cap — hang guard, not a work budget (ASTERISM_THEORY_REVIEWER_TIMEOUT_SEC; 7200)",

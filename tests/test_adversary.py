@@ -1989,3 +1989,207 @@ def test_no_since_file_when_the_record_stood_still(
 
     proj = _judge_projection(workspace, conn, attempts, 1)
     assert not (proj / "since.md").exists()
+
+
+# ---------------------------------------------------------------------
+# `adversary.dossier` — the package in the prompt (owner ruling 09-07)
+# ---------------------------------------------------------------------
+
+def _dossier_prompt(workspace: Path, conn: sqlite3.Connection,
+                    attempts_name: str, monkeypatch, *, mode: str,
+                    proposal: str = _PROPOSAL) -> str:
+    """One judge round under `mode`; returns the prompt file's text.
+
+    The RAW file, not the rendered one — `_rendered` below applies the
+    template pass the provider applies, and the two are different
+    questions (what the framework wrote vs what the model reads)."""
+    from Tooling.pipeline import adversary as adv
+    monkeypatch.setenv("ASTERISM_ADVERSARY_DOSSIER", mode)
+    attempts = workspace / ".attempts" / attempts_name
+    attempts.mkdir(parents=True)
+    seen: dict = {}
+
+    def fake_spawn(**kw):
+        seen.update(kw)
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            _clear_criteria_json(), encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    verdict, err, rc = adv.review(
+        round_no=1, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p", conn=conn,
+        problem="p", proposal_body=proposal, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert rc == 0 and verdict is not None
+    assert seen["prompt_flags"] == {
+        "dossier_inline": mode == "inline",
+        "dossier_files": mode == "files"}, \
+        "both names travel, always — the renderer is fail-open"
+    return Path(seen["prompt_path"]).read_text(encoding="utf-8")
+
+
+def _rendered(text: str, *, mode: str) -> str:
+    """The prompt as the MODEL sees it: the conditional blocks resolved
+    the way the provider adapter resolves them."""
+    from Tooling.agent import render_prompt_template
+    return render_prompt_template(
+        text, flags={"dossier_inline": mode == "inline",
+                     "dossier_files": mode == "files",
+                     "native_file_tools": False, "mcp_only_reads": True})
+
+
+_MANIFEST_HEAD = "\n\n## This round's dossier — actually present\n"
+
+
+def test_dossier_files_mode_is_byte_for_byte_the_prompt_of_today(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """The default mode changes NOTHING. The daemon hot-swaps this code
+    within a minute of it being saved, onto a board mid-debate, so
+    `files` has to be the rubric with the placeholders substituted and
+    the per-spawn manifest after it — nothing between, nothing added."""
+    from Tooling.pipeline import PROMPT_DIR
+    from Tooling.pipeline import adversary as adv
+
+    text = _dossier_prompt(workspace, conn, "dossier-files", monkeypatch,
+                           mode="files")
+    proj = workspace / ".attempts" / "dossier-files" / "adversary" / "r1"
+    pdir = workspace / "Problems" / "p"
+    head = ((PROMPT_DIR / "adversary" / "adversary.md")
+            .read_text(encoding="utf-8")
+            .replace(adv.PROOFS_DIR_PLACEHOLDER,
+                     (pdir / "proofs").resolve().as_posix())
+            .replace(adv.PAPERS_DIR_PLACEHOLDER,
+                     (workspace / "Problems" / "p" / "_docs")
+                     .resolve().as_posix()))
+    assert text.startswith(head), "the rubric, verbatim, first"
+    assert text[len(head):].startswith(_MANIFEST_HEAD), \
+        "and the per-spawn manifest immediately after it"
+    # No inlined body rides — this is a directory the judge opens, as it
+    # always was.
+    assert (proj / "contract.md").read_text(encoding="utf-8") not in text
+    # …and what the MODEL reads carries neither section nor its wording:
+    # the rubric's `#if dossier_inline` block is dropped on the flag.
+    model_sees = _rendered(text, mode="files")
+    assert "## Dossier (inline)" not in model_sees
+    assert "## Table of contents" not in model_sees
+    assert "INLINED VERBATIM" not in model_sees
+
+
+def test_dossier_inline_ships_the_files_in_order_and_maps_the_rest(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """`inline`: the small always-read files verbatim, in the fixed
+    invariant-first order; an outline for the four big ones; the way IN
+    (never a map) for CATALOG.md and the two directories; and the
+    per-spawn manifest still last."""
+    from Tooling.pipeline import adversary as adv
+
+    pdir = workspace / "Problems" / "p"
+    (pdir / "Root.lean").write_text("theorem main : True := trivial\n",
+                                    encoding="utf-8")
+    (pdir / "Defs.lean").write_text("def T : Prop := True\n",
+                                    encoding="utf-8")
+    text = _dossier_prompt(workspace, conn, "dossier-inline", monkeypatch,
+                           mode="inline")
+    proj = workspace / ".attempts" / "dossier-inline" / "adversary" / "r1"
+
+    assert "## Dossier (inline)" in text
+    # ORDER: every inlined file that exists appears once, in the order
+    # the constant declares — the round-invariant prefix depends on it.
+    present = [n for n in adv.DOSSIER_INLINE_ORDER if (proj / n).is_file()]
+    assert present, "the fixture projection has files to inline"
+    at = [text.index(f"### {n}\n") for n in present]
+    assert at == sorted(at), f"out of order: {present}"
+    # VERBATIM: the body is the file's own bytes, no line numbers.
+    for name in present:
+        body = (proj / name).read_text(encoding="utf-8").rstrip("\n")
+        assert body in text, f"{name} is not inlined verbatim"
+    # MAPPED, not inlined: the four get an outline; CATALOG.md gets the
+    # way in and no map (its outline IS a roster).
+    assert "## Table of contents (read on demand)" in text
+    mapped = [n for n in adv.DOSSIER_OUTLINED if (proj / n).is_file()]
+    assert "TREE.md" in mapped, "the round-fresh record is in every dossier"
+    for name in mapped:
+        assert f"### {name} — " in text
+        assert (proj / name).read_text(encoding="utf-8") not in text, \
+            f"{name} is mapped, never inlined"
+    # The per-spawn block is LAST — everything above it is cacheable.
+    assert text.index(_MANIFEST_HEAD) > text.index("## Dossier (inline)")
+    assert "### " not in text[text.index(_MANIFEST_HEAD):]
+    # And the rubric's own `## What you see` says so.
+    assert "INLINED VERBATIM" in _rendered(text, mode="inline")
+
+
+def test_dossier_inline_prefix_is_identical_across_rounds(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """Two projections differing ONLY in the proposal share every byte
+    up to `### decisions.md`.
+
+    That is the whole reason the order is fixed: a provider caches a
+    prompt by its prefix, so round 2 must not re-pay for the contract,
+    the charter, the Programme and the author's Context — which is 40K+
+    of the ~100K a union_closed round ships."""
+    a = _dossier_prompt(workspace, conn, "dossier-p1", monkeypatch,
+                        mode="inline", proposal=_PROPOSAL)
+    b = _dossier_prompt(workspace, conn, "dossier-p2", monkeypatch,
+                        mode="inline",
+                        proposal=_PROPOSAL + "\nA second route.\n")
+    cut = "### decisions.md"
+    assert a != b, "the two rounds really do differ"
+    assert a.split(cut)[0] == b.split(cut)[0], \
+        "the round-invariant prefix moved between rounds"
+
+
+def test_an_unreadable_dossier_mode_runs_the_default(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch, capsys,
+) -> None:
+    """A config typo must not discard a finished proposal. It degrades
+    to `files` and says so."""
+    from Tooling.pipeline import adversary as adv
+    monkeypatch.setenv("ASTERISM_ADVERSARY_DOSSIER", "INLINED")
+    assert adv.dossier_mode() == adv.DOSSIER_FILES
+    assert "is not one of" in capsys.readouterr().out
+
+
+def test_a_roster_and_a_directory_get_the_way_in_never_a_map(
+    tmp_path: Path,
+) -> None:
+    """CATALOG.md is hundreds of sections: its outline IS a roster, so
+    printing one would cost more than the file and teach less. It gets
+    its size and the queries that reach one entry — the same answer
+    `inspect` gives when asked for a roster-sized file's whole map. The
+    two directories are the same shape for the same reason."""
+    from Tooling.pipeline import adversary as adv
+
+    proj = tmp_path / "r1"
+    proj.mkdir()
+    (proj / "CATALOG.md").write_text(
+        "".join(f"## uc_lemma_{i}\nstatement {i}\n" for i in range(400)),
+        encoding="utf-8")
+    (proj / "TREE.md").write_text(
+        "# Tree\n## Lemmas\n- a\n## Open\n- b\n", encoding="utf-8")
+    (proj / "contract.md").write_text("# Contract\nrules\n",
+                                      encoding="utf-8")
+    proofs = tmp_path / "proofs"
+    proofs.mkdir()
+    (proofs / "a.lean").write_text("theorem a : True := trivial\n",
+                                   encoding="utf-8")
+
+    text = adv.dossier_sections(proj, proofs_dir=proofs,
+                                papers_dir=tmp_path / "nope")
+
+    # The roster: named, sized, with the way in — and with no heading of
+    # its own leaking into the prompt.
+    assert "### CATALOG.md — " in text and "A roster" in text
+    assert "outline_prefix" in text and '"decl"' in text
+    assert "## uc_lemma_1\n" not in text, "the roster's own map never rides"
+    # The mapped file: the outline `inspect` answers with, verbatim.
+    from Tooling.knowledge import workspace_query as _wq
+    for line in _wq.outline(proj / "TREE.md"):
+        assert line in text
+    # The directories: entry count and the queries, never a listing.
+    assert f"### proofs dir `{proofs.as_posix()}` — 1 entr(ies)" in text
+    assert "a.lean" not in text.split("### proofs dir")[1]
+    assert "DOES NOT EXIST" in text.split("### papers dir")[1]

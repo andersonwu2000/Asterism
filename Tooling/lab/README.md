@@ -30,7 +30,8 @@ names them.
 asterism lab snapshot --scope <problem> [--rewind <ISO instant>] [--root R]
 asterism lab build    <exp> <arm> [--root R]
 asterism lab run      <exp> <arm> [--reps N] [--keep] [--root R]
-asterism lab run      standard <set|set/item|all> [--seats S=P/M] [--root R]
+asterism lab run      standard <set|set/item|all> [--seats S=P/M]
+                               [--config K=V] [--root R]
 asterism lab gc       [--keep-latest 3] [--root R]
 ```
 
@@ -56,6 +57,10 @@ asterism lab gc       [--keep-latest 3] [--root R]
 * `--seats <seat>=<provider>/<model>[:<effort>]` moves one seat for a
   whole run, merged over whatever the arm or the set declares.
   Repeatable.
+* `--config <section>.<key>=<value>` moves one `Asterism.yaml` flag the
+  same way — `--config adversary.dossier=inline`. Repeatable, merged
+  over the arm's or the set's own `config:`. The value is read as YAML,
+  so `true` / `3` / `inline` land as the bool, the int and the string.
 
 ## `lab run standard` — the sets with recorded answers
 
@@ -132,10 +137,13 @@ arms:
       adversary/adversary.md: overlays/rubric_v2/adversary.md
     seats:                   # <seat>: provider/model[:effort]
       adversary: codex/gpt-5:xhigh
+    config:                  # <dotted Asterism.yaml key>: value
+      adversary.dossier: inline
     # ...plus the kind's own inputs:
     #   judge_round      group, trigger, and exactly one of
     #                    rows (programme_revisions ids) | proposal (a
-    #                    file), with decisions (a file)
+    #                    file, or a LIST of them — one round each),
+    #                    with decisions (a file, or the matching list)
     #   strategist_wake  group, trigger, since
     #   theory_wake      group, request: {objective, situation}
     #   push_wake        group, trigger, prompt, prompt2
@@ -212,7 +220,9 @@ it.
 `run_record.json` (in `_out/` and beside it) carries the slice id, the
 code commit, the arm's own options as they were when it ran, the
 **sha256 of every file under the workspace's own `Tooling/prompts/`**
-(what the seat read, not what the arm declared),
+(what the seat read, not what the arm declared), `config_read` — what
+the workspace's own `Asterism.yaml` held for each key the arm's
+`config:` named, on the same declaration-vs-reality rule —
 the seats as the driver read them inside the workspace, the provider's
 own token/turn/wall accounting from `spawn_usage`, the outcome, and the
 artefact list.

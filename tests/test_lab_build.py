@@ -560,7 +560,7 @@ def test_a_command_line_seat_wins_over_the_arms_and_leaves_the_others(
     so it goes OVER what the arm pinned — the arm pinned it for the
     experiment's own question, not for this one. Merged rather than
     replacing: an arm that moves a DIFFERENT seat keeps it, the same
-    rule `_apply_seats` follows against the archived config."""
+    rule `_apply_overlay` follows against the archived config."""
     root = tmp_path / "lab"
     exp = _exp(root, "Erdos.p1_20260101-000000Z", arm_body=(
         "    seats: {adversary: codex/gpt-5:xhigh,"
@@ -573,3 +573,120 @@ def test_a_command_line_seat_wins_over_the_arms_and_leaves_the_others(
     assert exp.arm("a").seats["adversary"]["model"] == "gpt-5", \
         "the parsed experiment is not mutated"
     assert spec_mod.with_seats(exp, {}) is exp
+
+
+def test_a_config_overlay_lands_in_the_workspaces_own_yaml(
+        tmp_path, base, head):
+    """`config:` is the third overlay, and it exists because `prompts:`
+    and `seats:` cannot express a framework FLAG. It merges into the
+    ARCHIVED config the same way seats do — the arm names one key, and
+    everything else stays what the commit shipped."""
+    import yaml
+    root = tmp_path / "lab"
+    live = _workspace(tmp_path)
+    sl = snap_mod.take(live, root, problem=PROBLEM)
+    exp = _exp(root, sl.id, arm_body=(
+        "    seats: {adversary: codex/gpt-5:xhigh}\n"
+        "    config: {adversary.dossier: inline, dispatch.pool: 3}"))
+    ws = build_mod.build(root, exp, "a", slice_=sl, base=base, commit=head,
+                         rep=1)
+    cfg = yaml.safe_load((ws / "Asterism.yaml").read_text(encoding="utf-8"))
+    assert cfg["adversary"]["dossier"] == "inline"
+    assert cfg["dispatch"]["pool"] == 3
+    # The seat overlay rode in the SAME write, and the section it shares
+    # with the flag kept both halves.
+    assert cfg["adversary"]["model"] == "gpt-5"
+    # …and nothing else in the archived config was taken back to a
+    # built-in default.
+    archived = yaml.safe_load(
+        (base / "Asterism.yaml").read_text(encoding="utf-8"))
+    assert cfg["strategist"] == archived["strategist"]
+    rec = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))
+    assert rec["overlay"]["config"]["adversary.dossier"] == "inline"
+    # And the record can be asked what the workspace HELD, not just what
+    # the arm declared.
+    assert build_mod.config_now(ws, ["adversary.dossier", "nope.missing"]) \
+        == {"adversary.dossier": "inline", "nope.missing": None}
+
+
+def test_a_command_line_config_wins_over_the_arms(tmp_path):
+    """`--config` is the operator asking THIS question of the whole run,
+    so it goes over an arm's own — the same rule `--seats` follows, and
+    for the same reason."""
+    root = tmp_path / "lab"
+    exp = _exp(root, "Erdos.p1_20260101-000000Z", arm_body=(
+        "    config: {adversary.dossier: files, dispatch.pool: 2}\n"))
+    moved = spec_mod.with_config(exp, {"adversary.dossier": "inline"})
+    assert moved.arm("a").config == {"adversary.dossier": "inline",
+                                     "dispatch.pool": 2}
+    assert exp.arm("a").config["adversary.dossier"] == "files", \
+        "the parsed experiment is not mutated"
+    assert spec_mod.with_config(exp, {}) is exp
+
+
+def test_a_dotless_config_key_is_refused_while_the_operator_is_looking(
+        tmp_path):
+    """A bare `dossier: inline` would land a top-level key nothing ever
+    reads and let the arm report green on the setting it meant to
+    change — the failure a hand-written lab.yaml is actually exposed
+    to. Refused at load, with the shape it wanted."""
+    root = tmp_path / "lab"
+    with pytest.raises(lab.LabError) as exc:
+        _exp(root, "Erdos.p1_20260101-000000Z",
+             arm_body="    config: {dossier: inline}\n")
+    assert "dotted" in str(exc.value) and "adversary.dossier" in str(exc.value)
+
+
+def test_a_judge_arm_may_name_several_proposal_files_one_round_each(tmp_path):
+    """`proposal:` takes a LIST, paired positionally with `decisions:` —
+    the shape `rows:` has always had. Two rounds of one debate are one
+    arm's question; split across two arms, the round number would ride
+    the same axis as whatever the arms are there to differ in."""
+    root = tmp_path / "lab"
+    d = lab.docs_dir(root, "e1")
+    d.mkdir(parents=True)
+    for n in (2, 3):
+        (d / f"p{n}.md").write_text(f"# round {n}\n", encoding="utf-8")
+        (d / f"d{n}.json").write_text("[]", encoding="utf-8")
+    exp = _exp(root, "Erdos.p1_20260101-000000Z", arm_body="")
+    _write_yaml(root, "e1", """
+snapshot: Erdos.p1_20260101-000000Z
+arms:
+  a:
+    kind: judge_round
+    group: 1
+    proposal: [p2.md, p3.md]
+    decisions: [d2.json, d3.json]
+""")
+    exp = spec_mod.load(root, "e1")
+    opts = exp.arm("a").options
+    assert [Path(p).name for p in opts["proposal"]] == ["p2.md", "p3.md"]
+    assert all(Path(p).is_absolute() for p in opts["decisions"])
+    # …and the driver turns them into one round each, in order.
+    from Tooling.lab import driver as driver_mod
+    got = driver_mod._judge_sources({"source_db": None}, opts, "Erdos.p1")
+    assert [g["body"] for g in got] == ["# round 2\n", "# round 3\n"]
+
+
+@pytest.mark.parametrize("body,want", [
+    ("    proposal: [p2.md, p3.md]\n    decisions: [d2.json]\n",
+     "paired positionally"),
+    ("    rows: [1]\n    decisions: [d2.json]\n", "ONE file"),
+    ("    proposal: []\n", "name exactly one proposal"),
+])
+def test_a_mismatched_proposal_list_is_refused_at_load(tmp_path, body, want):
+    """A proposal judged against another round's batch is a result
+    nobody can tell from a real one — refused before a workspace is
+    built, like every other lab.yaml defect."""
+    root = tmp_path / "lab"
+    d = lab.docs_dir(root, "e1")
+    d.mkdir(parents=True)
+    for n in (2, 3):
+        (d / f"p{n}.md").write_text(f"# round {n}\n", encoding="utf-8")
+        (d / f"d{n}.json").write_text("[]", encoding="utf-8")
+    _write_yaml(root, "e1", "snapshot: Erdos.p1_20260101-000000Z\n"
+                            "arms:\n  a:\n    kind: judge_round\n"
+                            "    group: 1\n" + body)
+    with pytest.raises(lab.LabError) as exc:
+        spec_mod.load(root, "e1")
+    assert want in str(exc.value)
