@@ -30,8 +30,8 @@ Push the charter forward.
 Update it as you think. Four sections, in this order:
 
 1. `## Abstract` — what the record already has, what this adds, and how the statement stands to the charter's claim (implies it, is equivalent to it, reduces it to a smaller claim, a condition whose failure refutes it; equivalent or stronger is fine), argued or proved; a relation that rests on something the record has not proved is stated as such.
-2. `## Theorems and proofs` — every result claimed proved, each as a statement and a complete proof. Only rigorous argument in this section.
+2. `## Theorems and proofs` — every result THIS document adds, each as a statement and a complete proof. A result from an accepted document or the record is cited (document, theorem number), not reprinted — a retained theorem is not a contribution and its proof is not re-reviewed. Only rigorous argument in this section.
 3. `## Load-bearing work` — for each route, what you tried and where it stops; what a counterexample would have to look like. An attempt that fails and says precisely why is accepted as a result; an open statement that is only named and not advanced is not.
-4. `## Leads` — the next routes, each with its reason and the test it survived (a case analysis, a construction, a computation). A different route is worth more than the next step on the same one.
+4. `## Leads` — the ways out you see and the next step on each, with the reason and the test it survived (a case analysis, a construction, a computation).
 
 Nothing from the record or the notes is presented as new. LaTeX for mathematics. The document goes to a reviewer.

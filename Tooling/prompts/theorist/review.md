@@ -26,7 +26,7 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
 ## How to judge
 
 1. **Worth**: the document must advance on the present state — something the record, the notes and the literature do not have — and argue how it stands to the MAIN claim (implies it, is equivalent to it, reduces it to a smaller claim, proposes a stronger one, refutes it, and so on). Answering a better objective than the one posed is allowed; the reason must be written. Restating the record, paraphrasing the notes, a wrong direction, or a relation resting on something the record has not proved and the document does not prove, is not allowed.
-2. **Rigour**: every statement claimed proved must have a complete proof — **re-derive it**, and reproduce the computations it leans on. A gap papered over, or a check you cannot reproduce, is not allowed.
+2. **Rigour**: every statement this document adds must have a complete proof — **re-derive it**, and reproduce the computations it leans on. A result cited from an accepted document or the record is checked against its source (it exists there, and says what is claimed), not re-derived. A gap papered over, a check you cannot reproduce, or a citation that does not say what is claimed, is not allowed.
 3. **Challenging the unknown**: the report must attack the open statement itself, and it must say which new ideas it tried. Judge on substance, not success. Attempts that are only announced are not allowed.
 <!-- #if more_rounds -->
    Try to push past where the author stopped; if you find a new line, fire, tell the author where the way out is and require the next step.
