@@ -401,17 +401,57 @@ def test_proved_self_edge_needs_no_receipt(
     assert _gstatus(conn, g) == "proved"
 
 
-def test_proved_flip_without_receipt_lenient_logs_and_writes(
+def test_proved_flip_without_receipt_refused_in_lenient_mode_too(
         conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture):
-    """Production stays lenient: loud `[receipt-violation]` marker, write
-    proceeds (same rationale as the edge check — CI proves completeness,
-    a live daemon shouldn't crash mid-cascade)."""
+    """Owner ruling 2026-09-07 — the receipt check does NOT take the
+    edge check's lenient dial. An undeclared edge means the TABLE is
+    behind the code and CI proves the table complete, so production may
+    log and continue; a missing receipt means nobody can name why this
+    goal is true, and no log line makes that safe to write. Refused in
+    both modes, with the loud message still printed (the unit of work
+    that catches it — verify housekeeping, cascade recovery, a pipeline
+    commit — is what keeps the daemon up)."""
     monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
     g = _insert_goal(conn, status="attempting")
-    transitions.apply_goal_transition(conn, g, "proved", event="probe")
+    with pytest.raises(transitions.IllegalTransition, match="receipt"):
+        transitions.apply_goal_transition(conn, g, "proved", event="probe")
     out = capsys.readouterr().out
     assert "[receipt-violation]" in out
+    assert "probe" in out
+    # Refused BEFORE the write — the row never says proved.
+    assert _gstatus(conn, g) == "attempting"
+
+
+def test_unregistered_receipt_kind_refused_in_lenient_mode_too(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture):
+    """The other half of the receipt check (a kind nobody registered a
+    soundness argument for) takes the same ruling."""
+    monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
+    g = _insert_goal(conn, status="attempting")
+    with pytest.raises(transitions.IllegalTransition, match="unregistered"):
+        transitions.apply_goal_transition(
+            conn, g, "proved", event="probe",
+            receipt=transitions.ProvedReceipt("trust_me", "nope"))
+    assert "[receipt-violation]" in capsys.readouterr().out
+    assert _gstatus(conn, g) == "attempting"
+
+
+def test_edge_check_keeps_its_lenient_dial_when_the_receipt_is_good(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture):
+    """The ruling narrows to `_check_receipt`. The EDGE check keeps the
+    strict/lenient split — a receipted `proved` flip over an undeclared
+    edge still logs and writes in production, or the change would have
+    silently hardened the bookkeeping check too."""
+    monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
+    g = _insert_goal(conn, status="disproved")   # disproved→proved: no edge
+    transitions.apply_goal_transition(
+        conn, g, "proved", event="probe",
+        receipt=transitions.ProvedReceipt("axiom_gate", "t"))
+    out = capsys.readouterr().out
+    assert "[transition-violation]" in out
     assert _gstatus(conn, g) == "proved"
 
 

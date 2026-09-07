@@ -290,6 +290,89 @@ def test_housekeeping_proved_marks_strategy_and_goal(
     assert db.get_goal(conn, gid)["status"] == "proved"
 
 
+def test_housekeeping_receipt_refusal_costs_its_strategy_not_the_tick(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner ruling 2026-09-07 — a proved-flip carrying no ProvedReceipt
+    is REFUSED in production too, so `apply_goal_transition` can now
+    raise on a road that used to only log. Housekeeping runs inline on
+    the dispatcher's main thread, so the refusal has to stop at the
+    unit: this strategy is named in the degraded ledger (visible in
+    `daemon status`, no log grep) and the loop takes the next one.
+    """
+    from Tooling.core import degraded
+    from Tooling.state import transitions
+
+    bad_goal = _seed_goal(conn, slug="bad")
+    bad_sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=bad_goal, lean_path="Problems/p/proofs/L_bad.lean")
+    good_goal = _seed_goal(conn, slug="good")
+    good_sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=good_goal, lean_path="Problems/p/proofs/L_good.lean")
+    assert bad_sid < good_sid, "ORDER BY s.id — the refused one runs first"
+
+    real_flip = verify._flip_proved
+
+    def flip(conn_, *, sid, goal_id, counts, touched_goals):
+        if sid == bad_sid:
+            # A future code path that flips proved and forgets to say why.
+            transitions.apply_goal_transition(
+                conn_, goal_id, "proved", event="verify_proved")
+            return
+        real_flip(conn_, sid=sid, goal_id=goal_id, counts=counts,
+                  touched_goals=touched_goals)
+
+    monkeypatch.setattr(verify, "_flip_proved", flip)
+    monkeypatch.setattr(verify, "verify_strategy", lambda *a, **kw: "proved")
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+
+    # Refused: nothing settled on an argument nobody can name.
+    assert db.get_goal(conn, bad_goal)["status"] != "proved"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (bad_sid,),
+    ).fetchone()["status"] == "proposed"
+    # …and the loop carried on to the next strategy.
+    assert db.get_goal(conn, good_goal)["status"] == "proved"
+    assert counts["proved"] == 1
+    led = degraded.snapshot(tmp_path)
+    assert led["receipt_refused"]["count"] >= 1
+    assert f"strategy s{bad_sid}" in led["receipt_refused"]["last_detail"]
+
+
+def test_housekeeping_receipt_refusal_in_a_revival_costs_only_that_revival(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The third proved-flip in the same function (the G1 shelved-alias
+    revival) takes the same rule: mark the revival, keep the tick."""
+    from Tooling.core import degraded
+    from Tooling.state import transitions
+
+    canonical = _seed_goal(conn, slug="canon")
+    db.update_goal_status(conn, canonical, "proved")
+    shelved = _seed_goal(conn, slug="shelf")
+    db.update_goal_status(conn, shelved, "shelved")
+    db.set_alias_target(conn, shelved, canonical)
+    conn.commit()
+
+    def _receiptless_revive(conn_, workspace, *, shelved_id, canonical_id):
+        transitions.apply_goal_transition(
+            conn_, shelved_id, "proved", event="backward_alias_proved")
+        return True
+
+    monkeypatch.setattr(verify, "_revive_shelved_alias", _receiptless_revive)
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+
+    assert counts["revived"] == 0
+    assert db.get_goal(conn, shelved)["status"] == "shelved"
+    led = degraded.snapshot(tmp_path)
+    assert f"shelved-revival g{shelved}" in led["receipt_refused"][
+        "last_detail"]
+
+
 def test_housekeeping_proved_does_not_inline_lake_build(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

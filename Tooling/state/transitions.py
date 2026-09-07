@@ -34,6 +34,19 @@ Strict vs. lenient
   some untested path ever sneaks one through, a loud log beats crashing the
   daemon mid-cascade and leaving the DB half-mutated (CLAUDE.md rule 5: loud
   signal, not a hard stop on a live proof run).
+- ONE EXCEPTION — the proved-flip RECEIPT check (`_check_receipt`) REFUSES
+  the write in every mode (owner ruling 2026-09-07). The edge registry is
+  BOOKKEEPING: an undeclared edge means the table is behind the code, and CI
+  proves the table complete, so a live daemon logs it and keeps going. A
+  `ProvedReceipt` is not bookkeeping — it IS the soundness argument, and a
+  `proved` row written without one is a theorem nobody can name a gate for:
+  exactly the silent error this framework refuses everywhere else. So the
+  write is refused whatever the mode, and the loud message is printed before
+  the raise. What keeps the daemon up is the CALLER, not the dial: each unit
+  of work (verify housekeeping's per-strategy / per-gate-result loop, the
+  dispatcher's cascade recovery wrapper, each pipeline's commit handler)
+  catches `IllegalTransition`, marks that unit failed, and takes the next —
+  one refused write, not a settled-but-unsound tree.
 
 Terminal vocabulary (owner ruling 2026-09-04)
 ---------------------------------------------
@@ -399,7 +412,11 @@ def has_live_sibling(conn: sqlite3.Connection, goal_id: int, *,
 class IllegalTransition(RuntimeError):
     """Raised (strict mode only) when a (from, to) edge is not declared in the
     registry. In lenient/production mode the same condition is logged with a
-    `[transition-violation]` marker and the write proceeds."""
+    `[transition-violation]` marker and the write proceeds.
+
+    The proved-flip receipt check (`_check_receipt`) is the exception: it
+    raises this in BOTH modes, because a receipt is the soundness argument
+    rather than bookkeeping (module docstring, "Strict vs. lenient")."""
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +429,11 @@ class IllegalTransition(RuntimeError):
 # structural test over the known paths — the exact shape under which Forward
 # once shipped ungated. A transition INTO 'proved' now must carry a receipt
 # naming which of the three sanctioned soundness arguments applies; a new
-# code path that flips 'proved' without one trips strict mode (CI) or logs
-# `[receipt-violation]` loudly in production — same dial, same rationale as
-# the edge registry above.
+# code path that flips 'proved' without one is REFUSED — in CI and in
+# production alike (owner ruling 2026-09-07). NOT the same dial as the edge
+# registry above: that one asks "is the table complete?" and a live daemon
+# may log and continue, while this one asks "why is this true?" and there is
+# no answer that a log line makes safe to write.
 # ---------------------------------------------------------------------------
 
 PROVED_RECEIPT_KINDS: frozenset[str] = frozenset({
@@ -458,7 +477,12 @@ def _check_receipt(goal_id: int, frm: "str | None",
                    receipt: "ProvedReceipt | None", event: str) -> None:
     """Enforce the receipt requirement for a non-idempotent flip INTO
     'proved'. Missing or unregistered-kind receipts violate; row-absent and
-    proved→proved self-edges are exempt (mirrors `_check`)."""
+    proved→proved self-edges are exempt (mirrors `_check`).
+
+    REFUSES THE WRITE IN EVERY MODE (owner ruling 2026-09-07) — unlike
+    `_check` / `assert_main_thread`, which keep the strict/lenient split.
+    The message is printed BEFORE the raise so the forensic line survives
+    wherever the unit of work catches it (see the module docstring)."""
     if frm is None or frm == "proved":
         return
     if receipt is None:
@@ -473,9 +497,8 @@ def _check_receipt(goal_id: int, frm: "str | None",
                "with its soundness argument")
     else:
         return
-    if _strict():
-        raise IllegalTransition(msg)
     print(msg, flush=True)
+    raise IllegalTransition(msg)
 
 
 def _strict() -> bool:

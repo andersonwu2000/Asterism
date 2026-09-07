@@ -2310,8 +2310,17 @@ def _backward_parse_and_commit(
         # is the registry's framework-origin, non-agent-visible entry
         # for exactly this (`state/failures.py:203`); `lake_build_error`
         # keeps only the verdicts that carry Lean diagnostics.
+        #
+        # `IllegalTransition` joins it (2026-09-07): the proved-flip
+        # receipt check refuses the write in every mode now, and a
+        # refusal says the FRAMEWORK cannot name this proof's soundness
+        # argument. Billing that to the agent would burn a goal attempt
+        # toward SHELVE and hand it "your Lean failed to build" for a
+        # bug in our own commit path — the same mis-attribution the
+        # OSError branch above was opened to end.
         return _abort(
-            "worker_exception" if isinstance(exc, OSError)
+            "worker_exception"
+            if isinstance(exc, (OSError, transitions.IllegalTransition))
             else "lake_build_error",
             diagnostics.annotate_failure_detail(str(exc)),
             leading,

@@ -356,6 +356,25 @@ def _settle_promotion(conn: sqlite3.Connection, workspace: Path, res,
     # (re-submitted) by the loop below without the rolled-back consumer
 
 
+def _receipt_refused(workspace: Path, unit: str,
+                     exc: "transitions.IllegalTransition") -> None:
+    """A refused proved-write costs its own unit, never the daemon.
+
+    `transitions._check_receipt` raises in every mode since 2026-09-07 (a
+    ProvedReceipt is the soundness argument, not bookkeeping), and
+    housekeeping runs INLINE on the dispatcher's main thread — an escape
+    here wedges the whole tick, which is the crash the lenient dial was
+    written to avoid. Catch it at the unit instead: name it, count it,
+    take the next strategy. The ledger is what makes it visible without a
+    log grep (`daemon status` renders it as `degraded`); the strategy
+    stays 'proposed' / the goal stays unproved, so nothing settles on an
+    argument nobody can name.
+    """
+    from ..core import degraded
+    print(f"[verify] {unit}: proved-write REFUSED — {exc}", flush=True)
+    degraded.record(workspace, "receipt_refused", f"{unit}: {exc}")
+
+
 def verify_housekeeping(
     conn: sqlite3.Connection, *, workspace: Path, max_iters: int = 8,
     intents: dict[str, intent_mod.ProblemIntent] | None = None,
@@ -394,8 +413,12 @@ def verify_housekeeping(
     # tick flips or rolls back here, on the main thread.
     if gate is not None:
         for res in gate.drain_results():
-            _settle_promotion(conn, workspace, res, counts=counts,
-                              touched_goals=touched_goals)
+            try:
+                _settle_promotion(conn, workspace, res, counts=counts,
+                                  touched_goals=touched_goals)
+            except transitions.IllegalTransition as e:
+                _receipt_refused(
+                    workspace, f"promotion gate s{res.strategy_id}", e)
     for _ in range(max_iters):
         ready = [s for s in db.strategies_ready_for_verify(conn)
                  if gate is None or not gate.pending(int(s["id"]))]
@@ -405,46 +428,55 @@ def verify_housekeeping(
         for s in ready:
             sid = int(s["id"])
             goal_id = int(s["goal_id"])
-            outcome = verify_strategy(
-                conn, workspace=workspace, strategy_id=sid,
-                intents=intents,
-            )
-            # 'retry' is no longer produced (verify_strategy doesn't
-            # hit the gateway). Kept for forward-compat in case a
-            # future change reintroduces transient infra failures.
-            if outcome == "retry":
-                counts["retry"] += 1
-                print(f"[verify] Strategy={sid} → retry (transient infra)",
-                      flush=True)
-                _refresh_trees(conn, workspace, touched_goals)
-                return counts
-            if outcome == "proved":
-                if gate is None:
-                    # No gate (unit tests / in-process callers): the
-                    # pre-2026-08-30 immediate flip.
-                    _flip_proved(conn, sid=sid, goal_id=goal_id,
-                                 counts=counts, touched_goals=touched_goals)
-                else:
-                    # The alias is on disk; the status waits for the cold
-                    # build of it and its consumers. Off the main thread
-                    # (the #64 lesson: a 10-strategy cascade × 30-60 s
-                    # inline build blocked the dispatcher for ~10 min);
-                    # the result lands on a later tick via drain_results.
-                    mods = promotion_modules(conn, workspace, strategy_id=sid)
-                    gate.submit(sid, mods)
-                    counts["pending"] += 1
-                    print(f"[verify] Strategy={sid} → promotion gate "
-                          f"({len(mods)} module(s))", flush=True)
-            elif outcome == "dead":
-                # Sibling strategy still in flight (e.g. Strategist
-                # parallel inject): `_strategy_dead` defers the terminal
-                # so we don't kill working work mid-flight — mirrors
-                # `_kill_upward_chain`'s deferred-terminal branch.
-                _strategy_dead(conn, sid=sid, goal_id=goal_id,
-                               counts=counts, touched_goals=touched_goals)
-                print(f"[verify] Strategy={sid} → dead", flush=True)
-            else:  # "superseded"
-                counts["superseded"] += 1
+            try:
+                outcome = verify_strategy(
+                    conn, workspace=workspace, strategy_id=sid,
+                    intents=intents,
+                )
+                # 'retry' is no longer produced (verify_strategy doesn't
+                # hit the gateway). Kept for forward-compat in case a
+                # future change reintroduces transient infra failures.
+                if outcome == "retry":
+                    counts["retry"] += 1
+                    print(f"[verify] Strategy={sid} → retry (transient "
+                          f"infra)", flush=True)
+                    _refresh_trees(conn, workspace, touched_goals)
+                    return counts
+                if outcome == "proved":
+                    if gate is None:
+                        # No gate (unit tests / in-process callers): the
+                        # pre-2026-08-30 immediate flip.
+                        _flip_proved(conn, sid=sid, goal_id=goal_id,
+                                     counts=counts,
+                                     touched_goals=touched_goals)
+                    else:
+                        # The alias is on disk; the status waits for the
+                        # cold build of it and its consumers. Off the main
+                        # thread (the #64 lesson: a 10-strategy cascade ×
+                        # 30-60 s inline build blocked the dispatcher for
+                        # ~10 min); the result lands on a later tick via
+                        # drain_results.
+                        mods = promotion_modules(conn, workspace,
+                                                 strategy_id=sid)
+                        gate.submit(sid, mods)
+                        counts["pending"] += 1
+                        print(f"[verify] Strategy={sid} → promotion gate "
+                              f"({len(mods)} module(s))", flush=True)
+                elif outcome == "dead":
+                    # Sibling strategy still in flight (e.g. Strategist
+                    # parallel inject): `_strategy_dead` defers the
+                    # terminal so we don't kill working work mid-flight —
+                    # mirrors `_kill_upward_chain`'s deferred-terminal
+                    # branch.
+                    _strategy_dead(conn, sid=sid, goal_id=goal_id,
+                                   counts=counts,
+                                   touched_goals=touched_goals)
+                    print(f"[verify] Strategy={sid} → dead", flush=True)
+                else:  # "superseded"
+                    counts["superseded"] += 1
+            except transitions.IllegalTransition as e:
+                _receipt_refused(workspace, f"strategy s{sid}", e)
+                continue
         # G1 shelved-revival pass (post-strategy housekeeping). Forward
         # commit links a shelved goal S to a newly-produced Forward
         # output X via `S.alias_target_id = X`. Once X transitions to
@@ -457,10 +489,18 @@ def verify_housekeeping(
         # functionally-identical lemma proves (brouwer 2026-05-22
         # G1 incident).
         for s_id, x_id in revivals:
-            ok = _revive_shelved_alias(
-                conn, workspace,
-                shelved_id=s_id, canonical_id=x_id,
-            )
+            try:
+                ok = _revive_shelved_alias(
+                    conn, workspace,
+                    shelved_id=s_id, canonical_id=x_id,
+                )
+            except transitions.IllegalTransition as e:
+                # Third proved-flip in this function, same rule as the
+                # two above: the revival's own alias_induction receipt is
+                # what makes g{s_id} a theorem, so a refusal ends THIS
+                # revival and no other.
+                _receipt_refused(workspace, f"shelved-revival g{s_id}", e)
+                continue
             if ok:
                 counts["revived"] += 1
                 touched_goals.add(s_id)

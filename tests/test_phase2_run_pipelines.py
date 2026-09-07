@@ -1274,3 +1274,55 @@ def test_run_forward_reuse_parks_alongside_confirmshelve_goal(
         "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
         (did,)).fetchone()["produced_goal_id"]
     assert pg == x                       # inject still repointed (parks alongside)
+
+
+def test_run_forward_receipt_refused_commit_is_the_pipelines_own_failure(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Owner ruling 2026-09-07 — the proved-flip receipt check refuses
+    the write in every mode, so a commit running on a WORKER thread can
+    now raise. Forward's commit handler is what catches it: the refusal
+    comes back as THIS pipeline's failure with the message in
+    `failure_detail` (which the cascade writes onto the producing
+    Inject's `outcome_detail`), not as an unattributed worker death.
+    """
+    from Tooling.state import transitions as _t
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: useful intermediate.\n"
+            "theorem my_lemma : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    def _receiptless(conn_, *, problem, workspace, metadata, **kw):
+        # A future commit path that flips proved and names no gate.
+        # Idempotent across the retry helper's re-spawns, so every retry
+        # dies of the RECEIPT rather than of a slug collision.
+        g = db.goal_by_slug(conn_, problem, metadata.slug)
+        gid = int(g["id"]) if g is not None else db.insert_goal(
+            conn_, problem=problem, slug=metadata.slug,
+            lean_path=f"Problems/{problem}/proofs/L_{metadata.slug}.lean",
+            statement="True", origin="forward", depth=0)
+        _t.apply_goal_transition(conn_, gid, "proved",
+                                 event="forward_lemma_proved")
+    monkeypatch.setattr(forward, "commit_forward_lemma", _receiptless)
+
+    r = forward.run_forward(conn, problem="p", workspace=workspace,
+                            intent=mfst, pipeline_id="fwd-receipt")
+    # The commit handler classified it (`forward_no_new_goal`, a
+    # pipeline_infra reason) and kept the refusal verbatim; the retry
+    # budget then ran out on the same refusal, which is what 'exhausted'
+    # says. Either way the message is the pipeline's own, not a stack
+    # trace the cascade had to invent.
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "forward_no_new_goal"
+    assert "receipt-violation" in (r.failure_detail or "")
+    # …and nothing landed proved on the way out.
+    assert db.goal_by_slug(conn, "p", "my_lemma")["status"] != "proved"

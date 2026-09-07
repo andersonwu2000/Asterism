@@ -298,7 +298,13 @@ def test_a_filesystem_error_is_not_the_agents_lean_failing():
     failed to build"."""
     bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
         encoding="utf-8")
-    assert '"worker_exception" if isinstance(exc, OSError)' in bwd
+    # 2026-09-07: `IllegalTransition` joins OSError on that branch. The
+    # proved-flip receipt check refuses the write in every mode now, and
+    # a refusal says the FRAMEWORK cannot name this proof's soundness
+    # argument — billing it to the agent would burn a goal attempt
+    # toward SHELVE and hand it "your Lean failed to build".
+    assert ('isinstance(exc, (OSError, transitions.IllegalTransition))'
+            in bwd)
     assert failures.REGISTRY["worker_exception"].origin == "framework"
     assert failures.REGISTRY["worker_exception"].agent_visible is False
 

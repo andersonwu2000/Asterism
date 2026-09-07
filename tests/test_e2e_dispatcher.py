@@ -429,3 +429,82 @@ def test_dispatch_pool_caps_in_flight_even_in_ledger_mode(
     assert live["peak"] == 2, (
         "the three rows should still have filled the pool — a peak of "
         f"{live['peak']} means the harness never exercised the ceiling")
+
+
+def test_a_receipt_refused_cascade_is_recovered_not_a_dead_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Owner ruling 2026-09-07 — `transitions._check_receipt` refuses a
+    receipt-less proved flip in production too, so `cascade_one` can
+    RAISE on a road that used to only log. The pop loop's recovery
+    wrapper is what keeps the daemon up, and only the real loop can show
+    it: the exception is named, the unit is re-cascaded as failed, and
+    the tick finishes instead of the whole run dying on one bad write.
+    """
+    monkeypatch.chdir(tmp_path)
+    _seed_workspace(tmp_path)
+    from Tooling.pipeline import _lake as _lake_mod
+    monkeypatch.setattr(_lake_mod, "lake_build", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(_lake_mod, "lake_build_modules",
+                        lambda *a, **k: (True, ""))
+    assert cli.cmd_init(argparse.Namespace(problem="p", force=False)) == 0
+
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+
+    class _NoopGw:
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(gateway_lifecycle, "start_gateway",
+                        lambda workspace, **kw: _NoopGw())
+
+    conn = db.connect()
+    root_id = int(conn.execute(
+        "SELECT id FROM goals WHERE problem='p'").fetchone()["id"])
+    db.update_goal_status(conn, root_id, "open")
+    conn.commit()
+    conn.close()
+
+    from Tooling.core.dispatcher import loop as _loop
+    from Tooling.state import transitions as _t
+    monkeypatch.setattr(_loop, "strategist_triggers", lambda *a, **k: None)
+    # The worker only has to come back; this test is about what the pop
+    # loop does with the cascade, not about the pipeline.
+    monkeypatch.setattr(
+        _loop, "_run_pipeline",
+        lambda ws, intents, kind, tid, tk, pid, did=None:
+            _loop.WorkerDone(pid, kind, tid, tk, "proved", ""))
+    # One dispatch, then the queue stays empty so `--once` can exit.
+    real_refill, seen = _loop.bfs_refill, {"n": 0}
+
+    def _refill_once(*a, **k):
+        seen["n"] += 1
+        return real_refill(*a, **k) if seen["n"] == 1 else 0
+    monkeypatch.setattr(_loop, "bfs_refill", _refill_once)
+
+    calls: list = []
+    real_cascade = _t.cascade_one
+
+    def _cascade(conn_, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            # A future cascade arm that flips proved and names no gate.
+            _t.apply_goal_transition(conn_, root_id, "proved",
+                                     event="set_terminal")
+        return real_cascade(conn_, **kw)
+    monkeypatch.setattr(_loop, "cascade_one", _cascade)
+
+    dispatcher.run(tmp_path, once=True)
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
+
+    out = capsys.readouterr().out
+    assert "[receipt-violation]" in out, "the refusal named itself"
+    assert "worker exception" in out, "the recovery wrapper logged it"
+    assert len(calls) >= 2, "the recovery re-cascaded the unit"
+    assert calls[-1]["outcome"] == "failed"
+    conn2 = db.connect()
+    assert conn2.execute(
+        "SELECT status FROM goals WHERE id = ?",
+        (root_id,)).fetchone()["status"] != "proved"

@@ -507,3 +507,33 @@ def test_a_gate_result_for_a_dead_strategy_is_named_not_dropped(
     assert db.get_goal(conn, gid)["status"] != "proved"
     out = capsys.readouterr().out
     assert f"promotion gate result for s{sid} ignored: status=superseded" in out
+
+
+def test_a_gate_result_whose_flip_has_no_receipt_costs_only_that_promotion(
+        conn, tmp_path, monkeypatch, capsys):
+    """Owner ruling 2026-09-07 — the proved-flip receipt check refuses
+    the write in production too, so `_settle_promotion` can raise. It
+    runs on the dispatcher's main thread from `verify_housekeeping`, so
+    the refusal is caught per GATE RESULT: this promotion is named in
+    the degraded ledger and the tick finishes."""
+    from Tooling.core import degraded
+    from Tooling.state import transitions
+
+    gid, sid, _parent, _ = _promotable(conn, tmp_path, monkeypatch)
+
+    def _receiptless(c, *, sid, goal_id, counts, touched_goals):
+        # A future promotion path that flips proved and names no gate.
+        transitions.apply_goal_transition(
+            c, goal_id, "proved", event="verify_proved")
+
+    monkeypatch.setattr(verify, "_flip_proved", _receiptless)
+    gate = _pending_gate(sid)
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+    gate.answer()
+    verify.verify_housekeeping(conn, workspace=tmp_path, promotion_gate=gate)
+
+    assert db.get_goal(conn, gid)["status"] != "proved"
+    assert "[receipt-violation]" in capsys.readouterr().out
+    led = degraded.snapshot(tmp_path)
+    assert led["receipt_refused"]["count"] >= 1
+    assert f"promotion gate s{sid}" in led["receipt_refused"]["last_detail"]
