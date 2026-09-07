@@ -34,6 +34,20 @@ lean ran at 31% CPU, 1.79M major faults, paging into zram):
   paging looks like. A build gets a budget of COMPUTE; wall-clock is
   only the loose net under a tree that never runs. This is the shape
   the elaboration wall took on 2026-08-29 (`lsp/gateway/wall.py`).
+
+A third, from the flagship on 2026-09-07 (Ubuntu 24.04, NO swap):
+
+* THE OOM KILL MUST NOT KILL ITS OWN WITNESS. A scope inherits
+  systemd's default `OOMPolicy=stop`: when the kernel OOM-kills ONE
+  process in the scope, systemd SIGTERMs every other process in it —
+  the trailer shell included. No stats file, rc -15, and the one
+  outcome the fence exists to name came back as a plain build failure
+  (`capped=False`) on the only kind of box where the fence actually
+  bites, a machine with no swap to page into. The scope now asks for
+  `OOMPolicy=continue`, so the kill takes only its victim and the
+  trailer lives to write `oom_kill 1`; `classify` also reads a bare
+  SIGTERM-with-no-stats as capped, for a systemd that will not take
+  the property.
 """
 from __future__ import annotations
 
@@ -202,15 +216,26 @@ _LINUX_TRAILER = (
     '> "$ASTERISM_FENCE_STATS" 2>/dev/null; exit $rc')
 
 
+#: Keeps the trailer alive through the kernel's OOM kill. systemd's
+#: default for a scope is `OOMPolicy=stop`, which answers ONE process
+#: being OOM-killed by SIGTERMing every process in the unit — including
+#: the shell that was going to read `memory.events` and prove the build
+#: was capped. `continue` leaves the survivors alone.
+OOM_POLICY_CONTINUE = "OOMPolicy=continue"
+
+
 def linux_fenced_argv(args: "list[str]", *, fence_bytes: int,
-                      stats_path: str, unit: "str | None" = None
-                      ) -> "list[str]":
+                      stats_path: str, unit: "str | None" = None,
+                      oom_policy: bool = True) -> "list[str]":
     """`--unit` names the scope so its limit can be raised in place
     later (`linux_set_property_argv`) and its cgroup found from outside
-    it (`_linux_scope_cgroup`)."""
+    it (`_linux_scope_cgroup`). `oom_policy=False` is the shape for a
+    systemd that will not take `OOMPolicy=` on a scope — the probe
+    settles which one this host gets."""
     return ["systemd-run", "--user", "--scope", "--quiet",
             *([f"--unit={unit}"] if unit else []),
-            "-p", f"MemoryMax={int(fence_bytes)}", "--",
+            "-p", f"MemoryMax={int(fence_bytes)}",
+            *(["-p", OOM_POLICY_CONTINUE] if oom_policy else []), "--",
             "sh", "-c", _LINUX_TRAILER, "sh", *args]
 
 
@@ -247,48 +272,84 @@ def parse_linux_stats(text: str) -> "tuple[int | None, int]":
     return peak, kills
 
 
+#: Exit codes that mean the kernel stopped this build and the trailer
+#: never got to write the stats. 137/-9: the trailer shell was itself
+#: the OOM victim. 143/-15: `OOMPolicy=stop` — the kernel killed one
+#: process in the scope and systemd SIGTERMed the rest, trailer
+#: included (the flagship's shape on 2026-09-07, before the scope asked
+#: for `continue`). Reading a bare SIGTERM as capped can at worst
+#: mistake a hand-stopped build for a fenced one; the fence's own
+#: timeout kills with SIGKILL and raises `FenceTimeout` instead of
+#: reaching here.
+KERNEL_STOPPED_RC = (137, -9, 143, -15)
+
+
 def classify(*, rc: int, oom_kills: int, stats_seen: bool) -> bool:
-    """Capped = the kernel's OOM killer fired inside the fence. When the
-    trailer shell itself was the victim no stats exist; a SIGKILL exit
-    with no stats is the remaining fingerprint."""
+    """Capped = the kernel's OOM killer fired inside the fence. With the
+    stats in hand the `oom_kill` counter says so outright; with no stats
+    the exit code is the only fingerprint left (`KERNEL_STOPPED_RC`)."""
     if oom_kills > 0:
         return True
-    if not stats_seen and rc in (137, -9):
+    if not stats_seen and rc in KERNEL_STOPPED_RC:
         return True
     return False
 
 
 _LINUX_PROBE: "bool | None" = None
+#: Does this host's systemd take `OOMPolicy=` on a scope? Settled by the
+#: probe; read by `_run_linux` when it builds the argv.
+_LINUX_OOM_POLICY: bool = True
 _LINUX_PROBE_LOCK = threading.Lock()
+
+
+def _probe_scope(*, oom_policy: bool):
+    """A throwaway scope carrying the properties a fenced build would
+    ask for. None = the spawn itself failed (already reported)."""
+    try:
+        return subprocess.run(
+            ["systemd-run", "--user", "--scope", "--quiet",
+             "-p", "MemoryMax=1G",
+             *(["-p", OOM_POLICY_CONTINUE] if oom_policy else []),
+             "--", "true"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[fence] systemd-run probe failed — builds run "
+              f"unfenced ({e})", flush=True)
+        return None
 
 
 def _linux_supported() -> bool:
     """One-time probe: a user scope with a memory limit must be creatable
     (systemd-run present, memory controller delegated to the user
     slice). A host that cannot fence runs builds unfenced and says so
-    once — the pre-fence shape, not a silent downgrade."""
-    global _LINUX_PROBE
+    once — the pre-fence shape, not a silent downgrade. A host whose
+    systemd knows the memory limit but not `OOMPolicy=` keeps its fence
+    and loses only the trailer's testimony, which `classify` then reads
+    off the exit code instead; that too is said out loud."""
+    global _LINUX_PROBE, _LINUX_OOM_POLICY
     with _LINUX_PROBE_LOCK:
         if _LINUX_PROBE is not None:
             return _LINUX_PROBE
         ok = False
-        if shutil.which("systemd-run"):
-            try:
-                r = subprocess.run(
-                    ["systemd-run", "--user", "--scope", "--quiet",
-                     "-p", "MemoryMax=1G", "--", "true"],
-                    capture_output=True, text=True, timeout=30)
-                ok = r.returncode == 0
-                if not ok:
+        if not shutil.which("systemd-run"):
+            print("[fence] systemd-run not found — builds run unfenced",
+                  flush=True)
+        else:
+            r = _probe_scope(oom_policy=True)
+            if r is not None and r.returncode != 0:
+                bare = _probe_scope(oom_policy=False)
+                if bare is not None and bare.returncode == 0:
+                    _LINUX_OOM_POLICY = False
+                    print("[fence] this systemd will not take OOMPolicy= on "
+                          "a scope — an OOM kill takes the stats trailer "
+                          "with it; capped is read off the SIGTERM instead",
+                          flush=True)
+                    r = bare
+                else:
                     print(f"[fence] no user memory scope here — builds run "
                           f"unfenced ({(r.stderr or '').strip()[:160]})",
                           flush=True)
-            except (OSError, subprocess.TimeoutExpired) as e:
-                print(f"[fence] systemd-run probe failed — builds run "
-                      f"unfenced ({e})", flush=True)
-        else:
-            print("[fence] systemd-run not found — builds run unfenced",
-                  flush=True)
+            ok = r is not None and r.returncode == 0
         _LINUX_PROBE = ok
         return ok
 
@@ -331,7 +392,8 @@ def _run_linux(args, fence_gb, *, cwd, env, cpu_budget_sec,
     unit = f"asterism-build-{secrets.token_hex(4)}.scope"
     env = {**(env or os.environ), "ASTERISM_FENCE_STATS": stats_path}
     argv = linux_fenced_argv(list(args), fence_bytes=int(fence_gb * 2**30),
-                             stats_path=stats_path, unit=unit)
+                             stats_path=stats_path, unit=unit,
+                             oom_policy=_LINUX_OOM_POLICY)
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace",

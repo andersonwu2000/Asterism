@@ -77,6 +77,61 @@ def test_classification_is_structural_not_textual():
     assert mf.classify(rc=0, oom_kills=0, stats_seen=False) is False
 
 
+def test_an_oom_killed_scope_that_lost_its_trailer_is_still_capped():
+    """Flagship 2026-09-07, Ubuntu 24.04 with no swap: a 0.2G fence
+    around a 400M allocation came back rc -15, `capped=False`, while the
+    journal said `Failed with result 'oom-kill'`. `OOMPolicy=stop` — the
+    scope's default — answers one OOM kill by SIGTERMing every process
+    in the unit, so the trailer died before writing the stats and the
+    fence's whole point was reported as a plain build failure. The scope
+    now asks for `continue`; this is the fingerprint for a systemd that
+    will not take the property."""
+    assert mf.classify(rc=-15, oom_kills=0, stats_seen=False) is True
+    assert mf.classify(rc=143, oom_kills=0, stats_seen=False) is True
+    # with stats in hand the counter decides — a build stopped by hand
+    # after writing its stats is not a capped build
+    assert mf.classify(rc=-15, oom_kills=0, stats_seen=True) is False
+
+
+def test_the_scope_lets_an_oom_kill_take_only_its_victim():
+    cmd = mf.linux_fenced_argv(["lake", "build", "A.B"], fence_bytes=2**30,
+                               stats_path="/tmp/x.stats")
+    assert "OOMPolicy=continue" in cmd, (
+        "without it systemd kills the whole scope on an OOM — including "
+        "the trailer that proves the build was capped")
+    assert cmd[cmd.index("OOMPolicy=continue") - 1] == "-p"
+    assert cmd[-3:] == ["lake", "build", "A.B"]
+    # a systemd that refuses the property still gets a fence
+    bare = mf.linux_fenced_argv(["lake", "build", "A.B"], fence_bytes=2**30,
+                                stats_path="/tmp/x.stats", oom_policy=False)
+    assert "OOMPolicy=continue" not in bare
+    assert f"MemoryMax={2**30}" in bare and bare[-3:] == ["lake", "build", "A.B"]
+
+
+def test_a_systemd_that_refuses_oompolicy_keeps_its_fence(monkeypatch):
+    """The probe must not read "unknown property" as "no fence here":
+    the memory limit is the fence, `OOMPolicy=` only decides who lives
+    to report on it."""
+    seen = []
+
+    class _R:
+        def __init__(self, rc):
+            self.returncode, self.stdout, self.stderr = rc, "", "Unknown assignment"
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        return _R(1 if mf.OOM_POLICY_CONTINUE in argv else 0)
+
+    monkeypatch.setattr(mf.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(mf.subprocess, "run", fake_run)
+    monkeypatch.setattr(mf, "_LINUX_PROBE", None)
+    monkeypatch.setattr(mf, "_LINUX_OOM_POLICY", True)
+    assert mf._linux_supported() is True
+    assert len(seen) == 2, "the probe must retry without the property"
+    assert mf._LINUX_OOM_POLICY is False, \
+        "a host that cannot have OOMPolicy=continue must know it"
+
+
 # ───────────────────────── the real OS ─────────────────────────
 
 _ALLOC = ("import sys\n"
@@ -93,12 +148,19 @@ def test_the_os_enforces_the_fence(tmp_path):
     script.write_text(_ALLOC, encoding="utf-8")
     over = mf.run_fenced([sys.executable, str(script), "400"],
                          fence_gb=0.2, cwd=str(tmp_path), cpu_budget_sec=120)
-    # Two legal fates for 400M inside a 0.2G fence. A Job Object caps
-    # COMMIT, so Windows kills it (capped). A cgroup caps RAM and leaves
-    # swap open as the valve (owner ruling: the fence bounds what the
-    # build takes from RAM, the OS may page the rest), so a host with
-    # swap — the SP7 runs zram — lets it finish with its RAM peak pinned
-    # at the fence; only RAM+swap exhaustion is an OOM kill there.
+    # Three legal fates for 400M inside a 0.2G fence.
+    #  * Windows: a Job Object caps COMMIT, so the allocation is refused
+    #    and the job records the violation — capped.
+    #  * Linux WITH swap (the SP7 runs zram): a cgroup caps RAM and
+    #    leaves swap open as the valve (owner ruling: the fence bounds
+    #    what the build takes from RAM, the OS may page the rest), so
+    #    the build finishes with its RAM peak pinned at the fence; only
+    #    RAM+swap exhaustion is an OOM kill there.
+    #  * Linux with NO swap (the flagship): nowhere to page, so the
+    #    kernel OOM-kills inside the scope — capped, and the scope's
+    #    `OOMPolicy=continue` is what leaves the trailer alive to say
+    #    so (2026-09-07: under the default `stop` this same run came
+    #    back rc -15, capped False, an OOM reported as a build error).
     if over.capped:
         assert over.returncode != 0
     else:
