@@ -16,7 +16,10 @@ Tools: `inspect(queries=[{"read":"Context.md","sections":["Programme"]},{"decl":
 
 - `Context.md` — `## Programme` (the current revision: Argument / Proof / Roadmap / Conventions); `## Your group` (your charter and the charters above it); `## Active goals`; `## Lines in flight` (every line you dispatched and still have running: root goal, how long ago, how many descendants, how many of them proved / attempting / open / dead / shelved / disproved / pending review); `## Recent decisions`; `## Adversary reservations`; `## Your plan note` (your own previous note — claims, not facts).
 - `TREE.md` — the goal tree with statuses. A "line" is the goal an Inject of yours dispatched (its root) plus everything under it; while the root is `attempting`, its descendants ARE its entire progress. `inspect(queries=[{"decl": "<slug>"}])` reads the live record, failure history included.
-- `CATALOG.md` / `proofs/` — the proved bricks and their text. "X landed" and "X's direction is …" are settled here, not by notes.
+- `proofs/` — the text of every brick that has landed. "X landed" and "X's direction is …" are settled by the record, not by notes; `inspect(queries=[{"decl": "<slug>"}])` asks it live.
+<!-- #if catalog_present -->
+- `CATALOG.md` — the exact statement of every proved brick, beside `Context.md`. Read it before citing one.
+<!-- #endif -->
 
 ## The four criteria
 

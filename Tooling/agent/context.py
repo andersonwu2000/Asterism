@@ -116,18 +116,36 @@ def _section_header(goal: sqlite3.Row, workspace: Path) -> list[str]:
 
 
 def _section_sandbox(strategy_id: int | None = None,
-                     goal: sqlite3.Row | None = None) -> list[str]:
+                     goal: sqlite3.Row | None = None,
+                     *, catalog_present: bool = False) -> list[str]:
     """Universal sandbox info — read-allowlist boundaries + framework
     file conventions. Always rendered (Builder + Backward both need
     to know which paths are accessible). Strategy-specific naming is
     in `_section_strategy_naming` below; that one is Backward-only
     because Builder doesn't fan out into sub-goals.
 
-    Parameters are kept for legacy compatibility but unused — the
-    section content is purely static. `brief.py` calls this with
-    no args to assemble the cross-spawn BRIEF.md.
+    `strategy_id` / `goal` are kept for legacy compatibility but unused.
+    `catalog_present` is not decoration: the CATALOG.md sentence is an
+    INSTRUCTION ("read it before citing one"), and a pure-NL problem
+    with nothing proved and nothing alive never gets that file — the
+    p1101 wake of 2026-09-08 12:37Z reported that "the required
+    pre-injection catalogue check cannot be performed" and stopped.
+    An instruction naming a file that does not exist is a gate an agent
+    cannot pass; it is not printed unless the file is there with
+    entries in it (`catalog_has_entries`). `brief.py` resolves the flag
+    for the cross-spawn BRIEF.md.
     """
     del strategy_id, goal  # static section, params retained for API stability
+    companions = ("`PAST_*.md` / `LESSONS.md` / `CATALOG.md` / "
+                  "`PAPER_MAP.md` / `BATCHES.md`" if catalog_present else
+                  "`PAST_*.md` / `LESSONS.md` / `PAPER_MAP.md` / "
+                  "`BATCHES.md`")
+    catalog_line = (
+        " `CATALOG.md` holds the exact statement of "
+        "every proved brick in this problem — read it before citing one."
+        if catalog_present else
+        " No brick has landed in this problem yet, so there is no "
+        "`CATALOG.md`: the record is what `inspect` answers.")
     return [
         "## Sandbox",
         "- Reads allowed without permission prompts:",
@@ -146,10 +164,8 @@ def _section_sandbox(strategy_id: int | None = None,
         "those dirs walks the operator-private trees and is refused. "
         "Omit the path — it defaults to your cwd — or name `Library/` "
         "or your Project's `_docs/` (where its papers are).",
-        "- `PAST_*.md` / `LESSONS.md` / `CATALOG.md` / `PAPER_MAP.md` / "
-        "`BATCHES.md` sit in Context.md's own directory (NOT your cwd) "
-        "and are read-only. `CATALOG.md` holds the exact statement of "
-        "every proved brick in this problem — read it before citing one.",
+        f"- {companions} sit in Context.md's own directory (NOT your "
+        f"cwd) and are read-only.{catalog_line}",
         "- `patch.lean` is your output; sub-goal stubs go in "
         "`new_<slug>.lean`. Lead with `--` annotation comments, then edit "
         "the body — the signature is locked. See your prompt for layout.",
@@ -617,6 +633,29 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     except OSError:
         return []
     return rows
+
+
+def catalog_has_entries(conn: "sqlite3.Connection | None",
+                        problem: str) -> bool:
+    """Whether a rendered `CATALOG.md` would carry proved bricks.
+
+    The definition of "entries" lives beside the writer on purpose:
+    `write_catalog_companion`'s header counts PROVED rows, and every
+    surface that promises the catalog is promising those. An alive-goals
+    catalog is written too, but "read it before citing a proved brick"
+    is not a promise it keeps.
+
+    Conn-less callers (bare-fixture BRIEF renders) get False — the
+    surfaces then say nothing about a file they cannot vouch for, which
+    is the same answer they give a young problem."""
+    if conn is None:
+        return False
+    try:
+        return conn.execute(
+            "SELECT 1 FROM goals WHERE problem = ? AND status = 'proved'"
+            " LIMIT 1", (problem,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def catalog_companion_path(attempts_dir: Path) -> str:
