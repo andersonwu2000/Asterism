@@ -266,3 +266,58 @@ def test_every_tool_decorator_in_the_repo_opts_out_of_structured_output() -> Non
     assert not offenders, (
         "tool decorators without structured_output=False — each doubles "
         "its payload into structuredContent:\n  " + "\n  ".join(offenders))
+
+
+# ── a `#` inside fenced code is not a heading ────────────────────────
+
+_FENCED = """## Setup
+
+```bash
+# install the toolchain
+elan toolchain install leanprover/lean4:v4.9.0
+```
+
+the line that used to disappear
+
+## After
+tail
+"""
+
+
+def test_a_hash_inside_a_code_fence_does_not_cut_the_section(
+    tmp_path: Path,
+) -> None:
+    """`# install the toolchain` is a line of `## Setup`, and reading it
+    as a heading did two things — the second one silently. It invented a
+    section nobody wrote, and it TRUNCATED the real one at that line, so
+    a reader asking for `Setup` by name got the two lines above the code
+    block and nothing to say the rest existed."""
+    cwd = _workspace(tmp_path)
+    (cwd / "fenced.md").write_text(_FENCED, encoding="utf-8")
+
+    out = wq.run_queries(
+        [{"read": "fenced.md", "sections": ["Setup"]}], cwd=cwd)
+    assert "elan toolchain install" in out
+    assert "the line that used to disappear" in out
+    assert "tail" not in out          # the NEXT real heading still ends it
+
+
+def test_the_outline_counts_only_real_headings(tmp_path: Path) -> None:
+    cwd = _workspace(tmp_path)
+    (cwd / "fenced.md").write_text(_FENCED, encoding="utf-8")
+    out = wq.run_queries([{"read": "fenced.md", "outline": True}], cwd=cwd)
+    assert "2 sections" in out
+    assert "install the toolchain" not in out
+
+
+def test_an_unclosed_fence_does_not_swallow_the_rest_of_the_document(
+    tmp_path: Path,
+) -> None:
+    """A closer is the same character and at least as long as its
+    opener; a `~~~` block is closed by `~~~`, not by a stray ``` — and
+    a tilde fence inside a backtick block is content, not a fence."""
+    cwd = _workspace(tmp_path)
+    (cwd / "mixed.md").write_text(
+        "## One\n~~~\n# not a heading\n~~~\n## Two\nx\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "mixed.md", "outline": True}], cwd=cwd)
+    assert "2 sections" in out

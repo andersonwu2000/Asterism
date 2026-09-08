@@ -5,8 +5,6 @@ watermark note has carried a split promise since 08-29). Everything here
 is pure text: no path resolution, no filesystem, no read scope. That is
 the seam — `workspace_query` decides WHICH file answers a query, this
 module decides what the file's shape is.
-
-Everything moved unchanged.
 """
 from __future__ import annotations
 
@@ -23,6 +21,13 @@ OUTLINE_MATCH_MAX = 60
 #: sections. Level 1-4 only: deeper is prose formatting, not structure.
 HEADING_RE = re.compile(r"^(#{1,4})\s+(\S.*?)\s*$")
 
+#: A fenced code block's opener/closer: three or more backticks or
+#: tildes, indented up to three spaces (CommonMark). The info string
+#: (```lean) is legal only on the OPENER, which is what tells the two
+#: apart when the same line could be either.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
 def sections(lines: "list[str]") -> "list[tuple[str, int, int, int]]":
     """(heading text, level, first line, last line) for each section.
 
@@ -30,9 +35,32 @@ def sections(lines: "list[str]") -> "list[tuple[str, int, int, int]]":
     asking for `## Programme` brings its `###` subsections with it — the
     nesting a reader means when it names a section. Line numbers are
     1-based and inclusive, so they can be handed straight back as
-    `lines`."""
-    heads = []
+    `lines`.
+
+    FENCED CODE IS NOT STRUCTURE. A `# install` inside ```…``` is a line
+    of the surrounding section, and reading it as a heading does two
+    things, the second one silently: it invents a section nobody wrote,
+    and it TRUNCATES the real one at that line — the real section now
+    ends where the phantom begins, so a reader asking for it by name got
+    the half above the code block with nothing to say anything was
+    missing. Every shell or python block in a framework document has
+    such a line. Fence state is tracked the way CommonMark defines it:
+    a closer is the same character, at least as long as the opener, and
+    carries no info string.
+    """
+    heads: "list[tuple[str, int, int]]" = []
+    fence: "str | None" = None
     for i, ln in enumerate(lines, 1):
+        f = _FENCE_RE.match(ln)
+        if f is not None:
+            mark, info = f.group(1), f.group(2).strip()
+            if fence is None:
+                fence = mark
+            elif mark[0] == fence[0] and len(mark) >= len(fence) and not info:
+                fence = None
+            continue
+        if fence is not None:
+            continue
         m = HEADING_RE.match(ln)
         if m:
             heads.append((m.group(2), len(m.group(1)), i))
