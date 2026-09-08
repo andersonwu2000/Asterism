@@ -43,8 +43,19 @@ const SEAT_KEYS = (key: string): boolean =>
   key.endsWith('.provider') ||
   key.endsWith('.reasoning_effort')
 
+// Human labels for the controls; the exact engine key stays in the tooltip.
+const PARAMETER_COPY: Record<string, { label: string; hint?: string }> = {
+  'dispatch.pool': { label: 'Concurrent agents' },
+  'ledger.idle_spares': { label: 'Spare workers', hint: 'Keep this many Lean workers ready for new work.' },
+  'dispatch.ram_budget': { label: 'Memory limit', hint: 'For example, 26G or 85%. Leave empty to use the agent limit.' },
+  'dispatch.budget_sec': { label: 'Time budget (seconds)' },
+  'dispatch.shelve_threshold': { label: 'Attempts before shelving' },
+  'dispatch.quota_wait': { label: 'When the usage limit is reached', hint: 'Choose whether the run resumes after the subscription resets.' },
+  'dispatch.blocked_kinds': { label: 'Paused agent roles' },
+}
+
 function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
-  const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  const { data, error, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   // The polled read carries the DECLARED lists and never spawns. Asking
   // the backends what they actually run is an ACTION — it spawns one
   // subprocess per backend — so it waits for a picker to open rather
@@ -58,13 +69,14 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
     apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
       .then((r) => setLive(r.groups))
       .catch(() => {
+        asked.current = false
         /* keep the declared lists — never blank the picker */
       })
   }, [])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  if (!data) return null
+  if (!data) return <p role="status" className="py-2 text-xs text-ink-dim">{error ? <>Couldn’t load parameters. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></> : 'Loading parameters…'}</p>
   const settings = data.settings.filter((s) => owns(s.key) || s.key.endsWith('.provider'))
   // ONE Save for the whole panel: edits collect as drafts, dirty rows
   // mark themselves, one click lands them all.
@@ -119,7 +131,7 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
     const groups = live ?? s.groups ?? []
     return (
       <ModelPicker
-        className="w-56 shrink-0"
+        className="w-full min-w-0 @min-[36rem]/config:w-56"
         label={`${seat} model`}
         groups={groups}
         value={current}
@@ -134,15 +146,18 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
     )
   }
   const row = (s: ConfigSetting) => {
+    const copy = PARAMETER_COPY[s.key]
     const draft = drafts[s.key]
     const current = String(s.resolved ?? '')
     const dirty = draft !== undefined && draft !== current
     return (
-      <div key={s.key} className="flex items-center gap-3 py-1">
-        <span className="w-56 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
+      <div key={s.key} className="grid min-w-0 gap-2 py-2 @min-[36rem]/config:grid-cols-[minmax(0,1fr)_14rem]">
+        <label htmlFor={`config-${s.key}`} title={s.key} className="min-w-0 break-words text-xs text-ink-dim">{copy?.label ?? s.key.split('.').pop()?.replace(/_/g, ' ')}</label>
         {s.choices ? (
           <Select
-            className="w-56 shrink-0"
+            id={`config-${s.key}`}
+            aria-describedby={`hint-${s.key}`}
+            className="w-full min-w-0"
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           >
@@ -153,41 +168,45 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
             )}
             {s.choices.map((c) => (
               <option key={c} value={c}>
-                {c}
+                {s.key === 'dispatch.quota_wait' ? c === 'true' ? 'Wait for reset' : 'Stop the run' : c}
               </option>
             ))}
           </Select>
         ) : (
           <input
-            className={`w-56 shrink-0 rounded-lg border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
+            id={`config-${s.key}`}
+            aria-describedby={`hint-${s.key}`}
+            inputMode={s.type === 'int' ? 'numeric' : undefined}
+            className={`w-full min-w-0 rounded-lg border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
               dirty ? 'border-star/50' : 'border-edge focus:border-ink-faint'
             }`}
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           />
         )}
-        <span className="min-w-0 truncate text-[11px] text-ink-faint">
+        <span id={`hint-${s.key}`} className="min-w-0 text-[11px] leading-relaxed text-ink-faint @min-[36rem]/config:col-span-2">
           {dirty && (
             <span className="mr-1.5 text-star" title="unsaved change">
               ·
             </span>
           )}
-          {s.description}
+          {copy?.hint ?? s.description}
         </span>
       </div>
     )
   }
   return (
-    <div>
+    <fieldset disabled={saving} className="@container/config min-w-0">
+      {error && <p role="status" className="mb-2 text-xs text-ink-dim">Couldn’t refresh parameters — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>}
       {models.map((s) => {
         const seat = s.key.split('.')[0]
         const prov = providerOf.get(seat)
         const provDirty = prov !== undefined && drafts[prov.key] !== undefined
         return (
-          <div key={s.key} className="flex items-center gap-3 py-1">
-            <span className="w-56 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
+          <div key={s.key} className="grid min-w-0 gap-2 py-2 @min-[36rem]/config:grid-cols-[minmax(0,1fr)_14rem]">
+            <span title={s.key} className="min-w-0 break-words text-xs text-ink-dim">{seat.replace(/_/g, ' ')} model</span>
             {modelPicker(s)}
-            <span className="min-w-0 truncate text-[11px] text-ink-faint">
+            <span className="min-w-0 text-[11px] leading-relaxed text-ink-faint @min-[36rem]/config:col-span-2">
               {(drafts[s.key] !== undefined || provDirty) && (
                 <span className="mr-1.5 text-star" title="unsaved change">
                   ·
@@ -199,7 +218,7 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
         )
       })}
       {knobs.map(row)}
-      <div className="mt-3 flex items-center gap-3 border-t border-edge pt-3">
+      {(dirtyKeys.length > 0 || saving || msg) && <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-edge pt-3">
         <Button
           variant="ok"
           disabled={saving || dirtyKeys.length === 0}
@@ -207,14 +226,10 @@ function ConfigPanel({ owns }: { owns: (key: string) => boolean }) {
         >
           {saving ? 'Saving…' : 'Save changes'}
         </Button>
-        <span className="tnum text-[11px] text-ink-faint">
-          {dirtyKeys.length > 0
-            ? `${dirtyKeys.length} unsaved change${dirtyKeys.length === 1 ? '' : 's'}`
-            : 'no unsaved changes'}
-        </span>
-        {msg && <span className="min-w-0 truncate font-mono text-[11px] text-ink-dim">{msg}</span>}
-      </div>
-    </div>
+        {dirtyKeys.length > 0 && <span className="tnum text-[11px] text-ink-faint">{dirtyKeys.length} unsaved change{dirtyKeys.length === 1 ? '' : 's'}</span>}
+        {msg && <span role="status" className="min-w-0 break-words text-[11px] text-ink-dim">{msg}</span>}
+      </div>}
+    </fieldset>
   )
 }
 
@@ -234,6 +249,7 @@ export function RunParameters({ running }: { running: boolean }) {
       <button
         className="flex cursor-pointer items-baseline gap-2 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
       >
         <span className={`inline-block text-[9px] transition-transform ${open ? 'rotate-90' : ''}`}>
           ▸
@@ -257,8 +273,7 @@ export function RunParameters({ running }: { running: boolean }) {
         <div className="mt-2">
           {running && (
             <div className="mb-3 rounded-lg border border-edge bg-surface-2 px-3 py-2 text-[11px] text-ink-dim">
-              A run is live — saving here makes the engine finish its in-flight work, then
-              hand off to a fresh process on the new parameters (~1 min, nothing is lost).
+              A run is live. Saved changes take effect after the current work finishes, in about a minute.
             </div>
           )}
           <ConfigPanel owns={RUN_KEYS} />

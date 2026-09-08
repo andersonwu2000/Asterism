@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
 import { docAddress } from '../lib/docShell'
+import { beginIntentSave, finishIntentSave, onIntentSaved, setIntentField, useIntentDraft } from '../lib/intentDrafts'
 import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
@@ -114,7 +115,7 @@ function PapersBlock({ problem, project }: { problem: string; project: string })
       ) : (
         <div className="flex flex-col gap-1">
           {(bindings ?? []).map((b) => (
-            <div key={b.id} className="flex items-center gap-2" title={b.reason ?? undefined}>
+            <div key={b.id} className="flex min-w-0 flex-wrap items-center gap-2" title={b.reason ?? undefined}>
               {b.missing ? (
                 <>
                   <span className="font-mono text-[12px] text-ink-dim">
@@ -125,7 +126,7 @@ function PapersBlock({ problem, project }: { problem: string; project: string })
               ) : (
                 <Link
                   to={docHref(project, b)}
-                  className="font-mono text-[12px] text-ink transition-colors hover:text-starlight"
+                  className="min-w-0 break-all font-mono text-[12px] text-ink transition-colors hover:text-starlight"
                   title={b.reason ?? `read ${b.source_name ?? b.id}`}
                 >
                   {b.source_name ?? b.id}
@@ -149,6 +150,7 @@ function PapersBlock({ problem, project }: { problem: string; project: string })
                 className="text-ink-faint transition-colors hover:text-ink disabled:opacity-45"
                 disabled={busy}
                 title="unbind this paper from the problem (the shelf copy stays)"
+                aria-label={`Unbind ${b.source_name ?? b.id}`}
                 onClick={() => void unbind(b.id)}
               >
                 ×
@@ -158,8 +160,8 @@ function PapersBlock({ problem, project }: { problem: string; project: string })
         </div>
       )}
       {bindable.length > 0 && (
-        <div className="mt-2 flex items-center gap-2">
-          <Select className="w-72 shrink-0" value={pick} onChange={(e) => setPick(e.target.value)}>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Select aria-label="Paper to bind" className="w-72 max-w-full min-w-0" value={pick} onChange={(e) => setPick(e.target.value)}>
             <option value="">bind a paper from the shelf…</option>
             {bindable.map((s) => (
               <option key={s.id} value={s.id}>
@@ -199,33 +201,30 @@ export default function IntentEditor({
 }) {
   const [data, setData] = useState<IntentData | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [charter, setCharter] = useState('')
-  const [word, setWord] = useState('')
-  const [settings, setSettings] = useState<IntentData['settings'] | null>(null)
+  const draft = useIntentDraft(problem)
+  const charter = draft.patch.charter ?? data?.charter ?? ''
+  const word = draft.patch.word ?? data?.word ?? ''
+  const settings = data ? { ...data.settings, ...draft.patch.settings } : null
   // per FIELD, not one flag: every sanctioned write records a history
   // row and re-mirrors the durable seed, so posting a field nobody
   // touched would file a change that never happened
-  const [touched, setTouched] = useState<Set<'charter' | 'word' | 'settings'>>(new Set())
-  const [busy, setBusy] = useState(false)
+  const busy = draft.saving
+  const [readTick, setReadTick] = useState(0)
   const [saved, setSaved] = useState(false)
   const [editing, setEditing] = useState(false)
-  const dirty = touched.size > 0
+  const dirty = Object.keys(draft.patch).length > 0
+  useEffect(() => onIntentSaved((savedProblem, submitted) => {
+    if (savedProblem !== problem) return
+    setData(current => current === null ? current : {
+      ...current, ...submitted, settings: { ...current.settings, ...submitted.settings },
+    })
+    setReadTick(n => n + 1)
+  }), [problem])
 
   // the parent shows an unsaved-changes dot on the tab
   useEffect(() => {
     onDirtyChange?.(dirty)
   }, [dirty, onDirtyChange])
-
-  // an unsaved draft must survive an accidental reload/close
-  useEffect(() => {
-    if (!dirty) return
-    const guard = (e: BeforeUnloadEvent) => {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', guard)
-    return () => window.removeEventListener('beforeunload', guard)
-  }, [dirty])
 
   useEffect(() => {
     let cancelled = false
@@ -233,63 +232,44 @@ export default function IntentEditor({
       .then((d) => {
         if (cancelled) return
         setData(d)
-        setCharter(d.charter)
-        setWord(d.word)
-        setSettings(d.settings)
       })
       .catch((e) => !cancelled && setError(String((e as Error).message)))
     return () => {
       cancelled = true
     }
-  }, [problem])
+  }, [problem, readTick])
 
   if (error && !data)
     return (
-      <div className="p-6 text-xs text-ink-dim">
+      <div role="status" className="p-6 text-xs text-ink-dim" title={error}>
         {/* raw "404: unknown problem" is machine voice — say what it
             means and what to do (a problem the engine no longer knows;
             audit 2026-07-11) */}
         {/404|unknown problem|no DB/i.test(error)
           ? 'The engine does not know this problem — it was likely reset or removed. Create it again, or delete the row below.'
-          : error}
+          : 'Couldn’t load the task’s instructions.'}{' '}
+        <button className="cursor-pointer underline" onClick={() => { setError(null); setReadTick(n => n + 1) }}>Retry</button>
       </div>
     )
   if (!data || !settings)
     return <div className="late-fade p-6 text-xs text-ink-faint">Loading…</div>
 
-  const touch = (what: 'charter' | 'word' | 'settings') => {
-    setTouched((old) => new Set(old).add(what))
+  const touch = () => {
     setSaved(false)
   }
 
   const save = async () => {
-    setBusy(true)
+    if (!beginIntentSave(problem)) return
     setError(null)
+    const submitted = draft.patch
     try {
-      await apiPost(`/api/problems/${encodeURIComponent(problem)}/intent`, {
-        ...(touched.has('charter') ? { charter } : {}),
-        ...(touched.has('word') ? { word } : {}),
-        // only the two knobs this panel OWNS. The read carries more
-        // than that (the axiom gate, which is read-only, and machine
-        // channels this UI never shows) and writing a value back
-        // merely because it was read is how a surface starts
-        // asserting settings nobody chose here.
-        ...(touched.has('settings')
-          ? {
-              settings: {
-                library: settings.library,
-                forbidden_lemmas: settings.forbidden_lemmas,
-              },
-            }
-          : {}),
-      })
-      setTouched(new Set())
+      await apiPost(`/api/problems/${encodeURIComponent(problem)}/intent`, submitted)
+      finishIntentSave(problem, submitted)
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     } catch (e) {
+      finishIntentSave(problem)
       setError(String((e as Error).message))
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -324,7 +304,7 @@ export default function IntentEditor({
           <div className="text-sm leading-relaxed text-ink-dim">
             {charter.trim() ? renderProse(charter) : <p>No goal written yet. Use “Edit intent” to describe the question.</p>}
             {word.trim() && <section className="mt-6 border-t border-edge pt-5">
-              <h3 className={eyebrow}>Your standing word</h3>
+              <h3 className={eyebrow}>Standing instructions</h3>
               {renderProse(word)}
             </section>}
             {dirty && <p className="mt-4 text-xs">Reading your unsaved draft — return to “Edit intent” to save it.</p>}
@@ -345,8 +325,8 @@ export default function IntentEditor({
             label="The goal"
             value={charter}
             onChange={(v) => {
-              setCharter(v)
-              touch('charter')
+              setIntentField(problem, 'charter', v, data.charter)
+              touch()
             }}
           />
         </fieldset>
@@ -358,15 +338,15 @@ export default function IntentEditor({
             className={eyebrow}
             title="carried verbatim into every agent at every depth of the discussion tree. The engine has no way to amend it — there is no request it can make against your word."
           >
-            your standing word
+            standing instructions
           </div>
           <MarkdownEditor
-            label="Your standing word"
+            label="Standing instructions"
             heightClass="h-64"
             value={word}
             onChange={(v) => {
-              setWord(v)
-              touch('word')
+              setIntentField(problem, 'word', v, data.word)
+              touch()
             }}
           />
           <div className="mt-1 text-[11px] text-ink-faint">
@@ -375,14 +355,12 @@ export default function IntentEditor({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button variant="primary" disabled={busy || !dirty} onClick={() => void save()}>
             {busy ? 'Saving…' : 'Save'}
           </Button>
           <span className="text-[11px] text-ink-faint">
-            {saved
-              ? 'saved — the engine picks it up on its next tick'
-              : 'plain language; a save reaches the next agent, nothing restarts'}
+            {saved && !dirty ? 'Saved. The next agent will use these instructions.' : null}
           </span>
           {error && <span className="text-[11px] text-ink-dim">{error}</span>}
         </div>
@@ -400,8 +378,10 @@ export default function IntentEditor({
               checked={settings.library}
               disabled={bridged}
               onChange={(e) => {
-                setSettings({ ...settings, library: e.target.checked })
-                touch('settings')
+                setIntentField(problem, 'settings', {
+                  library: e.target.checked, forbidden_lemmas: settings.forbidden_lemmas,
+                }, { library: data.settings.library, forbidden_lemmas: data.settings.forbidden_lemmas })
+                touch()
               }}
             />
             harvest finished work into the Library
@@ -415,8 +395,10 @@ export default function IntentEditor({
             hint="add pattern (e.g. sperner*)"
             values={settings.forbidden_lemmas}
             onChange={(v) => {
-              setSettings({ ...settings, forbidden_lemmas: v })
-              touch('settings')
+              setIntentField(problem, 'settings', {
+                library: settings.library, forbidden_lemmas: v,
+              }, { library: data.settings.library, forbidden_lemmas: data.settings.forbidden_lemmas })
+              touch()
             }}
           />
           {/* the axiom gate is FIXED AT CREATION (server enforces 409):

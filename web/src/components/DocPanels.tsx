@@ -21,16 +21,8 @@ import { Button } from './ui'
  * could not be reused by a shell that owns the view control.
  */
 
-/** The bar every render pane wears: what the pane has to say about
- * itself, and — where there is work to ask for — the button that asks.
- *
- * One shape for prose and for TeX. The two formats must operate alike
- * (owner, 2026-09-06) and "does this read?" is the same question in
- * both; what differs is whether anything must be RUN to answer it. TeX
- * has an engine to call, so it has a button. The painter is already
- * live under the reader's eyes, so prose has only the sentence (owner,
- * 2026-09-08) — the action is optional here for that reason, not as a
- * convenience. */
+/** The status and action for a pane that needs an engine to run.
+ * Prose renders continuously and only reports formatting issues. */
 function PanelBar({
   action,
   status,
@@ -58,13 +50,9 @@ function PanelBar({
  * being written, not as it was last saved.
  *
  * The check is the painter itself (`lib/prose::proseIssues`): the
- * render below the bar is what the document says, and the bar's one
- * line says whether every line of it made the journey. Nothing to
- * press: there is no compile step here, so the button that used to open
- * a report of the same fact was a second door onto the render already
- * on screen (owner, 2026-09-08). A count is enough — an unclosed fence
- * or a formula the typesetter refused is visible in the paint below,
- * which is where the reader is already looking. */
+ * preview is the answer when everything reads cleanly. Only an unclosed
+ * fence or refused formula needs a report, with its source line so the
+ * writer can repair it. */
 export function ProsePanel({
   text,
   scrollRef,
@@ -74,17 +62,17 @@ export function ProsePanel({
    * (`docShell::syncedScrollTop`) */
   scrollRef?: Ref<HTMLDivElement>
 }) {
-  const n = useMemo(() => proseIssues(text).length, [text])
+  const issues = useMemo(() => proseIssues(text), [text])
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <PanelBar
-        warn={n > 0}
-        status={
-          n === 0
-            ? 'painted by the console — it read every line'
-            : `${n} line${n === 1 ? '' : 's'} the painter could not read`
-        }
-      />
+      {issues.length > 0 && (
+        <details className="shrink-0 border-b border-edge px-3 py-2 text-xs text-ink-dim">
+          <summary className="cursor-pointer text-ink">{issues.length} formatting issue{issues.length === 1 ? '' : 's'}</summary>
+          <ul className="mt-2 max-h-36 space-y-2 overflow-y-auto break-words">
+            {issues.map((issue, i) => <li key={i}><span className="font-mono">Line {issue.line}</span> — {issue.detail}</li>)}
+          </ul>
+        </details>
+      )}
       <div ref={scrollRef} className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
         <div className="max-w-[78ch] text-[13px] leading-relaxed text-ink-dim">
           {renderProse(text, { mode: 'document', frontmatter: true })}
@@ -133,31 +121,33 @@ export function TexPanel({
    * follows the file, not every keystroke */
   savedAt: number
 }) {
-  const [result, setResult] = useState<TexResult | null>(null)
+  const [result, setResult] = useState<(TexResult & { source: string }) | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const valueRef = useRef(value)
+  const renderVersion = useRef(0)
   valueRef.current = value
 
   const render = useCallback(
     async (force: boolean) => {
+      const version = ++renderVersion.current
+      const source = valueRef.current
       setBusy(true)
       setError(null)
       try {
-        setResult(
-          await apiPost<TexResult>(`/api/projects/${encodeURIComponent(project)}/tex`, {
+        const next = await apiPost<TexResult>(`/api/projects/${encodeURIComponent(project)}/tex`, {
             path,
             // what is in the box, so the panel follows the writing even
             // before the document lands on disk
-            content: valueRef.current,
+            content: source,
             force,
-          }),
-        )
+          })
+        if (version === renderVersion.current) setResult({ ...next, source })
       } catch (e) {
-        setResult(null)
+        if (version !== renderVersion.current) return
         setError(e instanceof ApiError ? e.detail : String((e as Error).message))
       } finally {
-        setBusy(false)
+        if (version === renderVersion.current) setBusy(false)
       }
     },
     [project, path],
@@ -177,10 +167,14 @@ export function TexPanel({
             {busy ? 'Rendering…' : 'Render'}
           </Button>
         }
-        warn={!busy && result?.status === 'failed'}
+        warn={!busy && Boolean(error || result?.status === 'failed')}
         status={
           busy
             ? 'compiling…'
+            : error
+              ? 'Couldn’t render'
+            : result !== null && result.source !== value
+              ? 'Changed since last render'
             : result?.status === 'ok'
               ? `compiled by ${result.engine}`
               : result?.status === 'no_engine'

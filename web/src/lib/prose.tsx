@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { apiGet } from './api'
 import { currentSegments, navigate } from './router'
 import { Lean } from './lean'
-import { MATH_SPLIT_RE, mathError, withMath } from './tex'
+import { MATH_SPLIT_RE, TeX, mathError, mathRun, withMath } from './tex'
 import { emitGoalHover, emitGoalOpen } from './goalFocus'
 import { parseProjectRoute, projectPath } from './projectRoute'
 import { frameClass, oneNewline } from './textFrame'
@@ -11,8 +11,8 @@ import { frameClass, oneNewline } from './textFrame'
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
  * answers, the Programme. Block engine shaped by QPaper's field-tested
  * renderer (chat-utils.js renderMarkdown): fences and $math$ tokenized
- * out before inline styling, TeX \(..\)/\[..\] normalized to dollar
- * form (models drift off the prompt's delimiter instruction), ordered/
+ * out before inline styling, TeX \(..\)/\[..\] recognized alongside
+ * dollars (models drift off the prompt's delimiter instruction), ordered/
  * mixed lists, quotes, rules and tables as real blocks. One deliberate
  * departure: single newlines inside a paragraph JOIN AS SPACES
  * (CommonMark soft break) — our authors write 72-column hard-wrapped
@@ -209,9 +209,11 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
  * through the Lean tokenizer — code is the one coloured thing on every
  * screen (DESIGN.md) — then $math$, then **bold** / *emphasis* /
  * citation tokens on the rest. */
+const INLINE_CODE_RE = /(`[^`\n]+`)/
+
 export function renderInline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = []
-  text.split(/(`[^`\n]+`)/).forEach((part, i) => {
+  text.split(INLINE_CODE_RE).forEach((part, i) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       // normal-case: code must survive an uppercase ancestor —
       // identifier case is semantic
@@ -368,11 +370,27 @@ function renderRuns(runs: Run[], keyBase: string): ReactNode[] {
   })
 }
 
+function tableCells(line: string): string[] {
+  const cells = ['']
+  const append = (text: string) => { cells[cells.length - 1] += text }
+  const source = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
+  source.split(INLINE_CODE_RE).forEach((part, i) => {
+    if (i % 2) { append(part); return }
+    for (const seg of part.split(MATH_SPLIT_RE)) {
+      if (mathRun(seg)) { append(seg); continue }
+      for (let at = 0; at < seg.length; at++) {
+        if (seg[at] === '\\' && seg[at + 1] === '|') { append('|'); at++ }
+        else if (seg[at] === '|') cells.push('')
+        else append(seg[at])
+      }
+    }
+  })
+  return cells.map(cell => cell.trim())
+}
+
 function renderTable(lines: string[], keyBase: string): ReactNode {
-  const cells = (l: string) =>
-    l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
-  const head = cells(lines[0])
-  const rows = lines.slice(2).filter((l) => l.trim().startsWith('|')).map(cells)
+  const head = tableCells(lines[0])
+  const rows = lines.slice(2).filter((l) => l.trim().startsWith('|')).map(tableCells)
   return (
     <div key={keyBase} className="overflow-x-auto">
       <table className="text-[0.95em]">
@@ -429,6 +447,32 @@ function preamble(text: string): { inner: string; rest: string } | null {
   return null
 }
 
+/** Block boundaries shared by the reading surface and its report.
+ * Code spans protect literal delimiters; a standalone display formula
+ * stays whole before Markdown looks for paragraphs, lists, or headings. */
+function proseBlocks(text: string): { kind: 'prose' | 'code' | 'math'; text: string }[] {
+  const blocks: { kind: 'prose' | 'code' | 'math'; text: string }[] = []
+  const tokens = /```[\s\S]*?(?:```|$)|`[^`\n]+`|\$\$[^$]+\$\$|\\\[[\s\S]+?\\\]/g
+  let start = 0
+  for (const match of text.matchAll(tokens)) {
+    const token = match[0]
+    const code = token.startsWith('```')
+    if (!code && token.startsWith('`')) continue
+    const end = match.index + token.length
+    if (!code) {
+      const before = text.slice(text.lastIndexOf('\n', match.index - 1) + 1, match.index)
+      const nextLine = text.indexOf('\n', end)
+      const after = text.slice(end, nextLine < 0 ? text.length : nextLine)
+      if (before.trim() || after.trim()) continue
+    }
+    if (match.index > start) blocks.push({ kind: 'prose', text: text.slice(start, match.index) })
+    blocks.push({ kind: code ? 'code' : 'math', text: token })
+    start = end
+  }
+  if (start < text.length) blocks.push({ kind: 'prose', text: text.slice(start) })
+  return blocks
+}
+
 /** Full prose body. `mode: 'chat'` = compact, heading marks stripped;
  * `mode: 'document'` = a reading page — real headings (the Programme's
  * title + sections, a document in the Files tab), more air between
@@ -451,12 +495,16 @@ export function renderProse(
     fmBlock = <pre className={frameClass({ tone: 'faint' })}>{pre.inner}</pre>
     text = pre.rest.replace(/^\n+/, '')
   }
-  const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
+  const blocks = proseBlocks(text)
   return (
-    <div className={doc ? 'space-y-3' : 'space-y-2'}>
+    <div className={`min-w-0 [overflow-wrap:anywhere] ${doc ? 'space-y-3' : 'space-y-2'}`}>
       {fmBlock}
-      {blocks.map((block, bi) => {
-        if (block.startsWith('```')) {
+      {blocks.map(({ kind, text: block }, bi) => {
+        if (kind === 'math') {
+          const run = mathRun(block)!
+          return <div key={bi} className="min-w-0 overflow-x-auto"><TeX {...run} /></div>
+        }
+        if (kind === 'code') {
           const body = block.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '')
           return (
             <pre
@@ -467,12 +515,9 @@ export function renderProse(
             </pre>
           )
         }
-        // TeX delimiter drift (QPaper: models emit \(..\)/\[..\] no
-        // matter what the prompt says) — normalized outside fences only
-        const prose = block
-          .replace(/\\\[([\s\S]*?)\\\]/g, (_, tex: string) => `$$${tex}$$`)
-          .replace(/\\\(([^\n]*?)\\\)/g, (_, tex: string) => `$${tex}$`)
-        const paras = prose.split(/\n{2,}/).filter((p) => p.trim() !== '')
+        // Delimiters are recognized by renderInline AFTER code spans
+        // are protected; a literal `\(x\)` must keep its own spelling.
+        const paras = block.split(/\n{2,}/).filter((p) => p.trim() !== '')
         return paras.map((para, pi) => {
           const key = `${bi}.${pi}`
           const lines = para.split('\n')
@@ -573,26 +618,27 @@ export interface ProseIssue {
  */
 export function proseIssues(text: string): ProseIssue[] {
   const out: ProseIssue[] = []
-  const lines = oneNewline(text).split('\n')
-  let fenceAt: number | null = null
-  lines.forEach((line, i) => {
-    if (/^\s*```/.test(line)) {
-      fenceAt = fenceAt === null ? i + 1 : null
-      return
+  let line = 1
+  for (const block of proseBlocks(oneNewline(text))) {
+    if (block.kind === 'code') {
+      if (block.text.indexOf('```', 3) < 0) out.push({
+        line,
+        detail: 'a code fence opens here and never closes — everything below it paints as code',
+      })
+    } else {
+      const prose = block.kind === 'math' ? block.text : block.text.split(INLINE_CODE_RE)
+        .map((part, n) => n % 2 ? ' ' : part).join('')
+      let atLine = line
+      for (const seg of prose.split(MATH_SPLIT_RE)) {
+        const run = mathRun(seg)
+        if (run) {
+          const err = mathError(run.math, run.display)
+          if (err !== null) out.push({ line: atLine, detail: err })
+        }
+        atLine += seg.split('\n').length - 1
+      }
     }
-    if (fenceAt !== null) return
-    for (const seg of line.split(MATH_SPLIT_RE)) {
-      const display = seg.startsWith('$$') && seg.endsWith('$$') && seg.length > 4
-      const inline = !display && seg.startsWith('$') && seg.endsWith('$') && seg.length > 2
-      if (!display && !inline) continue
-      const err = mathError(seg.slice(display ? 2 : 1, display ? -2 : -1), display)
-      if (err !== null) out.push({ line: i + 1, detail: err })
-    }
-  })
-  if (fenceAt !== null)
-    out.push({
-      line: fenceAt,
-      detail: 'a code fence opens here and never closes — everything below it paints as code',
-    })
+    line += block.text.split('\n').length - 1
+  }
   return out.sort((a, b) => a.line - b.line)
 }

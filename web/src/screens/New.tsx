@@ -201,6 +201,7 @@ export default function New({ project }: { project?: string | null }) {
   const hasLean = defs.trim() !== '' || root.trim() !== ''
 
   const create = async () => {
+    if (busy || !nameOk || desc.trim() === '') return
     setBusy(true)
     setError(null)
     // The description IS the charter, verbatim — no `# name` title, no
@@ -260,23 +261,28 @@ export default function New({ project }: { project?: string | null }) {
         from this description; you review its statements before anything is kept.
       </p>
 
-      <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+      <fieldset disabled={busy} aria-busy={busy} className="min-w-0">
+      <label htmlFor="new-task-name" className="mb-1 block text-[11px] font-medium tracking-widest text-ink-dim uppercase">
         name
       </label>
       <input
-        className="mb-1 w-96 rounded-lg border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-        placeholder="Topology.my_theorem"
+        id="new-task-name"
+        className="mb-1 w-full max-w-96 rounded-lg border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+        placeholder={`${project || 'Topology'}.my_theorem`}
+        aria-invalid={nameError !== null || undefined}
+        aria-describedby={nameError ? 'new-task-name-error' : undefined}
         value={name}
         onChange={(e) => setName(e.target.value)}
         spellCheck={false}
         autoFocus
       />
-      <div className="mb-4 min-h-4 text-[11px] text-danger">{nameError ?? ' '}</div>
+      <div id="new-task-name-error" className="mb-4 min-h-4 text-[11px] text-danger">{nameError ?? ' '}</div>
 
-      <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+      <label htmlFor="new-task-goal" className="mb-1 block text-[11px] font-medium tracking-widest text-ink-dim uppercase">
         what should be proved?
       </label>
       <textarea
+        id="new-task-goal"
         className="h-64 w-full resize-y rounded-lg border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder={
           'Describe the mathematics in natural language: the objects involved, the ' +
@@ -289,12 +295,14 @@ export default function New({ project }: { project?: string | null }) {
       />
 
       <label
-        className="mt-4 mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase"
+        htmlFor="new-task-instructions"
+        className="mt-4 mb-1 block text-[11px] font-medium tracking-widest text-ink-dim uppercase"
         title="carried verbatim into every agent at every depth of the discussion tree. The engine reads it and has no way to amend it, while the goal above it may be amended by request."
       >
-        anything that must hold whatever happens <span className="lowercase">(optional)</span>
+        standing instructions <span className="lowercase">(optional)</span>
       </label>
       <textarea
+        id="new-task-instructions"
         className="h-24 w-full resize-y rounded-lg border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder={
           'Standing instructions the engine may never rewrite: routes to prefer or avoid, ' +
@@ -354,14 +362,10 @@ export default function New({ project }: { project?: string | null }) {
         </div>
       )}
 
-      <p className="mt-4 text-[11px] text-ink-faint">
-        When the engine finishes, the results wait for your sign-off — whether they enter the
-        Library is decided there, not here.
-      </p>
-
       <button
         className="mt-4 mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"
         onClick={() => setShowLean((v) => !v)}
+        aria-expanded={showLean}
       >
         {showLean ? '▾' : '▸'} advanced — pin exact Lean (Defs.lean / Root.lean)
       </button>
@@ -409,6 +413,7 @@ export default function New({ project }: { project?: string | null }) {
       <button
         className="mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"
         onClick={() => setShowConstraints((v) => !v)}
+        aria-expanded={showConstraints}
       >
         {showConstraints ? '▾' : '▸'} advanced — engine constraints
       </button>
@@ -435,7 +440,7 @@ export default function New({ project }: { project?: string | null }) {
         </pre>
       )}
 
-      <div className="mt-2 flex items-center gap-3">
+      <div className="mt-2 flex flex-wrap items-center gap-3">
         {/* disabled buttons swallow pointer events — the "why" tooltip
             must live on a wrapper to actually show */}
         <span title={desc.trim() === '' ? 'write a description first' : undefined}>
@@ -453,11 +458,12 @@ export default function New({ project }: { project?: string | null }) {
           </span>
         )}
         {!busy && (
-          <Button variant="ghost" onClick={() => navigate('/')}>
+          <Button variant="ghost" onClick={() => navigate(project ? projectPath(project, 'tasks') : '/')}>
             Cancel
           </Button>
         )}
       </div>
+      </fieldset>
 
       {/* The shelf, floating (owner, 2026-08-27). Browsing a
           collection to choose from it is a task of its own: inlined it
@@ -479,6 +485,8 @@ export default function New({ project }: { project?: string | null }) {
           <input
             className="mt-3 w-full rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
             placeholder={`search ${shelf.length} papers by title or filename`}
+            type="search"
+            aria-label="Search papers"
             value={paperQ}
             onChange={(e) => setPaperQ(e.target.value)}
             spellCheck={false}
@@ -497,6 +505,7 @@ export default function New({ project }: { project?: string | null }) {
                     key={p.id}
                     data-paper-option
                     data-bound={bound ? '' : undefined}
+                    aria-pressed={bound}
                     className="flex w-full cursor-pointer items-baseline gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-wash"
                     onClick={() => togglePaper(p.id)}
                   >
@@ -504,6 +513,7 @@ export default function New({ project }: { project?: string | null }) {
                         the mark is the same glyph in both states so
                         the rows do not shift when one is taken */}
                     <span
+                      aria-hidden="true"
                       className={
                         'shrink-0 text-[11px] ' + (bound ? 'text-ink' : 'text-ink-faint/25')
                       }
@@ -533,7 +543,7 @@ export default function New({ project }: { project?: string | null }) {
               })
             )}
           </div>
-          <div className="mt-3 flex items-center justify-between">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <span className="text-[11px] text-ink-faint">
               {chosen.length === 0
                 ? 'none bound — the engine will work from your description alone'

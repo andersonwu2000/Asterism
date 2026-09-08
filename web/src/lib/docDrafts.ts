@@ -31,14 +31,21 @@ export interface Draft {
 const keyOf = (project: string, path: string): string => `${project}\u0000${path}`
 
 const drafts = new Map<string, Draft>()
+const saves = new Set<string>()
 const listeners = new Set<() => void>()
+const saveListeners = new Set<(project: string, path: string, saved: Draft) => void>()
+
+export function onDocumentSaved(listener: (project: string, path: string, saved: Draft) => void): () => void {
+  saveListeners.add(listener)
+  return () => { saveListeners.delete(listener) }
+}
 
 /** Bumped on every change. `useSyncExternalStore` compares snapshots by
  * identity, so the per-Project view below is rebuilt only when this
  * moves — a component reading it does not get a new object (and a new
  * render) on someone else's keystroke. */
 let version = 0
-const views = new Map<string, { at: number; map: ReadonlyMap<string, Draft> }>()
+const views = new Map<string, { at: number; map: ReadonlyMap<string, Draft>; saving: ReadonlySet<string> }>()
 
 function changed(): void {
   version += 1
@@ -57,6 +64,47 @@ export function setDraft(
 
 export function getDraft(project: string, path: string): Draft | undefined {
   return drafts.get(keyOf(project, path))
+}
+
+export const documentDraftCount = (): number => drafts.size
+
+export function discardProjectDrafts(project: string): void {
+  const head = `${project}\u0000`
+  for (const key of drafts.keys()) {
+    if (!key.startsWith(head)) continue
+    drafts.delete(key)
+  }
+  changed()
+}
+
+/** Saving belongs to the document too: leaving and returning to the
+ * Workspace must not start a second write or clear newer writing. */
+export function beginDraftSave(project: string, path: string): boolean {
+  const key = keyOf(project, path)
+  if (saves.has(key)) return false
+  saves.add(key)
+  changed()
+  return true
+}
+
+export function finishDraftSave(project: string, path: string, saved?: Draft): void {
+  const key = keyOf(project, path)
+  if (saved) {
+    const latest = drafts.get(key)
+    if (latest?.text === saved.text) drafts.delete(key)
+    else if (latest) drafts.set(key, { ...latest, baseEtag: saved.baseEtag })
+  }
+  saves.delete(key)
+  if (saved) for (const listener of saveListeners) listener(project, path, saved)
+  changed()
+}
+
+export function useSavingPaths(project: string): ReadonlySet<string> {
+  return useSyncExternalStore(
+    cb => { listeners.add(cb); return () => listeners.delete(cb) },
+    () => { snapshot(project); return views.get(project)!.saving },
+    () => { snapshot(project); return views.get(project)!.saving },
+  )
 }
 
 export function dropDraft(project: string, path: string): void {
@@ -117,7 +165,8 @@ function snapshot(project: string): ReadonlyMap<string, Draft> {
   const head = `${project}\u0000`
   const map = new Map<string, Draft>()
   for (const [k, v] of drafts) if (k.startsWith(head)) map.set(k.slice(head.length), v)
-  views.set(project, { at: version, map })
+  const saving = new Set([...saves].filter(k => k.startsWith(head)).map(k => k.slice(head.length)))
+  views.set(project, { at: version, map, saving })
   return map
 }
 

@@ -73,7 +73,7 @@ export default function StrategyPanel({
   }, [onClose])
 
   return (
-    <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
+    <div className="rise-in flex h-1/2 min-h-0 w-full shrink-0 flex-col border-t border-edge bg-surface @min-[48rem]/sky:h-full @min-[48rem]/sky:w-96 @min-[48rem]/sky:border-t-0 @min-[48rem]/sky:border-l">
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
         <span className="truncate font-mono text-sm text-ink">
           strategy s{strategyId}

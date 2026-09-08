@@ -35,7 +35,7 @@ import { Button, Select } from './ui'
  * on its own schedule. A settings page that implied otherwise would be
  * describing a mechanism the daemon does not have. */
 export const WHEN =
-  'takes effect on the daemon’s next config check (about a minute)'
+  'Saved. Changes take effect in about a minute, after current work finishes.'
 
 function Row({
   label,
@@ -47,8 +47,8 @@ function Row({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 py-1">
-      <span className="w-32 shrink-0 font-mono text-[11px] text-ink-dim">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6rem] items-center gap-2 py-2 @min-[32rem]/seats:grid-cols-[8rem_minmax(0,1fr)_6rem]">
+      <span className="col-span-2 min-w-0 break-words font-mono text-[11px] text-ink-dim @min-[32rem]/seats:col-span-1">
         {label}
         {/* the settled norm earns no ink: only a seat that has LEFT the
             board is marked, and in the same word the control above
@@ -108,15 +108,16 @@ export default function Seats({
   }
 
   return (
-    <div data-seats>
+    <fieldset data-seats disabled={saving} className="@container/seats min-w-0">
       {rows.map((r) => {
         const picked = value(r.model)
         const stray = offCatalog(groups, picked)
         return (
           <Row key={r.seat} label={r.seat} pinned={pinned.includes(r.seat)}>
             <ModelPicker
-              className="w-56"
+              className="w-full min-w-0"
               label={`${r.seat} model`}
+              title={`Backend: ${value(r.provider) || 'claude'}`}
               groups={groups}
               value={picked}
               onOpen={onAskCatalog}
@@ -127,16 +128,11 @@ export default function Seats({
                 }))
               }
             />
-            {/* the backend is not a control — it is what the model
-                implies, and drawing it as one would let the two
-                disagree (lib/models). It is shown because a seat's
-                whole posture is what this section is for. */}
-            <span className="w-24 shrink-0 text-[11px] text-ink-faint">
-              {value(r.provider) || 'claude'}
-            </span>
+            {/* The model implies its backend; its tooltip and the menu
+                name it without adding another column to every row. */}
             {r.effort !== null && (
               <span
-                className="flex items-center gap-1.5"
+                className="flex min-w-0 flex-col items-start gap-1"
                 title={
                   r.effort.applies
                     ? 'how deep this seat thinks'
@@ -144,7 +140,8 @@ export default function Seats({
                 }
               >
                 <Select
-                  className={`w-24 ${r.effort.applies ? '' : 'opacity-50'}`}
+                  className={`w-full min-w-0 ${r.effort.applies ? '' : 'opacity-50'}`}
+                  aria-label={`${r.seat} reasoning depth`}
                   value={value(r.effort)}
                   onChange={(e) =>
                     setDrafts((d) => ({ ...d, [r.effort!.key]: e.target.value }))
@@ -157,7 +154,7 @@ export default function Seats({
                   ))}
                 </Select>
                 {!r.effort.applies && (
-                  <span className="text-[10px] text-ink-faint">unread here</span>
+                  <span className="text-[10px] text-ink-faint">inactive for this model</span>
                 )}
               </span>
             )}
@@ -165,7 +162,7 @@ export default function Seats({
                 ink: the machine's own catalog does not name it */}
             {stray && (
               <span
-                className="text-[10px] text-ink-faint"
+                className="col-span-full text-[10px] text-ink-faint"
                 title="the yaml seats this name; the machine's catalog does not list it. It still runs — this is what is actually seated."
               >
                 off-catalog
@@ -174,7 +171,7 @@ export default function Seats({
           </Row>
         )
       })}
-      <div className="mt-2 flex flex-wrap items-center gap-3">
+      {(dirty.length > 0 || saving || note) && <div className="mt-2 flex flex-wrap items-center gap-3">
         <Button
           variant="ok"
           size="xs"
@@ -183,8 +180,8 @@ export default function Seats({
         >
           {saving ? 'Saving…' : `Save${dirty.length ? ` (${dirty.length})` : ''}`}
         </Button>
-        <span className="text-[11px] text-ink-faint">{note ?? WHEN}</span>
-      </div>
-    </div>
+        {note && <span role="status" className="text-[11px] text-ink-faint">{note}</span>}
+      </div>}
+    </fieldset>
   )
 }

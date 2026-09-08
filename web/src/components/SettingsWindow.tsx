@@ -190,9 +190,9 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
         </div>
         <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink-faint">
           {seated ? (
-            <span>{p.seats.map((x) => x.seat).join(' · ')}</span>
+            <span title={p.seats.map((x) => x.seat).join(' · ')}>Used by {p.seats.length} agent role{p.seats.length === 1 ? '' : 's'}</span>
           ) : (
-            <span>no seat is pointed at it — nothing here is being spent</span>
+            <span>Not used by the current models</span>
           )}
           {p.auth_flow === 'borrowed_session' && (
             <span title="its sign-in lives in another application, not in a file this console can read — so this row reports what it can see, never a guess">
@@ -320,9 +320,6 @@ function Appearance() {
     <Row>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-xs text-ink">Appearance</span>
-        <span className="text-[11px] text-ink-faint">
-          one achromatic language, two ends of its lightness scale
-        </span>
         <span className="ml-auto flex overflow-hidden rounded-lg border border-edge">
           {(['dark', 'light'] as const).map((t) => (
             <button
@@ -448,8 +445,7 @@ function Machine() {
       <Label>Machine</Label>
       <MachineParameters />
       <div className="mt-2 text-[11px] text-ink-faint">
-        a saved change reaches the engine within about a minute: a running daemon finishes
-        its in-flight work and hands off to a fresh one on the new settings.
+          Changes take effect in about a minute, after the current work finishes.
       </div>
     </Row>
   )
@@ -482,13 +478,13 @@ export default function SettingsWindow({ onClose }: { onClose: () => void }) {
   return (
     <ConfirmWindow title="Settings" width="lg" onClose={onClose}>
       <div className="mt-4 flex flex-col gap-3">
+        <Appearance />
         {(meta?.providers ?? []).map((p) => (
           <Account key={p.name} p={p} onChanged={refresh} />
         ))}
         <Allowance />
         <SeatsSection />
         <Machine />
-        <Appearance />
         <ShutDown />
       </div>
     </ConfirmWindow>

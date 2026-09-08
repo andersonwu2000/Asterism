@@ -244,6 +244,60 @@ describe('renderProse line endings — CRLF is a line ending too', () => {
  * ignore.
  */
 describe('proseIssues — what the painter could not read', () => {
+  it('keeps pipes inside formulas and code inside their table cell', () => {
+    const out = html('| Math | Code |\n| --- | --- |\n| $|x|$ | `a | b` |')
+    expect(out.match(/<td\b/g)).toHaveLength(2)
+    expect(out).toContain('<math')
+    expect(out).toContain('<code')
+  })
+
+  it('reads an escaped table pipe as part of the cell text', () => {
+    const out = html('| Text |\n| --- |\n| left \\| right |')
+    expect(out.match(/<td\b/g)).toHaveLength(1)
+    expect(out).toContain('left | right')
+  })
+
+  it('keeps multiline display math together across a paragraph break', () => {
+    const source = '$$\nx^2\n\n+ y^2\n$$'
+    expect(html(source)).toContain('<math')
+    expect(html(source)).not.toContain('$$')
+    expect(proseIssues(source)).toEqual([])
+  })
+
+  it('does not turn the leading minus in display math into a list', () => {
+    const out = html('\\[\n- x\n\\]')
+    expect(out).toContain('<math')
+    expect(out).not.toContain('<ul')
+  })
+
+  it('leaves TeX examples inside inline code exactly as written', () => {
+    const source = String.raw`Write \(x^2\), \[x^2\] or $x^2$.`
+    const out = html('`' + source + '`')
+    const code = /<code[^>]*>([\s\S]*?)<\/code>/.exec(out)![1].replace(/<[^>]*>/g, '')
+    expect(code).toBe(source)
+    expect(out).not.toContain('class="katex"')
+  })
+
+  it('does not report invalid math quoted as inline code', () => {
+    expect(proseIssues('For example, `' + String.raw`$\frac{1}{$` + '` and `' + String.raw`\(\unknowncommand\)` + '`.')).toEqual([])
+  })
+
+  it.each([
+    String.raw`$x^2$`, String.raw`$$x^2$$`,
+    String.raw`\(x^2\)`, String.raw`\[x^2\]`,
+  ])('reads %s using the same math grammar as its check', source => {
+    expect(html(source)).toContain('class="katex"')
+    expect(proseIssues(source)).toEqual([])
+    expect(proseIssues(source.replace('x^2', String.raw`\unknowncommand`))).toHaveLength(1)
+  })
+
+  it('reports a multiline formula at the line where it opens', () => {
+    const source = 'Before\n\n\\[\n\\unknowncommand\n\\]\n\nAfter'
+    expect(html(source)).toContain('\\unknowncommand')
+    expect(html(source)).not.toContain('class="katex"')
+    expect(proseIssues(source)).toEqual([{ line: 3, detail: expect.stringContaining('Undefined control sequence') }])
+  })
+
   it('says nothing about a document that reads clean', () => {
     expect(proseIssues('# Title\n\nBody with `code` and $x^2$.\n')).toEqual([])
   })

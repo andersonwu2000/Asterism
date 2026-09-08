@@ -36,7 +36,7 @@ function AmendCard({
     try {
       await apiPost(`/api/inbox/amend/${a.id}/resolve`, {
         action,
-        body: action === 'accept' && editing ? body : undefined,
+        body: action === 'accept' && body !== a.proposed_body ? body : undefined,
         reason: action === 'reject' ? reason || undefined : undefined,
       })
       onDone()
@@ -68,11 +68,11 @@ function AmendCard({
 
   return (
     <div className="rounded-xl border border-warn/40 bg-surface p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Link
             to={projectPath(project, 'tasks', a.problem)}
-            className="font-mono text-sm text-ink hover:underline"
+            className="min-w-0 break-all font-mono text-sm text-ink hover:underline"
           >
             {a.problem}
           </Link>
@@ -107,24 +107,24 @@ function AmendCard({
 
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
 
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <Button variant="ok" disabled={busy} onClick={() => void resolve('accept')}>
-          {editing ? 'Accept with edits' : 'Accept proposed'}
+          {body !== a.proposed_body ? 'Accept with edits' : 'Accept proposed'}
         </Button>
         <Button
           variant="outline"
           disabled={busy}
           onClick={() => {
             setEditing((v) => !v)
-            setBody(a.proposed_body)
           }}
         >
           {editing ? 'Back to diff' : 'Edit before accepting'}
         </Button>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">
           {rejecting && (
             <input
-              className="w-64 rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              className="w-64 max-w-full rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              aria-label="Reason for rejecting the amendment"
               placeholder="why? (guides the Strategist)"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -143,7 +143,7 @@ function AmendCard({
       {/* the highest-stakes click states its consequence — one line.
           "Either choice" misled next to THREE buttons (cold-eye): Edit
           is a mode toggle, not a resolution — name the two that are. */}
-      <div className="mb-3 truncate text-[11px] text-ink-faint">
+      <div className="mb-3 text-[11px] leading-relaxed text-ink-dim">
         Accept {isGoal ? 'replaces the goal' : 'writes the file'} (with your edits, if any);
         Reject keeps {isGoal ? 'the current one' : 'it'} and asks you why — either resolution
         unpauses the problem.
@@ -169,13 +169,14 @@ function AmendCard({
 
       {editing ? (
         <textarea
+          aria-label="Proposed amendment"
           className="h-72 w-full resize-y rounded-lg border border-edge bg-bg p-3 font-mono text-xs text-ink focus:border-accent focus:outline-none"
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
         />
       ) : (
-        <DiffView left={a.current_body} right={a.proposed_body} />
+        <DiffView left={a.current_body} right={body} />
       )}
     </div>
   )
@@ -243,7 +244,7 @@ function SignoffCard({
 
   return (
     <div className="rounded-xl border border-warn/30 bg-surface p-4">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <Link
           to={projectPath(project, 'tasks', s.problem)}
           className="font-mono text-sm text-ink hover:underline"
@@ -279,7 +280,7 @@ function SignoffCard({
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       {/* signing ceremony — the affirmative twin of delete's
           type-the-name: approving puts YOUR name on the record */}
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="text-[11px] tracking-widest text-ink-faint uppercase">
           signed off by
         </span>
@@ -297,7 +298,7 @@ function SignoffCard({
           + machine evidence
         </span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="star"
           disabled={busy || !signed}
@@ -334,10 +335,11 @@ function SignoffCard({
         >
           Approve — archive only
         </Button>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">
           {rejecting && (
             <input
-              className="w-64 rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              className="w-64 max-w-full rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              aria-label="Reason for rejecting the results"
               placeholder="what's still missing?"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -363,14 +365,13 @@ function SignoffCard({
  * it is about are, and it draws NOTHING when there is nothing to
  * decide (an empty state on a page you did not open is furniture). */
 export default function Inbox({ project }: { project: string }) {
-  const { data, refresh } = usePoll<InboxResponse>(
+  const { data, error, refresh } = usePoll<InboxResponse>(
     `/api/inbox?project=${encodeURIComponent(project)}`,
     3000,
   )
 
-  if (!data) return null
-  const empty = data.amends.length === 0 && data.signoffs.length === 0
-  if (empty) return null
+  const empty = !data || (data.amends.length === 0 && data.signoffs.length === 0)
+  if (empty && !error) return null
 
   return (
     // no eyebrow of its own: the shelf directly below carries a NEEDS
@@ -378,8 +379,9 @@ export default function Inbox({ project }: { project: string }) {
     // stalled ones), and one page cannot say the same words twice
     // about two things. The sub-labels name what each pile is.
     <section className="mb-7">
+      {error && <p role="status" className="mb-3 text-xs text-ink-dim">Couldn’t check for decisions waiting on you. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>}
       <div className="flex flex-col gap-6">
-          {data.amends.length > 0 && (
+          {data && data.amends.length > 0 && (
             <section>
               <SectionLabel>amend requests ({data.amends.length})</SectionLabel>
               <div className="flex flex-col gap-3">
@@ -389,7 +391,7 @@ export default function Inbox({ project }: { project: string }) {
               </div>
             </section>
           )}
-          {data.signoffs.length > 0 && (
+          {data && data.signoffs.length > 0 && (
             <section>
               <SectionLabel>ingest sign-offs ({data.signoffs.length})</SectionLabel>
               <div className="flex flex-col gap-3">

@@ -156,7 +156,7 @@ test('a pending amendment still locks the goal, but not the standing word', asyn
   await expect(page.getByText('The strategist has proposed a change', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: 'Edit intent' }).click()
   await expect(page.getByRole('textbox', { name: 'The goal', exact: true })).toBeDisabled()
-  await expect(page.getByRole('textbox', { name: 'Your standing word', exact: true })).toBeEnabled()
+  await expect(page.getByRole('textbox', { name: 'Standing instructions', exact: true })).toBeEnabled()
 })
 
 test('failed task listing offers recovery instead of a perpetual loading state', async ({ page }) => {

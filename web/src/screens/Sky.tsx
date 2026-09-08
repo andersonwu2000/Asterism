@@ -252,7 +252,7 @@ export default function Sky({
   // request is conditional now (`pollGet` sends the ETag, the server
   // answers 304 with no body) and 5s is a constellation's cadence, not
   // a stopwatch's.
-  const { data, error, loading } = usePoll<ProblemDetail>(
+  const { data, error, loading, refresh } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(problem)}`,
     5000,
   )
@@ -306,8 +306,8 @@ export default function Sky({
     return onGoalOpen(consume)
   }, [data, problem])
 
-  if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
-  if (error && !data) return <ErrorState error={error} />
+  if (loading && !data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
+  if (error && !data) return <ErrorState error={error} onRetry={refresh} />
   if (!data) return null
 
   const chatHoverIds =
@@ -346,7 +346,8 @@ export default function Sky({
     )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="@container/sky flex h-full min-h-0 flex-col">
+      {error && <p role="status" className="shrink-0 px-4 pt-3 text-xs text-ink-dim">Map updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>}
       {/* the one control this section owns: the same goals, read as a
           map or swept as a table */}
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3">
@@ -366,8 +367,8 @@ export default function Sky({
           {data.goals.filter((g) => g.status === 'proved').length}/{data.goals.length} proved
         </span>
       </div>
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col @min-[48rem]/sky:flex-row">
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           {view === 'map' ? (
             <div className="h-full">
               <Constellation

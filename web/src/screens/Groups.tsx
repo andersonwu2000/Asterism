@@ -82,7 +82,7 @@ export default function Groups({
       : 'thinking'
   }
   const group = resolveGroup(pick, workers)
-  const { data, error, stale } = usePoll<Programme>(
+  const { data, error, stale, refresh } = usePoll<Programme>(
     `/api/problems/${encodeURIComponent(problem)}/programme` +
       (group !== null ? `?group=${group}` : ''),
     15000,
@@ -96,7 +96,7 @@ export default function Groups({
   // the Assistant is told which group's Programme is on screen — the
   // server's own answer, so it can never name a sibling's argument
   usePublishFocus({ problem, group_id: data?.group_id ?? null })
-  if (error) return <ErrorState error={error} />
+  if (error && !data) return <ErrorState error={error} onRetry={refresh} />
   if (!data) return <p role="status" className="px-6 py-8 text-sm text-ink-dim">Reading the discussion…</p>
   // which group the reader is standing on — the server's own answer,
   // never the picker's, so the sheet and the argument on screen are
@@ -106,14 +106,15 @@ export default function Groups({
     (data.groups ?? []).find((g) => g.is_top) ??
     null
   return (
-    <div className="px-2 py-4">
+    <div className="@container/groups px-2 py-4">
+      {error && <div role="status" className="px-5 pb-2 text-xs text-ink-dim">Discussion updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></div>}
       <ProgrammeView
         data={data}
         group={group}
         liveIds={liveIds}
         livePhase={livePhase}
         onPickGroup={setPick}
-        stale={stale}
+        stale={stale && !error}
         /* the row named a revision: read THAT one, in the same shape
            the argument as it stands is read in (owner, 2026-09-06) —
            the ruling above, the body under it, and the chain folded
@@ -145,7 +146,7 @@ export default function Groups({
             )}
             {/* Actions stay with the current argument. Revision
                 history has its own reading view beside this one. */}
-            {shown &&
+            {shown && !stale &&
               (acting ? (
                 <GroupCommandSheet
                   problem={problem}

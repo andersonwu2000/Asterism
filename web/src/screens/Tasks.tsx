@@ -4,7 +4,7 @@ import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { projectPath, shelfOrder } from '../lib/projectRoute'
-import { scopeCovers } from '../lib/programmeFocus'
+import { discardIntentDraft, useIntentDraft } from '../lib/intentDrafts'
 import { RunConfirm } from '../components/CommandConfirm'
 import { ConfirmWindow } from '../components/ConfirmWindow'
 import { Button, StatusBadge } from '../components/ui'
@@ -382,6 +382,7 @@ function Shelf({
  * achromatic law's one sanctioned exception) unlocks only when the name
  * is typed back. The real guards live in the chokepoint. */
 function DeleteTask({ problem, project }: { problem: string; project: string }) {
+  const { saving } = useIntentDraft(problem)
   const [open, setOpen] = useState(false)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
@@ -393,10 +394,12 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
     if (!busy) setOpen(false)
   }, [busy])
   const doDelete = async () => {
+    if (saving) return
     setBusy(true)
     setError(null)
     try {
       await apiPost(`/api/problems/${encodeURIComponent(problem)}/delete`, {})
+      discardIntentDraft(problem)
       navigate(projectPath(project, 'tasks'))
     } catch (e) {
       setError(String((e as Error).message))
@@ -412,6 +415,7 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
           setError(null)
           setOpen(true)
         }}
+        disabled={saving}
       >
         delete this task…
       </button>
@@ -430,6 +434,8 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
           <input
             className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
             placeholder={`type ${problem} to confirm`}
+            aria-label="Task name to confirm deletion"
+            disabled={busy}
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             autoFocus
@@ -445,7 +451,7 @@ function DeleteTask({ problem, project }: { problem: string; project: string }) 
                   ? 'cursor-pointer bg-destruct text-starlight hover:opacity-90'
                   : 'cursor-default border border-edge text-ink-faint'
               }`}
-              disabled={!match || busy}
+              disabled={!match || busy || saving}
               onClick={() => void doDelete()}
             >
               {busy ? 'Deleting…' : 'Delete forever'}
@@ -468,7 +474,6 @@ function OneTask({
 }) {
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [, setDirty] = useState(false)
-  const mine = daemon?.running === true && scopeCovers(daemon.scope, problem)
   return (
     // no horizontal padding of its own: the intent editor brings the
     // page's gutter, and two of them put the header a notch left of
@@ -476,7 +481,7 @@ function OneTask({
     <div className="mx-auto max-w-4xl py-8">
       <Link to={projectPath(project, 'tasks')} className="mx-6 mb-4 inline-block text-xs text-ink-dim hover:text-ink">‹ All tasks</Link>
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 px-6">
-        <span className="font-mono text-sm text-ink">{problem}</span>
+        <span className="min-w-0 break-all font-mono text-sm text-ink">{problem}</span>
         {row && <StatusBadge status={row.status} />}
         <span className="ml-auto flex items-center gap-3">
           <RunControl
@@ -489,23 +494,17 @@ function OneTask({
       <div className="px-6">
         <RunParameters running={daemon?.running ?? false} />
       </div>
-      <nav aria-label="Read this task" className="mx-6 mt-6 grid gap-3 sm:grid-cols-3">
+      <nav aria-label="Read this task" className="mx-6 mt-5 flex flex-wrap gap-x-5 gap-y-2">
         {([
-          ['groups', 'Read the argument', 'The current plan and its discussions.'],
-          ['sky', 'Explore the proof', 'Claims, dependencies and proved steps.'],
-          ['timeline', 'Follow the history', 'Decisions and what became of them.'],
-        ] as const).map(([section, title, description]) => (
-          <Link key={section} to={projectPath(project, section, problem)} className="group rounded-xl border border-edge bg-surface p-4 transition-colors hover:border-ink-faint hover:bg-surface-2">
-            <span className="flex items-center justify-between gap-2 text-xs font-medium text-ink">{title}<span aria-hidden="true" className="text-ink-faint group-hover:text-ink">↗</span></span>
-            <span className="mt-2 block text-[11px] leading-relaxed text-ink-dim">{description}</span>
+          ['groups', 'Read the argument'],
+          ['sky', 'Explore the proof'],
+          ['timeline', 'Follow the history'],
+        ] as const).map(([section, title]) => (
+          <Link key={section} to={projectPath(project, section, problem)} className="text-[11px] text-ink-dim underline decoration-edge-strong underline-offset-4 transition-colors hover:text-ink hover:decoration-ink-faint">
+            {title}
           </Link>
         ))}
       </nav>
-      <div className="mt-3 mb-3 px-6 text-[11px] text-ink-faint">
-        {mine
-          ? 'the run is live — what you save below reaches the next agent it spawns, no restart'
-          : 'what you save below applies when the next run starts'}
-      </div>
       <IntentEditor
         problem={problem}
         project={project}

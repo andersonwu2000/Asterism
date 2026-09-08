@@ -8,7 +8,7 @@ import { cycleLine, isTheory, providerLabel, windowLabel } from '../lib/vocab'
 import type { CycleSubject } from '../lib/vocab'
 import { scopedRows } from '../lib/quota'
 import { projectPath } from '../lib/projectRoute'
-import { navigate } from '../lib/router'
+import { Link, navigate } from '../lib/router'
 import { frameClass } from '../lib/textFrame'
 import { renderInline, renderProse } from '../lib/prose'
 import { PAGE } from '../components/glyphs'
@@ -315,8 +315,8 @@ function Lane({
   const [stopping, setStopping] = useState(false)
   const signal = laneSignal(w, problem ?? null)
   return (
-    <div className="rounded-xl border border-edge bg-surface p-3">
-      <div className="flex items-baseline gap-2.5">
+    <div className="min-w-0 rounded-xl border border-edge bg-surface p-3">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1">
         <KindWord kind={w.kind} className="text-xs font-medium text-ink" />
         {laneProblem ? (
           <GoalLink project={project} problem={laneProblem} slug={w.slug} />
@@ -347,7 +347,7 @@ function Lane({
           </span>
         )}
         <span
-          className="tnum ml-auto text-[11px] text-ink-faint"
+          className="tnum ml-auto whitespace-nowrap text-[11px] text-ink-faint"
           title="how long this agent has worked this goal (engine term: unit lease)"
         >
           on it {laneAge(w.leased_at) ?? '—'}
@@ -611,7 +611,7 @@ export default function EngineRoom({
   // filtered by `problems.project`. Without it a run over another
   // shelf filled this page with another Project's work — and the lane
   // links pointed into THIS Project at another Project's task.
-  const { data, error } = usePoll<RunStatus>(
+  const { data, error, refresh } = usePoll<RunStatus>(
     `/api/run?project=${encodeURIComponent(project)}` +
       (pin ? `&problem=${encodeURIComponent(pin)}` : ''),
     2000,
@@ -658,7 +658,7 @@ export default function EngineRoom({
   // A behind schema arrives HERE rather than as a field: `_ro` refuses
   // the connection, so /api/run 503s before its daemon block exists.
   if (!data && error)
-    return schemaBehindError(error) ? <SchemaLine /> : <ErrorState error={error} />
+    return schemaBehindError(error) ? <SchemaLine /> : <ErrorState error={error} onRetry={refresh} />
   if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
   const d = data.daemon
@@ -714,7 +714,7 @@ export default function EngineRoom({
       : 0
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
+    <div className="@container/engine mx-auto max-w-5xl px-6 py-8">
       {/* one status line, no page title: the menu already said which
           room this is, and drawing that twice is the law the shell
           exists to keep */}
@@ -731,17 +731,20 @@ export default function EngineRoom({
           }`}
         />
         <span className="text-ink">{phase}</span>
-        {data.problem && <span className="font-mono text-ink-dim">{data.problem}</span>}
+        {data.problem && <span className="min-w-0 break-all font-mono text-ink-dim">{data.problem}</span>}
         {running && <RunClock startedAt={d.started_at} />}
         {!running && (
           <span className="text-ink-faint">{lastExitLine(d.last_exit)}</span>
         )}
         {running && !d.stopping && (
           <span className="text-ink-faint">
-            closing this page does NOT stop it — Stop lives on the task
+            Runs continue when you close this page.{' '}
+            <Link to={projectPath(project, 'tasks', pin)} className="text-ink-dim underline decoration-edge-strong underline-offset-2 hover:text-ink">Manage run</Link>
           </span>
         )}
       </div>
+
+      {error && <p role="status" className="mt-3 text-xs text-ink-dim">Engine updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>}
 
       <section className="mt-7">
         <SectionLabel>
@@ -761,12 +764,13 @@ export default function EngineRoom({
                 : 'none this instant — between batches'}
           </div>
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 @min-[48rem]/engine:grid-cols-2">
             {workers.map((w, i) => {
               const laneProblem = w.problem ?? data.problem
               return (
                 <div
                   key={`${w.kind}:${w.slug}:${i}`}
+                  className="min-w-0"
                   onMouseEnter={() =>
                     laneProblem && emitGoalHover({ problem: laneProblem, slug: w.slug })
                   }
@@ -895,7 +899,7 @@ export default function EngineRoom({
                 {providerLabel('claude')}
               </span>
               {claudeSeats !== null && claudeSeats.length > 0 && (
-                <span className="text-ink-faint"> · {claudeSeats.join(' · ')}</span>
+                <span className="text-ink-faint" title={claudeSeats.join(' · ')}> · {claudeSeats.length} agent roles</span>
               )}
             </div>
             {(
@@ -952,7 +956,7 @@ export default function EngineRoom({
                 <div className="text-[11px] text-ink-dim">
                   {providerLabel(l.provider)}
                   {provSeats.length > 0 && (
-                    <span className="text-ink-faint"> · {provSeats.join(' · ')}</span>
+                    <span className="text-ink-faint" title={provSeats.join(' · ')}> · {provSeats.length} agent roles</span>
                   )}
                   {l.plan && <span className="text-ink-faint"> · {l.plan} plan</span>}
                 </div>

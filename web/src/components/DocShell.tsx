@@ -8,6 +8,7 @@ import {
   modeFor,
   ownerOf,
   readSplit,
+  refKey,
   splitStep,
   syncedScrollTop,
   writeSplit,
@@ -20,6 +21,7 @@ import { ImagePanel, LeanInfoPanel, PdfPanel, ProsePanel, TexPanel } from './Doc
 import { MarkdownEditor } from '../lib/markdown'
 import { LeanEditor } from './LeanEditor'
 import { Button } from './ui'
+import { useElementWidth } from '../lib/useElementWidth'
 
 /*
  * The open document (docs_tab_spec.md §C1-C3): one header line saying
@@ -53,8 +55,6 @@ export interface Conflict {
   detail: string
 }
 
-const lastSegment = (path: string): string => path.split('/').pop() ?? path
-
 /** The mode table's pane widths, spelt in the one place that draws
  * them. `even` splits the room between writing and reading; the other
  * two hold content with a width of its own (a compiled page, a column
@@ -86,23 +86,25 @@ const PANE_WIDTH: Record<DocPane, string> = {
 function Divider({
   ratio,
   onRatio,
+  stacked,
 }: {
   ratio: number
   onRatio: (r: number) => void
+  stacked: boolean
 }) {
   const [live, setLive] = useState(false)
   const pct = Math.round(ratio * 100)
   return (
     <div
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={stacked ? 'horizontal' : 'vertical'}
       aria-label="resize the panes"
       aria-valuenow={pct}
       aria-valuemin={Math.round(SPLIT_MIN * 100)}
       aria-valuemax={Math.round((1 - SPLIT_MIN) * 100)}
       tabIndex={0}
       data-split-handle
-      className="group relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize touch-none focus:outline-none"
+      className={`group relative z-10 shrink-0 touch-none focus:outline-none ${stacked ? '-my-1 h-[9px] cursor-row-resize' : '-mx-1 w-[9px] cursor-col-resize'}`}
       onPointerDown={(e) => {
         // the whole gesture belongs to this element, including the part
         // of it that happens over an iframe or a pdf viewer
@@ -112,15 +114,17 @@ function Divider({
       onPointerMove={(e) => {
         if (!live) return
         const box = e.currentTarget.parentElement?.getBoundingClientRect()
-        if (!box || box.width === 0) return
-        onRatio(clampSplit((e.clientX - box.left) / box.width))
+        if (!box || (stacked ? box.height : box.width) === 0) return
+        onRatio(clampSplit(stacked ? (e.clientY - box.top) / box.height : (e.clientX - box.left) / box.width))
       }}
       onPointerUp={(e) => {
         e.currentTarget.releasePointerCapture(e.pointerId)
         setLive(false)
       }}
+      onLostPointerCapture={() => setLive(false)}
       onKeyDown={(e) => {
-        const next = splitStep(ratio, e.key)
+        const key = stacked ? ({ ArrowUp: 'ArrowLeft', ArrowDown: 'ArrowRight' }[e.key] ?? e.key) : e.key
+        const next = splitStep(ratio, key)
         if (next === null) return
         e.preventDefault()
         onRatio(next)
@@ -129,7 +133,7 @@ function Divider({
       {/* the 1px line itself, centred in the hit area */}
       <span
         aria-hidden
-        className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+        className={`absolute transition-colors ${stacked ? 'inset-x-0 top-1/2 h-px -translate-y-1/2' : 'inset-y-0 left-1/2 w-px -translate-x-1/2'} ${
           live ? 'bg-ink-faint' : 'bg-edge group-hover:bg-ink-faint group-focus:bg-ink-faint'
         }`}
       />
@@ -163,6 +167,7 @@ export default function DocShell({
   onSave,
   onTakeDisk,
   onKeepMine,
+  onReload,
 }: {
   project: string
   open: DocRef | null
@@ -185,7 +190,10 @@ export default function DocShell({
   onSave: () => void
   onTakeDisk: () => void
   onKeepMine: () => void
+  onReload: () => void
 }) {
+  const { ref: containerRef, width } = useElementWidth<HTMLDivElement>()
+  const stacked = width < 640
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
   /* Where this reader put the divider. It survives the document, the
    * tab and the browser, because it is a fact about the PERSON — how
@@ -210,14 +218,14 @@ export default function DocShell({
   useEffect(() => () => releaseLeanSlot(slotId), [slotId])
   // a new document is a new caret — a stale line number would ask the
   // engine for a goal in a file nobody is reading
-  const key = open === null ? '' : `${open.kind}:${open.path}`
+  const key = open === null ? '' : refKey(open)
   useEffect(() => setCursor(null), [key])
 
   if (open === null)
     return (
-      <div className="min-w-0 flex-1 overflow-auto p-6">
-        <p className="max-w-md text-[11px] leading-relaxed text-ink-faint">
-          Nothing open. Pick a document on the left, or start one with{' '}
+      <div ref={containerRef} className="min-w-0 flex-1 overflow-auto p-6">
+        <p className="max-w-md text-[13px] leading-relaxed text-ink-dim">
+          Choose a file to read or edit, or start one with{' '}
           <span className="font-mono">+ file</span> under{' '}
           <span className="font-mono">yours</span>.
         </p>
@@ -244,11 +252,8 @@ export default function DocShell({
   const split = showLeft && showRight
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-edge px-4 py-1.5">
-        <span className="font-mono text-[12px] text-ink" title={open.path}>
-          {lastSegment(open.path)}
-        </span>
         <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
           {place(open)}
         </span>
@@ -282,19 +287,21 @@ export default function DocShell({
         )}
         {note !== null && conflict === null && (
           <span
-            className={`min-w-0 truncate text-[11px] ${
-              note === 'saved' ? 'text-ink-faint' : 'text-warn'
+            role="status"
+            className={`min-w-0 text-[11px] ${
+              note === 'saved' ? 'text-ink-faint' : 'w-full break-words text-warn'
             }`}
           >
             {note}
           </span>
         )}
         {conflict !== null && (
-          <span className="flex min-w-0 items-center gap-2 text-[11px] text-warn">
-            <span className="min-w-0 truncate">{conflict.detail}</span>
+          <span role="status" className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-warn">
+            <span className="basis-full" title={conflict.detail}>This file changed on disk. Choose which version to keep.</span>
             <button
               className="cursor-pointer text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
               onClick={onTakeDisk}
+              disabled={saving}
               title="drop what you wrote and reload the file"
             >
               take the disk's
@@ -302,6 +309,7 @@ export default function DocShell({
             <button
               className="cursor-pointer text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
               onClick={onKeepMine}
+              disabled={saving}
               title="overwrite the disk with what you wrote"
             >
               keep mine
@@ -317,13 +325,19 @@ export default function DocShell({
         </button>
       </div>
 
+      {doc?.error != null && doc.text !== undefined && (
+        <p role="status" className="px-4 py-2 text-xs text-ink-dim" title={doc.error}>
+          Couldn’t refresh this file. Your writing is still here.{' '}
+          <button className="cursor-pointer underline" onClick={onReload}>Retry</button>
+        </p>
+      )}
       {isDir ? (
         <div className="min-w-0 flex-1 overflow-auto p-4">
           <p className="text-[11px] text-ink-faint">a folder — new files start here.</p>
         </div>
-      ) : doc?.error != null ? (
+      ) : doc?.error != null && doc.text === undefined ? (
         <div className="min-w-0 flex-1 overflow-auto p-4">
-          <div className="text-xs text-warn">{doc.error}</div>
+          <p role="status" className="text-xs text-ink-dim" title={doc.error}>Couldn’t open this file. <button className="cursor-pointer underline" onClick={onReload}>Retry</button></p>
         </div>
       ) : panel === 'viewer' ? (
         <PdfPanel src={rawDocUrl(project, open)} title={open.path} />
@@ -343,7 +357,7 @@ export default function DocShell({
           <div className="late-fade text-xs text-ink-faint">loading…</div>
         </div>
       ) : (
-        <div className="flex min-h-0 min-w-0 flex-1">
+        <div className={`flex min-h-0 min-w-0 flex-1 ${stacked ? 'flex-col' : ''}`}>
           {showLeft && (
             <div
               ref={sourcePane}
@@ -354,7 +368,7 @@ export default function DocShell({
               // grow:1 would otherwise hand the surplus back and both
               // panes would settle level again whatever the basis said.
               style={split ? { flex: `0 0 ${ratio * 100}%` } : undefined}
-              className="flex min-w-0 flex-1 flex-col overflow-auto p-4"
+              className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto p-4"
               data-source-pane
             >
               {mode.editor === 'lean' ? (
@@ -391,6 +405,7 @@ export default function DocShell({
                   key={key}
                   className={`h-full min-h-[24rem] w-full resize-none rounded-xl border border-edge bg-wash text-ink focus:border-ink-faint focus:outline-none ${EDITOR_METRICS}`}
                   value={text}
+                  aria-label="document source"
                   autoFocus={autoFocus}
                   spellCheck={false}
                   onChange={(e) => onChange(e.target.value)}
@@ -402,14 +417,14 @@ export default function DocShell({
               )}
             </div>
           )}
-          {split && <Divider ratio={ratio} onRatio={setRatio} />}
+          {split && <Divider ratio={ratio} onRatio={setRatio} stacked={stacked} />}
           {showRight && (
             // in a split the divider IS the line, and the pane takes
             // whatever the reader left it — the mode table's starting
             // width only applies when there is nothing to negotiate
             <div
               className={`flex min-h-0 min-w-0 flex-col ${
-                split ? 'flex-1' : PANE_WIDTH[mode.pane]
+                split || stacked ? 'flex-1' : PANE_WIDTH[mode.pane]
               }`}
               data-render-pane
             >

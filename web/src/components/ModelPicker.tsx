@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { pickerRows } from '../lib/models'
 import type { PickerRow } from '../lib/models'
 import type { ModelGroup } from '../lib/types'
@@ -56,6 +56,15 @@ export default function ModelPicker({
   const [at, setAt] = useState(0)
   const boxRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
+  const restoreTrigger = useRef(false)
+
+  // Restore after the options unmount. Focusing during the key event
+  // can race the opening effect and leave focus on a removed option.
+  useLayoutEffect(() => {
+    if (open || !restoreTrigger.current) return
+    restoreTrigger.current = false
+    boxRef.current?.querySelector('button')?.focus()
+  }, [open])
 
   const rows = useMemo(() => pickerRows(groups, value), [groups, value])
   const models = useMemo(
@@ -65,13 +74,13 @@ export default function ModelPicker({
 
   // the menu opens ON the seated model, not at the top: the reader is
   // usually confirming what is there, or stepping one off it
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     const here = rows.findIndex((r) => r.kind === 'model' && r.model === value)
     setAt(here < 0 ? (models[0] ?? 0) : here)
   }, [open, rows, models, value])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     listRef.current?.querySelector<HTMLElement>(`[data-at="${at}"]`)?.focus()
   }, [open, at])
@@ -89,7 +98,11 @@ export default function ModelPicker({
       if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
     }
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      restoreTrigger.current = true
+      setOpen(false)
     }
     window.addEventListener('mousedown', away)
     window.addEventListener('keydown', key, true)
@@ -109,6 +122,7 @@ export default function ModelPicker({
   const take = (row: PickerRow) => {
     if (row.kind !== 'model') return
     onChange(row.model)
+    restoreTrigger.current = true
     setOpen(false)
   }
 
@@ -118,7 +132,8 @@ export default function ModelPicker({
   }
 
   return (
-    <div ref={boxRef} className={`relative ${className}`}>
+    <div ref={boxRef} className={`relative ${className}`}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false) }}>
       <button
         type="button"
         disabled={disabled}
@@ -161,6 +176,9 @@ export default function ModelPicker({
             } else if (e.key === 'ArrowUp') {
               e.preventDefault()
               step(-1)
+            } else if (e.key === 'Home' || e.key === 'End') {
+              e.preventDefault()
+              setAt((e.key === 'Home' ? models[0] : models[models.length - 1]) ?? 0)
             }
           }}
         >

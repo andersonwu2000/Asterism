@@ -4,6 +4,8 @@ import { apiPost, usePoll } from './lib/api'
 import { parseProjectRoute, projectPath, renamedProjectPath } from './lib/projectRoute'
 import { stalePair } from './lib/freshness'
 import { onAssistantRequest } from './lib/focus'
+import { documentDraftCount, unsavedGuard } from './lib/docDrafts'
+import { intentDraftCount } from './lib/intentDrafts'
 import Projects from './screens/Projects'
 import ProjectShell from './screens/ProjectShell'
 import New from './screens/New'
@@ -42,12 +44,8 @@ function UpdateBanner({ meta }: { meta: Meta | null }) {
   return (
     <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
       <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
-      <span className="text-ink">
-        this console is answering with older code than is on disk — quit from Settings,
-        then start Asterism again
-      </span>
-      <span className="font-mono text-[10px] text-ink-faint">
-        {pair[0]} → {pair[1]}
+      <span className="text-ink" title={`Running ${pair[0]}; installed ${pair[1]}`}>
+        Asterism was updated. Quit from Settings and reopen it to use the update.
       </span>
     </div>
   )
@@ -205,6 +203,7 @@ function Shell() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === '/') {
+        if (document.querySelector('[data-confirm-window]')) return
         e.preventDefault()
         setChat((o) => !o)
       }
@@ -235,14 +234,25 @@ function Shell() {
   // browser's generic dialog implies unsaved work that doesn't exist.
   // The truth ("closing this page does NOT stop the engine") is plain
   // words on the surfaces where the run is watched.
+  useEffect(() => {
+    // Drafts survive section changes, so their reload guard must too.
+    const guard = (event: BeforeUnloadEvent) => unsavedGuard(documentDraftCount() + intentDraftCount(), event)
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [])
+
+  // A Project supplies its own main landmark, below its navigation.
+  const Frame = project ? 'div' : 'main'
 
   return (
     <div className="flex h-full flex-col">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-surface-3 focus:px-4 focus:py-2 focus:text-sm"
+        onClick={e => { e.preventDefault(); document.getElementById('main-content')?.focus() }}>Skip to content</a>
       <UpdateBanner meta={meta} />
       <ClaudeBanner meta={meta} />
       <LeanBanner meta={meta} />
-      <div className="flex min-h-0 flex-1">
-        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <Frame data-app-content id={project ? undefined : 'main-content'} tabIndex={project ? undefined : -1} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none">
           {project ? (
             <ProjectShell
               route={project}
@@ -270,7 +280,7 @@ function Shell() {
           ) : (
             <Projects onOpenSettings={() => setSettingsOpen(true)} />
           )}
-        </main>
+        </Frame>
         <AssistantPanel
           open={chatOpen}
           onClose={() => setChat(false)}

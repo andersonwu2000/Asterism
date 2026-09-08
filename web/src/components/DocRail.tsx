@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, apiDelete, apiPost, apiPut } from '../lib/api'
 import { RAIL_ACTS, createFolder, docKind, moveTargets, railGroups, refKey } from '../lib/docShell'
 import type { DocRef, PaperRow, RailGroup, RailGroupId, RailRow } from '../lib/docShell'
@@ -36,6 +36,13 @@ export interface UploadItem {
   detail?: string
 }
 
+export interface RailReading {
+  ready: boolean
+  error: string | null
+  onRetry: () => void
+}
+const SOURCE = { yours: 'files', agent: 'files', papers: 'papers', engine: 'task', proofs: 'task' } as const
+
 /** What a group with nothing in it says. */
 const EMPTY: Record<RailGroupId, string> = {
   yours: 'nothing here yet — “+ file” starts one.',
@@ -72,7 +79,9 @@ export default function DocRail({
   taskFiles,
   open,
   dirty,
+  savingPaths,
   uploads,
+  readings,
   onOpen,
   onRefresh,
   onTask,
@@ -91,7 +100,9 @@ export default function DocRail({
   open: DocRef | null
   /** root-relative paths holding unsaved writing */
   dirty: ReadonlySet<string>
+  savingPaths: ReadonlySet<string>
   uploads: UploadItem[]
+  readings: Record<'files' | 'papers' | 'task', RailReading>
   onOpen: (ref: DocRef) => void
   onRefresh: () => void
   onTask: (task: string) => void
@@ -104,6 +115,7 @@ export default function DocRail({
   onDeleted: (path: string, next: DocRef | null) => void
 }) {
   const [query, setQuery] = useState('')
+  const savingUnder = (path: string) => [...savingPaths].some(p => p === path || p.startsWith(`${path}/`))
   const groups = useMemo(
     () => railGroups({ entries, papers, task, taskFiles, query }),
     [entries, papers, task, taskFiles, query],
@@ -160,6 +172,20 @@ export default function DocRail({
   const createRef = useRef<HTMLInputElement | null>(null)
   const renameRef = useRef<HTMLInputElement | null>(null)
   const paperInput = useRef<HTMLInputElement | null>(null)
+  const returnFocus = useRef(false)
+  useLayoutEffect(() => {
+    if (!returnFocus.current) return
+    returnFocus.current = false
+    const tree = listRef.current
+    const row = tree?.querySelector<HTMLElement>(`[data-at="${focusAt}"]`) ?? tree?.querySelector<HTMLElement>('[data-at]')
+    row?.focus()
+  }, [creating, renaming, moving, focusAt])
+  const cancelInline = () => {
+    returnFocus.current = true
+    setCreating(null)
+    setRenaming(null)
+    setMoving(null)
+  }
 
   useEffect(() => {
     if (creating !== null) createRef.current?.focus()
@@ -249,6 +275,7 @@ export default function DocRail({
   }
 
   const rename = async (from: string) => {
+    if (savingUnder(from)) { setRowNote('Wait for this file to finish saving.'); return }
     const name = renameName.trim()
     const parent = from.split('/').slice(0, -1).join('/')
     const to = `${parent}/${name}`.replace(/\/+/g, '/')
@@ -268,6 +295,7 @@ export default function DocRail({
   }
 
   const move = async (from: string, folder: string) => {
+    if (savingUnder(from)) { setRowNote('Wait for this file to finish saving.'); return }
     const to = `${folder}/${from.split('/').pop()}`.replace(/\/+/g, '/')
     setRowNote(null)
     try {
@@ -290,6 +318,7 @@ export default function DocRail({
   }
 
   const remove = async (path: string) => {
+    if (savingUnder(path)) { setDeleteNote('Wait for this file to finish saving.'); return }
     setDeleteBusy(true)
     setDeleteNote(null)
     try {
@@ -349,7 +378,7 @@ export default function DocRail({
     // the keys read the SAME table the strip does: which group may be
     // written to is one fact, and a second copy of it here is how a
     // read-only group grows a rename nobody meant to give it
-    const own = row !== null && RAIL_ACTS[item.group.id] === 'write'
+    const own = row !== null && RAIL_ACTS[item.group.id] === 'write' && !savingUnder(row.ref.path)
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       focusRow(i + 1)
@@ -412,26 +441,47 @@ export default function DocRail({
 
   let index = -1
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-edge">
+    <aside aria-label="Files" className={`flex min-h-0 w-full shrink-0 flex-col border-b border-edge ${open === null ? 'max-h-none flex-1 @min-[48rem]/project:flex-none' : 'max-h-[40%]'} @min-[48rem]/project:max-h-none @min-[48rem]/project:w-72 @min-[48rem]/project:border-r @min-[48rem]/project:border-b-0`}>
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <input
+          type="search"
           className="min-w-0 flex-1 rounded-md border border-edge bg-bg px-2 py-1 text-[11px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
           placeholder="find by name"
+          aria-label="Find a file"
+          data-file-entry
           value={query}
           spellCheck={false}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') setQuery('')
+            if (e.key === 'Escape' && query !== '') {
+              e.preventDefault()
+              e.stopPropagation()
+              setQuery('')
+            }
           }}
         />
         <button
           onClick={onHide}
           title="hide the file list"
+          aria-label="Hide file list"
+          aria-expanded={true}
           className="shrink-0 cursor-pointer rounded-md px-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
         >
           ‹
         </button>
       </div>
+      {Object.entries(readings).map(([source, reading]) => reading.error && (
+        <p key={source} role="status" title={reading.error} className="px-3 pb-2 text-xs text-ink-dim">
+          {source === 'files' ? 'Files' : source === 'papers' ? 'Papers' : 'Task files'} unavailable.{' '}
+          <button className="cursor-pointer underline" onClick={reading.onRetry}>Retry</button>
+        </p>
+      ))}
+      {filtering && groups.every(g => g.rows.length === 0) && Object.values(readings).every(r => r.ready && !r.error) && (
+        <p role="status" className="px-3 py-3 text-xs leading-relaxed text-ink-dim">
+          No files match “{query.trim()}”.{' '}
+          <button className="cursor-pointer underline" onClick={() => setQuery('')}>Clear search</button>
+        </p>
+      )}
       <div
         ref={listRef}
         role="tree"
@@ -441,6 +491,7 @@ export default function DocRail({
         {groups.map((g) => {
           const gi = ++index
           const gFolded = isFolded(g)
+          const reading = readings[SOURCE[g.id]]
           return (
             <div key={g.id}>
               <div className="mt-2 flex items-baseline gap-2 px-3 pb-1">
@@ -464,7 +515,7 @@ export default function DocRail({
                   <span aria-hidden className="mr-1">
                     {gFolded ? '›' : '⌄'}
                   </span>
-                  {g.label} · {g.count}
+                  {g.label} · {reading.ready ? g.count : '—'}
                 </button>
                 {g.id === 'yours' && (
                   <span className="ml-auto flex gap-2">
@@ -551,10 +602,11 @@ export default function DocRail({
                   note={createNote}
                   onChange={setNewName}
                   onSubmit={() => void create()}
-                  onCancel={() => setCreating(null)}
+                  onCancel={cancelInline}
                 />
               )}
-              {!gFolded && g.rows.length === 0 && (
+              {!gFolded && !reading.ready && !reading.error && <p role="status" className="late-fade px-4 py-1 text-xs text-ink-dim">Reading files…</p>}
+              {!gFolded && g.rows.length === 0 && reading.ready && !reading.error && !filtering && (
                 <p className="px-4 py-1 text-[11px] leading-relaxed text-ink-faint">
                   {EMPTY[g.id]}
                 </p>
@@ -576,11 +628,12 @@ export default function DocRail({
                             ref={renameRef}
                             className="w-full rounded-md border border-edge bg-bg px-2 py-1 font-mono text-[11px] text-ink focus:border-ink-faint focus:outline-none"
                             value={renameName}
+                            aria-label={`Rename ${row.name}`}
                             spellCheck={false}
                             onChange={(e) => setRenameName(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') void rename(row.ref.path)
-                              if (e.key === 'Escape') setRenaming(null)
+                              if (e.key === 'Enter') { e.preventDefault(); void rename(row.ref.path) }
+                              if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancelInline() }
                             }}
                           />
                         </div>
@@ -657,6 +710,7 @@ export default function DocRail({
                       )}
                       {on && (
                         <ActionStrip
+                          saving={savingUnder(row.ref.path)}
                           group={g}
                           depth={row.depth}
                           note={rowNote}
@@ -679,7 +733,7 @@ export default function DocRail({
                           depth={row.depth}
                           onAt={setMoveAt}
                           onPick={(f) => void move(row.ref.path, f)}
-                          onCancel={() => setMoving(null)}
+                          onCancel={cancelInline}
                         />
                       )}
                       {g.id === 'yours' &&
@@ -694,7 +748,7 @@ export default function DocRail({
                             note={createNote}
                             onChange={setNewName}
                             onSubmit={() => void create()}
-                            onCancel={() => setCreating(null)}
+                            onCancel={cancelInline}
                           />
                         )}
                     </div>
@@ -748,12 +802,13 @@ function CreateRow({
         ref={inputRef}
         className="w-full rounded-md border border-edge bg-bg px-2 py-1 font-mono text-[11px] text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder={kind === 'dir' ? 'folder name' : 'name.md'}
+        aria-label={kind === 'dir' ? 'New folder name' : 'New file name'}
         value={value}
         spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') onSubmit()
-          if (e.key === 'Escape') onCancel()
+          if (e.key === 'Enter') { e.preventDefault(); onSubmit() }
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel() }
         }}
       />
       {note !== null && (
@@ -766,6 +821,7 @@ function CreateRow({
 /** What may be done to the selected row — or the sentence saying why
  * nothing may (§D6). The ONLY place these acts live. */
 function ActionStrip({
+  saving,
   group,
   depth,
   note,
@@ -775,6 +831,7 @@ function ActionStrip({
   onMove,
   onDelete,
 }: {
+  saving: boolean
   group: RailGroup
   depth: number
   note: string | null
@@ -809,6 +866,8 @@ function ActionStrip({
           <button
             className="cursor-pointer transition-colors hover:text-ink"
             onClick={onRename}
+            disabled={saving}
+            style={saving ? { opacity: 0.45, cursor: 'default' } : undefined}
             title="F2"
           >
             rename
@@ -817,6 +876,8 @@ function ActionStrip({
           <button
             className="cursor-pointer transition-colors hover:text-ink"
             onClick={onMove}
+            disabled={saving}
+            style={saving ? { opacity: 0.45, cursor: 'default' } : undefined}
             title="m"
           >
             move
@@ -825,6 +886,8 @@ function ActionStrip({
           <button
             className="cursor-pointer transition-colors hover:text-ink"
             onClick={onDelete}
+            disabled={saving}
+            style={saving ? { opacity: 0.45, cursor: 'default' } : undefined}
             title="Delete"
           >
             delete
@@ -859,24 +922,36 @@ function RevealButton({ onReveal }: { onReveal: () => void }) {
  * has to retype is not one they were given (DESIGN.md: a refusal sits
  * where the act would have been). */
 function RevealedPath({ at }: { at: { path: string; where: string } }) {
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const pathRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => setCopyState('idle'), [at.path])
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(at.path)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+      pathRef.current?.focus()
+      pathRef.current?.select()
+    }
+  }
   return (
     <div className="mt-1 leading-relaxed">
       <div>{at.where}</div>
       <div className="mt-0.5 flex items-baseline gap-2">
-        <code className="min-w-0 truncate font-mono text-ink-dim" title={at.path}>
-          {at.path}
-        </code>
+        <input ref={pathRef} readOnly value={at.path} aria-label="File path"
+          className="min-w-0 flex-1 bg-transparent font-mono text-ink-dim outline-none"
+          onFocus={e => e.currentTarget.select()} />
         <button
           className="shrink-0 cursor-pointer transition-colors hover:text-ink"
-          onClick={() => {
-            void navigator.clipboard?.writeText(at.path)
-            setCopied(true)
-          }}
+          aria-label="Copy file path"
+          onClick={() => void copy()}
         >
-          {copied ? 'copied' : 'copy'}
+          {copyState === 'copied' ? 'copied' : 'copy'}
         </button>
       </div>
+      {copyState === 'failed' && <p role="status" className="mt-1">Couldn’t copy automatically. The path is selected for you to copy.</p>}
     </div>
   )
 }
@@ -885,13 +960,16 @@ function RevealedPath({ at }: { at: { path: string; where: string } }) {
  * screen: the column is ONE column, whichever group is being read. */
 export function ClosedColumn({ onOpen }: { onOpen: () => void }) {
   return (
-    <div className="shrink-0 border-r border-edge px-2 py-4">
+      <div className="shrink-0 border-b border-edge px-3 py-2 @min-[48rem]/project:border-r @min-[48rem]/project:border-b-0 @min-[48rem]/project:px-2 @min-[48rem]/project:py-4">
       <button
         onClick={onOpen}
-        title="show the file list"
+          title="show the file list"
+          aria-label="Show file list"
+          data-file-entry
+          aria-expanded={false}
         className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
       >
-        ›
+          <span aria-hidden>›</span><span className="ml-2 @min-[48rem]/project:hidden">Files</span>
       </button>
     </div>
   )

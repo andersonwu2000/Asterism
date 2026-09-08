@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { parseProjectRoute } from '../lib/projectRoute'
-import { useRoute } from '../lib/router'
+import { Link, useRoute } from '../lib/router'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../lib/api'
 import { affectedSummary, commandTitle, splitPrepared } from '../lib/commands'
 import type { PreparedCommand } from '../lib/commands'
@@ -187,7 +188,7 @@ function keep(key: string, value: string | null): void {
 }
 
 const MIN_WIDTH = 360
-const maxWidth = () => Math.min(window.innerWidth * 0.7, 960)
+const maxWidth = () => Math.min(window.innerWidth * 0.7, window.innerWidth - 384, 960)
 const readingWidth = () => Math.min(window.innerWidth * 0.55, 800)
 
 /** The turn as the record keeps it — what streamed, and what it did. */
@@ -220,6 +221,8 @@ export default function AssistantPanel({
   // the Project binds the conversations (§1.1-2) — it comes from the
   // address, and everything session-shaped keys off it
   const project = parseProjectRoute(route.segments)?.project ?? null
+  const projectRef = useRef(project)
+  projectRef.current = project
 
   const [meta, setMeta] = useState<ChatState | null>(null)
   const [liveGroups, setLiveGroups] = useState<ModelGroup[] | null>(null)
@@ -235,7 +238,14 @@ export default function AssistantPanel({
   const [editDraft, setEditDraft] = useState('')
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [answerLocation, setAnswerLocation] = useState<{ project: string | null; path: string } | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const [reading, setReading] = useState(true)
+  const [readError, setReadError] = useState<string | null>(null)
+  const [readTick, setReadTick] = useState(0)
+  const recordVersion = useRef(0)
+  const preparing = useRef(false)
+  const [preparingSend, setPreparingSend] = useState(false)
   // the model choice persists (QA, 2026-07-20): it silently reverted
   // to the costlier default on every reload — a user who parked it on
   // the cheap seat kept paying for the strong one
@@ -256,6 +266,7 @@ export default function AssistantPanel({
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const conversationsRef = useRef<HTMLButtonElement | null>(null)
   const streamingRef = useRef(false)
   const liveRef = useRef<StreamTurn>(emptyTurn())
   const turnsRef = useRef<ChatTurn[]>(turns)
@@ -268,6 +279,8 @@ export default function AssistantPanel({
   const groups = explainerGroups(meta?.groups ?? [], liveGroups)
   const currentSession = sessions.find((s) => s.id === sessionId) ?? null
   const picked = model ?? meta?.model_default ?? ''
+  const canSend = meta !== null && !reading && readError === null && meta.available !== false &&
+    canSwitchModel(currentSession, groups, picked)
 
   const listSessions = useCallback(async (proj: string | null) => {
     const q = proj ? `?project=${encodeURIComponent(proj)}` : ''
@@ -285,6 +298,10 @@ export default function AssistantPanel({
   // transcript under another's name.
   useEffect(() => {
     let gone = false
+    const version = ++recordVersion.current
+    setReading(true)
+    setReadError(null)
+    setMeta(null)
     setSessions([])
     setSessionId(null)
     setTurns([])
@@ -295,11 +312,13 @@ export default function AssistantPanel({
     setSelTurn(null)
     setEditing(null)
     setNote(null)
-    apiGet<ChatState>(
-      `/api/chat/state${project ? `?project=${encodeURIComponent(project)}` : ''}`,
-    )
-      .then((s) => {
-        if (gone) return
+    void (async () => {
+      try {
+        const [s, rows] = await Promise.all([
+          apiGet<ChatState>(`/api/chat/state${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+          listSessions(project),
+        ])
+        if (gone || version !== recordVersion.current) return
         setMeta(s)
         // a model stored while another provider was seated is not a
         // choice here — a name no group offers dies at the spawn
@@ -308,28 +327,24 @@ export default function AssistantPanel({
         // an empty offer is a serve that cannot say, not a refusal
         if (model !== null && offer.length > 0 && !offered && model !== s.model_default)
           setModelState(null)
-      })
-      .catch(() => undefined)
-    void (async () => {
-      try {
-        const rows = await listSessions(project)
-        if (gone) return
         setSessions(rows)
         const remembered = local(sessionKey(project))
         const pick = rows.find((r) => r.id === remembered) ?? rows[0] ?? null
         if (!pick) return
         setSessionId(pick.id)
         const record = await loadRecord(pick.id)
-        if (!gone) setTurns(record)
-      } catch {
-        /* an older serve, or none — the empty state says what to do */
+        if (!gone && version === recordVersion.current) setTurns(record)
+      } catch (e) {
+        if (!gone && version === recordVersion.current) setReadError((e as Error).message)
+      } finally {
+        if (!gone && version === recordVersion.current) setReading(false)
       }
     })()
     return () => {
       gone = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, listSessions, loadRecord])
+  }, [project, listSessions, loadRecord, readTick])
 
   // Which models exist is a question only the machine can answer, and a
   // kept list goes stale the day a vendor ships a tier — so it is asked,
@@ -348,6 +363,7 @@ export default function AssistantPanel({
     apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
       .then((r) => setLiveGroups(r.groups))
       .catch(() => {
+        askedModels.current = false
         /* keep the declared lists — never blank the picker */
       })
   }, [])
@@ -385,7 +401,11 @@ export default function AssistantPanel({
 
   const openSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current) return
+      if (streamingRef.current || preparing.current) return
+      const version = ++recordVersion.current
+      setReading(true)
+      setReadError(null)
+      setTurns([])
       setFoldNote(null)
       setSessionId(id)
       keep(sessionKey(project), id)
@@ -394,23 +414,31 @@ export default function AssistantPanel({
       setEditing(null)
       setLive(null)
       try {
-        setTurns(await loadRecord(id))
+        const record = await loadRecord(id)
+        if (version === recordVersion.current) setTurns(record)
       } catch (e) {
-        setTurns([])
-        setFoldNote({ id, text: String((e as Error).message) })
+        if (version === recordVersion.current) setReadError((e as Error).message)
+      } finally {
+        if (version === recordVersion.current) setReading(false)
       }
     },
     [project, loadRecord],
   )
 
   const newSession = useCallback(async () => {
-    if (streamingRef.current) return
+    if (streamingRef.current || preparing.current || reading || readError !== null) return
+    const version = ++recordVersion.current
+    preparing.current = true
+    setPreparingSend(true)
     setFoldNote(null)
     try {
       const s = await apiPost<ChatSessionSummary>('/api/chat/sessions', { project })
+      keep(sessionKey(project), s.id)
+      if (version !== recordVersion.current || projectRef.current !== project) return
       setSessions((prev) => sortSessions([s, ...prev.filter((p) => p.id !== s.id)]))
       setSessionId(s.id)
-      keep(sessionKey(project), s.id)
+      setReading(false)
+      setReadError(null)
       setTurns([])
       setLive(null)
       setOpenTools(new Set())
@@ -419,9 +447,12 @@ export default function AssistantPanel({
       setFoldOpen(false)
       inputRef.current?.focus()
     } catch (e) {
-      setFoldNote({ id: null, text: String((e as Error).message) })
+      if (version === recordVersion.current) setFoldNote({ id: null, text: String((e as Error).message) })
+    } finally {
+      preparing.current = false
+      setPreparingSend(false)
     }
-  }, [project])
+  }, [project, reading, readError])
 
   const renameSession = useCallback(
     async (id: string, title: string) => {
@@ -431,9 +462,10 @@ export default function AssistantPanel({
           `/api/chat/sessions/${encodeURIComponent(id)}`,
           { title },
         )
-        setSessions(await listSessions(project))
+        const rows = await listSessions(project)
+        if (projectRef.current === project) setSessions(rows)
       } catch (e) {
-        setFoldNote({ id, text: String((e as Error).message) })
+        if (projectRef.current === project) setFoldNote({ id, text: String((e as Error).message) })
       }
     },
     [project, listSessions],
@@ -445,10 +477,11 @@ export default function AssistantPanel({
       try {
         await apiDelete(`/api/chat/sessions/${encodeURIComponent(id)}`)
       } catch (e) {
-        setFoldNote({ id, text: String((e as Error).message) })
+        if (projectRef.current === project) setFoldNote({ id, text: String((e as Error).message) })
         return
       }
       const rows = await listSessions(project).catch(() => [])
+      if (projectRef.current !== project) return
       setSessions(rows)
       if (id === sessionRef.current) {
         const next = rows[0] ?? null
@@ -467,10 +500,12 @@ export default function AssistantPanel({
   const send = useCallback(
     async (raw: string, truncateTo?: number) => {
       const text = raw.trim()
-      if (text === '' || streamingRef.current) return
+      if (text === '' || streamingRef.current || preparing.current || !canSend) return
       // frozen at send: the answer is about the screen the question was
       // asked from, not the one it arrives on
       const { page, project: proj, focus } = whereFromRoute(route.segments, screen)
+      const belongsHere = () => projectRef.current === proj
+      const version = recordVersion.current
       const reask = truncateTo !== undefined
       setNote(null)
       setFoldOpen(false)
@@ -482,16 +517,22 @@ export default function AssistantPanel({
       // conversation per glance is a shelf of nothing
       let sid = sessionRef.current
       if (sid === null) {
+        preparing.current = true
+        setPreparingSend(true)
         try {
           const s = await apiPost<ChatSessionSummary>('/api/chat/sessions', { project: proj })
           sid = s.id
+          keep(sessionKey(proj), s.id)
+          if (!belongsHere() || version !== recordVersion.current) return
           sessionRef.current = s.id
           setSessionId(s.id)
-          keep(sessionKey(proj), s.id)
           setSessions((prev) => sortSessions([s, ...prev.filter((p) => p.id !== s.id)]))
         } catch (e) {
-          setNote(String((e as Error).message))
+          if (belongsHere()) setNote(String((e as Error).message))
           return
+        } finally {
+          preparing.current = false
+          setPreparingSend(false)
         }
       }
 
@@ -502,13 +543,16 @@ export default function AssistantPanel({
         if (inputRef.current) inputRef.current.style.height = 'auto'
       }
       setTurns([...base, { role: 'user', text, at: new Date().toISOString() }])
+      inputRef.current?.focus({ preventScroll: true })
       liveRef.current = { ...emptyTurn(), stage: 'context' }
       setLive(liveRef.current)
+      setAnswerLocation({ project: proj, path: route.path })
       setStreamingBoth(true)
       const ac = new AbortController()
       abortRef.current = ac
 
       const rollback = (detail: string) => {
+        if (!belongsHere()) return
         // failed send → the question returns to the input box, no
         // orphan turn left standing
         setTurns(before)
@@ -516,6 +560,7 @@ export default function AssistantPanel({
         setNote(detail)
       }
       const commit = (extra?: string) => {
+        if (!belongsHere()) return
         const l = liveRef.current
         if (l.text === '' && l.rows.length === 0) {
           setTurns(base)
@@ -577,7 +622,7 @@ export default function AssistantPanel({
               // the first frame names the session this turn was filed
               // on — the server's answer wins over ours
               const id = typeof ev.id === 'string' ? ev.id : null
-              if (id !== null && id !== sessionRef.current) {
+              if (id !== null && belongsHere() && id !== sessionRef.current) {
                 sessionRef.current = id
                 setSessionId(id)
                 keep(sessionKey(proj), id)
@@ -585,7 +630,7 @@ export default function AssistantPanel({
               continue
             }
             liveRef.current = reduceEvent(liveRef.current, ev)
-            setLive(liveRef.current)
+            if (belongsHere()) setLive(liveRef.current)
             if (ev.type === 'done' || ev.type === 'error') {
               landed = true
               if (ev.type === 'done' && !openRef.current) onReplyWaiting(true)
@@ -604,7 +649,7 @@ export default function AssistantPanel({
             return
           }
           liveRef.current = endStream(liveRef.current, why)
-          setLive(liveRef.current)
+          if (belongsHere()) setLive(liveRef.current)
         }
         commit()
       } catch (e) {
@@ -622,11 +667,11 @@ export default function AssistantPanel({
         abortRef.current = null
         // titles, turn counts and the order all moved
         void listSessions(proj)
-          .then(setSessions)
+          .then(rows => { if (belongsHere()) setSessions(rows) })
           .catch(() => undefined)
       }
     },
-    [picked, route.segments, screen, onReplyWaiting, setStreamingBoth, listSessions],
+    [picked, route.segments, route.path, screen, onReplyWaiting, setStreamingBoth, listSessions, canSend],
   )
 
   const stop = useCallback(() => abortRef.current?.abort(), [])
@@ -700,15 +745,15 @@ export default function AssistantPanel({
   // panel while it is shut, and the corner glyph says so
   return (
     <aside
-      className={`relative shrink-0 flex-col border-l border-edge bg-surface ${open ? 'flex' : 'hidden'}`}
-      style={{ width }}
+      className={`relative h-[48dvh] min-h-0 w-full shrink-0 flex-col border-t border-edge bg-surface md:h-full md:w-[min(var(--assistant-width),calc(100vw-24rem))] md:border-t-0 md:border-l ${open ? 'flex' : 'hidden'}`}
+      style={{ '--assistant-width': `${width}px` } as CSSProperties}
       aria-label="assistant"
       onKeyDown={(e) => {
-        if (e.key === 'Escape') onClose()
+        if (e.key === 'Escape' && !e.defaultPrevented) onClose()
       }}
     >
       <div
-        className="absolute top-0 bottom-0 left-0 z-10 w-1 cursor-col-resize hover:bg-edge"
+        className="absolute top-0 bottom-0 left-0 z-10 hidden w-1 cursor-col-resize hover:bg-edge md:block"
         onMouseDown={(e) => {
           dragRef.current = { startX: e.clientX, startW: width }
           document.body.style.cursor = 'col-resize'
@@ -730,6 +775,7 @@ export default function AssistantPanel({
           title="the conversations on this project"
           aria-expanded={foldOpen}
           aria-label="conversations"
+          ref={conversationsRef}
         >
           {foldOpen ? '▾' : '▸'}
         </button>
@@ -754,7 +800,7 @@ export default function AssistantPanel({
             title="stronger models cost more of the same subscription quota"
           />
           <button
-            className="cursor-pointer rounded-lg px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+            className="hidden cursor-pointer rounded-lg px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink md:block"
             onClick={toggleWide}
             title={wide ? 'back to the narrow panel' : 'widen for reading'}
             aria-label="widen"
@@ -778,25 +824,35 @@ export default function AssistantPanel({
         </div>
       )}
 
+      {streaming && answerLocation && answerLocation.project !== project && (
+        <p role="status" className="border-b border-edge px-4 py-2 text-xs text-ink-dim">
+          Still answering in <Link to={answerLocation.path} className="underline">{answerLocation.project ?? 'the previous conversation'}</Link>. The answer will be saved there.
+        </p>
+      )}
+
       {/* the conversations, IN PLACE under the header — do not float
           what the page can simply say (DESIGN.md) */}
       {foldOpen && (
         <SessionsFold
           sessions={sessions}
           currentId={sessionId}
-          streaming={streaming}
+          streaming={streaming || preparingSend}
+          loading={reading}
+          unavailable={readError !== null}
           note={foldNote}
           onOpen={(id) => void openSession(id)}
           onNew={() => void newSession()}
           onRename={(id, t) => void renameSession(id, t)}
           onDelete={(id) => void deleteSession(id)}
-          onClose={() => setFoldOpen(false)}
+          onClose={() => { setFoldOpen(false); conversationsRef.current?.focus() }}
         />
       )}
 
       {/* transcript */}
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {turns.length === 0 && live === null ? (
+        {reading ? <p role="status" className="late-fade text-xs text-ink-dim">Loading conversation…</p> : readError ? (
+          <p role="status" className="text-xs text-ink-dim" title={readError}>Couldn’t load this conversation. <button className="cursor-pointer underline" onClick={() => sessionId ? void openSession(sessionId) : setReadTick(value => value + 1)}>Retry</button></p>
+        ) : turns.length === 0 && live === null ? (
           <div className="flex h-full flex-col justify-center gap-3 text-[12px] text-ink-faint">
             <p>
               ask about progress, a lemma, or how the machine works. it reads the workspace and
@@ -845,7 +901,7 @@ export default function AssistantPanel({
                   selected={selTurn === i}
                   editing={editing === i}
                   draft={editDraft}
-                  canEdit={!streaming}
+                  canEdit={!streaming && canSend && !preparingSend}
                   onSelect={() => setSelTurn(selTurn === i ? null : i)}
                   onEdit={() => {
                     setEditing(i)
@@ -853,9 +909,7 @@ export default function AssistantPanel({
                   }}
                   onDraft={setEditDraft}
                   onSubmit={() => {
-                    const text = editDraft
-                    setEditing(null)
-                    void send(text, i)
+                    void send(editDraft, i)
                   }}
                   onCancel={() => setEditing(null)}
                 />
@@ -923,6 +977,7 @@ export default function AssistantPanel({
             value={input}
             rows={1}
             placeholder="ask anything…"
+            aria-label="Message to the Assistant"
             className="max-h-40 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
             // grow with CONTENT, not just newlines — a long soft-wrapped
             // question scrolled invisibly inside a two-line box (QA)
@@ -952,8 +1007,8 @@ export default function AssistantPanel({
             <button
               className="mb-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-bg transition-colors enabled:bg-ink enabled:hover:bg-ink-dim disabled:cursor-default disabled:bg-surface-3 disabled:text-ink-faint"
               onClick={() => void send(input)}
-              disabled={input.trim() === '' || unavailable !== null || wrongBackend}
-              title="send (Enter)"
+              disabled={input.trim() === '' || !canSend || preparingSend}
+              title={preparingSend ? 'Preparing conversation…' : 'send (Enter)'}
               aria-label="send"
             >
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>

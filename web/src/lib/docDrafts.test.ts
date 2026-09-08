@@ -1,13 +1,39 @@
 import { describe, expect, it } from 'vitest'
 import {
+  beginDraftSave,
   dirtyPaths,
   dropDraft,
   getDraft,
+  finishDraftSave,
+  discardProjectDrafts,
   isDirty,
   renameDraft,
   setDraft,
   unsavedGuard,
 } from './docDrafts'
+
+it('a completed save clears only its snapshot and rebases later writing', () => {
+  setDraft('Save', 'user/a.md', 'sent', 'original')
+  expect(beginDraftSave('Save', 'user/a.md')).toBe(true)
+  expect(beginDraftSave('Save', 'user/a.md')).toBe(false)
+  setDraft('Save', 'user/a.md', 'later', 'original')
+  finishDraftSave('Save', 'user/a.md', { text: 'sent', baseEtag: 'saved' })
+  expect(getDraft('Save', 'user/a.md')).toEqual({ text: 'later', baseEtag: 'saved' })
+  expect(beginDraftSave('Save', 'user/a.md')).toBe(true)
+  finishDraftSave('Save', 'user/a.md')
+  expect(getDraft('Save', 'user/a.md')).toEqual({ text: 'later', baseEtag: 'saved' })
+  beginDraftSave('Save', 'user/a.md')
+  finishDraftSave('Save', 'user/a.md', { text: 'later', baseEtag: 'saved-again' })
+  expect(getDraft('Save', 'user/a.md')).toBeUndefined()
+})
+
+it('deleting a project clears only its own drafts', () => {
+  setDraft('Before', 'user/a.md', 'my writing', 'one')
+  setDraft('Other', 'user/a.md', 'other writing', 'two')
+  discardProjectDrafts('Before')
+  expect(dirtyPaths('Before')).toEqual([])
+  expect(getDraft('Other', 'user/a.md')?.text).toBe('other writing')
+})
 
 /*
  * Unsaved writing, and the guard that stands over it (docs_tab_spec.md

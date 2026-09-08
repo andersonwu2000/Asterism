@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
 // namespace import on purpose: the portal call below is then the ONLY
 // occurrence of that name anywhere in `src`, so grepping for it is a
@@ -71,9 +71,35 @@ export function ConfirmWindow({
   children: ReactNode
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null)
+  const titleId = useId()
+  // Capture before a child's autoFocus runs. A picker may focus its
+  // search input during commit, before this window's effect executes.
+  const returnFocus = useRef(document.activeElement as HTMLElement | null)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      const panel = panelRef.current
+      const windows = document.querySelectorAll('[data-confirm-window]')
+      if (!panel || windows[windows.length - 1] !== panel) return
+      if (e.key === 'Tab') {
+        const stops = Array.from(panel.querySelectorAll<HTMLElement>(
+          'a[href], button, input, select, textarea, summary, [tabindex]',
+        )).filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length > 0)
+        const first = stops[0]
+        const last = stops[stops.length - 1]
+        const active = document.activeElement
+        if (!first) {
+          e.preventDefault()
+          panel.focus()
+        } else if (e.shiftKey && (active === first || active === panel || !panel.contains(active))) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && (active === last || !panel.contains(active))) {
+          e.preventDefault()
+          first.focus()
+        }
+        return
+      }
+      if (e.key !== 'Escape' || e.defaultPrevented) return
       // The INNERMOST surface answers first. This listener is on
       // `window` in the CAPTURE phase — it has to be, or a keystroke
       // inside the panel would never reach it — which means it also
@@ -83,6 +109,7 @@ export function ConfirmWindow({
       // layer that can be dismissed says so with `data-dismissible`
       // and takes the key; the window closes on the next press.
       if (document.querySelector('[data-dismissible]') !== null) return
+      e.preventDefault()
       e.stopPropagation()
       onClose()
     }
@@ -93,19 +120,38 @@ export function ConfirmWindow({
   useEffect(() => {
     if (autoFocus) panelRef.current?.focus()
   }, [autoFocus])
+  useEffect(() => {
+    const opener = returnFocus.current
+    const panel = panelRef.current
+    return () => {
+      // Strict Mode rehearses effect cleanup while the window remains
+      // mounted. Restore only after its actual removal; otherwise the
+      // rehearsal takes focus away from an input that just opened.
+      queueMicrotask(() => {
+        if (panel?.isConnected) return
+        const active = document.activeElement
+        if (active !== document.body && active?.isConnected) return
+        if (opener?.isConnected) opener.focus({ preventScroll: true })
+      })
+    }
+  }, [])
   return ReactDOM.createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-3 sm:p-6"
       onClick={onClose}
     >
       <div
         ref={panelRef}
+        data-confirm-window
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         tabIndex={-1}
-        className={`${WIDTH[width]} max-h-[85vh] max-w-full overflow-y-auto rounded-xl border border-edge bg-surface p-5 focus:outline-none`}
+        className={`${WIDTH[width]} flex max-h-[85dvh] max-w-full flex-col rounded-xl border border-edge bg-surface p-5 focus:outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-ink">{title}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span id={titleId} className="text-sm font-medium text-ink">{title}</span>
           {subject !== undefined && (
             <span
               className="min-w-0 truncate font-mono text-[11px] text-ink-faint"
@@ -122,8 +168,16 @@ export function ConfirmWindow({
               {badge}
             </span>
           )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={`Close ${title}`}
+            className="ml-auto flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-base text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+          >
+            <span aria-hidden>×</span>
+          </button>
         </div>
-        {children}
+        <div data-window-body className="min-h-0 overflow-y-auto overscroll-contain">{children}</div>
       </div>
     </div>,
     document.body,

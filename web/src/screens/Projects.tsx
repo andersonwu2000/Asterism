@@ -4,6 +4,8 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { projectPath } from '../lib/projectRoute'
 import { visibleProjects } from '../lib/projectShelf'
+import { discardProjectDrafts, useDrafts, useSavingPaths } from '../lib/docDrafts'
+import { readTabs, writeTabs } from '../lib/docTabs'
 import type { ProjectFilter } from '../lib/projectShelf'
 import CollectionSearch from '../components/CollectionSearch'
 import ProjectSkyPreview from '../components/ProjectSkyPreview'
@@ -38,7 +40,7 @@ function TileActions({
   onDelete: () => void
 }) {
   return (
-    <div className="pointer-events-none absolute right-5 top-4 flex justify-end gap-3 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+    <div className="pointer-events-none absolute right-5 top-4 flex justify-end gap-3 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
       {(
         [
           ['rename…', onRename, `rename ${p.name} — the tasks keep their names and their folders`],
@@ -76,6 +78,13 @@ function RenameProject({
   onDone: () => void
 }) {
   const [name, setName] = useState(p.name)
+  const savingFiles = useSavingPaths(p.name).size > 0
+  const hasDrafts = useDrafts(p.name).size > 0
+  // The current rename endpoint changes the database name but leaves
+  // Problems/<name>/_docs in place. Never strand that document shelf.
+  const { data: docs, error: docsError, refresh: retryDocs } = usePoll<{ entries: { kind: string }[] }>(`/api/projects/${encodeURIComponent(p.name)}/docs`, 0)
+  const hasDocuments = hasDrafts || (docs?.entries.some(entry => entry.kind === 'file') ?? false)
+  const canRename = docs !== null && !docsError && !hasDocuments && !savingFiles
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // the name is the thing being edited, so the focus lands there and
@@ -86,10 +95,12 @@ function RenameProject({
     inputRef.current?.select()
   }, [])
   const save = async () => {
+    if (!canRename || busy || !name.trim() || name.trim() === p.name) return
     setBusy(true)
     setErr(null)
     try {
       await apiPatch(`/api/projects/${encodeURIComponent(p.name)}`, { name: name.trim() })
+      writeTabs(name.trim(), readTabs(p.name))
       onDone()
       onClose()
     } catch (e) {
@@ -114,6 +125,9 @@ function RenameProject({
         ref={inputRef}
         className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
         value={name}
+        aria-label="Project name"
+        autoFocus
+        disabled={busy}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && name.trim() !== '' && !busy) void save()
@@ -126,12 +140,15 @@ function RenameProject({
         </Button>
         <Button
           variant="primary"
-          disabled={busy || name.trim() === '' || name.trim() === p.name}
+          disabled={busy || !canRename || name.trim() === '' || name.trim() === p.name}
           onClick={() => void save()}
         >
-          {busy ? 'Renaming…' : 'Rename'}
+            {busy ? 'Renaming…' : 'Rename'}
         </Button>
       </div>
+      {hasDocuments ? <p role="status" className="mt-2 text-xs text-ink-dim">This project has documents. Renaming is unavailable because it would leave their folder behind.</p>
+        : docsError ? <p role="status" className="mt-2 text-xs text-ink-dim">Couldn’t check this project’s documents. <button className="cursor-pointer underline" onClick={retryDocs}>Retry</button></p>
+        : docs === null ? <p role="status" className="late-fade mt-2 text-xs text-ink-faint">Checking documents…</p> : null}
     </ConfirmWindow>
   )
 }
@@ -154,11 +171,15 @@ function DeleteProject({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const empty = p.problems === 0
+  const savingFiles = useSavingPaths(p.name).size > 0
+  const drafts = useDrafts(p.name).size
   const remove = async () => {
+    if (savingFiles || busy) return
     setBusy(true)
     setErr(null)
     try {
       await apiDelete(`/api/projects/${encodeURIComponent(p.name)}`)
+      discardProjectDrafts(p.name)
       onDone()
       onClose()
     } catch (e) {
@@ -185,6 +206,7 @@ function DeleteProject({
           </>
         )}
       </p>
+      {drafts > 0 && empty && <p className="mt-2 text-xs text-ink-dim">This also discards {drafts} unsaved document {drafts === 1 ? 'draft' : 'drafts'}.</p>}
       {err && <div className="mt-2 text-xs text-danger">{err}</div>}
       <div className="mt-4 flex items-center justify-end gap-2">
         <Button variant="outline" onClick={onClose} disabled={busy}>
@@ -193,7 +215,7 @@ function DeleteProject({
         {empty && (
           <button
             className="cursor-pointer rounded-lg bg-destruct px-3 py-1.5 text-xs font-medium text-starlight transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
-            disabled={busy}
+            disabled={busy || savingFiles}
             onClick={() => void remove()}
           >
             {busy ? 'Deleting…' : 'Delete'}
@@ -256,10 +278,11 @@ function NewProject({ onDone }: { onDone: () => void }) {
     if (open) inputRef.current?.focus()
   }, [open])
   const create = async () => {
+    if (busy || name.trim() === '') return
     setBusy(true)
     setErr(null)
     try {
-      const r = await apiPost<{ project: string }>('/api/projects', { name, description })
+      const r = await apiPost<{ project: string }>('/api/projects', { name: name.trim(), description })
       setOpen(false)
       setName('')
       setDescription('')
@@ -277,7 +300,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
         className="flex min-h-[400px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-edge p-5 text-[12.5px] text-ink-dim transition-colors hover:border-ink-faint hover:bg-surface"
         onClick={() => setOpen(true)}
       >
-        <span className="mb-1 text-[18px] leading-none">+</span>
+        <span aria-hidden className="mb-1 text-[18px] leading-none">+</span>
         new project
       </button>
       {open && (
@@ -285,7 +308,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
           title="New project"
           width="sm"
           autoFocus={false}
-          onClose={() => setOpen(false)}
+          onClose={() => { if (!busy) setOpen(false) }}
         >
           <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
             one identifier — a letter, then letters, digits or underscore. It becomes the
@@ -295,18 +318,24 @@ function NewProject({ onDone }: { onDone: () => void }) {
             ref={inputRef}
             className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
             placeholder="Combinatorics"
+            aria-label="Project name"
+            autoFocus
+            disabled={busy}
             value={name}
             onChange={(e) => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void create() } }}
           />
           <textarea
             className="mt-2 h-20 w-full resize-none rounded-md border border-edge bg-bg px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
             placeholder="what this shelf is for (optional)"
+            aria-label="Project description (optional)"
+            disabled={busy}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
           {err && <div className="mt-2 text-xs text-danger">{err}</div>}
           <div className="mt-4 flex items-center justify-end gap-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
               Cancel
             </Button>
             <Button
@@ -331,7 +360,6 @@ export default function Projects({ onOpenSettings }: { onOpenSettings: () => voi
   )
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ProjectFilter>('all')
-  if (error && !data) return <ErrorState error={error} />
   const projects = data?.projects ?? []
   const visible = visibleProjects(projects, query, filter)
   const filters = [
@@ -379,7 +407,7 @@ export default function Projects({ onOpenSettings }: { onOpenSettings: () => voi
         </div>
       </div>
       {error && data && <div role="status" className="mb-4 text-xs text-ink-dim">Updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></div>}
-      {!data ? <p role="status" className="py-12 text-sm text-ink-dim">Loading projects…</p> : <>
+      {!data ? (error ? <ErrorState error={error} onRetry={refresh} /> : <p role="status" className="py-12 text-sm text-ink-dim">Loading projects…</p>) : <>
       {projects.length === 0 && <p className="mb-6 text-sm text-ink-dim">Start with a project. Its tasks, documents and discussions will live together here.</p>}
       {visible.length === 0 && projects.length > 0 && (
         <div role="status" className="mb-6 rounded-xl border border-edge px-6 py-10">

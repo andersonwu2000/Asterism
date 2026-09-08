@@ -37,7 +37,12 @@ export function UserTurn({
   onCancel: () => void
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const wasEditing = useRef(false)
   useEffect(() => {
+    const closing = wasEditing.current && !editing
+    wasEditing.current = editing
+    if (closing) rootRef.current?.querySelector<HTMLButtonElement>('button[data-user-question]')?.focus()
     if (editing) {
       const el = ref.current
       if (!el) return
@@ -50,11 +55,12 @@ export function UserTurn({
 
   if (editing)
     return (
-      <div className="mt-5 first:mt-0">
+      <div ref={rootRef} className="mt-5 first:mt-0">
         <div className="rounded-xl border border-edge bg-surface-2 px-2 py-1.5">
           <textarea
             ref={ref}
             value={draft}
+            aria-label="Edit question"
             rows={2}
             className="max-h-56 w-full resize-none bg-transparent px-1 py-0.5 text-[13px] text-ink focus:outline-none"
             onInput={(e) => {
@@ -69,16 +75,16 @@ export function UserTurn({
                 onCancel()
               } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
-                onSubmit()
+                if (canEdit && draft.trim() !== '') onSubmit()
               }
             }}
           />
         </div>
-        <div className="mt-1 flex items-center gap-2 pl-1 text-[11px] text-ink-faint">
+        <div className="mt-1 flex flex-wrap items-center gap-2 pl-1 text-[11px] text-ink-faint">
           <button
             className="cursor-pointer transition-colors hover:text-ink"
             onClick={onSubmit}
-            disabled={draft.trim() === ''}
+            disabled={!canEdit || draft.trim() === ''}
             title="everything after this question is dropped, here and on the engine"
           >
             re-ask
@@ -92,16 +98,19 @@ export function UserTurn({
       </div>
     )
 
+  const Card = canEdit ? 'button' : 'div'
   return (
-    <div className="mt-5 first:mt-0">
-      <div
-        className={`cursor-text rounded-xl px-3 py-2 text-[13px] whitespace-pre-wrap transition-colors ${
+    <div ref={rootRef} className="mt-5 first:mt-0">
+      <Card
+        data-user-question
+        aria-expanded={canEdit ? selected : undefined}
+        className={`w-full cursor-text rounded-xl px-3 py-2 text-left text-[13px] whitespace-pre-wrap transition-colors ${
           selected ? 'bg-surface-3 text-ink' : 'bg-surface-2 text-ink'
         }`}
-        onClick={onSelect}
+        onClick={canEdit ? onSelect : undefined}
       >
         {text}
-      </div>
+      </Card>
       {selected && canEdit && (
         <div className="mt-1 pl-1 text-[11px] text-ink-faint">
           <button className="cursor-pointer transition-colors hover:text-ink" onClick={onEdit}>

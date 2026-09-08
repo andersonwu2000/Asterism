@@ -362,8 +362,8 @@ test('workspace: the render pane says whether it read, and asks nothing', async 
 }) => {
   // The `Check` button opened a report of the same fact the render
   // below it already shows — there is no compile step for prose, so
-  // there was nothing to press for (owner, 2026-09-08). The one line
-  // stays.
+  // there was nothing to press for. A clean render is its own answer;
+  // only formatting issues need another line.
   const shelf = await firstShelf(request)
   test.skip(shelf === null, 'needs a workspace with a Project')
   const s = shelf as Shelf
@@ -392,7 +392,8 @@ test('workspace: the render pane says whether it read, and asks nothing', async 
   await page.goto(at(s.project, 'workspace'))
   await page.getByRole('treeitem', { name: /prose\.md/ }).click()
   const pane = page.locator('[data-render-pane]')
-  await expect(pane.getByText('painted by the console')).toBeVisible()
+  await expect(pane.getByRole('heading', { name: 'A heading' })).toBeVisible()
+  await expect(pane.getByText(/formatting issue/)).toHaveCount(0)
   await expect(pane.locator('button')).toHaveCount(0)
 })
 
@@ -506,7 +507,7 @@ test('settings: one default control, three layers, and no second effort dial', a
   // the page
   await expect(page.getByText(/\.reasoning_effort/)).toHaveCount(0)
   // and the machine's own numbers are still here, beside it
-  await expect(page.getByText('dispatch.pool')).toBeVisible()
+  await expect(page.getByLabel('Concurrent agents', { exact: true })).toBeVisible()
 })
 
 test('settings: the seats, read one chair at a time, behind Advanced', async ({
@@ -545,8 +546,9 @@ test('settings: the seats, read one chair at a time, behind Advanced', async ({
   await page.keyboard.press('Escape')
   await expect(menu).toBeHidden()
   await expect(seats).toBeVisible()
-  // a write lands in a FILE; nothing here reaches a running daemon
-  await expect(seats.getByText(/next config check/)).toBeVisible()
+  await expect(seats.getByRole('combobox', { name: 'strategist reasoning depth' })).toBeVisible()
+  // A settled roster needs no disabled Save or repeated status sentence.
+  await expect(seats.getByRole('button', { name: /^Save/ })).toHaveCount(0)
 })
 
 test('the old settings address opens the window and steps out of the way', async ({
@@ -643,10 +645,10 @@ test('the Assistant model picker is two levels, not a flat list', async ({
 test('run parameters live beside Run, not in settings', async ({ page, request }) => {
   await openShelf(page, request, 'tasks', false)
   await page.getByRole('button', { name: /run parameters/ }).click()
-  await expect(page.getByText('formalizer.model')).toBeVisible()
-  await expect(page.getByText('dispatch.budget_sec')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'formalizer model', exact: true })).toBeVisible()
+  await expect(page.getByLabel('Time budget (seconds)', { exact: true })).toBeVisible()
   // and the machine's own knobs are not
-  await expect(page.getByText('dispatch.pool')).toHaveCount(0)
+  await expect(page.getByLabel('Concurrent agents', { exact: true })).toHaveCount(0)
 })
 
 test('the Library is not reachable from anywhere', async ({ page }) => {
@@ -892,7 +894,7 @@ test('timeline: a row opens the object it names, not a list to find it in', asyn
   const rows = page.locator('[data-event-row]')
   await expect(rows).toHaveCount(2)
 
-  await rows.nth(0).locator('[data-event-detail] [role="button"]').click()
+  await rows.nth(0).locator('[data-event-detail]').getByRole('button').click()
   await expect.poll(() => page.url()).toContain('/rev/412')
   await expect.poll(() => page.url()).toContain('/groups/')
   // and it lands on the revision's own READING — the same shape the
@@ -906,7 +908,7 @@ test('timeline: a row opens the object it names, not a list to find it in', asyn
 
   await page.goBack()
   await expect(rows).toHaveCount(2)
-  await rows.nth(1).locator('[data-event-detail] [role="button"]').click()
+  await rows.nth(1).locator('[data-event-detail]').getByRole('button').click()
   await expect.poll(() => page.url()).toContain('/workspace/agent/theory_note.md')
 })
 

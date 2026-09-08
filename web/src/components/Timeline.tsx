@@ -15,6 +15,7 @@ import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
 import { PAGE } from './glyphs'
 import JudgeVerdict from './JudgeVerdict'
+import { ErrorState } from './ui'
 
 /*
  * The Timeline is a LOG, not a narrative: every row reads
@@ -186,6 +187,7 @@ function Row({
   const note = e.kind === 'failed' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
+  const Verb = expandable ? 'button' : 'span'
   return (
     <div>
       {/* three tracks, and the middle one is FIXED: a verb that reflowed
@@ -220,16 +222,19 @@ function Row({
           {e.approx && <span className="text-ink-faint/60">~</span>}
           {TIME_FMT.format(new Date(e.at))}
         </span>
-        <span
+        <Verb
           data-event-label={e.kind}
           /* the theory layer's rows carry the PAGE mark: the verb says
              what was asked, the mark says what comes back — a document,
              which is neither a star nor a brick. Identity is shape, so
              the ink stays the quiet default (DESIGN.md). */
-          className={`flex min-w-0 items-baseline gap-1.5 text-xs ${
+          className={`flex min-w-0 items-baseline gap-1.5 text-left text-xs ${expandable ? 'cursor-pointer' : ''} ${
             EVENT_CLS[e.kind] ?? 'text-ink-dim'
           }`}
           title={`${eventColumn(e.kind, e.n)} — ${eventTitle(e.kind)}`}
+          aria-label={expandable ? `Details for ${e.label}` : undefined}
+          aria-expanded={expandable ? open : undefined}
+          onClick={expandable ? ev => { ev.stopPropagation(); setOpen(value => !value) } : undefined}
         >
           {isTheory(e.kind) && (
             /* the mark HANGS LEFT, out of the track and into the dead
@@ -248,16 +253,15 @@ function Row({
             {eventLabel(e.kind)}
             {e.n !== null && <span className="tnum"> {countWord(e.kind, e.n)}</span>}
           </span>
-        </span>
+        </Verb>
         <span data-event-detail className="flex min-w-0 items-baseline gap-2">
           {!following && (
-          <span
-            role="button"
-            tabIndex={0}
+          <button
+            type="button"
             /* the OBJECT never yields: a long note used to squeeze the
                name down to "msid…", which is the one token the row
                exists to carry (cold-eye, 2026-08-07) */
-            className={`max-w-[70%] shrink-0 truncate ${
+            className={`${note && !open ? 'max-w-[70%]' : 'max-w-full'} shrink-0 truncate text-left ${
               e.object_kind === 'goal' || e.object_kind === 'unbuilt'
                 ? 'font-mono text-[12px]'
                 : 'text-xs'
@@ -268,12 +272,6 @@ function Row({
             onClick={(ev) => {
               ev.stopPropagation()
               ;(openName ?? follow)()
-            }}
-            onKeyDown={(ev) => {
-              if (ev.key === 'Enter') {
-                ev.stopPropagation()
-                ;(openName ?? follow)()
-              }
             }}
           >
             {/* the object column is otherwise a wall of mono goal
@@ -294,7 +292,7 @@ function Row({
               </span>
             )}
             {e.label}
-          </span>
+          </button>
           )}
           {showProblem && e.problem && (
             <span className="shrink-0 font-mono text-[10px] text-ink-faint">
@@ -310,7 +308,7 @@ function Row({
         /* the expansion starts where the objective does, so the indent
            is the two fixed tracks and their gaps and moves with them:
            3.1 + 0.5 + 6.2 − 0.4 for the row's own px-2 */
-        <div className="mx-2 mt-1 mb-2 ml-[9.4rem] rounded-lg border border-edge bg-surface px-3 py-2">
+        <div data-event-body className="mx-2 mt-1 mb-2 min-w-0 rounded-lg border border-edge bg-surface px-3 py-2 @min-[36rem]/timeline:ml-[9.4rem]">
           {argument && argument !== e.label && (
             /* which argument this brick serves. A column would cost
                width on every problem to answer a question only
@@ -334,7 +332,7 @@ function Row({
           {verdictOf && (
             <JudgeVerdict problem={verdictOf.problem} revId={verdictOf.revId} />
           )}
-          <div className="mt-1.5 flex items-center gap-3 text-[11px]">
+          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px]">
             {openName !== null && (
               <button
                 className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
@@ -395,7 +393,7 @@ export default function Timeline({
    * path is the whole address — no task has to be told to it. */
   onOpenDocument?: (path: string) => void
 }) {
-  const { data, error, loading } = usePoll<{
+  const { data, error, loading, refresh } = usePoll<{
     events: TimelineEvent[]
     /** the per-task feed's seam. The shelf-wide one carries a MAP under
      * its own key instead (`log_since_by_problem`) — one line across
@@ -412,13 +410,18 @@ export default function Timeline({
   /** pages fetched behind the first one, oldest-ward. History does not
    * change, so they are held rather than re-polled. */
   const [older, setOlder] = useState<TimelineEvent[]>([])
-  const [cursor, setCursor] = useState<string | null>(null)
+  // undefined means no older page has been read; null means the last
+  // page answered. Treating both as null reopened the first cursor at
+  // the end and appended the same history again on every click.
+  const [cursor, setCursor] = useState<string | null | undefined>(undefined)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [moreError, setMoreError] = useState<string | null>(null)
   // a new subject is a new history — never show one feed's tail under
   // another's head
   useEffect(() => {
     setOlder([])
-    setCursor(null)
+    setCursor(undefined)
+    setMoreError(null)
   }, [path])
 
   // dispatch rows for bricks that don't exist (kind 'asked', no goal):
@@ -433,18 +436,19 @@ export default function Timeline({
       ),
     [data, older],
   )
-  const more = cursor ?? data?.next_before ?? null
+  const more = cursor === undefined ? (data?.next_before ?? null) : cursor
   const loadEarlier = async () => {
     if (more === null || loadingMore) return
     setLoadingMore(true)
+    setMoreError(null)
     try {
       const page = await apiGet<{ events: TimelineEvent[]; next_before?: string | null }>(
         `${path}${path.includes('?') ? '&' : '?'}before=${encodeURIComponent(more)}`,
       )
       setOlder((o) => [...o, ...page.events])
       setCursor(page.next_before ?? null)
-    } catch {
-      /* the button stays; the history is not going anywhere */
+    } catch (e) {
+      setMoreError((e as Error).message)
     } finally {
       setLoadingMore(false)
     }
@@ -463,7 +467,7 @@ export default function Timeline({
   if (loading && all.length === 0)
     return <div className="late-fade px-4 py-8 text-center text-xs text-ink-faint">Loading…</div>
   if (error && all.length === 0)
-    return <div className="px-4 py-8 text-center text-xs text-ink-dim">{error.message}</div>
+    return <ErrorState error={error} onRetry={refresh} />
   if (all.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">Nothing has happened yet.</div>
 
@@ -477,7 +481,8 @@ export default function Timeline({
   })
 
   return (
-    <div className="flex flex-col">
+    <div className="@container/timeline flex flex-col">
+      {error && <p role="status" className="mb-3 text-xs text-ink-dim">Timeline updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>}
       {/* nothing sits above the log any more — no lens chips, no held-
           back count. When you are following one object, that state has
           to be visible and reversible, so THAT line stays. */}
@@ -563,6 +568,7 @@ export default function Timeline({
       })}
       {/* a shelf's history is every task's at once, so it pages. One
           task's does not, and the button simply never appears. */}
+      {moreError && <p role="status" title={moreError} className="mt-4 text-center text-xs text-ink-dim">Could not load earlier events. Try again.</p>}
       {more !== null && follow === null && (
         <button
           className="mt-4 cursor-pointer self-center text-[11px] text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"

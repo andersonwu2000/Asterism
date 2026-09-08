@@ -197,7 +197,7 @@ export function StatusBadge({
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center py-24 text-center">
+    <div className="flex flex-col items-center justify-center px-6 py-16 text-center sm:py-24">
       <svg width="30" height="30" viewBox="0 0 20 20" className="mb-4 text-ink-faint" aria-hidden>
         <path
           d="M4 14.5L10.5 5l5 6.5"
@@ -218,12 +218,13 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 
 /** API error → user-facing state. Distinguishes the two structured
  * degraded modes (no DB yet / schema behind) from transport failures. */
-export function ErrorState({ error }: { error: Error }) {
+export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => void }) {
+  const retry = onRetry && <div className="mt-5"><Button variant="outline" onClick={onRetry}>Retry</Button></div>
   if (error instanceof ApiError && error.detail === 'NO_DATABASE') {
     return (
       <EmptyState title="This workspace hasn't been initialized yet">
-        Run the engine once (press Run in the header, or{' '}
-        <code className="font-mono">asterism init</code> a problem) and the board will populate.
+        Add a task and start its first run to initialize this workspace.
+        {retry}
       </EmptyState>
     )
   }
@@ -232,6 +233,7 @@ export function ErrorState({ error }: { error: Error }) {
       <EmptyState title="Database needs a migration">
         The engine's schema is newer than this database. Start the engine once to migrate, then
         reload.
+        {retry}
       </EmptyState>
     )
   }
@@ -239,12 +241,18 @@ export function ErrorState({ error }: { error: Error }) {
     return (
       <EmptyState title="Not found">
         {error.detail} — it may have been renamed or removed.
+        {retry}
       </EmptyState>
     )
   }
   return (
     <EmptyState title="Can't reach the engine">
-      {String(error.message)} — is <code className="font-mono">asterism serve</code> still running?
+      Check that Asterism is running, then try again.
+      <details className="mt-3 text-xs">
+        <summary className="cursor-pointer">Details</summary>
+        <p className="mt-2 break-words">{error.message}</p>
+      </details>
+      {retry}
     </EmptyState>
   )
 }

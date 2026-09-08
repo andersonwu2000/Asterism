@@ -373,8 +373,8 @@ export default function ProgrammeView({
   const reading = stale ? 'opacity-40 transition-opacity duration-150' : ''
   const cur = data.current
   return (
-    <div className={`mx-auto grid gap-6 px-5 py-5 ${hasDelegation ? 'max-w-6xl lg:grid-cols-[260px_minmax(0,1fr)]' : 'max-w-3xl'}`}>
-      {hasDelegation && <aside aria-label="Discussion groups" className="min-w-0 self-start lg:sticky lg:top-5 lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto lg:border-r lg:border-edge lg:pr-4">{picker}</aside>}
+    <div className={`mx-auto grid gap-6 px-5 py-5 ${hasDelegation ? 'max-w-6xl @min-[52rem]/groups:grid-cols-[260px_minmax(0,1fr)]' : 'max-w-3xl'}`}>
+      {hasDelegation && <aside aria-label="Discussion groups" className="min-w-0 self-start @min-[52rem]/groups:sticky @min-[52rem]/groups:top-5 @min-[52rem]/groups:max-h-[calc(100vh-9rem)] @min-[52rem]/groups:overflow-y-auto @min-[52rem]/groups:border-r @min-[52rem]/groups:border-edge @min-[52rem]/groups:pr-4">{picker}</aside>}
       <div className="min-w-0">
         {!hasDelegation && picker}
         {/* ONE reading, and the chain folded under it (owner,

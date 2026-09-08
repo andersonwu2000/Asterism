@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, apiGet, apiPut, apiUpload, usePoll } from '../lib/api'
-import { dropDraft, renameDraft, setDraft, unsavedGuard, useDrafts } from '../lib/docDrafts'
+import { beginDraftSave, dropDraft, finishDraftSave, getDraft, onDocumentSaved, renameDraft, setDraft, useDrafts, useSavingPaths } from '../lib/docDrafts'
 import {
   defaultView,
   docAddress,
@@ -123,9 +123,18 @@ export default function Docs({
     () => localStorage.getItem(COLUMN_KEY) !== '0',
   )
   const [doc, setDoc] = useState<DiskDoc | null>(null)
+  const readIdentity = useRef('')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
-  const [saving, setSaving] = useState(false)
+  const savingPaths = useSavingPaths(project)
+  const saving = open?.kind === 'doc' && savingPaths.has(open.path)
+  const currentOpen = useRef(open)
+  currentOpen.current = open
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [note, setNote] = useState<string | null>(null)
   const [conflict, setConflict] = useState<Conflict | null>(null)
   /** bumped each time a document lands on disk — the TeX panel follows
@@ -133,6 +142,20 @@ export default function Docs({
   const [savedAt, setSavedAt] = useState(0)
   /** a document just created here opens with the caret already in it */
   const [autoFocus, setAutoFocus] = useState(false)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const focusFiles = useCallback(() => {
+    workspaceRef.current?.querySelector<HTMLElement>('[data-file-entry]')?.focus()
+  }, [])
+  const columnFocusPending = useRef(false)
+  const changeColumn = (next: boolean) => {
+    columnFocusPending.current = true
+    setColumnOpen(next)
+  }
+  useLayoutEffect(() => {
+    if (!columnFocusPending.current) return
+    columnFocusPending.current = false
+    focusFiles()
+  }, [columnOpen, focusFiles])
   const [uploads, setUploads] = useState<UploadItem[]>([])
   const seq = useRef(0)
   // Counter, not boolean: dragging over child elements fires
@@ -143,17 +166,17 @@ export default function Docs({
     localStorage.setItem(COLUMN_KEY, columnOpen ? '1' : '0')
   }, [columnOpen])
 
-  const { data: tree, refresh: refreshTree } = usePoll<{ entries: DocEntry[] }>(
+  const { data: tree, error: treeError, refresh: refreshTree } = usePoll<{ entries: DocEntry[] }>(
     `/api/projects/${encodeURIComponent(project)}/docs`,
     30000,
   )
-  const { data: shelf, refresh: refreshPapers } = usePoll<{ papers: PaperShelfItem[] }>(
+  const { data: shelf, error: papersError, refresh: refreshPapers } = usePoll<{ papers: PaperShelfItem[] }>(
     `/api/projects/${encodeURIComponent(project)}/papers`,
     30000,
   )
   // ONLY the chosen task (§C5): a problem detail is ~800KB, and asking
   // for every task on the shelf would move megabytes to draw one list
-  const { data: detail } = usePoll<ProblemDetail>(
+  const { data: detail, error: taskError, refresh: refreshTask } = usePoll<ProblemDetail>(
     task === null ? null : `/api/problems/${encodeURIComponent(task)}`,
     30000,
   )
@@ -200,6 +223,15 @@ export default function Docs({
   const text = draft?.text ?? doc?.content
   const isEditable = open !== null && editable(open) && !openIsDir
   const dirty = draft !== undefined
+  useEffect(() => onDocumentSaved((savedProject, path, saved) => {
+    if (savedProject !== project || currentOpen.current?.kind !== 'doc' || currentOpen.current.path !== path) return
+    // The current screen receives the saved snapshot even when an
+    // earlier mount started the request. Re-reading keeps the editor
+    // mounted and also cancels any older read still in flight.
+    setDoc({ path, content: saved.text, etag: saved.baseEtag })
+    setSavedAt(n => n + 1)
+    setReload(n => n + 1)
+  }), [project])
 
   /* The shelf answers after the first render, so the task the engine
    * group lists cannot be settled by the initial state alone: on the
@@ -267,7 +299,10 @@ export default function Docs({
     // the PREVIOUS document is dropped first: a screen that swaps its
     // subject must never show the old one's bytes as if they were the
     // new one's (lib/api's `keepPrevious` makes the same ruling)
-    setDoc(null)
+    const identity = `${project}\u0000${openKey}`
+    const sameFile = readIdentity.current === identity
+    readIdentity.current = identity
+    setDoc(current => sameFile ? current : null)
     setLoadError(null)
     if (open === null || openIsDir) return
     if (panelFor(open.path) === 'viewer') {
@@ -292,7 +327,6 @@ export default function Docs({
       })
       .catch((e) => {
         if (gone) return
-        setDoc(null)
         setLoadError(refusal(e))
       })
     return () => {
@@ -317,7 +351,7 @@ export default function Docs({
       if (open === null || open.kind !== 'doc') return
       // typing and then undoing is not unsaved work — the store holds
       // only what the disk does not have (lib/docDrafts)
-      if (doc?.content !== undefined && v === doc.content) {
+      if (!savingPaths.has(open.path) && doc?.content !== undefined && v === doc.content) {
         dropDraft(project, open.path)
         return
       }
@@ -332,7 +366,7 @@ export default function Docs({
         held !== undefined ? held.baseEtag : (doc?.etag ?? null),
       )
     },
-    [project, open, doc, drafts],
+    [project, open, doc, drafts, savingPaths],
   )
 
   /** Write it. `base` carries the sha1 the draft started from, so the
@@ -340,8 +374,8 @@ export default function Docs({
    * again WITHOUT it is the reader's explicit "keep mine". */
   const save = useCallback(
     async (base: boolean) => {
-      if (open === null || open.kind !== 'doc' || text === undefined) return
-      setSaving(true)
+      if (open === null || open.kind !== 'doc' || text === undefined || !beginDraftSave(project, open.path)) return
+      const stillHere = () => mounted.current && currentOpen.current?.kind === 'doc' && currentOpen.current.path === open.path
       setNote(null)
       try {
         const r = await apiPut<{ path: string; etag?: string }>(
@@ -350,19 +384,23 @@ export default function Docs({
             ? { content: text, base_etag: draft.baseEtag }
             : { content: text },
         )
-        dropDraft(project, open.path)
-        setDoc((d) => (d === null ? d : { ...d, content: text, etag: r.etag ?? null }))
-        setConflict(null)
-        setNote('saved')
-        setSavedAt((n) => n + 1)
+        // The request saved a snapshot. Later keystrokes are another
+        // draft, based on the bytes that just landed, even after a tab
+        // switch. A completion must never repaint a different file.
+        finishDraftSave(project, open.path, { text, baseEtag: r.etag ?? null })
+        if (stillHere()) {
+          setConflict(null)
+          setNote(getDraft(project, open.path) === undefined ? 'saved' : null)
+        }
         refreshTree()
       } catch (e) {
+        finishDraftSave(project, open.path)
         // a 409 is not a failure to write — it is the disk saying it
         // moved on, and the reader picks which version stands
-        if (e instanceof ApiError && e.status === 409) setConflict({ detail: e.detail })
-        else setNote(refusal(e))
-      } finally {
-        setSaving(false)
+        if (stillHere()) {
+          if (e instanceof ApiError && e.status === 409) setConflict({ detail: e.detail })
+          else setNote(refusal(e))
+        } else if (mounted.current) setNote(`Couldn’t save ${open.path}. Reopen it to try again.`)
       }
     },
     [project, open, text, draft, refreshTree],
@@ -379,24 +417,12 @@ export default function Docs({
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') {
         e.preventDefault()
+        if (document.querySelector('[data-confirm-window]')) return
         saveRef.current()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  /* The one honest beforeunload. App.tsx refuses it for a live RUN
-   * (owner, 2026-07-18) because the dialog implies unsaved work that
-   * does not exist; here the work is real and on this page only. One
-   * listener, reading the count through a ref — re-registering on every
-   * keystroke leaves a frame with no guard on it. */
-  const dirtyCount = useRef(0)
-  dirtyCount.current = drafts.size
-  useEffect(() => {
-    const onUnload = (e: BeforeUnloadEvent) => unsavedGuard(dirtyCount.current, e)
-    window.addEventListener('beforeunload', onUnload)
-    return () => window.removeEventListener('beforeunload', onUnload)
   }, [])
 
   /** Shelve papers, sequentially: PDF extraction is real server work,
@@ -442,7 +468,8 @@ export default function Docs({
 
   return (
     <div
-      className="relative flex h-full min-h-0 w-full"
+      ref={workspaceRef}
+      className="relative flex h-full min-h-0 w-full flex-col @min-[48rem]/project:flex-row"
       onDragEnter={(e) => {
         if (!hasFiles(e)) return
         e.preventDefault()
@@ -479,7 +506,13 @@ export default function Docs({
           taskFiles={taskFiles}
           open={open}
           dirty={dirtyPathSet}
+          savingPaths={savingPaths}
           uploads={uploads}
+          readings={{
+            files: { ready: tree !== null, error: treeError?.message ?? null, onRetry: refreshTree },
+            papers: { ready: shelf !== null, error: papersError?.message ?? null, onRetry: refreshPapers },
+            task: { ready: task === null || detail !== null, error: taskError?.message ?? null, onRetry: refreshTask },
+          }}
           onOpen={(ref) => {
             setAutoFocus(false)
             setOpen(ref)
@@ -495,7 +528,7 @@ export default function Docs({
             setTabs((s) => closeTabsWhere(s, (r) => r.kind === 'task'))
           }}
           onShelve={(files) => void shelvePapers(files)}
-          onHide={() => setColumnOpen(false)}
+          onHide={() => changeColumn(false)}
           onCreated={(ref) => {
             setAutoFocus(true)
             setOpen(ref)
@@ -515,9 +548,9 @@ export default function Docs({
           }}
         />
       ) : (
-        <ClosedColumn onOpen={() => setColumnOpen(true)} />
+        <ClosedColumn onOpen={() => changeColumn(true)} />
       )}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className={`${open === null && columnOpen ? 'hidden @min-[48rem]/project:flex' : 'flex'} min-h-0 min-w-0 flex-1 flex-col`}>
         {/* what is open, above what is being read (owner, 2026-09-08).
             The strip draws nothing at all when nothing is open — the
             shell below says so in words. */}
@@ -527,8 +560,10 @@ export default function Docs({
           dirty={dirtyPathSet}
           onActivate={(k) => setTabs((s) => activateTab(s, k))}
           onClose={(k) => setTabs((s) => closeTab(s, k))}
+          onEmptyClose={focusFiles}
         />
         <DocShell
+          onReload={() => setReload(value => value + 1)}
           project={project}
           open={open}
           isDir={openIsDir}

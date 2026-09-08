@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { relTime } from '../../lib/format'
 import type { ChatSessionSummary } from '../../lib/types'
 
@@ -17,6 +17,8 @@ export function SessionsFold({
   sessions,
   currentId,
   streaming,
+  loading,
+  unavailable,
   note,
   onOpen,
   onNew,
@@ -28,6 +30,8 @@ export function SessionsFold({
   currentId: string | null
   /** an answer is being written — the conversation it is on cannot go */
   streaming: boolean
+  loading: boolean
+  unavailable: boolean
   /** an API refusal, rendered at the row it concerns */
   note: { id: string | null; text: string } | null
   onOpen: (id: string) => void
@@ -43,6 +47,12 @@ export function SessionsFold({
   const [confirming, setConfirming] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const renameRef = useRef<HTMLInputElement | null>(null)
+  const returnToRow = useRef(false)
+  useLayoutEffect(() => {
+    if (renaming !== null || !returnToRow.current) return
+    returnToRow.current = false
+    listRef.current?.querySelector<HTMLElement>(`[data-at="${sel}"]`)?.focus()
+  }, [renaming, sel])
 
   useEffect(() => {
     if (renaming !== null) renameRef.current?.focus()
@@ -96,9 +106,10 @@ export function SessionsFold({
     ) : null
 
   return (
-    <div ref={listRef} className="border-b border-edge py-1" aria-label="conversation list">
+    <div ref={listRef} className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto overscroll-contain border-b border-edge py-1" aria-label="conversation list">
       <button
         data-at={0}
+        disabled={streaming || loading || unavailable}
         tabIndex={sel === 0 ? 0 : -1}
         className={`flex w-full cursor-pointer items-center px-3 py-1.5 text-left text-[12px] transition-colors focus:outline-none ${
           sel === 0 ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2 hover:text-ink'
@@ -108,7 +119,7 @@ export function SessionsFold({
           onNew()
         }}
         onKeyDown={(e) => onKey(e, 0)}
-        onFocus={() => setSel(0)}
+        onFocus={e => { if (e.currentTarget.matches(':focus-visible')) setSel(0) }}
       >
         + new conversation
       </button>
@@ -124,15 +135,19 @@ export function SessionsFold({
                 <input
                   ref={renameRef}
                   value={draft}
+                  aria-label="Conversation title"
                   className="w-full rounded-md border border-edge bg-bg px-1.5 py-0.5 text-[12px] text-ink focus:border-ink-faint focus:outline-none"
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault()
+                      returnToRow.current = true
                       onRename(s.id, draft.trim())
                       setRenaming(null)
                     } else if (e.key === 'Escape') {
+                      e.preventDefault()
                       e.stopPropagation()
+                      returnToRow.current = true
                       setRenaming(null)
                     }
                   }}
@@ -143,6 +158,7 @@ export function SessionsFold({
             ) : (
               <button
                 data-at={at}
+                disabled={streaming}
                 tabIndex={on ? 0 : -1}
                 aria-current={current ? 'true' : undefined}
                 className={`flex w-full cursor-pointer items-baseline gap-2 px-3 py-1.5 text-left transition-colors focus:outline-none ${
@@ -153,7 +169,9 @@ export function SessionsFold({
                   onOpen(s.id)
                 }}
                 onKeyDown={(e) => onKey(e, at)}
-                onFocus={() => setSel(at)}
+                // Mouse focus arrives before click. Moving the action
+                // strip then moves this row out from under the pointer.
+                onFocus={e => { if (e.currentTarget.matches(':focus-visible')) setSel(at) }}
               >
                 <span className="flex w-2 shrink-0 justify-center">
                   {current && <span className="h-1.5 w-1.5 rounded-full bg-ink" aria-hidden />}
@@ -169,7 +187,7 @@ export function SessionsFold({
               </button>
             )}
             {on && renaming !== s.id && (
-              <div className="flex items-center gap-2 px-3 pb-1 pl-[22px] text-[11px] text-ink-faint">
+              <div className="flex flex-wrap items-center gap-2 px-3 pb-1 pl-[22px] text-[11px] text-ink-faint">
                 <button
                   className="cursor-pointer transition-colors hover:text-ink"
                   onClick={() => startRename(s)}
@@ -205,7 +223,7 @@ export function SessionsFold({
           </div>
         )
       })}
-      {sessions.length === 0 && (
+      {sessions.length === 0 && !loading && !unavailable && (
         <div className="px-3 py-1.5 text-[11px] text-ink-faint">
           no conversations on this project yet
         </div>

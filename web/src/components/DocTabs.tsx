@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { docKind, refKey } from '../lib/docShell'
 import type { DocRef } from '../lib/docShell'
 import { tabLabel, tabStep, tabTitle } from '../lib/docTabs'
@@ -31,6 +31,7 @@ export default function DocTabs({
   dirty,
   onActivate,
   onClose,
+  onEmptyClose,
 }: {
   tabs: DocRef[]
   /** `refKey` of the document on screen */
@@ -39,19 +40,33 @@ export default function DocTabs({
   dirty: ReadonlySet<string>
   onActivate: (key: string) => void
   onClose: (key: string) => void
+  onEmptyClose: () => void
 }) {
   const [focusAt, setFocusAt] = useState(0)
   const stripRef = useRef<HTMLDivElement | null>(null)
+  const focusAfterClose = useRef<number | null>(null)
 
   /* The focus follows the reading when the reading is set from
    * somewhere else — the rail, an address, a tab closing under the
    * cursor. Without this, the roving index outlives the tab it named
    * and Delete closes a neighbour. */
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const closedAt = focusAfterClose.current
+    focusAfterClose.current = null
+    if (closedAt !== null && tabs.length === 0) {
+      onEmptyClose()
+      return
+    }
+    if (closedAt !== null && tabs.length > 0) {
+      const i = Math.min(closedAt, tabs.length - 1)
+      setFocusAt(i)
+      stripRef.current?.querySelector<HTMLElement>(`[data-tab-at="${i}"]`)?.focus()
+      return
+    }
     const i = tabs.findIndex((r) => refKey(r) === active)
     if (i >= 0) setFocusAt(i)
     else setFocusAt((at) => Math.min(at, Math.max(0, tabs.length - 1)))
-  }, [tabs, active])
+  }, [tabs, active, onEmptyClose])
 
   // nothing open is not an empty strip: the shell below says so in
   // words, and a bar with no tabs in it is chrome describing itself
@@ -60,6 +75,10 @@ export default function DocTabs({
   const focus = (i: number) => {
     setFocusAt(i)
     stripRef.current?.querySelector<HTMLElement>(`[data-tab-at="${i}"]`)?.focus()
+  }
+  const close = (key: string, i: number) => {
+    focusAfterClose.current = i
+    onClose(key)
   }
 
   return (
@@ -109,7 +128,7 @@ export default function DocTabs({
                   // the draft store outlives the tab (`lib/docTabs`), so
                   // closing asks nothing and loses nothing
                   e.preventDefault()
-                  onClose(key)
+                  close(key, i)
                 }
               }}
             >
@@ -130,7 +149,7 @@ export default function DocTabs({
               aria-label={`close ${label}`}
               title="close (Delete)"
               className="shrink-0 cursor-pointer text-[13px] leading-none text-ink-faint transition-colors hover:text-ink"
-              onClick={() => onClose(key)}
+              onClick={() => close(key, i)}
             >
               ×
             </button>

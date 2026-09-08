@@ -33,9 +33,9 @@ import Seats, { WHEN } from './Seats'
  * one is "everything else" by construction, so a seat added to the
  * engine later is seated rather than forgotten. */
 const LAYERS: [string, string[], string][] = [
-  ['theory', ['theorist', 'theory_reviewer'], 'writes what the record does not have'],
-  ['planning', ['strategist', 'adversary'], 'decides how the programme runs'],
-  ['formal', [], 'does the volume — Lean, search, the library'],
+  ['theory', ['theorist', 'theory_reviewer'], 'develops new mathematics'],
+  ['planning', ['strategist', 'adversary'], 'plans and reviews the proof'],
+  ['formal', [], 'formalizes and checks in Lean'],
 ]
 
 /** What a person calls each house. The KEY is the backend the engine
@@ -50,7 +50,7 @@ const membersOf = (seats: string[], rows: SeatRow[]): string[] => {
 }
 
 export default function DefaultModel() {
-  const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>(
+  const { data, error, refresh } = usePoll<{ settings: ConfigSetting[] }>(
     '/api/config',
     60000,
   )
@@ -61,11 +61,13 @@ export default function DefaultModel() {
   const [live, setLive] = useState<ModelGroup[] | null>(null)
   const [houses, setHouses] = useState<Record<string, HouseBoard> | null>(null)
   const [asking, setAsking] = useState(false)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
   const asked = useRef(false)
   const askCatalog = useCallback(() => {
     if (asked.current) return
     asked.current = true
     setAsking(true)
+    setCatalogError(null)
     apiPost<{ groups: ModelGroup[]; houses: Record<string, HouseBoard> }>(
       '/api/models/refresh',
       {},
@@ -74,8 +76,9 @@ export default function DefaultModel() {
         setLive(r.groups)
         setHouses(r.houses)
       })
-      .catch(() => {
-        /* keep the declared lists — never blank the picker */
+      .catch((e: Error) => {
+        asked.current = false
+        setCatalogError(e.message)
       })
       .finally(() => setAsking(false))
   }, [])
@@ -84,7 +87,7 @@ export default function DefaultModel() {
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
 
-  if (!data) return <div className="text-[11px] text-ink-faint">…</div>
+  if (!data) return <p role="status" className="text-xs text-ink-dim">{error ? <>Couldn’t load models. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></> : 'Loading models…'}</p>
   const rows = seatRows(data.settings)
   const groups = live ?? rows[0]?.model?.groups ?? []
   const boards = houses ?? {}
@@ -113,9 +116,6 @@ export default function DefaultModel() {
     <div data-default-model>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-xs text-ink">Default model</span>
-        <span className="text-[11px] text-ink-faint">
-          one house; the three layers follow it by rank
-        </span>
         {/* the lit half IS the current value — one control with a
             state, not two things to press (DESIGN.md, the appearance
             control's own shape) */}
@@ -162,12 +162,12 @@ export default function DefaultModel() {
           return (
             <div key={layer} className="flex flex-wrap items-baseline gap-2 py-0.5">
               <span className="w-20 shrink-0 text-[11px] text-ink-dim">{layer}</span>
-              <span className="w-56 shrink-0 font-mono text-[11px] text-ink">
+              <span className="min-w-0 break-words font-mono text-[11px] text-ink">
                 {model}
                 {depth !== '' && <span className="text-ink-faint"> · {depth}</span>}
               </span>
-              <span className="min-w-0 text-[11px] text-ink-faint">
-                {what} — {members.join(', ')}
+              <span className="min-w-0 text-[11px] text-ink-faint" title={members.join(', ')}>
+                {what}
               </span>
             </div>
           )
@@ -175,7 +175,7 @@ export default function DefaultModel() {
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-faint">
-        {here === null ? (
+        {houses === null ? (
           /* the way out, exactly: nothing can be derived until the
              machine has said what it can run, so the sentence that says
              so is also the button that fixes it */
@@ -184,16 +184,15 @@ export default function DefaultModel() {
             disabled={asking}
             onClick={askCatalog}
           >
-            {asking ? 'asking the backends…' : 'ask the backends what they can run'}
+            {asking ? 'Loading model choices…' : 'Load model choices'}
           </button>
-        ) : pinned.length > 0 ? (
+        ) : here === null ? <span>{Object.values(boards).some(board => Object.keys(board).length > 0) ? 'Custom models — see Advanced' : 'No default model presets available.'}</span> : pinned.length > 0 ? (
           <span title="these seats are set in Advanced; the default does not explain them">
             pinned: {pinned.join(' · ')}
           </span>
-        ) : (
-          <span>every seat is where {HOUSE_LABEL[here] ?? here} puts it</span>
-        )}
-        <span>{note ?? WHEN}</span>
+        ) : null}
+        {note && <span role="status">{note}</span>}
+        {catalogError && <span role="status" title={catalogError}>Couldn’t load model choices. Try again.</span>}
       </div>
 
       <div className="mt-3 border-t border-edge pt-2">

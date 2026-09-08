@@ -24,13 +24,16 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 
 
 function UsageTable({ project }: { project?: string }) {
-  const { data } = usePoll<{ problems: UsageProblem[]; window?: 'run' | 'all' }>(
+  const { data, error, refresh } = usePoll<{ problems: UsageProblem[]; window?: 'run' | 'all' }>(
     `/api/telemetry/usage${project ? `?project=${encodeURIComponent(project)}` : ''}`,
     10000,
   )
   // kind → model (from settings) turns raw tokens into weighted burn
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   const [expanded, setExpanded] = useState<string | null>(null)
+  if (!data) return error
+    ? <p role="status" className="text-xs text-ink-dim">Usage unavailable. <button className="cursor-pointer underline" onClick={refresh}>Retry</button></p>
+    : <p role="status" className="late-fade text-xs text-ink-dim">Reading usage…</p>
   const rows = data?.problems ?? []
   // the server says which window it aggregated — never claim "this
   // run" over an all-time ledger (it used to)
@@ -66,7 +69,7 @@ function UsageTable({ project }: { project?: string }) {
   return (
     <>
       <SectionLabel>{label}</SectionLabel>
-      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div className="mb-3 grid grid-cols-2 gap-3 @min-[44rem]/usage:grid-cols-5">
         <Stat label="agent spawns" value={String(total.spawns)} />
         <Stat label="output tokens" value={compactNumber(total.out)} />
         <Stat label="input + cache read" value={compactNumber(total.inTok)} />
@@ -104,7 +107,7 @@ function inner(
   setExpanded: (v: string | null) => void,
 ) {
   return (
-    <table className="w-full border-collapse text-left">
+    <div className="overflow-x-auto"><table className="w-full min-w-[560px] border-collapse text-left">
       <thead>
         <tr className="border-b border-edge text-xs text-ink-faint">
           <th className="py-2 pr-4 pl-2 font-medium">problem</th>
@@ -122,7 +125,7 @@ function inner(
               className="cursor-pointer border-b border-edge/60 hover:bg-surface"
               onClick={() => setExpanded(expanded === p.problem ? null : p.problem)}
             >
-              <td className="py-2 pr-4 pl-2 font-mono text-xs text-ink">{p.problem}</td>
+              <td className="py-2 pr-4 pl-2 font-mono text-xs text-ink"><button className="cursor-pointer text-left" aria-expanded={expanded === p.problem}>{p.problem}</button></td>
               <td className="py-2 pr-4 text-right text-xs text-ink-dim">{p.spawns}</td>
               <td className="py-2 pr-4 text-right text-xs text-ink-dim">
                 {compactNumber(p.input_tokens + p.cache_read_tokens)}
@@ -155,7 +158,7 @@ function inner(
           </Fragment>
         ))}
       </tbody>
-    </table>
+    </table></div>
   )
 }
 
@@ -232,13 +235,19 @@ function BurnStrip({ project }: { project?: string }) {
 
 /** The engine room's usage face: the run's burn, then the ledger. */
 export function UsageLedger({ project }: { project?: string }) {
+  const [open, setOpen] = useState(false)
   return (
-    <>
+    <section className="@container/usage">
+      <button className="flex cursor-pointer items-center gap-2 text-xs text-ink-dim hover:text-ink" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        <span aria-hidden>{open ? '▾' : '▸'}</span>Usage details
+      </button>
+      {open && <div className="mt-4">
       <BurnStrip project={project} />
       {/* the engine room is a per-Project surface (§1.4), so its ledger
           answers for the shelf the reader is standing on. Membership is
           the FK, not the name's first segment — serve does that half. */}
       <UsageTable project={project} />
-    </>
+      </div>}
+    </section>
   )
 }

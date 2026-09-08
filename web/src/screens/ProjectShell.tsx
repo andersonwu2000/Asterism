@@ -21,7 +21,7 @@ import Sky from './Sky'
 import Groups from './Groups'
 import EngineRoom from './EngineRoom'
 import Docs from './Docs'
-import { ErrorState } from '../components/ui'
+import { ErrorState, Select } from '../components/ui'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
 /*
@@ -49,6 +49,7 @@ function TaskRow({
   return (
     <Link
       to={to}
+      aria-current={active ? 'page' : undefined}
       title={p.name}
       className={`group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 font-mono text-[12px] transition-colors duration-150 ${
         active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
@@ -97,6 +98,8 @@ function TaskRail({
         <button
           onClick={onToggle}
           title="show the task list"
+          aria-label="Show task list"
+          aria-expanded={false}
           className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
         >
           ›
@@ -117,6 +120,8 @@ function TaskRail({
         <button
           onClick={onToggle}
           title="hide the task list"
+          aria-label="Hide task list"
+          aria-expanded={true}
           className="ml-auto cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
         >
           ‹
@@ -204,19 +209,19 @@ export default function ProjectShell({
   const current = problem ?? (rows.length === 1 ? rows[0].name : null)
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-6 border-b border-edge px-5">
+    <div className="@container/project flex h-full min-h-0 flex-col">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 border-b border-edge px-4 @min-[64rem]/project:gap-x-6 @min-[64rem]/project:px-5">
         <Link
           to="/"
-          className="flex min-w-0 max-w-64 items-center gap-2 py-3"
-          title="all projects"
+          className="flex min-w-0 max-w-64 flex-1 items-center gap-2 py-3 @min-[64rem]/project:flex-none"
+          title={`${project} — all projects`}
         >
           {MARK}
           <span className="truncate font-display text-[15px] font-medium text-ink">
             {project}
           </span>
         </Link>
-        <nav data-menu aria-label="Project sections" className="order-3 flex w-full gap-5 overflow-x-auto xl:order-none xl:w-auto">
+        <nav data-menu aria-label="Project sections" className="order-3 flex w-full justify-between gap-1.5 overflow-x-auto @min-[24rem]/project:justify-start @min-[24rem]/project:gap-5 @min-[64rem]/project:order-none @min-[64rem]/project:w-auto">
           {SECTIONS.map((s) => (
             <Link
               key={s}
@@ -274,8 +279,18 @@ export default function ProjectShell({
           </IconButton>
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col @min-[48rem]/project:flex-row">
         {showRail && (
+          <>
+          <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-2 @min-[48rem]/project:hidden">
+            <label htmlFor="compact-task" className="text-xs text-ink-dim">Task</label>
+            <Select id="compact-task" className="min-w-0 flex-1" value={problem ?? ''}
+              onChange={e => navigate(projectPath(project, section, e.target.value || null))}>
+              {!TASK_SECTIONS.includes(section) && <option value="">All tasks</option>}
+              {shelfOrder(rows).map(p => <option key={p.name} value={p.name}>{p.name.replace(/^.*\./, '')}</option>)}
+            </Select>
+          </div>
+          <div className="hidden min-h-0 shrink-0 @min-[48rem]/project:flex">
           <TaskRail
             project={project}
             section={section}
@@ -284,6 +299,8 @@ export default function ProjectShell({
             open={railOpen}
             onToggle={onToggleRail}
           />
+          </div>
+          </>
         )}
         {/* `key={current}` on the task-scoped screens is deliberate and
             stays: it is what guarantees no task's camera, selection or
@@ -292,14 +309,14 @@ export default function ProjectShell({
             fresh mount the reading already in hand when the task was
             visited inside its own poll interval, so a switch back paints
             from data rather than from a spinner. */}
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        <main id="main-content" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-y-auto focus:outline-none">
           {error && data && (
             <div role="status" className="border-b border-edge px-6 py-3 text-xs text-ink-dim">
               Task updates unavailable — showing the last reading. <button className="cursor-pointer underline" onClick={refresh}>Retry</button>
             </div>
           )}
           {error && !data && section !== 'workspace' ? (
-            <div><ErrorState error={error} /><div className="text-center"><button className="cursor-pointer rounded-lg border border-edge px-3 py-2 text-xs text-ink-dim hover:text-ink" onClick={refresh}>Retry</button></div></div>
+            <ErrorState error={error} onRetry={refresh} />
           ) : section === 'tasks' ? (
             <Tasks project={project} rows={rows} problem={problem} loaded={loaded} />
           ) : section === 'sky' ? (
