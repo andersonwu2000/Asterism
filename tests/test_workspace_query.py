@@ -144,6 +144,43 @@ def test_find_distinguishes_empty_scope_and_miss(here: Path) -> None:
     assert "NOT an empty directory" in out3
 
 
+def test_size_lists_directories_instead_of_calling_them_nothing(
+        here: Path) -> None:
+    """The 2026-09-07/08 papers-cache cluster: the dossier mapped
+    `agent/papers/ — 3 entries`, `size` on that glob answered "nothing
+    there" because every match was a directory, and ten theory
+    reviewers wrote the literature cache off as unavailable. A listing
+    that drops what a pattern matched is wrong, not smaller."""
+    shelf = here / "papers"
+    for name in ("1909d747937c", "90443d4ebbdf", "d37cdc541bd5"):
+        (shelf / name).mkdir(parents=True)
+        (shelf / name / "text.md").write_text("body\n", encoding="utf-8")
+    out = wq.run_queries([{"size": "papers/*"}], cwd=here)
+    assert "nothing there" not in out
+    for name in ("1909d747937c", "90443d4ebbdf", "d37cdc541bd5"):
+        assert f"papers/{name}/: directory, 1 entry" in out
+    # …and the way in, so the correction does not cost another round.
+    assert "all 3 match(es) are directories" in out
+    assert '"size": \'papers/*/*\'' in out or "papers/*/*" in out
+
+
+def test_size_still_measures_the_files_a_glob_matches(here: Path) -> None:
+    """Directories are an ADDITION: a mixed match still measures the
+    files, and a files-only match carries no directory footer."""
+    out = wq.run_queries([{"size": "proofs/*.lean"}], cwd=here)
+    assert "proofs/L_a.lean:" in out and "chars" in out
+    assert "are directories" not in out
+
+
+def test_find_marks_a_directory_hit_as_one(here: Path) -> None:
+    """`find` always returned directories and named them exactly like
+    files, so a hit list read as "all of these are readable" and the
+    next `read` came back "IS a directory"."""
+    (here / "papers" / "abc123").mkdir(parents=True)
+    out = wq.run_queries([{"find": "*", "in": "papers"}], cwd=here)
+    assert "papers/abc123/" in out
+
+
 def test_reading_a_directory_lists_its_own_contents(here: Path) -> None:
     """Reading `proofs/` as a file used to answer with the PARENT
     listing, so "empty dir" vs "wrong path" cost an extra probe
