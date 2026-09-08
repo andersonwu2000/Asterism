@@ -12,11 +12,11 @@ Tools: `inspect(queries=[{"read":"Context.md","sections":["Programme"]},{"decl":
 
 ## What you see
 
-Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it there, do not open it — except `TREE.md`, `CATALOG.md`, `dialogue.md`, `{papers_dir}` and `{proofs_dir}`, which `## Table of contents (read on demand)` maps instead. The literature is not in the dossier; criterion 1 asks it of you all the same.
+Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it there, do not open it — except `TREE.md`, `CATALOG.md`, `dialogue.md`, `author/`, `{papers_dir}` and `{proofs_dir}`, which `## Table of contents (read on demand)` maps instead. The literature is not in the dossier; criterion 1 asks it of you all the same.
 - `charter.md` — this group's charter: the claim every "charter" and "MAIN claim" below means. Below it, the charters above this one.
 - `request.md` — the request this document answers: its objective and situation.
 - `report.md` — the document under review.
-- `PROGRAMME.md` — the current Programme revision and its execution record; `CATALOG.md` — every landed statement; `TREE.md` — the goal tree. **A "this is new" claim is decided against these, not by the document's say-so.**
+- `PROGRAMME.md` — the current Programme revision and its execution record; `CATALOG.md` (present once a brick has landed) — every landed statement; `TREE.md` — the goal tree. **A "this is new" claim is decided against these, not by the document's say-so.**
 - `{papers_dir}` — this Project's documents; the owner's notes are under `user/`, the earlier theory documents under `agent/` (rejected ones are marked; a theorem in a document whose criterion 2 fired is not citable as a result). **A statement already in those notes or in the record is not new.**
 - `{proofs_dir}` — the landed proof files, readable in place.
 - `dialogue.md` (if present) — earlier rounds of THIS review.
