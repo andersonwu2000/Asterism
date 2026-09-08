@@ -70,6 +70,31 @@ def test_record_terminal_appends_and_never_raises(tmp_path):
     regress.record_terminal(tmp_path, problem="p", terminal="ingested")
 
 
+def test_a_refuted_root_gets_its_milestone_line(tmp_path):
+    """A root settled by a kernel-certified counterexample is a settled
+    root, and this file is the only durable answer to "which problems
+    were ever settled, at which commit, on which toolchain".
+
+    `refuted` became a terminal on 2026-08-30 and was left out of
+    `TERMINALS` until 2026-09-08, so the assert inside `record_terminal`
+    tripped and the best-effort `except` swallowed the append: every
+    kernel-disproved root silently lost its line. Nothing caught it
+    because the certification probe was broken for that entire window
+    (`9ba21ce3`) — no root reached `disproved` at all until the lab's
+    `smoke/false_root_e2e` walked the road."""
+    _git_init(tmp_path)
+    (tmp_path / "lean-toolchain").write_text("x", encoding="utf-8")
+    regress.record_terminal(tmp_path, problem="Lab.prime_plus_two",
+                            terminal="refuted", deliverables=1)
+    entries = regress.load(tmp_path)
+    assert [e["terminal"] for e in entries] == ["refuted"]
+    assert entries[0]["problem"] == "Lab.prime_plus_two"
+    assert entries[0]["deliverables"] == 1
+    assert len(entries[0]["commit"]) == 12          # real git head
+    # and the tracked-file schema guard accepts what the writer wrote
+    assert entries[0]["terminal"] in regress.TERMINALS
+
+
 # ---------------------------------------------------------------------
 # Report semantics
 # ---------------------------------------------------------------------

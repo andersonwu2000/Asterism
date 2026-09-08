@@ -7,7 +7,13 @@ the milestone commit itself (mechanism, not operator discipline):
   * `terminal="ingested"` — the Strategist's Ingest landed (the problem's
     terminal judgment; `problems.ingested_at`);
   * `terminal="bridged"`  — bridge/Gate B PASSED (the harvest is in the
-    Library; `problems.library_bridged_at`).
+    Library; `problems.library_bridged_at`);
+  * `terminal="refuted"`  — the root was DISPROVED in the kernel and the
+    Ingest closed the problem the other way (owner ruling 2026-08-30;
+    `problems.state='refuted'`, stamped with `ingested_at` like any
+    terminal). A settled root is a result whichever way it settled, and
+    "which problems were ever settled, at which commit, on which
+    toolchain" is exactly what this file is for.
 
 Why it exists: the DB resets (dev-scratch), the Library resets, the
 README progress log is prose, and INDEX.md (the one git-tracked
@@ -36,7 +42,15 @@ from ..core.process_group import no_window_creationflags
 
 MANIFEST_REL = Path("Benchmarks") / "proved_manifest.jsonl"
 
-TERMINALS = ("ingested", "bridged")
+#: `refuted` was missing here from 2026-08-30 (when the owner made a
+#: kernel-disproved root a terminal) to 2026-09-08. `strategist/commit`
+#: called `record_terminal(terminal="refuted")` all along, so the assert
+#: below tripped and the append was swallowed by the best-effort except
+#: — one printed line, no milestone. Nobody hit it because no root was
+#: ever disproved in that window: the certification probe was broken the
+#: whole time (`9ba21ce3`), and the lab's first `false_root_e2e` run
+#: found this the moment the road opened.
+TERMINALS = ("ingested", "bridged", "refuted")
 
 
 def _git_head(workspace: Path) -> str:
