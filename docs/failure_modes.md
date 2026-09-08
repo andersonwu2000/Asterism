@@ -63,6 +63,7 @@ from the English name.
 | `agent_infeasible` | Increment once, mark `disproved`, and propagate upward. |
 | `parent_needs_fix` | Increment once, park the sub-goal (`shelved`, event `wrong_context_park`), and propagate the fix signal upward: every strategy hanging on it dies, inward and upward. |
 | `agent_shelved` or `return_to_nl` | Increment once and send to `pending_strategist_review`; do not propagate a mathematical falsehood. |
+| `disproof_probe_exhausted` | Increment once and send to `pending_strategist_review`: the kernel disproof probe refused this goal twice across independent spawns, so the road is closed by the framework rather than retried a third time. |
 | `agent_declined`, `agent_bailed`, or another terminal agent failure | Increment once; threshold policy decides whether review is due. |
 | `missing_parent_stub` | Increment once, shelve, and propagate because the decomposition surface vanished. |
 
@@ -127,6 +128,7 @@ These stop the in-session retry loop rather than asking the same session to try 
 | `same_as_disproved` | The proposal repeats a statement already disproved in this problem. |
 | `duplicate_strategy` | The proposed decomposition has no novel sub-goal or link set. |
 | `return_to_nl` | The claim has no justified Programme Proof correspondence; the Strategist must repair or retire the natural-language claim. |
+| `disproof_probe_exhausted` | The `-- decline: disprove` submission was refused by the kernel probe `Tooling/pipeline/_disprove.PARK_AFTER_REFUSALS` times on this goal. The framework — not the agent — ends the road and parks the goal for Strategist review. |
 | `goal_no_longer_open` | A parallel cascade settled the goal during the run; this race terminates the loop. |
 
 `group_retired` is the Strategist-side race twin: a group became terminal while its wake was

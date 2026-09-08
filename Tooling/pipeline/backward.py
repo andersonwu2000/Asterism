@@ -1126,6 +1126,9 @@ def _backward_parse_and_commit(
     if decline is not None:
         from . import DECLINE_DISPROVE, DECLINE_UNPROVABLE
         from ._disprove import run_disproof_gate, teaching as _disproof_teaching
+        from ._disprove import (PARK_AFTER_REFUSALS as _DISPROOF_PARK_AFTER,
+                                park_prefix as _disproof_park_prefix,
+                                refusal_count as _disproof_refusals)
         _locked_sig = None
         try:
             _locked_sig = (attempts_dir / "_locked_signature.txt").read_text(
@@ -1183,6 +1186,18 @@ def _backward_parse_and_commit(
             # every other infra road here does.
             if verdict.infra_reason:
                 return _abort(verdict.infra_reason, verdict.detail, leading)
+            # Burn cap (post-mortem 2026-09-08). A refused disproof used
+            # to be an ordinary `agent_declined`, so the goal simply got
+            # re-dispatched until its attempts cap: g10948/10949/10952
+            # each spent FIVE spawns, 4-6 minutes apart, on a probe that
+            # could not accept any answer. After the SECOND refusal the
+            # open question is about the statement, not the submission —
+            # park it for the Strategist and say so.
+            nth = _disproof_refusals(conn, goal_id) + 1
+            if nth >= _DISPROOF_PARK_AFTER:
+                return _abort("disproof_probe_exhausted",
+                              _disproof_park_prefix(nth) + verdict.detail,
+                              leading)
             return _abort("agent_declined", verdict.detail, leading)
         if decline == DECLINE_UNPROVABLE:
             # A bare falsity CLAIM never terminates a goal any more

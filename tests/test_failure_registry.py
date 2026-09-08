@@ -79,6 +79,9 @@ def test_terminal_decline_set_pinned():
         # dedupe reuse tier CITES it instead of aborting the batch.
         "same_as_disproved",
         "duplicate_strategy", "return_to_nl",
+        # 09-08: the disprove road's burn cap — two kernel-probe
+        # refusals park the goal instead of taking a third spawn.
+        "disproof_probe_exhausted",
     }
 
 
@@ -109,6 +112,9 @@ def test_non_agent_set_pinned():
         # lesson in "your slot went away" — the row that used to carry
         # it said `lake_build_error`, i.e. "your Lean is broken".
         "verify_infra", "framework_verify_error",
+        # 09-08: a goal parked by the disprove-road burn cap is read
+        # next by the Strategist, not by another worker.
+        "disproof_probe_exhausted",
     }
 
 

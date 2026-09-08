@@ -219,6 +219,21 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # — routes to pending_strategist_review (mirror of agent_shelved;
     # the claim's justification is the Strategist's debt, not a death).
     "return_to_nl": _T(terminal_in_loop=True, agent_visible=False),
+    # The disprove road's burn cap (2026-09-08). The kernel probe
+    # refused this goal's negation `_disprove.PARK_AFTER_REFUSALS`
+    # times across independent spawns; the goal parks in
+    # `pending_strategist_review` instead of taking a third worker.
+    # NOT `agent_declined`: that reason is the framework saying "try
+    # again", and trying again was the whole failure (g10948/10949/
+    # 10952 spent five spawns each on a probe that could not accept any
+    # answer). NOT `agent_shelved` either — the agent asked for nothing;
+    # the FRAMEWORK ended the road, and conflating the two would hide
+    # exactly this shape from the next audit. agent_visible=False for
+    # the same reason as its two review-routing siblings: the reader of
+    # a parked goal is the Strategist, and the refusal it is parked on
+    # already rode the previous attempt's history.
+    "disproof_probe_exhausted": _T(terminal_in_loop=True,
+                                   agent_visible=False),
 
     # --- race (parallel cascade settled the target mid-run) -------------
     "goal_no_longer_open": _T("race", terminal_in_loop=True,
@@ -368,6 +383,10 @@ AGENT_DECLINE_REASONS: frozenset = frozenset({
     "agent_declined", "agent_shelved", "agent_infeasible",
     "parent_needs_fix", "return_to_nl", "agent_bailed",
 })
+# `disproof_probe_exhausted` is deliberately NOT here: the agent
+# declined nothing, the framework ended the road. `draft_verdict_class`
+# therefore frames the parked patch as 'refused', which is the truth —
+# re-submitting it is exactly what the cap exists to stop.
 
 
 def draft_verdict_class(failure_reason: str) -> str:

@@ -2152,6 +2152,18 @@ def _cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.increment_goal_attempts(conn, int(target_id))
             _enqueue_strategist_review(conn, int(target_id))
             return
+        # The disprove road's burn cap (2026-09-08): the kernel probe
+        # refused this goal's negation twice across independent spawns.
+        # Same review routing as agent_shelved / return_to_nl — the
+        # chain stays alive, the Strategist decides — but reached by
+        # the FRAMEWORK's count, not the agent's ask. Without it the
+        # refusal was a plain `agent_declined` and the goal simply
+        # re-dispatched until the attempts cap (three union_closed
+        # goals × five spawns, 2026-09-07/08).
+        if failure_reason == "disproof_probe_exhausted":
+            db.increment_goal_attempts(conn, int(target_id))
+            _enqueue_strategist_review(conn, int(target_id))
+            return
         if failure_reason == "missing_parent_stub":
             # The goal's own stub file (goals.lean_path) is gone from disk
             # while the row is still dispatchable — a DB↔file drift (e.g. a
