@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -134,7 +135,61 @@ def _user_docs_dir(workspace: Path, problem: str) -> "Path | None":
 CATALOG_COMPANION = "CATALOG.md"
 
 
-def _brick_line(slug: str, lean_path: str, catalog: "Path | None") -> str:
+#: The stamp `agent/context.write_catalog_companion` puts in every
+#: catalog it writes: `_Snapshot taken 2026-09-08 13:12 UTC. …_`. It is
+#: the only thing on disk that says WHEN the file's contents were true.
+_CATALOG_STAMP_RE = re.compile(
+    r"_Snapshot taken (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC")
+#: How far into the file that stamp can be. It is written in the
+#: preamble, before the first entry, so a small read settles it — and a
+#: catalog is a roster (1,333 sections, 30-60K) that this module must
+#: never read whole on a tool return path.
+_CATALOG_HEAD_BYTES = 4096
+
+
+def _catalog_stamp(path: Path) -> "datetime | None":
+    """When the catalog beside the reader was rendered, or None when the
+    file carries no stamp we can read.
+
+    Minute resolution, and the stamp is the FLOOR of the write (the
+    writer formats `%H:%M`), so `stamp >= proved` is a sound test for
+    "this file was written after that brick landed" — it can call a
+    fresh catalog stale, never a stale one fresh. That asymmetry is the
+    one to keep: a wrong "stale" costs a read of the proof file, which
+    the same line names; a wrong "fresh" is the defect this exists to
+    close."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_CATALOG_HEAD_BYTES)
+    except OSError:
+        return None
+    m = _CATALOG_STAMP_RE.search(head)
+    if m is None:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _proved_at(value: "str | None") -> "datetime | None":
+    """`goals.updated_at` (an ISO-8601 UTC instant — `db.now`) as a
+    datetime. The row was just seen to be `proved`, so its last update
+    IS when it landed."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        out = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return out if out.tzinfo is not None else out.replace(tzinfo=timezone.utc)
+
+
+def _brick_line(slug: str, lean_path: str, catalog: "Path | None",
+                catalog_stamp: "datetime | None" = None,
+                proved_at: "datetime | None" = None) -> str:
     """One `brick proved:` line, in the two spellings the reader can act
     on — and no third one it cannot.
 
@@ -156,15 +211,31 @@ def _brick_line(slug: str, lean_path: str, catalog: "Path | None") -> str:
     proved and no alive goals = no companion) and to a declaration name
     the record has never held; both halves of that line were
     unreachable. The catalog is named only when one is actually beside
-    the reader — see `ChangeNotice.__init__`'s `catalog_dir`."""
+    the reader — see `ChangeNotice.__init__`'s `catalog_dir`.
+
+    And only when that catalog is NEWER than this brick. Existence was
+    the wrong question: `CATALOG.md` is rewritten on context-render
+    paths (per wake), not when a brick lands, so a file sitting beside a
+    long-running spawn routinely predates the news this very line is
+    announcing. "(also in `CATALOG.md`)" then sent the reader to a
+    catalog that does not contain the brick — one of them quoted its
+    `(0 entries)` header back as evidence the brick had not landed
+    (2026-09-08 field reading). A pointer is only worth printing when
+    the thing pointed at has the answer; when it does not, the line says
+    so and the proof file beside it is the address that does."""
     name = str(slug or "").strip() or Path(str(lean_path or "")).stem or "?"
     rel = str(lean_path or "").replace("\\", "/").strip()
     out = f"- brick proved: `{name}`"
     if rel:
         out += f" — `{rel}`"
-    if catalog is not None:
-        out += f" (also in `{catalog.as_posix()}`)"
-    return out
+    if catalog is None:
+        return out
+    if catalog_stamp is None:
+        return out + (" (CATALOG.md carries no snapshot stamp — read the "
+                      "proof file)")
+    if proved_at is None or catalog_stamp < proved_at:
+        return out + " (CATALOG.md predates this brick — read the proof file)"
+    return out + f" (also in `{catalog.as_posix()}`)"
 
 
 class ChangeNotice:
@@ -329,9 +400,18 @@ class ChangeNotice:
                 "SELECT id, path FROM theory_documents"
                 " WHERE problem = ? AND status = 'accepted'"
                 " AND path IS NOT NULL")
+            # `updated_at` is when the row reached `proved` (nothing
+            # touches a proved goal afterwards on this path) — the
+            # timestamp the catalog's own stamp is measured against.
+            # A schema without the column is a workspace whose bricks
+            # simply carry no landing time: `_rows` answers [], so the
+            # query is asked in the plainer spelling too.
             goals = self._rows(
                 conn,
-                "SELECT id, slug, lean_path FROM goals"
+                "SELECT id, slug, lean_path, updated_at FROM goals"
+                " WHERE problem = ? AND status = 'proved'") or self._rows(
+                conn,
+                "SELECT id, slug, lean_path, NULL FROM goals"
                 " WHERE problem = ? AND status = 'proved'")
         finally:
             conn.close()
@@ -347,27 +427,36 @@ class ChangeNotice:
                 # needs to be the one this project writes paths in.
                 doc = str(row[1]).replace("\\", "/")
                 lines.append(f"- theory document accepted: `{doc}`")
-        catalog = self._catalog()
+        cat = self._catalog()
+        catalog, stamp = cat if cat is not None else (None, None)
         for row in goals:
             if row[0] in self._proved:
                 continue
             self._proved.add(row[0])
             if self._primed:
-                lines.append(_brick_line(row[1], row[2], catalog))
+                lines.append(_brick_line(
+                    row[1], row[2], catalog, stamp,
+                    _proved_at(row[3] if len(row) > 3 else None)))
         return lines
 
-    def _catalog(self) -> "Path | None":
-        """This spawn's `CATALOG.md`, or None when there is not one to
-        name. Checked per trailer rather than once at construction: the
+    def _catalog(self) -> "tuple[Path, datetime | None] | None":
+        """This spawn's `CATALOG.md` and the moment it was rendered, or
+        None when there is not one to name.
+
+        Checked per trailer rather than once at construction: the
         companion is (re)written per wake, and a spawn whose problem
-        proves its first brick gets one while it works."""
+        proves its first brick gets one while it works. The STAMP is
+        read on the same pass, because whether to name the file is a
+        question about its contents, not its existence (`_brick_line`)."""
         if self.catalog_dir is None:
             return None
         cand = self.catalog_dir / CATALOG_COMPANION
         try:
-            return cand if cand.is_file() else None
+            if not cand.is_file():
+                return None
         except OSError:
             return None
+        return cand, _catalog_stamp(cand)
 
     def _rows(self, conn: "sqlite3.Connection", sql: str) -> "list[tuple]":
         """One query, or nothing. A workspace whose schema predates a

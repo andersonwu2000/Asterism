@@ -51,7 +51,7 @@ def _db(ws):
         "CREATE TABLE theory_documents (id INTEGER PRIMARY KEY,"
         " problem TEXT, path TEXT, status TEXT);"
         "CREATE TABLE goals (id INTEGER PRIMARY KEY, problem TEXT,"
-        " slug TEXT, lean_path TEXT, status TEXT);")
+        " slug TEXT, lean_path TEXT, status TEXT, updated_at TEXT);")
     conn.commit()
     conn.close()
     return path
@@ -143,11 +143,14 @@ def test_accepted_document_and_proved_brick(tmp_path):
         " (3, 'Other.p9', 'Problems/Other/_docs/agent/nope.md', 'accepted');"
         "INSERT INTO goals VALUES"
         " (10, 'Test.p1', 'shell_closure',"
-        "  'Problems/Test/p1/proofs/L_shell_closure.lean', 'proved'),"
+        f"  'Problems/Test/p1/proofs/L_shell_closure.lean', 'proved',"
+        f"  '{PROVED_AT}'),"
         " (11, 'Test.p1', 'open_one',"
-        "  'Problems/Test/p1/proofs/L_open_one.lean', 'open'),"
+        f"  'Problems/Test/p1/proofs/L_open_one.lean', 'open',"
+        f"  '{PROVED_AT}'),"
         " (12, 'Other.p9', 'elsewhere',"
-        "  'Problems/Other/p9/proofs/L_elsewhere.lean', 'proved');")
+        f"  'Problems/Other/p9/proofs/L_elsewhere.lean', 'proved',"
+        f"  '{PROVED_AT}');")
     conn.commit()
     conn.close()
 
@@ -165,13 +168,29 @@ def test_accepted_document_and_proved_brick(tmp_path):
     assert notice.trailer() == ""
 
 
-def _land_brick(ws, *, slug="shell_closure", gid=10):
+#: When every brick in this suite lands, unless a test says otherwise:
+#: 2026-01-01 16:40 UTC, the same instant the owner-edit tests pin.
+PROVED_AT = "2026-01-01T16:40:00+00:00"
+
+
+def _land_brick(ws, *, slug="shell_closure", gid=10, at=PROVED_AT):
     conn = sqlite3.connect(ws / "asterism.db")
     conn.execute(
-        "INSERT INTO goals VALUES (?, ?, ?, ?, 'proved')",
-        (gid, PROBLEM, slug, f"Problems/Test/p1/proofs/L_{slug}.lean"))
+        "INSERT INTO goals VALUES (?, ?, ?, ?, 'proved', ?)",
+        (gid, PROBLEM, slug, f"Problems/Test/p1/proofs/L_{slug}.lean", at))
     conn.commit()
     conn.close()
+
+
+def _catalog(attempts, *, taken: "str | None", entries: int = 1):
+    """A catalog the way `context.write_catalog_companion` writes one —
+    the preamble stamp is what the notice reads. `taken=None` writes a
+    catalog with no stamp at all (a hand-made or pre-stamp file)."""
+    body = [f"# Proved catalog — {PROBLEM} ({entries} entries)"]
+    if taken is not None:
+        body.append(f"_Snapshot taken {taken} UTC. Statuses move while"
+                    " you work._")
+    return _write(attempts / "CATALOG.md", "\n".join(body) + "\n")
 
 
 def test_the_brick_line_resolves_by_decl_and_by_read(tmp_path):
@@ -195,7 +214,8 @@ def test_a_root_brick_keeps_the_name_its_wrapper_declares(tmp_path):
     notice = _notice(ws)
     conn = sqlite3.connect(ws / "asterism.db")
     conn.execute("INSERT INTO goals VALUES (7, ?, 'main',"
-                 " 'Problems/Test/p1/Root.lean', 'proved')", (PROBLEM,))
+                 " 'Problems/Test/p1/Root.lean', 'proved', ?)",
+                 (PROBLEM, PROVED_AT))
     conn.commit()
     conn.close()
     out = notice.trailer()
@@ -212,11 +232,47 @@ def test_catalog_named_only_when_one_is_beside_the_reader(tmp_path):
     # the reader at one.
     assert "CATALOG.md" not in notice.trailer()
 
-    _write(attempts / "CATALOG.md", "# Proved catalog\n")
+    _catalog(attempts, taken="2026-01-01 16:41")   # rendered AFTER
     _land_brick(ws, slug="second_one", gid=11)
     out = notice.trailer()
     assert "- brick proved: `second_one`" in out
     assert f"(also in `{(attempts / 'CATALOG.md').as_posix()}`)" in out
+
+
+def test_a_catalog_older_than_the_brick_is_named_as_such(tmp_path):
+    """Existence was the wrong question. `CATALOG.md` is rewritten on
+    context-render paths, not when a brick lands, so the file beside a
+    long-running spawn routinely predates the news the line is
+    announcing — and an agent quoted its `(0 entries)` header back as
+    evidence the brick had not landed (2026-09-08 field reading)."""
+    ws = _workspace(tmp_path)
+    attempts = ws / ".attempts" / "1234"
+    attempts.mkdir(parents=True)
+    _catalog(attempts, taken="2026-01-01 16:39", entries=0)  # BEFORE
+    notice = change_notice.ChangeNotice(ws, PROBLEM, catalog_dir=attempts)
+    _land_brick(ws)
+    out = notice.trailer()
+    assert "- brick proved: `shell_closure`" in out
+    assert "(CATALOG.md predates this brick — read the proof file)" in out
+    assert "also in" not in out
+    # the address that DOES have the answer is on the same line
+    assert "`Problems/Test/p1/proofs/L_shell_closure.lean`" in out
+
+
+def test_a_catalog_with_no_snapshot_stamp_is_not_vouched_for(tmp_path):
+    """A file whose render time cannot be read is one this notice cannot
+    say anything true about — so it says that, rather than the sentence
+    it cannot support."""
+    ws = _workspace(tmp_path)
+    attempts = ws / ".attempts" / "1234"
+    attempts.mkdir(parents=True)
+    _catalog(attempts, taken=None)
+    notice = change_notice.ChangeNotice(ws, PROBLEM, catalog_dir=attempts)
+    _land_brick(ws)
+    out = notice.trailer()
+    assert "(CATALOG.md carries no snapshot stamp — read the proof file)" \
+        in out
+    assert "also in" not in out
 
 
 def test_missing_tables_are_not_an_error(tmp_path):
