@@ -46,9 +46,16 @@ def render(workspace: Path, intent: intent_mod.ProblemIntent,
     # off the dispatch path (cli init / daemon startup), so the
     # one-time cost of the lazy import is moot.
     from ..agent import context
+    # The sandbox section's CATALOG.md sentence is an instruction, and a
+    # problem with nothing proved has no such file to read (p1101,
+    # 2026-09-08 12:37Z: "the required pre-injection catalogue check
+    # cannot be performed"). Ask the record whether the promise can be
+    # kept before making it.
     sections: list[list[str]] = [
         _section_brief_header(intent),
-        context._section_sandbox(),
+        context._section_sandbox(
+            catalog_present=context.catalog_has_entries(
+                conn, intent.problem)),
         context._section_forbidden(intent),
         context._section_goal(intent),
         context._section_user_word(intent),
@@ -97,7 +104,11 @@ def write_for_all_problems(conn: sqlite3.Connection, workspace: Path,
     """
     for problem_name, intent in intents.items():
         try:
-            write(workspace, intent)
+            # `conn` was held and not passed until 2026-09-08, which
+            # cost the render every question it can only answer from the
+            # record — the Library menu, and now whether this problem
+            # has a catalog worth naming.
+            write(workspace, intent, conn=conn)
         except Exception as exc:  # noqa: BLE001
             # BRIEF render failure must not block the daemon. Log and
             # carry on — Context.md will inline whatever's currently on

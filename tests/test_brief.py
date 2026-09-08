@@ -188,15 +188,16 @@ def test_write_for_all_problems_swallows_per_problem_errors(
 
     # Force `bad` to raise inside write.
     real_write = brief.write
-    def faulty_write(workspace, pi):
+    def faulty_write(workspace, pi, conn=None):
         if pi.problem == "bad":
             raise RuntimeError("simulated render failure")
-        return real_write(workspace, pi)
+        return real_write(workspace, pi, conn=conn)
     monkeypatch.setattr(brief, "write", faulty_write)
 
     # No exception should escape.
     brief.write_for_all_problems(
-        conn=None,  # write_for_all_problems doesn't use conn currently
+        conn=None,  # a conn-less render is legal; sections that need
+                    # the record simply render empty
         workspace=tmp_path,
         intents={"good": good_pi, "bad": bad_pi},
     )
@@ -205,3 +206,55 @@ def test_write_for_all_problems_swallows_per_problem_errors(
     assert (tmp_path / "Problems/good/BRIEF.md").exists()
     # `bad` did not (the faulty write raised).
     assert not (tmp_path / "Problems/bad/BRIEF.md").exists()
+
+
+# ── the CATALOG.md promise is made only where it can be kept ─────────
+
+def _conn_with(proved: bool):
+    """A workspace record with (or without) one proved brick."""
+    import sqlite3
+    from Tooling.state import db
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    db.init_schema(c)
+    c.execute("INSERT INTO problems (name, created_at) VALUES ('p', ?)",
+              (db.now(),))
+    if proved:
+        c.execute(
+            "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+            " origin, status, depth, created_at, updated_at) VALUES"
+            " ('p', 'brick', 'Problems/p/proofs/L_brick.lean', 'T',"
+            "  'theorem', 'forward', 'proved', 0, ?, ?)",
+            (db.now(), db.now()))
+    c.commit()
+    return c
+
+
+def test_brief_promises_the_catalog_when_a_brick_has_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.knowledge import lemma_lookup
+    monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
+    out = brief.render(tmp_path, ProblemIntent(problem="p", charter="T"),
+                       conn=_conn_with(proved=True))
+    assert "`CATALOG.md`" in out
+    assert "read it before citing one" in out
+
+
+def test_brief_says_nothing_about_a_catalog_that_does_not_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """p1101, 2026-09-08 12:37Z: a pure-NL problem with nothing proved
+    and no alive goals never gets a `CATALOG.md`, and the wake reported
+    that "the required pre-injection catalogue check cannot be
+    performed" — an instruction naming a file that does not exist is a
+    gate the agent cannot pass. Where the promise cannot be kept, it is
+    not made."""
+    from Tooling.knowledge import lemma_lookup
+    monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
+    out = brief.render(tmp_path, ProblemIntent(problem="p", charter="T"),
+                       conn=_conn_with(proved=False))
+    assert "read it before citing one" not in out
+    assert "No brick has landed in this problem yet" in out
+    # and the companions that DO exist are still named
+    assert "`LESSONS.md`" in out

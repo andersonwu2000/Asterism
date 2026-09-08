@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.pipeline import PROMPT_DIR, strategist
+from Tooling.pipeline.strategist import batch_rules
 from Tooling.state import db
 
 
@@ -2251,6 +2252,116 @@ def test_verify_decisions_rejects_confirmshelve_ancestor_plus_inject_descendant(
     assert "descendant" in err.lower()
     assert "_cascade_shelve_descendants" in err or "cascade" in err.lower()
     assert str(root) in err and str(sub) in err
+
+
+def _p617_shape(conn: sqlite3.Connection) -> "tuple[int, int, int, int]":
+    """The p617 batch of 2026-09-08 13:12Z (and again, identical, at
+    13:17Z): `ConfirmShelve(ancestor)` + `Inject(descendant)` while two
+    OTHER goals wait on a review verdict.
+
+    Returns (ancestor, descendant, pending_a, pending_b). The root stays
+    `open` so the root-blocked rule is out of the picture — what this
+    fixture isolates is two rules whose remedies contradict each other.
+    """
+    _insert_root(conn)
+    anc = db.insert_goal(
+        conn, problem="p", slug="anc",
+        lean_path="Problems/p/proofs/L_anc.lean", statement="T",
+        origin="backward")
+    desc = db.insert_goal(
+        conn, problem="p", slug="desc",
+        lean_path="Problems/p/proofs/L_desc.lean", statement="T",
+        origin="backward")
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'test', ?)",
+        (anc, db.now()))
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (cur.lastrowid, desc))
+    pend = []
+    for slug in ("waiting_a", "waiting_b"):
+        gid = db.insert_goal(
+            conn, problem="p", slug=slug,
+            lean_path=f"Problems/p/proofs/L_{slug}.lean", statement="T",
+            origin="backward")
+        db.update_goal_status(conn, gid, "pending_strategist_review")
+        pend.append(gid)
+    conn.commit()
+    return anc, desc, pend[0], pend[1]
+
+
+def _p617_batch(anc: int, desc: int) -> list:
+    ds, err = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Builder", "target_goal_id": desc,
+         "brick": "desc"},
+        {"kind": "ConfirmShelve", "target_goal_id": anc,
+         "reason": "decomposition exhausted"},
+    ]))
+    assert err == "" and ds is not None
+    return ds
+
+
+def test_two_batch_rules_refusing_at_once_name_one_shape_that_fits_both(
+    conn: sqlite3.Connection,
+) -> None:
+    """p617, 13:12Z and 13:17Z: the cascade rule told the Strategist to
+    "drop the ConfirmShelve and Inject(target=<ancestor>)", it did
+    exactly that, and the review-discharge rule refused the result —
+    the ancestor is not one of the goals waiting on a verdict. Its own
+    remedy walks back into the cascade rule. One rule per wake cannot
+    get out of that, because each wake is shown one third of the
+    constraint.
+
+    So the batch verifier collects BOTH and computes the union: drop the
+    ConfirmShelve, Inject the ancestor, and Inject one of the waiting
+    goals."""
+    anc, desc, pa, pb = _p617_shape(conn)
+    err = strategist.verify_decisions(_p617_batch(anc, desc), conn,
+                                      problem="p")
+    # both rules, in one message
+    assert "2 batch-level rules refuse this batch AT ONCE" in err
+    assert "descendant" in err.lower()          # the cascade rule
+    assert "review not discharged" in err       # the discharge rule
+    # and one shape that satisfies both
+    assert f"DROP ConfirmShelve(target_goal_id={anc})" in err
+    assert f"ADD  Inject(target_goal_id={anc}" in err
+    assert (f"ADD  Inject(target_goal_id={pa}" in err
+            or f"ADD  Inject(target_goal_id={pb}" in err)
+    # the pick is named as a pick, not as the only legal answer
+    assert f"any one of g{pa}, g{pb}" in err
+
+
+def test_the_shape_a_multi_refusal_message_names_passes_the_same_rules(
+    conn: sqlite3.Connection,
+) -> None:
+    """The composed shape is RE-CHECKED through the rules that produced
+    it before it is offered. Prescribing an unchecked shape is the
+    defect this whole change is about — one level up."""
+    anc, desc, _pa, _pb = _p617_shape(conn)
+    ds = _p617_batch(anc, desc)
+    refusals = batch_rules.cross_decision_refusals(ds, conn, problem="p")
+    assert len(refusals) == 2
+    fixed = batch_rules.repair_batch(ds, refusals)
+    assert batch_rules.cross_decision_refusals(fixed, conn,
+                                               problem="p") == []
+
+
+def test_a_lone_cross_decision_refusal_keeps_its_own_words(
+    conn: sqlite3.Connection,
+) -> None:
+    """One rule refusing is the case where the prose already names a
+    remedy nothing else contradicts — it is returned verbatim, with no
+    header and no computed shape."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "wait"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "rules refuse this batch AT ONCE" not in err
+    assert err.startswith(f"Root (goal_id={root}) is")
 
 
 def test_verify_decisions_allows_confirmshelve_with_inject_bb_different_target(

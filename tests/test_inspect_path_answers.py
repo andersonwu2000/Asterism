@@ -178,3 +178,107 @@ def test_the_workspace_anchor_is_not_a_hole_in_the_read_fence(
 
     assert "secret" not in out, out
     assert "operator-private" in out, out
+
+
+# ── a same-named file elsewhere is NAMED, not prescribed ─────────────
+
+def test_a_missing_report_is_not_answered_with_another_rounds_report(
+        tmp_path: Path, monkeypatch):
+    """The 2026-09-08 field reading: a reviewer asked for
+    `…/54c1fb01…/review/r2/report.md` and `inspect` answered "but a file
+    of that name is at …/4fea01b9…/review/r1/report.md — use that path"
+    — an imperative naming another attempt's earlier round. The
+    basename search drops every path segment that identifies the
+    document, and `review/r2` is exactly such a segment.
+
+    The place asked for is real; the file simply is not in it. So the
+    other file is named as what it is, and citing it is offered as a
+    decision the reader makes."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    mine = cwd / "review" / "r2"
+    mine.mkdir(parents=True)                      # my round exists…
+    other = cwd / "other_attempt" / "review" / "r1"
+    other.mkdir(parents=True)
+    (other / "report.md").write_text("someone else's round\n",
+                                     encoding="utf-8")
+
+    out = wq.run_queries([{"read": "review/r2/report.md"}], cwd=cwd)
+    assert "no file at" in out
+    assert "different attempt/round" in out
+    assert "cite it only if you mean that one" in out
+    assert "use that path" not in out
+    # named, so the reader can still act on it deliberately
+    assert "r1" in out and "report.md" in out
+
+
+def test_a_same_named_file_under_the_asked_for_dirs_is_still_the_answer(
+        tmp_path: Path, monkeypatch):
+    """The suffix case: the spec's directories ARE where the hit sits
+    (the spawn's other root), so nothing about the document's identity
+    was dropped and the pointer stands."""
+    cwd, attempts = _workspace(tmp_path, monkeypatch)
+    (attempts / "review" / "r2").mkdir(parents=True)
+    (attempts / "review" / "r2" / "report.md").write_text(
+        "mine\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "review/r2/report.md"}], cwd=cwd)
+    # resolution finds it outright, or the hint prescribes it — either
+    # way the reader is not sent to another round
+    assert "different attempt/round" not in out
+    assert "mine" in out or "use that path" in out
+
+
+def test_a_mistyped_directory_still_gets_the_file_it_meant(
+        tmp_path: Path, monkeypatch):
+    """`prooofs/L_a.lean` names a directory that does not exist — one
+    document, misspelled — and the file of that name is what was meant
+    (2026-08-15). The identity rule must not eat this case."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    (cwd / "proofs" / "L_a.lean").write_text("theorem a : True\n",
+                                             encoding="utf-8")
+    out = wq.run_queries([{"read": "prooofs/L_a.lean"}], cwd=cwd)
+    assert "use that path" in out
+    assert "different attempt/round" not in out
+
+
+# ── a glob that matched nothing says so ──────────────────────────────
+
+def test_a_glob_with_no_hits_says_it_was_a_glob_and_lists_the_dir(
+        tmp_path: Path, monkeypatch):
+    """`_glob_split` cuts the pattern off before the miss is described,
+    so the diagnostic was handed the glob-free PREFIX — a directory,
+    every time — and answered "that path IS a directory and it is EMPTY
+    — the path was used exactly as given". False twice: the path was
+    not used as given, and an EMPTY verdict on a directory full of
+    files is the opposite of what the reader needed to know."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    (cwd / "proofs" / "L_a.lean").write_text("theorem a : True\n",
+                                             encoding="utf-8")
+
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs/*.rs"}], cwd=cwd)
+    assert "matched 0 files" in out
+    assert "glob" in out
+    assert "L_a.lean" in out                      # what IS there
+    assert "used exactly as given" not in out
+    assert "is EMPTY" not in out
+
+
+def test_a_glob_over_an_empty_directory_says_the_directory_is_empty(
+        tmp_path: Path, monkeypatch):
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs/*.lean"}], cwd=cwd)
+    assert "matched 0 files" in out
+    assert "is EMPTY" in out
+
+
+def test_a_plain_directory_miss_keeps_its_own_answer(
+        tmp_path: Path, monkeypatch):
+    """The non-glob spelling is untouched: an empty directory named
+    directly still gets the sentence that settles it."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs"}], cwd=cwd)
+    assert "used exactly as given" in out
+    assert "matched 0 files" not in out

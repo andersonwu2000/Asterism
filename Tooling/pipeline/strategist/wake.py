@@ -233,6 +233,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # empty KB renders neither the Context surface nor the instruction.
     from ...state import kb as _kb
     has_kb = bool(_kb.global_lessons(conn, problem))
+    from ...agent.context import catalog_has_entries as _catalog_has_entries
     # The framework's tools reach this wake over MCP, not a shell (see
     # knowledge/mcp_tools.py). No gateway session: the Strategist has no
     # Lean file open, and registering one would hold a backend slot for
@@ -246,7 +247,15 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         session_id=sid, timeout_sec=strategist_timeout,
         mcp_config_path=tools_cfg,
         prompt_flags={"has_history": has_history, "has_kb": has_kb,
-                      "routine_verdict": trigger_kind == "routine_fired"},
+                      "routine_verdict": trigger_kind == "routine_fired",
+                      # A prompt line that says "read CATALOG.md before
+                      # citing" is an instruction, and a problem with
+                      # nothing proved has no such file — the p1101
+                      # routine wake (2026-09-08 12:37Z) answered that
+                      # "the required pre-injection catalogue check
+                      # cannot be performed". Say it only when it can.
+                      "catalog_present": _catalog_has_entries(
+                          conn, problem)},
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the

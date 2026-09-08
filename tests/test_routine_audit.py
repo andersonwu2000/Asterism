@@ -536,3 +536,59 @@ def test_verdict_section_shows_only_fired_roots_still_live(conn):
     assert "`root` (goal_id" in body
     assert "`gone`" not in body
     assert "cannot reach MAIN" in body
+
+
+# ── the prompt's CATALOG.md line is conditional on there being one ───
+
+def _routine_prompt_rendered(flags: dict) -> str:
+    from Tooling.agent import runtime
+    from Tooling.pipeline import PROMPT_DIR
+    text = (PROMPT_DIR / "strategist" / "routine.md").read_text(
+        encoding="utf-8")
+    return runtime.render_prompt_template(text, flags=flags)
+
+
+def _run_routine_capturing_flags(wconn, workspace, mfst, monkeypatch):
+    from Tooling import agent
+    from Tooling.pipeline import strategist
+    from Tooling.pipeline.strategist import audit
+    top = groups_store.ensure_top_group(wconn, "p")
+    root = _line_in_flight(wconn, top)
+    seen: dict = {}
+
+    def fake_spawn(**kw):
+        seen["flags"] = kw.get("prompt_flags")
+        (kw["attempts_dir"] / audit.VERDICT_FILE).write_text(
+            _fired_verdict_text(root), encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        wconn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, intent=mfst, pipeline_id="pipe-r1",
+        group_id=top)
+    assert r.outcome == "success", r
+    return seen["flags"]
+
+
+def test_routine_prompt_omits_catalog_md_when_nothing_has_landed(
+        wconn, workspace, mfst, monkeypatch):
+    """p1101, 2026-09-08 12:37Z: the wake was told to check `CATALOG.md`
+    before injecting, on a pure-NL problem that never gets one (nothing
+    proved, no alive goals = no companion written), and answered that
+    "the required pre-injection catalogue check cannot be performed".
+    An instruction naming a file that does not exist is a gate the agent
+    cannot pass."""
+    flags = _run_routine_capturing_flags(wconn, workspace, mfst, monkeypatch)
+    assert flags["catalog_present"] is False
+    out = _routine_prompt_rendered(flags)
+    assert "CATALOG.md" not in out
+    assert "`proofs/`" in out          # what IS there is still named
+
+
+def test_routine_prompt_names_catalog_md_once_a_brick_has_landed(
+        wconn, workspace, mfst, monkeypatch):
+    _goal(wconn, "landed", status="proved")
+    flags = _run_routine_capturing_flags(wconn, workspace, mfst, monkeypatch)
+    assert flags["catalog_present"] is True
+    out = _routine_prompt_rendered(flags)
+    assert "Read it before citing one." in out
