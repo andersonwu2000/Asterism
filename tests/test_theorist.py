@@ -2214,7 +2214,7 @@ def test_a_checkpoint_from_the_continuity_era_still_adopts(
 
 
 # ---------------------------------------------------------------------
-# the reviewer's own files, preserved beside the document
+# the review's own files, preserved beside the document
 # ---------------------------------------------------------------------
 
 def _round(attempts: Path, n: int) -> Path:
@@ -2224,13 +2224,20 @@ def _round(attempts: Path, n: int) -> Path:
     return d
 
 
-def _fill_round(attempts: Path, n: int, *, reviewer: "dict[str, str]"):
+def _fill_round(attempts: Path, n: int, *, reviewer: "dict[str, str]",
+                report: str = ""):
     """One round dir as a real one looks: the framework's projection,
-    the provider's private residue, and whatever the reviewer wrote."""
+    the provider's private residue, and whatever the reviewer wrote.
+
+    `report` is the document AS THIS ROUND SAW IT — the projection's own
+    `report.md`, which a later revision cites and which the landed file
+    (the last version) cannot stand in for."""
     from Tooling.pipeline.theorist import review as _review
     d = _round(attempts, n)
     for name in sorted(_review.projection_files()):
         (d / name).write_text(f"framework {name}", encoding="utf-8")
+    if report:
+        (d / "report.md").write_text(report, encoding="utf-8")
     # The two framework names that carry a number, and the private class.
     (d / "PROGRAMME_G7.md").write_text("welded", encoding="utf-8")
     (d / f"verdict_r{n}_raw.json").write_text("{}", encoding="utf-8")
@@ -2245,23 +2252,51 @@ def _fill_round(attempts: Path, n: int, *, reviewer: "dict[str, str]"):
     return d
 
 
-def test_only_the_reviewers_own_files_leave_the_round_dir(
+def _fill_root(attempts: Path, *, author: "dict[str, str]"):
+    """The attempt ROOT as a real one looks: every companion the
+    framework writes there, the provider's private residue, and the
+    author's own attachments."""
+    from Tooling.pipeline.theorist import preserve as _preserve
+    attempts.mkdir(parents=True, exist_ok=True)
+    for name in sorted(_preserve.framework_root_files()):
+        (attempts / name).write_text(f"framework {name}", encoding="utf-8")
+    # The numbered framework name, and the private class in both its
+    # spellings — the `_` file, the provider home, and a credential
+    # dropped at the top level that no `_` rule catches.
+    (attempts / "PROGRAMME_G7.md").write_text("welded", encoding="utf-8")
+    (attempts / "_codex_sessions.json").write_text("{}", encoding="utf-8")
+    (attempts / "_codex_home").mkdir(exist_ok=True)
+    (attempts / "_codex_home" / "auth.json").write_text("SECRET",
+                                                        encoding="utf-8")
+    (attempts / "auth.json").write_text("SECRET", encoding="utf-8")
+    for name, body in author.items():
+        (attempts / name).write_text(body, encoding="utf-8")
+    return attempts
+
+
+def test_a_round_dir_yields_the_review_and_never_the_dossier(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """The round dir holds three kinds of file and exactly one of them
-    is evidence: the framework's projection is reproducible from the DB,
-    the provider's home holds a copy of the operator's credential, and
-    what is left is what the reviewer wrote."""
+    """The round dir holds three kinds of file. The framework's dossier
+    is reproducible from the DB and the provider's home holds a copy of
+    the operator's credential, so neither travels — but two of the
+    framework's own files DO: `report.md` is the document as that round's
+    reviewer ruled on it, which every later revision cites, and
+    `verdict.json` is the ruling in the reviewer's own words."""
     from Tooling.pipeline.theorist import preserve as _preserve
     attempts = workspace / ".attempts" / "th-1"
-    _fill_round(attempts, 1, reviewer={
+    _fill_round(attempts, 1, report="# round one\n", reviewer={
         "review_notes.md": "the descent", "reviewer_checks.py": "print(1)"})
-    _fill_round(attempts, 2, reviewer={"review_notes.md": "round two"})
+    _fill_round(attempts, 2, report="# round two\n",
+                reviewer={"review_notes.md": "round two"})
 
     got = _preserve.preserve(workspace, project="p", attempts_dir=attempts,
                              doc_stem="g1_20260908-0000_a_title")
-    assert sorted(got) == [(1, "review_notes.md"), (1, "reviewer_checks.py"),
-                           (2, "review_notes.md")]
+    assert sorted(got) == [
+        (_preserve.ROOT, "report.md"),
+        (1, "report.md"), (1, "review_notes.md"),
+        (1, "reviewer_checks.py"), (1, "verdict.json"),
+        (2, "report.md"), (2, "review_notes.md"), (2, "verdict.json")]
     base = workspace / "Problems" / "p" / "_docs" / "agent"
     kept = base / "g1_20260908-0000_a_title"
     assert got[(1, "reviewer_checks.py")] == (
@@ -2271,13 +2306,128 @@ def test_only_the_reviewers_own_files_leave_the_round_dir(
         encoding="utf-8") == "print(1)"
     assert (kept / "review_r2" / "review_notes.md").read_text(
         encoding="utf-8") == "round two"
+    # Each round's own document, not the last one twice.
+    assert (kept / "review_r1" / "report.md").read_text(
+        encoding="utf-8") == "# round one\n"
+    assert (kept / "review_r2" / "report.md").read_text(
+        encoding="utf-8") == "# round two\n"
     assert sorted(p.name for p in (kept / "review_r1").iterdir()) == [
-        "review_notes.md", "reviewer_checks.py"]
+        "report.md", "review_notes.md", "reviewer_checks.py", "verdict.json"]
+    # The root's own entry names the LANDED document — the file is the
+    # landing, so nothing is copied for it.
+    assert got[(_preserve.ROOT, "report.md")] == (
+        "Problems/p/_docs/agent/g1_20260908-0000_a_title.md")
     # Nothing else travelled — least of all the credential.
     assert not list(kept.rglob("auth.json"))
-    assert not list(kept.rglob("report.md"))
-    assert not list(kept.rglob("verdict*.json"))
+    assert not list(kept.rglob("verdict_r*_raw*.json"))
     assert not list(kept.rglob("PROGRAMME*.md"))
+    assert not list(kept.rglob("TREE.md"))
+
+
+def test_the_authors_own_files_leave_the_attempt_root(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The other half of the record, and the half nothing preserved. A
+    document retains earlier theorems "by reference" to
+    `report_before_r3_revision.md` and says its arithmetic is
+    reproducible from `checks.py`; both sit at the attempt ROOT, which
+    `preserve` never walked."""
+    from Tooling.pipeline.theorist import preserve as _preserve
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_root(attempts, author={
+        "checks.py": "print(1)", "checks.txt": "all passed",
+        "report_before_r3_revision.md": "# the r2 document\n",
+        "retained_r1_report.md": "# retained\n",
+        "classification.md": "# the cases\n"})
+
+    got = _preserve.preserve(workspace, project="p", attempts_dir=attempts,
+                             doc_stem="g1_20260908-0000_a_title")
+    kept = workspace / "Problems" / "p" / "_docs" / "agent" / \
+        "g1_20260908-0000_a_title"
+    assert sorted(p.name for p in (kept / "author").iterdir()) == [
+        "checks.py", "checks.txt", "classification.md",
+        "report_before_r3_revision.md", "retained_r1_report.md"]
+    assert got[(_preserve.ROOT, "checks.py")] == (
+        "Problems/p/_docs/agent/g1_20260908-0000_a_title/author/checks.py")
+    assert (kept / "author" / "checks.py").read_text(
+        encoding="utf-8") == "print(1)"
+    # The framework's own companions are not the author's attachments,
+    # and the credential is nobody's.
+    assert not list(kept.rglob("auth.json"))
+    assert not list(kept.rglob("Context.md"))
+    assert not list(kept.rglob("PROGRAMME*.md"))
+    assert not list(kept.rglob("_*"))
+    # `report.md` at the root IS the document; it is named, never copied.
+    assert not (kept / "author" / "report.md").exists()
+
+
+def _citing_everything(pid: str) -> str:
+    """A document that cites BOTH sides of its own review, in every
+    spelling the landed shelf actually carries one: the absolute path
+    out of a tool's output, its backslash twin, the bare markdown link,
+    and the bare name in prose."""
+    return (
+        "# Cited work\n\n## Abstract\n\nIt reduces MAIN.\n\n"
+        f"Theorem 4 is unchanged from D:/Asterism/.attempts/{pid}/review/"
+        f"r2/report.md, and the round-1 ruling is at "
+        f"review/r1/verdict.json.\n"
+        f"The arithmetic is reproduced by [checks.py](checks.py); its "
+        f"output is in checks.txt.\n"
+        f"Section 3 is retained by reference to "
+        f"D:\\Asterism\\.attempts\\{pid}\\report_before_r3_revision.md.\n"
+        f"This document is .attempts/{pid}/report.md.\n\n"
+        "## Theorems and proofs\n\nTheorem 1. ...\n\n"
+        "## Load-bearing work\n\nX.\n\n## Leads\n\nA.\n")
+
+
+def test_the_landed_document_cites_the_authors_files_and_each_round(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The whole of S1 in one landing: a two-round run whose document
+    cites its author's attachments, an earlier round's `report.md` and
+    itself. Every one of those paths is inside `.attempts/<pid>/`, which
+    the pipeline deletes on its way out — so after landing none of them
+    may still be spelled that way, and every rewritten path must be a
+    file that is actually on the shelf."""
+    from Tooling.pipeline.theorist import landing as _landing
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_root(attempts, author={
+        "checks.py": "print(1)", "checks.txt": "all passed",
+        "report_before_r3_revision.md": "# the r2 document\n"})
+    _fill_round(attempts, 1, report="# round one\n",
+                reviewer={"review_notes.md": "the descent"})
+    _fill_round(attempts, 2, report="# round two\n", reviewer={})
+
+    path, _v = _landing.land(
+        workspace, conn, problem="p", group_id=1, pipeline_id="th-1",
+        body=_citing_everything("th-1"), rounds=2, verdict=_clear(),
+        attempts_dir=attempts)
+    stem = Path(path).name[:-3]
+    kept = f"Problems/p/_docs/agent/{stem}"
+    text = (workspace / path).read_text(encoding="utf-8")
+
+    assert ".attempts" not in text
+    for rel in (f"{kept}/review_r2/report.md",
+                f"{kept}/review_r1/verdict.json",
+                f"{kept}/author/checks.py",
+                f"{kept}/author/checks.txt",
+                f"{kept}/author/report_before_r3_revision.md"):
+        assert rel in text, rel
+        assert (workspace / rel).is_file(), rel
+    # Its own name, for the citation that pointed at the working copy.
+    assert f"This document is {path}." in text
+    # And the round it cites is the round's own document, not the last.
+    assert (workspace / kept / "review_r2" / "report.md").read_text(
+        encoding="utf-8") == "# round two\n"
+
+    # Preserving the same run again copies over its own output, and the
+    # rewrite applied to text it has already rewritten changes nothing —
+    # `author/checks.py` must not gain a second `author/`, and the round's
+    # `review_r2/report.md` must not be re-pointed at the landed file.
+    from Tooling.pipeline.theorist import preserve as _preserve
+    again = _preserve.preserve(workspace, project="p", attempts_dir=attempts,
+                               doc_stem=stem)
+    assert _preserve.rewrite(text, again) == text
 
 
 def _citing_report(pid: str) -> str:
@@ -2433,3 +2583,96 @@ def test_re_landing_the_same_review_preserves_it_again_unchanged(
     assert kept in (workspace / third).read_text(encoding="utf-8")
     assert _preserve.rewrite(
         once, {(1, "review_notes.md"): "elsewhere.md"}) == once
+
+
+# ---------------------------------------------------------------------
+# the author's attachments reach the reviewer
+# ---------------------------------------------------------------------
+
+def test_the_authors_attachments_are_staged_into_the_projection(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The projection was a CLOSED whitelist — built name by name from a
+    fixed list — so a file whose name nobody knew in advance could not be
+    in it, and the author's own `checks.py` never reached the seat asked
+    to reproduce it. What the author wrote is staged under `author/`;
+    what the framework and the provider wrote is not."""
+    from Tooling.pipeline.theorist import review as _review
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_root(attempts, author={"checks.py": "print(1)",
+                                 "checks.txt": "all passed"})
+    proj = _review.build_review_projection(
+        round_no=1, attempts_dir=attempts, conn=conn, workspace=workspace,
+        problem="p", group_id=groups_mod.ensure_top_group(conn, "p"),
+        objective="S such that S implies MAIN", situation="",
+        report_body="# The document\n", dialogue=[])
+
+    assert sorted(p.name for p in (proj / "author").iterdir()) == [
+        "checks.py", "checks.txt"]
+    assert (proj / "author" / "checks.py").read_text(
+        encoding="utf-8") == "print(1)"
+    # The credential never travels, in either of its two spellings, and
+    # neither do the framework's own companions or the document itself.
+    assert not (proj / "author" / "auth.json").exists()
+    assert not (proj / "author" / "_codex_home").exists()
+    assert not list((proj / "author").glob("_*"))
+    assert not (proj / "author" / "Context.md").exists()
+    assert not (proj / "author" / "PROGRAMME_G7.md").exists()
+    assert not (proj / "author" / "report.md").exists()
+
+    # And they are IN the dossier the reviewer reads, by name.
+    from Tooling.state import project_docs as _project_docs
+    text = _review.dossier_sections(
+        proj, proofs_dir=workspace / "Problems" / "p" / "proofs",
+        papers_dir=_project_docs.root(workspace, "p"))
+    assert _review.DOSSIER_AUTHOR_LINE in text
+    assert "`author/checks.py`" in text
+    assert "`author/checks.txt`" in text
+
+
+def test_a_round_with_no_attachments_names_none(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """"Absent" has to stay sayable. A run whose author attached nothing
+    gets no `author/` heading at all — the reviewer's criterion 2 is then
+    ruling on a real absence, not on a staging failure."""
+    from Tooling.pipeline.theorist import review as _review
+    from Tooling.state import project_docs as _project_docs
+    attempts = workspace / ".attempts" / "th-1"
+    _fill_root(attempts, author={})
+    proj = _review.build_review_projection(
+        round_no=1, attempts_dir=attempts, conn=conn, workspace=workspace,
+        problem="p", group_id=groups_mod.ensure_top_group(conn, "p"),
+        objective="S", situation="", report_body="# The document\n",
+        dialogue=[])
+    assert not (proj / "author").exists()
+    assert _review.DOSSIER_AUTHOR_LINE not in _review.dossier_sections(
+        proj, proofs_dir=workspace / "Problems" / "p" / "proofs",
+        papers_dir=_project_docs.root(workspace, "p"))
+
+
+def test_the_rendered_prompt_names_the_attachments_as_present(
+    workspace: Path, conn: sqlite3.Connection,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end, through the seat that actually reads it. The prompt's
+    manifest closes with "a file the prompt names that is not listed here
+    does not exist this round — do not probe for it", so an attachment
+    that reaches the projection but not that roster is one the reviewer
+    has been told not to look for."""
+    did = _theorize(conn, workspace)
+    fake, _state = _script(verdicts=[_clear()])
+
+    def spawn(**kw):
+        if kw.get("kind") == "theorist":
+            (kw["attempts_dir"] / "checks.py").write_text(
+                "print(1)", encoding="utf-8")
+        return fake(**kw)
+
+    monkeypatch.setattr(agent, "spawn_llm", spawn)
+    assert _run(conn, workspace, pintent, did).outcome == "success"
+    prompt = (workspace / ".attempts" / "th-1" / "review" / "r1"
+              / "_theory_review_prompt.md").read_text(encoding="utf-8")
+    from Tooling.pipeline.theorist import review as _review
+    assert _review.DOSSIER_AUTHOR_LINE in prompt
+    assert "`author/checks.py`" in prompt

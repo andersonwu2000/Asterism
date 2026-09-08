@@ -293,26 +293,36 @@ def test_the_roster_lists_what_the_programme_wrote_too(ws: Path) -> None:
     assert "body" not in "\n".join(lines)
 
 
-def test_the_roster_skips_the_reviewer_files_kept_beside_a_document(
+def test_the_roster_skips_the_review_files_kept_beside_a_document(
         ws: Path) -> None:
-    """`preserve` (2026-09-08) copies what a theory REVIEWER wrote into
-    `agent/<document-stem>/review_r<n>/` so the document's citations
-    still resolve once the round dir is deleted. They are reached
-    through that document, never listed as documents of their own —
-    each carries no `theory_documents` row, so the roster would have
-    shown `review_notes.md` as an accepted programme document with no
-    verdict mark at all."""
+    """`preserve` (2026-09-08) copies what a theory review produced into
+    `agent/<document-stem>/` — the reviewer's notes and each round's own
+    document under `review_r<n>/`, the author's scripts and RETAINED
+    EARLIER VERSIONS under `author/` — so the landed document's
+    citations still resolve once the attempts dir is deleted. They are
+    reached through that document, never listed as documents of their
+    own: each carries no `theory_documents` row, so the roster would
+    have shown `review_notes.md` as an accepted programme document with
+    no verdict mark at all, and `report_before_r3_revision.md` — a
+    version its own author withdrew — as settled prior work."""
     pd.write(ws, "Erdos", "agent/g7_20260908-1200_t10.md",
              "# T10 remains open\n\nbody\n", area=pd.AREA_AGENT)
-    kept = (pd.root(ws, "Erdos") / "agent" / "g7_20260908-1200_t10"
-            / "review_r4")
-    kept.mkdir(parents=True)
-    (kept / "review_notes.md").write_text(
+    base = pd.root(ws, "Erdos") / "agent" / "g7_20260908-1200_t10"
+    (base / "review_r4").mkdir(parents=True)
+    (base / "review_r4" / "review_notes.md").write_text(
         "# Reviewer notes\n\nthe theorem it proved past the stop\n",
         encoding="utf-8")
+    (base / "review_r4" / "report.md").write_text(
+        "# T10 remains open\n\nas round 4 read it\n", encoding="utf-8")
+    (base / "author").mkdir(parents=True)
+    (base / "author" / "report_before_r3_revision.md").write_text(
+        "# T10 remains open\n\nthe withdrawn version\n", encoding="utf-8")
     lines = _owner_notes(ws)
     assert any("g7_20260908-1200_t10.md" in ln for ln in lines), lines
     assert not any("review_notes.md" in ln for ln in lines), lines
+    assert not any("review_r4/report.md" in ln for ln in lines), lines
+    assert not any("report_before_r3_revision.md" in ln
+                   for ln in lines), lines
 
 
 def test_an_agent_document_carries_its_group_date_and_verdict(

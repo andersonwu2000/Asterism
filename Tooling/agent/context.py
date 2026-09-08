@@ -1981,15 +1981,21 @@ OTHER_PROBLEMS_BLURB = (
 MAX_OTHER_PROBLEM_DOCS = 12
 
 
-#: `agent/<document-stem>/review_r<n>/` — what a theory REVIEWER wrote,
-#: copied out of its round dir so the landed document's citations still
-#: resolve (`pipeline/theorist/preserve`). They are reached THROUGH the
-#: document that cites them, never listed as documents of their own:
-#: each has no `theory_documents` row, so the roster would have shown
+#: `agent/<document-stem>/{review_r<n>,author}/` — what a theory review
+#: produced, copied out of the attempts dir so the landed document's
+#: citations still resolve (`pipeline/theorist/preserve`): the
+#: reviewer's notes and each round's own `report.md` under
+#: `review_r<n>/`, the author's scripts, tables and RETAINED EARLIER
+#: VERSIONS under `author/`. They are reached THROUGH the document that
+#: cites them, never listed as documents of their own: each has no
+#: `theory_documents` row, so the roster would have shown
 #: `review_notes.md` as an accepted programme document carrying no
 #: verdict mark at all — prior work of this programme, to build on and
-#: never re-derive, which is precisely what it is not.
-_REVIEW_ROUND_DIR = re.compile(r"review_r\d+")
+#: never re-derive, which is precisely what it is not. The `author/`
+#: half is the sharper case: `report_before_r3_revision.md` IS a theory
+#: document, superseded by the one landed beside it, and listing it
+#: would put a withdrawn version on the shelf as settled work.
+_PRESERVED_REVIEW_DIR = re.compile(r"review_r\d+|author")
 
 
 def _section_owner_notes(intent: intent_mod.ProblemIntent,
@@ -2036,10 +2042,11 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
     the same lazy layer CATALOG.md and PAST_*.md are, and absent
     entirely when neither half has anything. Papers are skipped; §3.9
     parks them under `_docs/<area>/papers/<id>/` and `## Paper` is their
-    surface. Reviewer files are skipped for the same reason and by the
-    same rule (`_REVIEW_ROUND_DIR`). The Project resolves exactly as the
-    paper section resolves it, so the two can never point into different
-    roots."""
+    surface. A review's preserved files — the reviewer's under
+    `review_r<n>/`, the author's under `author/` — are skipped for the
+    same reason and by the same rule (`_PRESERVED_REVIEW_DIR`). The
+    Project resolves exactly as the paper section resolves it, so the two
+    can never point into different roots."""
     project = _paper_project(intent, conn)
     if not project:
         return []
@@ -2069,7 +2076,7 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
         refused: list[str] = []
         for p in sorted(base.rglob("*")):
             parts = p.relative_to(base).parts
-            if "papers" in parts or any(_REVIEW_ROUND_DIR.fullmatch(seg)
+            if "papers" in parts or any(_PRESERVED_REVIEW_DIR.fullmatch(seg)
                                         for seg in parts):
                 continue
             if (p.suffix.lower() not in OWNER_NOTE_EXTENSIONS

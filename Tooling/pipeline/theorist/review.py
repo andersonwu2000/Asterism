@@ -11,6 +11,14 @@ round has been argued. The Project's documents and the landed proofs
 are read IN PLACE on a read-only grant, exactly as the batch judge
 reads them.
 
+THE WHITELIST IS NOT THE WHOLE DOSSIER. Everything above is the
+FRAMEWORK's writing, and a document also rests on the author's — the
+script its arithmetic says it is reproducible from, the table it
+quotes. Those are copied in under `author/` (`stage_author_files`),
+because a projection assembled name by name from a fixed list cannot
+hold a file whose name nobody knew in advance, and criterion 2 fired on
+their absence for months (`DOSSIER_AUTHOR_LINE`).
+
 HOW that dossier reaches the reviewer is settled: the small always-read
 files ride IN the prompt verbatim and the rest arrive as the map
 `inspect` would have answered with. The block shapes are shared
@@ -27,6 +35,7 @@ from pathlib import Path
 
 from .. import dossier as _dossier
 from ..adversary import INFRA_RETRY_BACKOFF_SEC, INFRA_SPAWN_RETRIES
+from .preserve import AUTHOR_DIRNAME, author_files
 from .verdict import (REPORT_BASENAME, VERDICT_BASENAME, VERDICT_TRIES,
                       describe_verdict_shape, keep_rejected_verdict,
                       parse_theory_verdict, write_rubric)
@@ -114,6 +123,86 @@ DOSSIER_ROSTERS = ("CATALOG.md",)
 #: `dossier.notes_block`.
 DOSSIER_NOTE_AREAS = ("agent", "user")
 
+#: The author's own attachments, in the on-demand map — and the sentence
+#: that says what they are FOR.
+#:
+#: This projection was a closed whitelist: it was built name by name
+#: from the list above and the author's own files were not on it, so a
+#: document whose arithmetic said "reproducible by `checks.py`" reached
+#: a reviewer that had no `checks.py`. Criterion 2 is "reproduce the
+#: computations it leans on", and the reviewer then fired it for an
+#: attachment nobody had withheld — p889's pipeline `4db9612a` was
+#: refused that way after `checks.py` and `checks.txt` had landed, p359
+#: fired the same criterion on its final round, and one reviewer wrote
+#: the mechanism out in its own notes: "the authoritative dossier
+#: says … absent. I did not probe."
+DOSSIER_AUTHOR_LINE = (
+    "author/ — the author's attachments (scripts, tables, prior "
+    "versions); reproduce criterion 2 from them.")
+
+
+def author_attachments(proj: Path) -> "list[Path]":
+    """The author's attachments as THIS projection holds them, sorted by
+    name. Empty when the author attached nothing — which is a real
+    answer, and the only one that lets a reviewer say "absent" and be
+    right."""
+    d = Path(proj) / AUTHOR_DIRNAME
+    try:
+        return sorted((p for p in d.iterdir() if p.is_file()),
+                      key=lambda p: p.name)
+    except OSError:
+        return []
+
+
+def stage_author_files(attempts_dir: Path, proj: Path) -> "list[Path]":
+    """Copy the author's own files from the attempt root into the
+    projection under `author/`.
+
+    COPIED, not granted: the reviewer's read roots are the projection,
+    the landed proofs and the Project's shelf, and handing it the
+    author's working directory instead would hand it the checkpoint, the
+    session map and the provider home with them. The one file set that
+    is evidence travels; the filter is `preserve.author_files`, the same
+    one that decides what survives the landing, so what a reviewer read
+    and what a reader of the shelf can re-read are the same files."""
+    src_dir, out = Path(attempts_dir), []
+    dst_dir = Path(proj) / AUTHOR_DIRNAME
+    for src in author_files(src_dir):
+        try:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst_dir / src.name)
+        except OSError as exc:
+            print(f"[theorist] could not stage {src.name} for the "
+                  f"reviewer: {exc} — criterion 2 will read it as not "
+                  f"supplied", flush=True)
+            continue
+        out.append(dst_dir / src.name)
+    return out
+
+
+def author_block(proj: Path) -> "list[str]":
+    """`author/` in the table of contents: the one line that says what
+    the directory is, then every attachment by name and size.
+
+    By NAME because that is what the reviewer's objection turns on — a
+    document citing `checks.py` is checkable only if the reviewer can
+    see that `checks.py` is there — and by size for the same reason
+    `notes_block` gives one: it is how a reader decides whether to open
+    the whole file or a section of it."""
+    entries = author_attachments(proj)
+    if not entries:
+        return []
+    out = [f"### {DOSSIER_AUTHOR_LINE}"]
+    for p in entries:
+        try:
+            size = f"{p.stat().st_size:,} bytes"
+        except OSError:
+            size = "size unknown"
+        out.append(f"- `{AUTHOR_DIRNAME}/{p.name}` — {size}")
+    out += [f'Read one with `inspect(queries=[{{"read": '
+            f'"{AUTHOR_DIRNAME}/<name>"}}])`.', ""]
+    return out
+
 
 def dossier_sections(proj: Path, *, proofs_dir: Path,
                      papers_dir: Path) -> str:
@@ -146,6 +235,7 @@ def dossier_sections(proj: Path, *, proofs_dir: Path,
         p = proj / name
         if p.is_file():
             out += _dossier.roster_block(name, p)
+    out += author_block(proj)
     out += _dossier.notes_block("papers dir", papers_dir,
                                 areas=DOSSIER_NOTE_AREAS)
     out += _dossier.dir_block("proofs dir", proofs_dir)
@@ -253,6 +343,10 @@ def build_review_projection(*, round_no: int, attempts_dir: Path,
             out += [f"- {c}" for c in entry.get("criticisms", [])]
             out.append("")
         (proj / "dialogue.md").write_text("\n".join(out), encoding="utf-8")
+    # The whitelist above is the FRAMEWORK's half of the dossier. The
+    # author's own attachments are the other half, and criterion 2 is
+    # unanswerable without them — see `DOSSIER_AUTHOR_LINE`.
+    stage_author_files(attempts_dir, proj)
     write_rubric(proj)
     return proj
 
@@ -337,8 +431,15 @@ def review(*, round_no: int, attempts_dir: Path, conn: sqlite3.Connection,
     project = (_projects.project_of(conn, problem)
                or problem.split(".", 1)[0])
     papers_dir = _project_docs.root(workspace, project).resolve()
+    # The attachments are named here too, `author/`-qualified. The
+    # manifest below closes with "a file the prompt names that is not
+    # listed here does not exist this round — do not probe for it", and
+    # a reviewer that read the map, saw `author/checks.py` and then
+    # found it missing from the roster would obey the roster.
     present = sorted(p.name for p in proj.iterdir()
                      if p.is_file() and not p.name.startswith("_"))
+    present += [f"{AUTHOR_DIRNAME}/{p.name}"
+                for p in author_attachments(proj)]
     prompt_path = _render_prompt(
         PROMPT_DIR / "theorist" / "review.md",
         proj / "_theory_review_prompt.md",
