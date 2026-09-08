@@ -1892,8 +1892,9 @@ def _theory_doc_marks(conn, workspace: Path) -> "dict[str, dict]":
         return {}
     try:
         rows = conn.execute(
-            "SELECT path, group_id, status, created_at, verdict_json"
-            " FROM theory_documents WHERE path IS NOT NULL").fetchall()
+            "SELECT path, problem, group_id, status, created_at,"
+            " verdict_json FROM theory_documents"
+            " WHERE path IS NOT NULL").fetchall()
     except Exception:  # noqa: BLE001 — never break Context
         return {}
     from ..pipeline.theorist import verdict as _verdict
@@ -1927,7 +1928,13 @@ def _theory_doc_marks(conn, workspace: Path) -> "dict[str, dict]":
             parts.append("rigour defective — see criterion "
                          + _verdict.RIGOUR_CRITERION)
         out[str(r["path"]).replace("\\", "/")] = {
-            "status": status, "mark": ", ".join(parts)}
+            "status": status, "mark": ", ".join(parts),
+            # WHOSE document this is. The shelf is the PROJECT's — one
+            # `_docs/agent/` for all 46 Erdos problems — so without this
+            # column the roster called every one of them prior work of
+            # whichever problem happened to be reading (see
+            # `_section_owner_notes`).
+            "problem": str(r["problem"] or "")}
     return out
 
 
@@ -1943,6 +1950,35 @@ REFUSED_DOCS_BLURB = (
     "CITED is decided by criterion 2 (Rigour), not by the refusal: a "
     "document marked `rigour defective` was never re-derived by the "
     "reviewer, so its results are attempts and are not established")
+
+
+#: The section that carries the OTHER problems' accepted documents, and
+#: the sentence that says what they are to this reader. A Project's
+#: `_docs/agent/` is shared — 46 Erdos problems write into one shelf —
+#: so before this section every problem's `## Notes on this problem`
+#: listed all 46 problems' documents as its own prior work. Nine
+#: Strategist / Adversary / Theorist reports on 2026-09-07 said the same
+#: thing in the same words: "Context.md misclassifies unrelated theory
+#: reports as prior work for <this problem>", each one having had to
+#: open an abstract to find out.
+#:
+#: A separate top-level section, not a sub-list: what is under `## Notes
+#: on this problem` must be about THIS problem, and a sub-list would go
+#: on being read as one more shelf of the same record.
+OTHER_PROBLEMS_HEADING = (
+    "## Other problems in this Project — accepted documents "
+    "(context, not this problem's record)")
+OTHER_PROBLEMS_BLURB = (
+    "This Project's document shelf is shared. These were written for a "
+    "DIFFERENT problem's charter and are not prior work on yours — they "
+    "are neighbours' results you may cite when one genuinely bears on "
+    "your wall, never a list of what has been tried here.")
+
+#: Ceiling on that list. It grows with the Project, not with this
+#: problem, so an unbounded roster would eventually cost every wake on
+#: every problem more than this problem's own record does. Newest first,
+#: and the overflow says how to see the rest.
+MAX_OTHER_PROBLEM_DOCS = 12
 
 
 #: `agent/<document-stem>/review_r<n>/` — what a theory REVIEWER wrote,
@@ -1985,6 +2021,17 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
     theorems, which is the only thing that decides whether they may be
     cited.
 
+    GROUPED BY THE PROBLEM THAT OWNS IT. `_docs/agent/` belongs to the
+    PROJECT, not to a problem — 46 Erdos problems share one — and this
+    section's heading says "on this problem", so listing the whole shelf
+    under it told every reader that every neighbour's document was its
+    own prior work. `theory_documents.problem` is the owner, and the
+    documents of other problems go to their own top-level section
+    (`OTHER_PROBLEMS_HEADING`) instead: still reachable, no longer
+    misfiled. A file with no row (a reviewer's preserved work, an
+    owner-placed document) stays where it is — nothing claims it belongs
+    to another problem, so nothing may move it.
+
     A roster, never the bodies: path, size, date, title, one line each —
     the same lazy layer CATALOG.md and PAST_*.md are, and absent
     entirely when neither half has anything. Papers are skipped; §3.9
@@ -1998,14 +2045,20 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
         return []
     from ..state import project_docs as _project_docs
     marks = _theory_doc_marks(conn, workspace)
+    mine = str(intent.problem or "")
     groups: "list[tuple[str, str, list[str]]]" = []
+    # (mtime, line) for the other problems' accepted documents, so the
+    # cap keeps the newest rather than the alphabetically first.
+    others: "list[tuple[float, str]]" = []
+    others_refused = 0
     for area, heading, blurb in (
             (_project_docs.AREA_USER, "The owner wrote these",
              "read the ones whose title bears on your work "
              "(`inspect` / Read)"),
             (_project_docs.AREA_AGENT, "The programme wrote these",
-             "accepted theory documents — prior work to cite and build "
-             "on, never to re-derive or present as new")):
+             "accepted theory documents written for THIS problem — prior "
+             "work to cite and build on, never to re-derive or present "
+             "as new")):
         try:
             base = (_project_docs.root(Path(workspace), project) / area)
         except ValueError:
@@ -2041,6 +2094,22 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
             line = (f"- `{shown}` — {st.st_size / 1024:.1f} KB, {when}"
                     + (f" — {title}" if title else "")
                     + (f" [{mark}]" if mark else ""))
+            owner = str(rec.get("problem") or "")
+            if owner and mine and owner != mine:
+                # Another problem's document. Accepted ones are context
+                # a neighbour may cite; a REFUSED one is that problem's
+                # own record of an approach that failed on ITS wall, and
+                # carrying it here is what the sub-list's blurb ("what
+                # was tried on that wall") would then be lying about.
+                if rec.get("status") == "rejected":
+                    others_refused += 1
+                else:
+                    others.append((
+                        st.st_mtime,
+                        f"- {owner} — `{shown}`"
+                        + (f" — {title}" if title else "")
+                        + (f" [{mark}]" if mark else "")))
+                continue
             (refused if rec.get("status") == "rejected"
              else rows).append(line)
         if rows:
@@ -2048,11 +2117,44 @@ def _section_owner_notes(intent: intent_mod.ProblemIntent,
         if refused:
             groups.append((REFUSED_DOCS_HEADING, REFUSED_DOCS_BLURB,
                            refused))
-    if not groups:
+    out: list[str] = []
+    if groups:
+        out += ["## Notes on this problem", ""]
+        for heading, blurb, rows in groups:
+            out += [f"### {heading}", "", f"{blurb}.", "", *rows, ""]
+    out += _other_problem_docs_section(others, others_refused, project,
+                                       workspace)
+    return out
+
+
+def _other_problem_docs_section(others: "list[tuple[float, str]]",
+                                refused: int, project: str,
+                                workspace: Path) -> list[str]:
+    """`OTHER_PROBLEMS_HEADING` — the shelf's neighbours, newest first.
+
+    Split out because it is the one part of the roster whose size is the
+    PROJECT's and not this problem's: it needs a cap, and a cap needs a
+    way out (framework rule — a truncation that hides itself is the
+    failure). The way out is the shelf's own directory, in the spelling
+    `inspect` resolves."""
+    if not others and not refused:
         return []
-    out = ["## Notes on this problem", ""]
-    for heading, blurb, rows in groups:
-        out += [f"### {heading}", "", f"{blurb}.", "", *rows, ""]
+    shelf = f"Problems/{project}/_docs/agent"
+    out = [OTHER_PROBLEMS_HEADING, "", OTHER_PROBLEMS_BLURB, ""]
+    ordered = [line for _, line in sorted(others, key=lambda t: -t[0])]
+    out += ordered[:MAX_OTHER_PROBLEM_DOCS]
+    if len(ordered) > MAX_OTHER_PROBLEM_DOCS:
+        out.append(
+            f"- … {len(ordered) - MAX_OTHER_PROBLEM_DOCS} older one(s) "
+            f"not listed — the whole shelf: "
+            f'`inspect([{{"find": "*.md", "in": "{shelf}"}}])`')
+    if refused:
+        out.append(
+            f"- ({refused} refused document(s) of other problems are on "
+            f"the same shelf and are NOT listed: each is that problem's "
+            f"own record of an approach that failed on its wall, not "
+            f"evidence about yours.)")
+    out.append("")
     return out
 
 
