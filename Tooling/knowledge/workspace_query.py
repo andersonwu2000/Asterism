@@ -1295,6 +1295,38 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
     return f"Continue from line {resume} with `lines`."
 
 
+#: A ROSTER is uniform entries, one per line; a DOCUMENT is paragraphs.
+#: Size alone cannot tell them apart, and it was the only test: on
+#: 2026-09-07/08 four theory reviewers were refused the `Theorems and
+#: proofs` section of an ACCEPTED report under `_docs/agent/` — 28,347
+#: chars of prose and LaTeX — with "a section this size is a roster",
+#: and the round's own rubric requires checking exactly those theorems
+#: at source. Where the BYTES live separates the two cleanly, measured
+#: over the live corpus: every `TREE.md` roster past 20KB puts 0.000 of
+#: its characters in lines longer than 200 (longest line: 168), while
+#: the four sections of an accepted report run 0.44 to 1.00 (longest
+#: line: 1,367). So the tier asks the text and still never asks the
+#: filename — the giants it was built for are giants of the first kind.
+_ROSTER_LONG_LINE = 200
+_ROSTER_LONG_SHARE = 0.10
+
+
+def _looks_like_roster(text: str) -> bool:
+    """Is this a list of entries, or prose that happens to be long?
+
+    A roster's reader wants ONE entry and pages nothing; a document's
+    reader is mid-argument and a refusal costs the round. So a document
+    over the tier falls back to truncate-with-resume, which loses
+    nothing and names where to pick up."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    total = sum(len(ln) for ln in lines)
+    if not total:
+        return True
+    long_chars = sum(len(ln) for ln in lines
+                     if len(ln) > _ROSTER_LONG_LINE)
+    return long_chars / total < _ROSTER_LONG_SHARE
+
+
 def _big_section_refusal(q: dict, size: int, budget: int) -> str:
     """A section past 2x the budget is a ROSTER — uniform entries the
     reader wants ONE of, not a document to page through. Name the ways
@@ -1537,15 +1569,20 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                                 q, here, deny, len(text), per_query_chars)
                             refused = True
                         elif (key == "read" and q.get("sections")
-                              and len(text) > 2 * per_query_chars):
-                            # A section MORE than twice the budget is a
-                            # roster, not a reading (user backlog item
-                            # c, 2026-08-26: TREE.md's `## Lemmas` on a
-                            # mature problem is 141KB — paging it costs
-                            # ~12 calls and teaches nothing). Refuse
-                            # with the ways a roster is actually used.
-                            # Size-tiered on purpose: no filename
-                            # sniffing, so it covers every future giant.
+                              and len(text) > 2 * per_query_chars
+                              and _looks_like_roster(text)):
+                            # A section MORE than twice the budget AND
+                            # shaped like a list is a roster, not a
+                            # reading (user backlog item c, 2026-08-26:
+                            # TREE.md's `## Lemmas` on a mature problem
+                            # is 141KB — paging it costs ~12 calls and
+                            # teaches nothing). Refuse with the ways a
+                            # roster is actually used. Still no
+                            # filename sniffing: `_looks_like_roster`
+                            # asks the text, so the tier covers every
+                            # future giant of that kind and none of the
+                            # accepted DOCUMENTS it was refusing on
+                            # size alone (2026-09-07/08, ×4).
                             text = _big_section_refusal(
                                 q, len(text), per_query_chars)
                             refused = True

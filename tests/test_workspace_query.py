@@ -1325,6 +1325,45 @@ def test_section_reads_are_size_tiered(here: Path) -> None:
     assert "huge roster entry" not in out3, "refusal must not leak content"
 
 
+def test_a_long_prose_section_is_read_not_called_a_roster(here: Path) -> None:
+    """The roster tier exists for CATALOG / TREE listings, and size
+    alone could not tell one from a document: on 2026-09-07/08 four
+    theory reviewers were refused the `Theorems and proofs` section of
+    an ACCEPTED report (28,347 chars of prose and LaTeX) with "a
+    section this size is a roster", in a round whose rubric required
+    re-deriving exactly those theorems. Where the bytes live separates
+    them — a paragraph is a long line, an entry is not."""
+    para = ("The argument proceeds by comparing the two blocks factor "
+            "by factor, and every common prime divides their difference, "
+            "which is bounded above by the displacement plus the shorter "
+            "block length; this is the whole content of the step. ")
+    body = ["# Report", "## Theorems and proofs"]
+    body += [para * 2 for _ in range(60)]          # ~35KB of paragraphs
+    (here / "Report.md").write_text("\n\n".join(body), encoding="utf-8")
+
+    out = wq.run_queries([{"read": "Report.md",
+                           "sections": ["Theorems and proofs"]}], cwd=here)
+    assert "roster" not in out, "an accepted document is not a roster"
+    # Over the budget it is still truncated — but with the resume
+    # address, so nothing is lost and the round is not.
+    assert "truncated at" in out and "Continue from line" in out
+    assert "The argument proceeds" in out
+
+
+def test_the_roster_tier_still_fires_on_a_real_roster(here: Path) -> None:
+    """The giant it was built for: `TREE.md`'s `## Lemmas` renders one
+    record per short line, and every such section past 20KB in the live
+    corpus puts 0.000 of its characters in lines over 200."""
+    body = ["# Erdos.p1 — TREE", "## Lemmas", "```"]
+    body += [f"lemma_{i:04d} [g{10000 + i}]  (proved)" for i in range(900)]
+    body += ["```"]
+    (here / "TREE.md").write_text("\n".join(body), encoding="utf-8")
+    out = wq.run_queries([{"read": "TREE.md", "sections": ["Lemmas"]}],
+                         cwd=here)
+    assert "roster" in out
+    assert "lemma_0500" not in out, "refusal must not leak content"
+
+
 # ── the wrapper's target comes from the RECORD (2026-09-06) ─────────
 #
 # `inspect({"decl": "main"})` on a promoted ROOT resolved the strategy
