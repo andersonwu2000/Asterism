@@ -7,6 +7,8 @@ Lean toolchain and no reason to build one either).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from Tooling import sandbox
@@ -45,6 +47,27 @@ def test_truncation_says_how_much_was_dropped() -> None:
     big = "x" * (sandbox.MAX_OUTPUT_CHARS + 500)
     rendered = sandbox.ComputeResult(rc=0, output=big, seconds=0.1).render()
     assert "500 more characters dropped" in rendered
+    # ...and how much there WAS, so the next print can be sized rather
+    # than guessed at.
+    assert f"{sandbox.MAX_OUTPUT_CHARS + 500:,} printed" in rendered
+
+
+def test_the_output_ceiling_is_the_reply_the_transport_delivers() -> None:
+    """8,000 cut an 11,984-char Base64 certificate at position 8000,
+    `JSON.parse` threw there, and the reviewer spent three more calls
+    re-running the search split into 6,000-char prints (2026-09-07,
+    p931/r3). The ceiling is what a reply actually carries, so a result
+    that fits the pipe is not chopped before it reaches it."""
+    from Tooling.llm import capabilities
+    delivery = capabilities.inspect_delivery_chars("codex")
+    assert delivery, "the measured backend must declare a delivery ceiling"
+    assert sandbox.MAX_OUTPUT_CHARS == delivery, (
+        "the compute ceiling is DERIVED from what the transport "
+        "delivers - move both or neither")
+    # ...and the header plus a kill note still fit inside it.
+    full = sandbox.ComputeResult(
+        rc=0, output="x" * delivery, seconds=1.0, killed="timeout").render()
+    assert len(full) < delivery + 1000
 
 
 def test_limit_kills_name_the_fixed_limit() -> None:
@@ -201,6 +224,39 @@ def test_runaway_memory_is_stopped() -> None:
     r = sandbox.run("x=[]\nwhile True: x.append(bytearray(10**7))")
     assert r.rc != 0 or r.killed == "memory"
     assert "MemoryError" in r.output or r.killed == "memory"
+
+
+def test_the_reporter_is_loaded_before_the_memory_it_needs() -> None:
+    """`import traceback` sat INSIDE the except handler, which is the
+    one moment there may be no memory to load a module. On 2026-09-07 a
+    200,000-entry sweep blew the cap and the agent received a traceback
+    naming only `launcher.py:173` and `_compile_bytecode` - no user
+    frame at all. It read that as "the compute sandbox failed while
+    compiling its own launcher", filed it as a framework fault and
+    abandoned the search."""
+    from Tooling.sandbox import launcher
+    src = Path(launcher.__file__).read_text(encoding="utf-8")
+    head, _, body = src.partition("def main(")
+    assert "\nimport traceback" in head, (
+        "the reporter must be imported while there is room to import it")
+    assert "import traceback" not in body, (
+        "a lazy import inside the handler is the defect itself")
+
+
+def test_a_hard_cap_kill_reaches_the_agent_as_the_cap() -> None:
+    """`RLIMIT_AS` and the Windows Job Object fail the allocation INSIDE
+    the child, so only macOS's watchdog ever set `killed="memory"` - a
+    Linux agent that overran got a bare `MemoryError` and no "enumerate
+    in batches". The launcher knows, and says so with rc 4."""
+    from Tooling.sandbox import launcher
+    src = Path(launcher.__file__).read_text(encoding="utf-8")
+    assert "except MemoryError:" in src and "return 4" in src
+    assert sandbox._RC_MEMORY == 4, "one contract, two files"
+    # The runner turns that code into the framework's own vocabulary.
+    rendered = sandbox.ComputeResult(
+        rc=sandbox._RC_MEMORY, output="MemoryError", seconds=0.4,
+        killed="memory").render()
+    assert str(sandbox.MEMORY_MB) in rendered and "batches" in rendered
 
 
 @live
@@ -391,6 +447,103 @@ def test_the_limit_that_stopped_the_run_survives_the_gateway(monkeypatch):
                     "killed": "timeout"}).encode()))
     out = mcp_tools._compute_via_gateway("while True: pass")
     assert str(sandbox.TIMEOUT_SEC) in out and "Shrink" in out
+
+
+# -- a blocked compute must not block every other tool (2026-09-07/08) --
+#
+# FastMCP calls a SYNCHRONOUS tool body straight on the event loop
+# (`func_metadata.call_fn_with_arg_validation`: `return fn(**args)`
+# when the function is not a coroutine), and `compute` blocks on an
+# HTTP read for up to `_GATEWAY_TIMEOUT_SEC`. Terminating the client
+# cell tells this server nothing, so an abandoned sweep kept the whole
+# stdio server blocked for its full wall.
+#
+# Measured, p1094 adversary r2: two computes launched 23:31:26 and
+# 23:32:15, both cells terminated ~35s later; `write_file` issued
+# 23:38:07 returned at 00:01:26 — 1,399s, exactly when the second
+# 900s wall expired — and `feedback` nine seconds after that. The agent
+# named it itself: "the framework tool service is now queuing even its
+# own feedback call, likely behind the two terminated computation
+# requests."
+
+
+def test_compute_is_registered_off_the_event_loop() -> None:
+    """The registered tool is a coroutine; the module attribute stays
+    the plain function, because the shim dispatches by getattr and
+    already runs each call on its own thread."""
+    import inspect as _inspect
+    assert not _inspect.iscoroutinefunction(mcp_tools.compute), (
+        "the shim calls this directly and would get a coroutine")
+    tool = mcp_tools.mcp._tool_manager.get_tool("compute")
+    assert tool.is_async, "a sync body would block the whole stdio server"
+    # …and the wrapper must not have eaten the schema.
+    assert "code" in tool.parameters["properties"]
+
+
+def test_a_blocked_compute_still_lets_another_tool_answer() -> None:
+    """The invariant the incident violated: one slow tool holds up
+    nobody else."""
+    import asyncio
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking(code: str = "") -> str:
+        started.set()
+        release.wait(10)
+        return "slow done"
+
+    slow = mcp_tools._off_loop(blocking, 30)
+
+    async def drive() -> str:
+        task = asyncio.create_task(slow(code="x"))
+        await asyncio.get_running_loop().run_in_executor(
+            None, started.wait, 10)
+        # The loop is alive while the blocking call runs: this
+        # round-trip is what could not happen for 1,399 seconds.
+        quick = mcp_tools.ping()
+        release.set()
+        assert await task == "slow done"
+        return quick
+
+    assert asyncio.run(drive()) == "pong"
+
+
+def test_the_deadline_frees_the_server_even_if_the_call_never_returns(
+) -> None:
+    """A wedged read must not hold the slot for ever: past the deadline
+    the worker is abandoned and the agent gets an answer it can act on
+    rather than a turn spent waiting."""
+    import asyncio
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def never(code: str = "") -> str:
+        release.wait(30)
+        return "too late"
+
+    wedged = mcp_tools._off_loop(never, 0.3)
+    t0 = time.monotonic()
+    try:
+        out = asyncio.run(wedged(code="x"))
+    finally:
+        release.set()
+    assert time.monotonic() - t0 < 5, "the deadline did not free the server"
+    assert "did not answer within" in out and "abandoned" in out
+    assert "framework fault" in out, "a gate message names the way out"
+
+
+def test_the_deadline_outlives_the_socket_it_guards() -> None:
+    """The socket's own timeout must fire FIRST, so the normal answer is
+    "stopped at the 900s limit, shrink the search" and not this
+    server's generic abandonment note."""
+    assert (mcp_tools._COMPUTE_DEADLINE_SEC
+            > mcp_tools._GATEWAY_TIMEOUT_SEC), (
+        "an inverted pair would replace every compute answer with the "
+        "abandonment message")
 
 
 def test_the_gateway_endpoint_runs_the_same_sandbox() -> None:

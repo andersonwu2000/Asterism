@@ -124,14 +124,70 @@ def ping() -> str:
     return "pong"
 
 
-def _seat_tool(**tool_kwargs):
+def _off_loop(fn, deadline_sec: float):
+    """Register `fn` as an ASYNC tool that runs in a worker thread.
+
+    FastMCP calls a synchronous tool body directly on the event loop
+    (`func_metadata.call_fn_with_arg_validation`: `return
+    fn(**args)` when the function is not a coroutine), so a tool that
+    blocks blocks the WHOLE stdio server — every other request sits
+    unread in the pipe until it returns.
+
+    Measured 2026-09-07/08 (p1094 adversary r2): the seat launched two
+    `compute` sweeps at 23:31:26 and 23:32:15 and terminated its own
+    cells 35s later, which tells this server nothing — the sandbox kept
+    its 15-minute wall each and this process kept blocking on the HTTP
+    read. `write_file` was issued at 23:38:07 and returned at 00:01:26,
+    1,399 seconds later, exactly when the second wall expired; the
+    `feedback` call behind it returned nine seconds after that. The
+    agent worked it out on its own — "the framework tool service is now
+    queuing even its own feedback call, likely behind the two
+    terminated computation requests" — and spent the round waiting.
+
+    The thread copies the current context, so request-local ContextVars
+    are READ exactly as before; nothing behind this wrapper writes one
+    (a write would not propagate back, which is why it is applied per
+    tool rather than to all of them).
+
+    `deadline_sec` is the server's own ceiling: the thread is abandoned
+    on cancel rather than joined, so a wedged socket cannot hold the
+    slot open past it even if the blocking call never returns."""
+    import functools
+
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        import anyio
+        import anyio.to_thread
+        call = functools.partial(fn, *args, **kwargs)
+        try:
+            with anyio.fail_after(deadline_sec):
+                return await anyio.to_thread.run_sync(
+                    call, abandon_on_cancel=True)
+        except TimeoutError:
+            return (f"{fn.__name__}: the framework's service did not "
+                    f"answer within {deadline_sec:.0f}s and the call was "
+                    f"abandoned. This is a framework fault, not a "
+                    f"problem with your code: carry on with something "
+                    f"else and say so in your framework feedback.")
+
+    return run
+
+
+def _seat_tool(off_loop_sec: "float | None" = None, **tool_kwargs):
     """`@mcp.tool` that registers only when the seat's whitelist says
     so; the function itself always exists (the shim imports this module
     and dispatches by getattr — its own gate is the request's declared
-    tool list)."""
+    tool list, and it already runs each call on its own thread).
+
+    `off_loop_sec` registers the ASYNC wrapper with FastMCP while the
+    module attribute stays the plain function, so the two transports
+    keep their own dispatch and only the one that starves gets the
+    thread — see `_off_loop`."""
     def deco(fn):
         if _ALLOWED is None or fn.__name__ in _ALLOWED:
-            return mcp.tool(**tool_kwargs)(fn)
+            wrapped = fn if off_loop_sec is None else _off_loop(
+                fn, off_loop_sec)
+            mcp.tool(**tool_kwargs)(wrapped)
         return fn
     return deco
 
@@ -652,32 +708,6 @@ def _file_feedback(note: str, evidence: str) -> str:
             f"framework's developer and changes nothing about your task.")
 
 
-@_seat_tool(structured_output=False)
-def compute(code: str = "") -> str:
-    """Run a short Python calculation and get back what it prints.
-
-    NOT A PROOF. Nothing computed here establishes a mathematical claim,
-    in either direction — a clean sweep over a million points settles
-    nothing, and neither does an identity that checks out numerically.
-    Only the Lean kernel decides what is proved. Use this to hunt
-    counterexamples and to check your own arithmetic before you commit
-    to it in prose.
-
-    numpy is available. There is no filesystem, no network and no shell:
-    put the data you need inline in the code and return results with
-    `print()`. Each call is a fresh process, so define everything you
-    use. Time and memory are capped by the framework: 15 minutes of
-    wall clock and 512 MB, which is room for an exhaustive sweep of a
-    few million cases — size the search to fit rather than sampling it.
-    """
-    if not (code or "").strip():
-        return _ARG_HELP.format(
-            tool="compute",
-            hint='the parameter is `code`, a string — e.g. '
-                 'compute(code="print(sum(1/k**2 for k in range(1, 10**6)))")')
-    return _compute_via_gateway(code)
-
-
 #: The sandbox runs in the GATEWAY, not here.
 #:
 #: Measured 2026-08-11: no subprocess started from this stdio server
@@ -725,6 +755,40 @@ def compute(code: str = "") -> str:
 #: further), so it does not breach this server's rule against pulling
 #: the framework's heavy modules into the stdio process.
 _GATEWAY_TIMEOUT_SEC = 2 * _SANDBOX_TIMEOUT_SEC + 60
+
+#: The server's own ceiling on a `compute` call, a margin above
+#: the socket's so the agent normally gets the socket's message
+#: rather than this one. Past it the worker thread is abandoned
+#: and the server answers anyway — a wedged read must not hold
+#: the slot for ever (see `_off_loop`).
+_COMPUTE_DEADLINE_SEC = _GATEWAY_TIMEOUT_SEC + 30
+
+
+@_seat_tool(structured_output=False,
+            off_loop_sec=_COMPUTE_DEADLINE_SEC)
+def compute(code: str = "") -> str:
+    """Run a short Python calculation and get back what it prints.
+
+    NOT A PROOF. Nothing computed here establishes a mathematical claim,
+    in either direction — a clean sweep over a million points settles
+    nothing, and neither does an identity that checks out numerically.
+    Only the Lean kernel decides what is proved. Use this to hunt
+    counterexamples and to check your own arithmetic before you commit
+    to it in prose.
+
+    numpy is available. There is no filesystem, no network and no shell:
+    put the data you need inline in the code and return results with
+    `print()`. Each call is a fresh process, so define everything you
+    use. Time and memory are capped by the framework: 15 minutes of
+    wall clock and 512 MB, which is room for an exhaustive sweep of a
+    few million cases — size the search to fit rather than sampling it.
+    """
+    if not (code or "").strip():
+        return _ARG_HELP.format(
+            tool="compute",
+            hint='the parameter is `code`, a string — e.g. '
+                 'compute(code="print(sum(1/k**2 for k in range(1, 10**6)))")')
+    return _compute_via_gateway(code)
 
 
 def _gateway_silence_hint() -> str:

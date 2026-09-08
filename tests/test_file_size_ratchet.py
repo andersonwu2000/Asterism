@@ -849,7 +849,7 @@ _WATERMARKS = {
     # the other way and stayed where it was — `pipeline/_feedback` owns
     # the record shape, the ring and the gate, and this file only
     # resolves the spawn's own identity and calls it. Conscious bump.
-    "Tooling/knowledge/mcp_tools.py": 1360,  # +90 2026-09-08 a reply that carries no file at all reaches the wire as `isError` — the refusal flag from `run_queries` and the one wrap per server that stamps it, outside the change-notice wrap — conscious bump  # +60 2026-09-08 the changed-since-you-started install: the spawn-local resolver, the raw-read suppression (a byte-faithful answer must not carry a trailer into the file the agent writes back) and the import-time baseline
+    "Tooling/knowledge/mcp_tools.py": 1420,  # +60 2026-09-08 `compute` is registered off the event loop with its own deadline (a sync tool body blocks the WHOLE stdio server: two abandoned sweeps queued write_file for 1,399s) — conscious bump  # +90 2026-09-08 a reply that carries no file at all reaches the wire as `isError` — the refusal flag from `run_queries` and the one wrap per server that stamps it, outside the change-notice wrap — conscious bump  # +60 2026-09-08 the changed-since-you-started install: the spawn-local resolver, the raw-read suppression (a byte-faithful answer must not carry a trailer into the file the agent writes back) and the import-time baseline
     # 1000 (the default cap) → 1060 2026-09-06 — a turn that stops is an
     # ending and has to say so: `_stopped_note` / `_fail_open_rows` and
     # the two places that reach them (the reader's EOF, and the reader

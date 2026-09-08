@@ -28,6 +28,26 @@ refused.
 from __future__ import annotations
 
 import sys
+#: Imported HERE, at module scope, and that placement is the whole
+#: point. It used to be `import traceback` INSIDE the except handler in
+#: `main`, which is the one moment the interpreter may have no memory
+#: to load a module with: when agent code blows the address-space cap,
+#: the handler runs with the arena still exhausted, the first-time
+#: import fails, and CPython reports THAT failure instead of the
+#: original one. Measured 2026-09-07 (p931 theorist): a 200,000-entry
+#: prime-support sweep died and the agent received
+#:
+#:   File ".../sandbox/launcher.py", line 173, in main
+#:   File "<frozen importlib._bootstrap_external>", line 753,
+#:       in _compile_bytecode
+#:   MemoryError
+#:
+#: — no user frame at all. It read that as "the compute sandbox failed
+#: while compiling its own launcher", filed it as a framework fault and
+#: abandoned the search, when the truth was "your sweep wanted more
+#: than 512 MB". The reporter must be loaded while there is still room
+#: to load it.
+import traceback
 
 #: Modules with no place in a calculator. Blocking the IMPORT is the
 #: cheap half — a name already in `sys.modules` (ctypes, via numpy)
@@ -169,8 +189,27 @@ def main() -> int:
     except PermissionError as exc:
         print(f"\n[compute] refused: {exc}", file=sys.stderr)
         return 3
+    except MemoryError:
+        # The memory cap is enforced from OUTSIDE on every platform,
+        # but only macOS's watchdog gets to SAY so: `RLIMIT_AS` and the
+        # Windows Job Object make the allocation fail in here, and the
+        # bare `MemoryError` that reaches the agent looks like a bug in
+        # the framework rather than the limit doing its job. So name it
+        # from in here, where we know it happened, and let the runner
+        # turn rc 4 into the same `killed="memory"` instruction the
+        # watchdog produces.
+        #
+        # The message goes out BEFORE the traceback: formatting frames
+        # allocates, and at this instant that is exactly what is short.
+        print("\n[compute] out of memory — your code asked for more "
+              "than the framework's memory cap. Enumerate in batches "
+              "instead of materialising everything.", file=sys.stderr)
+        try:
+            traceback.print_exc()
+        except BaseException:  # noqa: BLE001 — the message already went
+            pass
+        return 4
     except BaseException as exc:  # noqa: BLE001 — report, never mask
-        import traceback
         traceback.print_exc()
         return 1 if isinstance(exc, Exception) else 2
     return 0
