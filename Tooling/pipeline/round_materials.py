@@ -46,11 +46,46 @@ SINCE_MARK = "_since_mark.txt"
 SINCE_WAKE_BEGAN = "Since this wake began:"
 SINCE_LAST_REBUTTAL = "Since the last rebuttal:"
 
-#: What `refresh` writes. `ADJUDICATIONS.md` and `BATCHES.md` are
+#: What `refresh` MAY write. `ADJUDICATIONS.md` and `BATCHES.md` are
 #: written only when their generators have something to say (no park
 #: rulings / no batches → no file), so this names the roster, not a
 #: guarantee that all four exist.
 ROUND_FILES = ("TREE.md", "CATALOG.md", "BATCHES.md", "ADJUDICATIONS.md")
+
+
+def refreshed_clause(target_dir: "Path | None") -> str:
+    """The half of `refreshed_sentence` that names the files, for a
+    caller that supplies its own opening (the judge's projection label
+    says where the snapshot came from first). One definition of the
+    list, two sentences that carry it."""
+    if target_dir is None:
+        return "The record files beside it are refreshed for this round."
+    here = [n for n in ROUND_FILES if (target_dir / n).is_file()]
+    if not here:
+        return "This round has no companion record files beside it."
+    return (f"{', '.join(here)} beside it "
+            f"{'is' if len(here) == 1 else 'are'} refreshed for this round.")
+
+
+def refreshed_sentence(target_dir: "Path | None") -> str:
+    """"…beside it are refreshed for this round", naming only the files
+    that are actually there.
+
+    Both round messages named all four unconditionally, and on a
+    problem with no park rulings and no batches two of them do not
+    exist. Five Strategists spent a round's first tool calls proving
+    that — "inspect on {CATALOG.md,BATCHES.md,ADJUDICATIONS.md}: 'no
+    file'; the directory listing contains only TREE.md among those
+    four" (2026-09-07/08, p373 / p889 / p1101 / p1094 / p889) — and one
+    of them read the absence as a framework fault rather than as
+    "there were no rulings to render".
+
+    Called right after `refresh`, so present-on-disk IS written-this-
+    round; the generators only ever add. `Context.md` is deliberately
+    not in the roster: it is the author's frozen snapshot, and the
+    sentence's whole job is to say which of its neighbours are not."""
+    return ("Context.md is your snapshot from spawn. "
+            + refreshed_clause(target_dir))
 
 
 def refresh(conn: sqlite3.Connection, *, workspace: Path, problem: str,

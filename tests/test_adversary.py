@@ -1623,8 +1623,15 @@ def test_projection_ships_the_strategists_context_verbatim(
     # mechanism that no longer exists and aged the freshest render in
     # the packet as the stalest. Requirement change: the label now
     # names the four and calls them refreshed.
-    assert ("`TREE.md`, `CATALOG.md`, `BATCHES.md`, `ADJUDICATIONS.md`"
-            " beside it are refreshed for this round." in label)
+    # ...and ONLY the ones actually written: on a problem with no
+    # park rulings and no batches, two of the four do not exist,
+    # and naming them sent the reader hunting (2026-09-07/08 x5).
+    for _name in round_materials.ROUND_FILES:
+        if _name in label:
+            assert (proj / _name).is_file(), _name
+        else:
+            assert not (proj / _name).is_file(), _name
+    assert "refreshed for this round." in label
     assert "COPY of the problem" not in label
 
 
@@ -1762,6 +1769,9 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
                 encoding="utf-8")
             seen["tree"] = (ad / "TREE.md").read_text(encoding="utf-8")
             seen["rebuttal"] = str(kw.get("retry_context") or "")
+            # The author's own dir, so the rebuttal's file list
+            # can be checked against what is really beside it.
+            seen["dir"] = str(ad)
         (ad / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
                         "brick": _INJECT_BRICK}),
@@ -1784,7 +1794,8 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
     # …and the rebuttal itself says which files are fresh and names the
     # change, so finding the one line that moved is not a re-read of
     # four files.
-    assert seen["rebuttal"].startswith(_PREFIX)
+    _assert_names_only_files_that_exist(seen["rebuttal"],
+                                        Path(seen["dir"]))
     assert (f"Since this wake began:\n- g{state['gid']} mid_debate: "
             f"open → proved") in seen["rebuttal"]
 
@@ -1792,9 +1803,28 @@ def test_the_author_gets_the_round_fresh_record_at_every_rebuttal(
 # ── the delta pack: what the record did while the author argued ─────
 
 
-_PREFIX = ("Context.md is your snapshot from spawn. TREE.md, "
-           "CATALOG.md, BATCHES.md, ADJUDICATIONS.md beside it are "
-           "refreshed for this round.")
+_PREFIX_HEAD = "Context.md is your snapshot from spawn."
+
+
+def _assert_names_only_files_that_exist(text: str, where: Path) -> None:
+    """The round message may name a companion only if it is there.
+
+    `refresh` writes ADJUDICATIONS.md / BATCHES.md only when their
+    generators have something to render, and the sentence named all
+    four unconditionally: five Strategists on 2026-09-07/08 opened
+    their round by proving two of them absent ("inspect returned 'no
+    file' for both absolute paths and listed the directory contents
+    without either filename"), and one filed the absence as a
+    framework fault."""
+    assert text.startswith(_PREFIX_HEAD), text[:120]
+    head = text.splitlines()[0]
+    for name in round_materials.ROUND_FILES:
+        if name in head:
+            assert (where / name).is_file(), (
+                f"{name} is named as refreshed but is not on disk")
+        else:
+            assert not (where / name).is_file(), (
+                f"{name} was written this round but is not named")
 
 
 def _ctx_at(attempts: Path, when: str) -> None:
@@ -1883,6 +1913,7 @@ def test_the_delta_pack_names_the_three_record_sources(
 
 
 def test_the_rebuttal_says_which_files_are_fresh_and_what_changed(
+    tmp_path: Path,
 ) -> None:
     """The prefix rides EVERY rebuttal — the author cannot tell a frozen
     companion from a fresh one by looking. The delta rides only when the
@@ -1891,17 +1922,29 @@ def test_the_rebuttal_says_which_files_are_fresh_and_what_changed(
     v = {"criticisms": ["[criterion 2] objection"]}
     text = strategist._format_rebuttal(
         v, 1, 5, since_label="Since this wake began:",
-        since=["g9 brick: open → proved"])
-    assert text.startswith(_PREFIX)
+        since=["g9 brick: open → proved"], attempts_dir=tmp_path)
+    assert text.startswith(_PREFIX_HEAD)
     assert "Since this wake began:\n- g9 brick: open → proved" in text
     assert "ADVERSARY REBUTTAL (round 1; 5 revision round(s) left" in text
     assert "[criterion 2] objection" in text
 
     quiet = strategist._format_rebuttal(
-        v, 2, 4, since_label="Since the last rebuttal:", since=[])
-    assert quiet.startswith(_PREFIX)
+        v, 2, 4, since_label="Since the last rebuttal:", since=[],
+        attempts_dir=tmp_path)
+    assert quiet.startswith(_PREFIX_HEAD)
     assert "Since this wake began" not in quiet
     assert "Since the last rebuttal" not in quiet
+
+    # A directory holding two of the four names exactly those
+    # two - the defect the five reports were about.
+    (tmp_path / "TREE.md").write_text("t", encoding="utf-8")
+    (tmp_path / "CATALOG.md").write_text("c", encoding="utf-8")
+    named = strategist._format_rebuttal(v, 1, 5,
+                                        attempts_dir=tmp_path)
+    _assert_names_only_files_that_exist(named, tmp_path)
+    assert "TREE.md, CATALOG.md beside it are refreshed" in named
+    assert "ADJUDICATIONS.md" not in named
+    assert "BATCHES.md" not in named
 
 
 # ── since.md: the judge is handed the same pack as the author ───────

@@ -496,14 +496,18 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         (proj / "Context.md").write_text(
             "_(Framework label — not part of the file. This is the"
             f" author's context SNAPSHOT, taken {_taken} when the wake"
-            " spawned; it is what the author saw. `TREE.md`,"
-            " `CATALOG.md`, `BATCHES.md`, `ADJUDICATIONS.md` beside it"
-            " are refreshed for this round."
-            " Where they disagree about what has landed, later is"
+            " spawned; it is what the author saw. "
+            # Named from DISK: BATCHES.md and ADJUDICATIONS.md exist
+            # only when there is something to render, and promising all
+            # four sent the judge's counterpart hunting for files that
+            # were never written (2026-09-07/08 ×5).
+            + _round_materials.refreshed_clause(proj)
+            + " Where they disagree about what has landed, later is"
             " closer to the truth and the difference is this"
             " packet's timing, not a defect in the proposal. When a"
             " status decides your verdict, ask the record:"
-            " `inspect({\"decl\": \"<slug>\"})` reads it live.)_\n\n"
+            " `inspect(queries=[{\"decl\": \"<slug>\"}])` reads it"
+            " live.)_\n\n"
             + ctx_text, encoding="utf-8")
     # Current rev (hoisted above) + the terminal outcomes since it,
     # welded into one file: the outcomes ARE this rev's execution
