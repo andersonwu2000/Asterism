@@ -616,6 +616,20 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         grant = _lake_grant(probe.resolve())
         if isinstance(grant, str):
             return [grant]
+        if _is_glob(where):
+            # `_glob_split` strips the pattern, so what `_nearest_
+            # existing` is handed is the glob-free PREFIX — a directory,
+            # every time. It answered "that path IS a directory and it
+            # is EMPTY — the path was used exactly as given", which is
+            # false twice over: the path was not used as given (the
+            # pattern was cut off it), and a non-empty directory whose
+            # pattern matched nothing was described as holding what it
+            # holds, with no mention that a pattern had been applied at
+            # all. A miss must say WHICH question came back empty.
+            return [f"nothing to search at {where!r}: that is a glob and "
+                    f"it matched 0 files; "
+                    f"{path_answers.glob_miss_note(probe, _glob_base(where, cwd)[1])}"
+                    f"{_resolution_note(where, cwd)}"]
         return [f"nothing to search at {where!r}; "
                 f"{_nearest_existing(probe, cwd, where)}"
                 f"{_resolution_note(where, cwd)}"]

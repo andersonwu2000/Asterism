@@ -239,3 +239,46 @@ def test_a_mistyped_directory_still_gets_the_file_it_meant(
     out = wq.run_queries([{"read": "prooofs/L_a.lean"}], cwd=cwd)
     assert "use that path" in out
     assert "different attempt/round" not in out
+
+
+# ── a glob that matched nothing says so ──────────────────────────────
+
+def test_a_glob_with_no_hits_says_it_was_a_glob_and_lists_the_dir(
+        tmp_path: Path, monkeypatch):
+    """`_glob_split` cuts the pattern off before the miss is described,
+    so the diagnostic was handed the glob-free PREFIX — a directory,
+    every time — and answered "that path IS a directory and it is EMPTY
+    — the path was used exactly as given". False twice: the path was
+    not used as given, and an EMPTY verdict on a directory full of
+    files is the opposite of what the reader needed to know."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    (cwd / "proofs" / "L_a.lean").write_text("theorem a : True\n",
+                                             encoding="utf-8")
+
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs/*.rs"}], cwd=cwd)
+    assert "matched 0 files" in out
+    assert "glob" in out
+    assert "L_a.lean" in out                      # what IS there
+    assert "used exactly as given" not in out
+    assert "is EMPTY" not in out
+
+
+def test_a_glob_over_an_empty_directory_says_the_directory_is_empty(
+        tmp_path: Path, monkeypatch):
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs/*.lean"}], cwd=cwd)
+    assert "matched 0 files" in out
+    assert "is EMPTY" in out
+
+
+def test_a_plain_directory_miss_keeps_its_own_answer(
+        tmp_path: Path, monkeypatch):
+    """The non-glob spelling is untouched: an empty directory named
+    directly still gets the sentence that settles it."""
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "proofs").mkdir()
+    out = wq.run_queries([{"grep": "theorem", "in": "proofs"}], cwd=cwd)
+    assert "used exactly as given" in out
+    assert "matched 0 files" not in out

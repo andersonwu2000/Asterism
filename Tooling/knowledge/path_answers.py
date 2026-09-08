@@ -90,6 +90,23 @@ def may_prescribe(spec: "str | None", p: Path, found: Path) -> bool:
         return False
 
 
+def glob_miss_note(prefix: Path, pattern: str) -> str:
+    """A glob that matched nothing: the directory the pattern ran under,
+    and what is in it.
+
+    Not `nearest_existing`: that one answers about a PATH, and a glob's
+    glob-free prefix is a directory every time, so it always came back
+    "that path IS a directory … the path was used exactly as given" —
+    a sentence about a path nobody typed (the pattern had been cut off
+    it) which never mentioned that a pattern had matched nothing. The
+    two questions have two answers."""
+    if not prefix.is_dir():
+        return (f"{prefix} is not a directory — {nearest_dir_note(prefix)}")
+    names = dir_listing(prefix)
+    where = f"{pattern!r} was matched under {prefix}, which "
+    return where + (f"holds: {', '.join(names)}" if names else "is EMPTY")
+
+
 def nearest_existing(p: Path, cwd: "Path | None" = None,
                       spec: "str | None" = None) -> str:
     """What a wrong path costs should be nothing.
