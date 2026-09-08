@@ -20,7 +20,7 @@ The owner's shape — no modes, no second file, no exit ceremony:
     type printing, no string comparison:
 
         example : False :=
-          absurd <original stub constant>
+          absurd @<original stub constant>
             (by first
               | exact <claim>
               | (push_neg; exact <claim>))
@@ -32,6 +32,8 @@ The owner's shape — no modes, no second file, no exit ceremony:
     propositional pushing is fair game). The probe is a throwaway
     elaboration: the original constant's `sorry` proof is used only
     for its TYPE and nothing from the probe is ever committed.
+    The `@` is load-bearing and was missing until 2026-09-08 — see
+    `_ABSURD_AT_WHY`.
   * the claim itself must be sorry-free and axiom-clean (the same
     `axiom_gate` every proved goal passes).
 
@@ -55,6 +57,62 @@ _CLAIM_SUFFIX = "_disproof_claim"
 #: into `dead_attempts.artifacts` by `collect_artifacts`, so a
 #: successful disproof's certified unit is preserved with the death row.
 PROBE_FILENAME = "_disproof.lean"
+
+#: Machine tag on every non-infra refusal this gate returns. The DB
+#: cannot otherwise tell a disprove-road refusal from any other
+#: `agent_declined` row, and the burn cap below has to count exactly
+#: those. Leading, so it survives every downstream truncation.
+REFUSAL_MARKER = "[disproof-gate refused]"
+
+#: Refusals on the disprove road a goal may collect before it is parked
+#: for the Strategist instead of re-spawned. 2026-09-08 post-mortem:
+#: three union_closed goals (10948/10949/10952) each burned FIVE spawns
+#: — 4-6 minutes apart, all night — against a probe that could not
+#: accept any answer (see `_ABSURD_AT_WHY`). Once two independent
+#: spawns have failed to state the negation the probe wants, the open
+#: question is about the STATEMENT, and that is the Strategist's to
+#: answer (Inject the missing lemma / ConfirmShelve / Reopen with a
+#: directive) — not a third worker's to guess at.
+PARK_AFTER_REFUSALS = 2
+
+
+def _refusal(detail: str) -> str:
+    """Tag a refusal so `refusal_count` can find it in the death row."""
+    return f"{REFUSAL_MARKER} {detail}"
+
+
+def refusal_count(conn, goal_id: int) -> int:
+    """How many times this gate has already refused THIS goal — the
+    tagged `dead_attempts` rows. Counts prior pipelines only: a
+    terminal decline returns straight out of the retry loop, so the
+    current attempt's row is not written until cascade."""
+    # instr(), not LIKE: the marker is a literal, and a `_` or `%` ever
+    # appearing in it would silently turn into a wildcard.
+    row = conn.execute(
+        "SELECT COUNT(*) FROM dead_attempts"
+        " WHERE target_kind = 'Goal' AND target_id = ?"
+        "   AND instr(COALESCE(failure_detail, ''), ?) > 0",
+        (int(goal_id), REFUSAL_MARKER)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def park_prefix(nth: int) -> str:
+    """PREFIXED to the refusal that parks the goal, never appended: the
+    reader is the Strategist, whose dossier digests each dead attempt
+    down to its FIRST line (`_digest_failure`, 200 chars). A park reason
+    at the tail is a park reason it never sees. Line one therefore says
+    the whole verdict; the rest names the moves that are actually open
+    (a gate message has to name an action its reader can take)."""
+    return (
+        f"[disproof-gate] parked for Strategist review: the kernel "
+        f"disproof probe refused this goal {nth} times "
+        f"(cap {PARK_AFTER_REFUSALS}) — the open question is the "
+        f"STATEMENT, not the submission.\n\n"
+        f"{nth} independent spawns could not state the negation this "
+        f"probe accepts. The next move is yours: Inject what is "
+        f"missing, ConfirmShelve, or Reopen with a directive — not "
+        f"another worker at the same submission. The refusal that "
+        f"ended the road follows.\n\n")
 
 
 @dataclass
@@ -178,6 +236,41 @@ def _stub_module(goal_lean_path: str) -> str:
     return goal_lean_path.replace("/", ".").removesuffix(".lean")
 
 
+_ABSURD_AT_WHY = """\
+Why the bridge writes `absurd @<slug>` and not `absurd <slug>`
+(post-mortem 2026-09-08, union_closed g10948/g10949/g10952: eleven
+spawns in eight hours, every one refused at the same column).
+
+Scope: EVERY refusal this gate has ever recorded is this bug, and it
+has certified nothing since it shipped on 2026-08-25 — 0 goals reached
+`disproved` in that window. The other face of it is g10897 (09-05),
+refused with `typeclass instance problem is stuck: DecidableEq ?m.7`
+instead of a mismatch; same metavariable, one elaboration step earlier.
+All three 09-08 submissions certify under `@`, on the three classical
+axioms — the mathematics was right every time.
+
+A BARE constant is elaborated with its leading implicit and
+instance-implicit binders EAGERLY INSTANTIATED to metavariables:
+`four_target_block_uniformity` does not have the type its file
+declares, it has `∀ (C D : Finset (Finset ?α)) …` with `?α` open.
+`absurd : a → ¬a → b` reads `a` off that, so the negation the probe
+then demands is the negation of the INSTANTIATED body — a type with a
+free metavariable in it (`∀ ⦃A B : Finset ?m.3⦄, …`), which no agent
+can state, while the gate's own teaching message tells it to state the
+closed `¬ (∀ {α} [DecidableEq α], …)`. The two can never meet, so
+EVERY goal whose locked signature opens with an implicit or
+instance-implicit binder was un-disprovable, and the agent could only
+retry until the goal's attempts cap parked it.
+
+`@` suppresses that insertion: the constant keeps its declared type,
+binders and all, and the demanded negation is exactly the closed one
+the message promises. Lean's defeq ignores binder ANNOTATION, so the
+agent's `{α}` / `[inst]` spelling still unifies with the `@`-form, and
+a negation of a DIFFERENT statement still fails to unify — the
+soundness of the bridge is untouched.
+"""
+
+
 def build_probe(patch_text: str, *, slug: str,
                 goal_lean_path: str,
                 claim_slug: "str | None" = None) -> "str | None":
@@ -186,7 +279,10 @@ def build_probe(patch_text: str, *, slug: str,
     be the attempt's own `s<id>` token (`claim_slug`) or the bare goal
     slug; either renames to `<slug>_disproof_claim`, so the bridge and
     the fq name downstream never change. None when the patch declares
-    neither head (nothing to certify)."""
+    neither head (nothing to certify).
+
+    The bridge negates `@<slug>`, never the bare constant — see
+    `_ABSURD_AT_WHY` above for the eleven-spawn reason why."""
     renamed = _rename_claim_decl(patch_text, slug, claim_slug=claim_slug)
     if renamed is None:
         return None
@@ -203,8 +299,9 @@ def build_probe(patch_text: str, *, slug: str,
         f"-- the original goal — defeq via `exact`, or its pushed form\n"
         f"-- (`push Not` is current mathlib; `push_neg` the older\n"
         f"-- spelling — both arms so either vintage certifies).\n"
+        f"-- `@` on the constant is LOAD-BEARING: see `_ABSURD_AT_WHY`.\n"
         f"example : False :=\n"
-        f"  absurd {slug}\n"
+        f"  absurd @{slug}\n"
         f"    (by first\n"
         f"      | exact {claim}\n"
         f"      | (push Not; exact {claim})\n"
@@ -219,14 +316,61 @@ def build_probe(patch_text: str, *, slug: str,
     return "\n".join(lines) + "\n"
 
 
-def teaching(locked_signature: "str | None", why: str) -> str:
+#: Lean's mismatch report, verbatim: the type the probe DEMANDED. It is
+#: the one thing an agent can copy and state without guessing, and the
+#: 400-char slice of `gate.detail` cut the message off two lines above
+#: it — every one of the eleven refusals reached the agent ending mid
+#: "has type", so it never once saw what the gate actually wanted.
+_EXPECTED_TYPE_RE = re.compile(
+    r"but is expected to have type\r?\n(?P<ty>(?:[ \t]+\S.*(?:\r?\n|$))+)")
+
+#: Raw-error budget in the refusal, and how it is spent: a Lean type
+#: mismatch puts the demanded type at the END, so a head-only slice
+#: drops precisely the half that matters (that is how a 400-char cut
+#: landed two lines above `but is expected to have type`, eleven times).
+#: Head AND tail — the belt behind `expected_type`'s dedicated field,
+#: for the failure shapes the regex does not know.
+_RAW_HEAD_BUDGET = 800
+_RAW_TAIL_BUDGET = 400
+_EXPECTED_TYPE_BUDGET = 4000
+
+
+def _clip(detail: "str | None") -> str:
+    """Head + tail of a raw Lean error — never the head alone."""
+    text = (detail or "").strip()
+    if len(text) <= _RAW_HEAD_BUDGET + _RAW_TAIL_BUDGET:
+        return text
+    return (f"{text[:_RAW_HEAD_BUDGET]}\n…\n{text[-_RAW_TAIL_BUDGET:]}")
+
+
+def expected_type(detail: "str | None") -> str:
+    """The `but is expected to have type …` block of a Lean type
+    mismatch, dedented, or "" when the failure was not a mismatch."""
+    m = _EXPECTED_TYPE_RE.search(detail or "")
+    if m is None:
+        return ""
+    block = m.group("ty").rstrip()
+    lines = block.splitlines()
+    pad = min((len(ln) - len(ln.lstrip()) for ln in lines if ln.strip()),
+              default=0)
+    out = "\n".join(ln[pad:] for ln in lines).strip()
+    return out[:_EXPECTED_TYPE_BUDGET]
+
+
+def teaching(locked_signature: "str | None", why: str,
+             expected: str = "") -> str:
     """The gate's refusal — hands the agent the framework-known
     negation (owner-approved wording shape, 2026-08-25) and the way
     out. Never a judgment on the mathematics. The negation shows the
     TYPE alone: the locked signature arrives as a full declaration
     (`theorem s3497 : ∀ …`) and wrapping THAT in `¬ (…)` hands the
     agent an un-Lean target it cannot possibly state (three decline
-    loops on mathd_algebra_433, 2026-08-27)."""
+    loops on mathd_algebra_433, 2026-08-27).
+
+    `expected` is the probe's own demanded type, lifted verbatim out of
+    the Lean error (`expected_type`). The rendered signature is a
+    RE-STATEMENT of the goal; this is the elaborator's answer, so when
+    the two disagree the agent has something it can copy."""
     neg = "the negation of the goal's locked signature"
     if locked_signature:
         m = re.match(r"^\s*(?:@\[[^\]]*\]\s*)?(?:theorem|lemma)\s+\S+\s*(.*)$",
@@ -239,12 +383,18 @@ def teaching(locked_signature: "str | None", why: str) -> str:
             # quantifiers, so describe rather than misquote
             neg = (f"the negation of `{rest}` (with its binders "
                    f"universally quantified)")
+    verbatim = ""
+    if expected:
+        verbatim = (
+            f" The probe's EXACT demanded type, as the elaborator "
+            f"printed it — state this verbatim:\n```\n{expected}\n```\n")
     return (
         f"disproof not certified: {why}. The goal's negation is: {neg} — "
         f"rewrite patch.lean so your declaration proves exactly that "
         f"(keep the `-- decline: disprove` marker; do the push_neg work "
         f"inside the proof body, or state the pushed form and the gate's "
-        f"push_neg arm will match it). The signature lock does not apply "
+        f"push_neg arm will match it).{verbatim} The signature lock does "
+        f"not apply "
         f"on this road — commit sends a disprove-marked patch here before "
         f"it ever compares signatures, so a `locked_signature` warning "
         f"from an editing tool is wrong about this turn; keep the "
@@ -272,11 +422,11 @@ def run_disproof_gate(*, workspace: Path, attempts_dir: Path,
                              claim_slug=claim_slug)
     if probe_text is None:
         owned = claim_slug or slug
-        return DisproofVerdict(False, teaching(
+        return DisproofVerdict(False, _refusal(teaching(
             locked_signature,
             f"patch.lean declares no `theorem {owned}` head to certify "
             f"— keep your locked `theorem {owned} : …` declaration and "
-            f"prove the negation under that head"))
+            f"prove the negation under that head")))
     probe_path = attempts_dir / PROBE_FILENAME
     probe_path.write_text(probe_text, encoding="utf-8")
     fq_claim = f"Problems.{problem}.{slug}{_CLAIM_SUFFIX}"
@@ -294,10 +444,11 @@ def run_disproof_gate(*, workspace: Path, attempts_dir: Path,
             return DisproofVerdict(
                 False, f"the probe unit could not be judged ({reason}: "
                        f"{(gate.detail or '')[:400]})", reason)
-        return DisproofVerdict(False, teaching(
+        return DisproofVerdict(False, _refusal(teaching(
             locked_signature,
             f"the probe unit did not certify "
-            f"({gate.failure_reason}: {(gate.detail or '')[:400]})"))
+            f"({gate.failure_reason}: {_clip(gate.detail)})",
+            expected_type(gate.detail))))
     return DisproofVerdict(True, (
         f"kernel-verified disproof: {fq_claim} proves the negation of "
         f"the goal (absurd-bridge probe compiled sorry-free and "
