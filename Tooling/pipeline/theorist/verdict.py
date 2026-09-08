@@ -66,6 +66,17 @@ RUBRIC_BASENAME = "_verdict_rubric.json"
 #: one malformed file must not cost the author's document.
 VERDICT_TRIES = 2
 
+#: The one-ruling rule, in the ONE spelling the reviewer is told it in.
+#: Byte-identical to `adversary.MIXED_BULLETS_RULE` and to the sentence
+#: both judge prompts carry; duplicated rather than imported because
+#: this module is a leaf that `serve` and `agent/context` load, and
+#: `pipeline.theorist` already depends on `pipeline.adversary` the other
+#: way. `tests/test_judge_list_schema_and_delta_gate.py` holds the four
+#: surfaces level.
+MIXED_BULLETS_RULE = ("A criterion is either fired or clear — its list "
+                      "holds only fired bullets or only clear bullets, "
+                      "never both.")
+
 
 def write_rubric(target_dir: Path) -> Path:
     """Declare this rubric in the review dir. `multi_clear` rides with
@@ -244,8 +255,13 @@ def parse_theory_verdict(text: str, criteria_keys=CRITERIA_KEYS
             return None, (f"criterion {k}: every bullet must start "
                           f"\"clear\" or \"fired: <objection>\"")
         if "clear" in heads and "fired" in heads:
+            # 2026-09-08: the refusal used to state the rule the prompt
+            # never did ("a criterion is one or the other"), so three
+            # theory_reviewer wakes filed it as an undeclared gate. The
+            # prompt now carries the sentence; the refusal quotes it
+            # verbatim and names the criterion that broke it.
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
-                          f"bullets — a criterion is one or the other")
+                          f"bullets. {MIXED_BULLETS_RULE}")
         if heads[0] == "clear":
             for x in vals:
                 if not x.strip()[len("clear"):].strip(" -—–:"):

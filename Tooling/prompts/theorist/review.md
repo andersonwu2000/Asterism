@@ -49,4 +49,4 @@ Write `{attempts_dir}/verdict.json` — adjudicate every criterion, a list per c
  "reservations": ["<advisory note — for concerns that fire no criterion; on the final round, also the line past the author's stop>"]}
 ```
 
-Any fired = rebut (your fired bullets go verbatim to the author for one revision); all clear = accept. No criterion takes a bare `clear` — each clear carries one concrete sentence for THIS document. This file is a review verdict, not an audit: exactly the five keys above, strings only.
+Any fired = rebut (your fired bullets go verbatim to the author for one revision); all clear = accept. A criterion is either fired or clear — its list holds only fired bullets or only clear bullets, never both. No criterion takes a bare `clear` — each clear carries one concrete sentence for THIS document. This file is a review verdict, not an audit: exactly the five keys above, strings only.

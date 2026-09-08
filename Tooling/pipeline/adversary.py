@@ -587,6 +587,22 @@ CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 #: job.
 NAMING_CRITERIA = ("1", "2")
 
+#: The one-ruling rule, in the ONE spelling the judge is told it in.
+#: 2026-09-08: `parse_verdict` refused a mixed criterion with a rule
+#: neither judge prompt stated, and three theory_reviewer wakes filed
+#: the refusal as an undeclared gate ("no such restriction appears in
+#: the task instructions") instead of fixing the file. The prompts now
+#: carry this sentence verbatim and so does the refusal, which also
+#: names the criterion that broke it. Held level with
+#: `Tooling/prompts/adversary/adversary.md`,
+#: `Tooling/prompts/theorist/review.md` and
+#: `theorist.verdict.MIXED_BULLETS_RULE` by
+#: `tests/test_judge_list_schema_and_delta_gate.py` — a paraphrase on
+#: any one surface is the same fault again.
+MIXED_BULLETS_RULE = ("A criterion is either fired or clear — its list "
+                      "holds only fired bullets or only clear bullets, "
+                      "never both.")
+
 
 def _prompt_text() -> str:
     """The judge's rubric as it stands right now, or "" if unreadable.
@@ -751,7 +767,7 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
                           f"\"clear\" or \"fired: <objection>\"")
         if "clear" in heads and "fired" in heads:
             return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
-                          f"bullets — a criterion is one or the other")
+                          f"bullets. {MIXED_BULLETS_RULE}")
         if heads[0] == "clear":
             # 2026-09-05 (union_closed): a criterion is clear iff EVERY
             # bullet is clear — several clears are the shape the rubric

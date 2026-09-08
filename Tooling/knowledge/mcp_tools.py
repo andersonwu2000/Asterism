@@ -264,6 +264,8 @@ def _declared_verdict_notes(obj: dict, keys: "list[str]",
     declaration does not promise to keep — so this holds the declared
     shape and the message names the one to write."""
     import re as _re
+
+    from ..pipeline.adversary import MIXED_BULLETS_RULE
     crit = obj.get("criteria")
     if not isinstance(crit, dict):
         return [f"`criteria` is not an object — one list of bullets per "
@@ -296,7 +298,7 @@ def _declared_verdict_notes(obj: dict, keys: "list[str]",
             continue
         if "clear" in heads and "fired" in heads:
             notes.append(f'criterion {k} mixes "clear" and "fired" '
-                         f"bullets — a criterion is one ruling")
+                         f"bullets. {MIXED_BULLETS_RULE}")
             continue
         if heads[0] == "clear":
             # A criterion is clear iff EVERY bullet is: a document with

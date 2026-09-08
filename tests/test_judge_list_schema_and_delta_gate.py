@@ -8,8 +8,14 @@ record traces to the zen resume-amnesia era (the revision turn
 succeeded but never touched the file), so the delta gate is an
 accident guard, not author discipline."""
 import json
+from pathlib import Path
 
 from Tooling.pipeline import adversary
+from Tooling.pipeline.theorist import verdict as theory_verdict
+
+_PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+JUDGE_PROMPTS = (_PROMPTS / "adversary" / "adversary.md",
+                 _PROMPTS / "theorist" / "review.md")
 
 
 def _verdict(criteria):
@@ -33,9 +39,38 @@ def test_a_criterion_takes_many_bullets_and_all_of_them_fire() -> None:
 
 
 def test_mixed_clear_and_fired_in_one_criterion_is_refused() -> None:
+    """The refusal names the criterion AND states the rule it broke.
+
+    2026-09-08: it used to say only "a criterion is one or the other" —
+    a rule no judge prompt carried — and three theory_reviewer wakes
+    filed it as an undeclared gate instead of rewriting the file."""
     v, err = adversary.parse_verdict(_verdict({
         "3": ["fired: a defect", "clear: rest holds"]}))
-    assert v is None and "one or the other" in err
+    assert v is None
+    assert "criterion 3" in err, err
+    assert adversary.MIXED_BULLETS_RULE in err, err
+
+
+def test_the_one_ruling_rule_has_one_spelling_on_every_surface() -> None:
+    """Prompt and parser must say it the same way, or a judge that obeys
+    the prompt still has its verdict refused. Four surfaces: the two
+    judge prompts, the batch parser, the theory-review parser."""
+    rule = adversary.MIXED_BULLETS_RULE
+    assert theory_verdict.MIXED_BULLETS_RULE == rule
+    for prompt in JUDGE_PROMPTS:
+        assert rule in prompt.read_text(encoding="utf-8"), prompt
+
+
+def test_the_theory_review_parser_refuses_a_mixed_criterion_the_same_way(
+) -> None:
+    criteria = {k: ["clear: holds for this document"]
+                for k in theory_verdict.CRITERIA_KEYS}
+    criteria["4"] = ["clear: the lead is motivated", "fired: and untested"]
+    v, err = theory_verdict.parse_theory_verdict(
+        json.dumps({"criteria": criteria, "reservations": []}))
+    assert v is None
+    assert "criterion 4" in err, err
+    assert theory_verdict.MIXED_BULLETS_RULE in err, err
 
 
 def test_clear_takes_as_many_bullets_as_the_criterion_has_items() -> None:

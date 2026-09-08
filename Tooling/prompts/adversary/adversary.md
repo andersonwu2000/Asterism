@@ -66,7 +66,7 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
-Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass.
+Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass. A criterion is either fired or clear — its list holds only fired bullets or only clear bullets, never both.
 
 No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 1's reason IS the naming: each NOW Inject's consumption chain and endpoint. Criterion 2's reason IS the naming: the Relation's argument and the handling of the open statement.
 
