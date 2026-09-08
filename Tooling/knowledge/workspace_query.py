@@ -279,17 +279,23 @@ def _tokens_match(parts: "tuple[str, ...]", toks: "list[str]") -> bool:
         and _tokens_match(parts[1:], rest)
 
 
-def _glob_hits(base: Path, pattern: str) -> "list[Path]":
+def _glob_hits(base: Path, pattern: str, *,
+               dirs_too: bool = False) -> "list[Path]":
     """Files under `base` matching `pattern` (glob, `**` included).
 
     `**` needs its own walk: `Path.glob` cannot prune, and an unpruned
     `**` from a workspace root would sweep `.lake`/`.git`. The walk
     skips `_SKIP_DIRS` exactly as a directory walk does — `.lake` stays
     reachable by aiming the glob-free prefix inside `.lake/packages`,
-    the same explicit-target grant as everywhere else."""
+    the same explicit-target grant as everywhere else.
+
+    `dirs_too` keeps the DIRECTORIES a pattern matched. Off for `grep`,
+    which reads bytes and has nothing to do with a directory; on for
+    `size`, which is a listing — see `_q_size`."""
     toks = pattern.split("/")
     if "**" not in toks:
-        return sorted(x for x in base.glob(pattern) if x.is_file())
+        return sorted(x for x in base.glob(pattern)
+                      if x.is_file() or (dirs_too and x.is_dir()))
     allow = _lake_grant(base.resolve()) is True
     aimed = set(base.resolve().parts)
     hits: "list[Path]" = []
@@ -305,6 +311,9 @@ def _glob_hits(base: Path, pattern: str) -> "list[Path]":
         rel = tuple(x for x in rel if x != ".")
         hits += (Path(root) / f for f in files
                  if _tokens_match(rel + (f,), toks))
+        if dirs_too:
+            hits += (Path(root) / d for d in dirs
+                     if _tokens_match(rel + (d,), toks))
     return sorted(hits)
 
 
@@ -331,8 +340,16 @@ def _glob_base(spec: str, cwd: Path) -> "tuple[Path, str]":
     return _resolve(prefix.as_posix(), cwd), pattern
 
 
-def _expand(spec: str, cwd: Path) -> "list[Path]":
-    """A path or a glob, relative to the agent's own directories."""
+def _expand(spec: str, cwd: Path, *, dirs_too: bool = False) -> "list[Path]":
+    """A path or a glob, relative to the agent's own directories.
+
+    `dirs_too` carries a listing's question through to `_glob_hits`:
+    `size` on `<dir>/*` was answered "nothing there" whenever every
+    match was a directory, and the dossier's own map said three entries
+    were sitting right there (theory_reviewer ×10, 2026-09-07/08 — the
+    reviewers only found them by switching to `find`). A listing that
+    drops half of what a pattern matched is not a smaller listing, it
+    is a wrong one."""
     if _is_glob(spec):
         base, pattern = _glob_base(spec, cwd)
         # The SAME two walls the directory branch below puts up. They
@@ -344,7 +361,7 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
             return []  # grep surfaces the teaching via _lake_grant
         if _skipped(base, allow_lake=grant is True):
             return []
-        hits = _glob_hits(base, pattern)
+        hits = _glob_hits(base, pattern, dirs_too=dirs_too)
         own = _own_attempt_dir()
         if not hits and own is not None and not Path(spec).is_absolute():
             # Same containment as `_resolve`: this fallback is the same
@@ -360,7 +377,7 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
                 base2.resolve().relative_to(own.resolve())
             except (ValueError, OSError):
                 return hits
-            hits = _glob_hits(base2, pattern2)
+            hits = _glob_hits(base2, pattern2, dirs_too=dirs_too)
         return hits
     p = _resolve(spec, cwd)
     if p.is_dir():
@@ -1103,7 +1120,11 @@ def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
     if isinstance(grant, str):
         return [grant]
     matched = sorted(base.rglob(pattern))
-    out = [_rel(p, cwd) for p in matched
+    # A trailing slash on a directory, the same mark the "holds:" line
+    # below has always used. `find` did return directories, but named
+    # them exactly like files, so a hit list mixing both read as a list
+    # of readable files and the next `read` came back "IS a directory".
+    out = [_rel(p, cwd) + ("/" if p.is_dir() else "") for p in matched
            if not _skipped(p, allow_lake=grant)
            and _denied(p, deny) is None]
     if not out:
@@ -1130,18 +1151,57 @@ def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
     return kept + ([note] if note else [])
 
 
+def _entry_count(p: Path) -> "int | None":
+    """How many entries a directory holds — None when it cannot be read.
+
+    A count, not a listing: the reader's next question is whether the
+    directory is worth opening, and `find` / a deeper glob answers the
+    listing half in one more call."""
+    try:
+        return sum(1 for _ in p.iterdir())
+    except OSError:
+        return None
+
+
 def _q_size(q: dict, cwd: Path, deny) -> "list[str]":
-    files = [f for f in _expand(str(q.get("size") or "."), cwd)
-             if _denied(f.resolve(), deny) is None]
-    if not files:
+    """Lines and chars per file — and DIRECTORIES, named as such.
+
+    Directories used to be dropped on the floor, so `size` on a path
+    holding nothing but subdirectories answered "nothing there" while
+    the dossier's own map said three entries were there. Ten reviewers
+    read that as a broken literature cache and one of them corrected
+    itself an hour later ("size omits directories, while reading the
+    directory reveals the three archived paper subdirectories" —
+    2026-09-07/08). A directory is a real answer to "what is at this
+    path", so it is one here: marked with a trailing slash and its
+    entry count, never silence."""
+    spec = str(q.get("size") or ".")
+    entries = [f for f in _expand(spec, cwd, dirs_too=True)
+               if _denied(f.resolve(), deny) is None]
+    if not entries:
         return ["nothing there"]
     rows = []
-    for f in files:
+    for f in entries:
+        if f.is_dir():
+            n = _entry_count(f)
+            held = "unreadable" if n is None else (
+                f"{n} entr{'y' if n == 1 else 'ies'}")
+            rows.append(f"{_rel(f, cwd)}/: directory, {held}")
+            continue
         text = _read_text(f)
         rows.append(f"{_rel(f, cwd)}: {len(text.splitlines())} lines, "
                     f"{len(text)} chars")
     kept, note = _cap(rows, q.get("max", DEFAULT_MAX), "")
-    return kept + ([note] if note else [])
+    out = kept + ([note] if note else [])
+    if all(f.is_dir() for f in entries):
+        # The refusal this replaces. Say what the match WAS and the one
+        # call that opens it, so "nothing there" cannot be read off a
+        # listing that found everything the map promised.
+        deeper = spec + ("" if spec.endswith("/") else "/") + "*"
+        out.append(f"all {len(entries)} match(es) are directories, not "
+                   f'files — look inside with {{"size": {deeper!r}}} or '
+                   f'{{"find": "*", "in": "<one of them>"}}.')
+    return out
 
 
 def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
@@ -1235,6 +1295,38 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
     return f"Continue from line {resume} with `lines`."
 
 
+#: A ROSTER is uniform entries, one per line; a DOCUMENT is paragraphs.
+#: Size alone cannot tell them apart, and it was the only test: on
+#: 2026-09-07/08 four theory reviewers were refused the `Theorems and
+#: proofs` section of an ACCEPTED report under `_docs/agent/` — 28,347
+#: chars of prose and LaTeX — with "a section this size is a roster",
+#: and the round's own rubric requires checking exactly those theorems
+#: at source. Where the BYTES live separates the two cleanly, measured
+#: over the live corpus: every `TREE.md` roster past 20KB puts 0.000 of
+#: its characters in lines longer than 200 (longest line: 168), while
+#: the four sections of an accepted report run 0.44 to 1.00 (longest
+#: line: 1,367). So the tier asks the text and still never asks the
+#: filename — the giants it was built for are giants of the first kind.
+_ROSTER_LONG_LINE = 200
+_ROSTER_LONG_SHARE = 0.10
+
+
+def _looks_like_roster(text: str) -> bool:
+    """Is this a list of entries, or prose that happens to be long?
+
+    A roster's reader wants ONE entry and pages nothing; a document's
+    reader is mid-argument and a refusal costs the round. So a document
+    over the tier falls back to truncate-with-resume, which loses
+    nothing and names where to pick up."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    total = sum(len(ln) for ln in lines)
+    if not total:
+        return True
+    long_chars = sum(len(ln) for ln in lines
+                     if len(ln) > _ROSTER_LONG_LINE)
+    return long_chars / total < _ROSTER_LONG_SHARE
+
+
 def _big_section_refusal(q: dict, size: int, budget: int) -> str:
     """A section past 2x the budget is a ROSTER — uniform entries the
     reader wants ONE of, not a document to page through. Name the ways
@@ -1244,7 +1336,9 @@ def _big_section_refusal(q: dict, size: int, budget: int) -> str:
     secs = ", ".join(str(s) for s in (q.get("sections") or []))
     rounds = (size + budget - 1) // budget
     return (f"section(s) [{secs}] total {size:,} chars — {rounds}x the "
-            f"{budget:,}-char reply budget. A section this size is a "
+            f"{budget:,}-char per-query budget (a reply carries "
+            f"several answers and has its own, larger, ceiling). "
+            f"A section this size is a "
             f"roster: grep it for the entry you want "
             f'({{"grep": "<name>", "in": {str(q.get("read"))!r}}}), ask '
             f'the live record ({{"decl": "<slug>"}}), or open an exact '
@@ -1269,7 +1363,7 @@ def _whole_read_refusal(q: dict, here: Path, deny, size: int,
     does not scroll to the truncation line. A refusal that names the
     precise asks (sections / lines / grep) turns the same round trip
     into a map instead of a misleading half-answer."""
-    head = (f"whole file is {size:,} chars — more than one reply's "
+    head = (f"whole file is {size:,} chars — more than one answer's "
             f"{budget:,}-char budget, so a whole read could only ever "
             f"deliver a silent prefix. Ask precisely instead:")
     try:
@@ -1458,7 +1552,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                         elif len(text) > per_query_chars:
                             block = (head + f"\nraw read is "
                                      f"{len(text):,} chars — over the "
-                                     f"{per_query_chars:,}-char reply "
+                                     f"{per_query_chars:,}-char per-query "
                                      f"budget, and raw never truncates. "
                                      f"Read a `sections`/`lines` slice "
                                      f"(still raw), or drop `raw` to "
@@ -1477,15 +1571,20 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                                 q, here, deny, len(text), per_query_chars)
                             refused = True
                         elif (key == "read" and q.get("sections")
-                              and len(text) > 2 * per_query_chars):
-                            # A section MORE than twice the budget is a
-                            # roster, not a reading (user backlog item
-                            # c, 2026-08-26: TREE.md's `## Lemmas` on a
-                            # mature problem is 141KB — paging it costs
-                            # ~12 calls and teaches nothing). Refuse
-                            # with the ways a roster is actually used.
-                            # Size-tiered on purpose: no filename
-                            # sniffing, so it covers every future giant.
+                              and len(text) > 2 * per_query_chars
+                              and _looks_like_roster(text)):
+                            # A section MORE than twice the budget AND
+                            # shaped like a list is a roster, not a
+                            # reading (user backlog item c, 2026-08-26:
+                            # TREE.md's `## Lemmas` on a mature problem
+                            # is 141KB — paging it costs ~12 calls and
+                            # teaches nothing). Refuse with the ways a
+                            # roster is actually used. Still no
+                            # filename sniffing: `_looks_like_roster`
+                            # asks the text, so the tier covers every
+                            # future giant of that kind and none of the
+                            # accepted DOCUMENTS it was refusing on
+                            # size alone (2026-09-07/08, ×4).
                             text = _big_section_refusal(
                                 q, len(text), per_query_chars)
                             refused = True

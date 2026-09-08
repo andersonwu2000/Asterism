@@ -227,6 +227,59 @@ def _wrapper_target(ws: Path, lp: str, stok: str, strats: "list[dict]"
              f"{says}."], "", "")
 
 
+#: The columns every tier selects. One spelling, so a tier added later
+#: cannot quietly answer with a narrower row than the renderer expects.
+_COLS = ("SELECT id, slug, lean_path, statement, status, problem, "
+         "alias_target_id FROM goals ")
+
+
+def _tiered(conn, name: str, prob: "str | None"
+            ) -> "tuple[list, bool]":
+    """This problem's exact name, then this problem's substrings, then
+    — only if nothing here matches — the rest of the run, LABELLED.
+
+    Returns `(rows, foreign)`; `foreign` is True when the answer left
+    the caller's problem, and the renderer says so.
+
+    Two faults met on `decl S` (2026-09-07/08, p373 ×3). The first is
+    that the local and the global search were ONE query each, `slug = ?
+    OR slug LIKE ?`, so a local near-miss and a foreign near-miss were
+    the same rank and the fallback fired on "nothing local" rather than
+    on "nothing local matches this name". The second is that SQLite's
+    `LIKE` is case-insensitive over ASCII: `%S%` matched `a_closed_form`
+    and `a_inv_left_inverse` — the `s` inside `closed` and `inverse` —
+    so a one-letter ask came back as six unrelated projects' theorems
+    and none of this problem's. `INSTR` is the case-sensitive substring
+    test, and slugs are snake_case by construction, so a capital in the
+    query is a real constraint rather than noise.
+
+    The tiers stop at the first that answers. A miss is a MISS: better
+    "no declaration named 'S'" — the truth, since `S` here is a `Defs`
+    definition and not a goal — than six neighbours from other
+    problems."""
+    tiers = []
+    if prob:
+        tiers.append(("WHERE problem = ? AND slug = ? ORDER BY slug LIMIT 6",
+                      (prob, name), False))
+        tiers.append(("WHERE problem = ? AND INSTR(slug, ?) > 0 "
+                      "ORDER BY LENGTH(slug), slug LIMIT 6",
+                      (prob, name), False))
+    tiers.append(("WHERE slug = ? ORDER BY problem, slug LIMIT 6",
+                  (name,), bool(prob)))
+    tiers.append(("WHERE INSTR(slug, ?) > 0 "
+                  "ORDER BY LENGTH(slug), problem, slug LIMIT 6",
+                  (name,), bool(prob)))
+    for where, args, foreign in tiers:
+        rows = conn.execute(_COLS + where, args).fetchall()
+        if rows:
+            # `prob` set and every row from elsewhere is the only shape
+            # that has to be disclosed: a global tier can still answer
+            # with this problem's rows when `prob` is unknown.
+            return rows, foreign and all(str(r["problem"]) != prob
+                                         for r in rows)
+    return [], False
+
+
 def answer(q: dict, cwd: Path, deny) -> "list[str]":
     """Answered from the framework's own tables, not from a regex.
 
@@ -271,27 +324,14 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
             except (ValueError, OSError):
                 prob = None
     try:
-        rows = []
+        rows, foreign = [], False
         if gid:
             rows = conn.execute(
                 "SELECT id, slug, lean_path, statement, status, problem, "
                 "alias_target_id FROM goals WHERE id = ?",
                 (int(gid.group(1)),)).fetchall()
         else:
-            if prob:
-                rows = conn.execute(
-                    "SELECT id, slug, lean_path, statement, status, problem, "
-                    "alias_target_id FROM goals "
-                    "WHERE problem = ? AND (slug = ? OR slug LIKE ?) "
-                    "ORDER BY (slug = ?) DESC, slug LIMIT 6",
-                    (prob, name, f"%{name}%", name)).fetchall()
-            if not rows:
-                rows = conn.execute(
-                    "SELECT id, slug, lean_path, statement, status, problem, "
-                    "alias_target_id FROM goals "
-                    "WHERE slug = ? OR slug LIKE ? "
-                    "ORDER BY (slug = ?) DESC, slug LIMIT 6",
-                    (name, f"%{name}%", name)).fetchall()
+            rows, foreign = _tiered(conn, name, prob)
         # The goal's own strategies, by the sid the wrapper names.
         #
         # This is the RECORD for two questions the answer could not
@@ -346,8 +386,16 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
     finally:
         conn.close()
     if not rows:
-        return [f"no declaration named {name!r} in this run's record. "
-                f"For a Mathlib name use `loogle`."]
+        # The record holds GOALS. A `Defs.lean` definition is not one,
+        # and `S` on p373 was exactly that — so the miss names the door
+        # that answers instead of leaving the reader to guess (it used
+        # to guess "search harder", and the unscoped substring search
+        # obliged with six other problems' theorems).
+        return [f"no declaration named {name!r} in this run's record — "
+                f"that record holds this run's GOALS. A definition from "
+                f"`Defs.lean` or a `let` inside a proof is not one: "
+                f'{{"grep": {name!r}, "in": "*.lean"}} finds it in the '
+                f"files. For a Mathlib name use `loogle`."]
     # The FULL signature from the stub file, not the stored `statement`.
     # `goals.statement` holds the pp-canonical CONCLUSION only, so a
     # by_contra sub-goal renders as literally `False` — which is why the
@@ -358,25 +406,24 @@ def answer(q: dict, cwd: Path, deny) -> "list[str]":
     # the ones it flattened. Same helper, so the lazy path is equivalent
     # to the eager one it retired rather than a cheaper imitation of it.
     from ..agent import context as _ctx
-    # An EXACT hit answers alone. Substring matching is the fallback for
-    # a half-remembered name, but once the caller has typed the whole
-    # thing, attaching every near-miss is the CATALOG's old failure in a
-    # new place — the answer is in there somewhere, under two others.
-    # Measured: three matches on one query, ~1,000 characters each,
-    # because a full signature is a full signature.
-    exact = [r for r in rows if r["slug"] == name]
-    others = len(rows) - len(exact)
-    if exact:
-        rows, note = exact, (f"({others} other slug(s) contain {name!r} — "
-                             f"ask for one by its full name)" if others else "")
-    else:
-        note = ""
+    # An EXACT hit answers alone, and `_tiered` is what makes that true:
+    # its first tier is this problem's exact name, so a near-miss never
+    # shares a reply with the name the caller actually typed. Attaching
+    # every neighbour is the CATALOG's old failure in a new place — the
+    # answer is in there somewhere, under two others, at ~1,000
+    # characters each because a full signature is a full signature.
     out: "list[str]" = []
-    if note:
-        out.append(note)
+    if foreign:
+        # Never silently: an answer from another project looks exactly
+        # like a local one on the line below, and that is how `decl S`
+        # came back as Minif2f and Geometry theorems while the reviewer
+        # read them as p373's own (×3, 2026-09-07/08).
+        out.append(f"nothing in {prob} matches {name!r}. These are from "
+                   f"OTHER problems — not this problem's declarations:")
     budget = _REASON_CHARS if len(rows) == 1 else _REASON_CHARS_SHORTLIST
     for r in rows:
-        out.append(f"{r['slug']}  [{r['status']}]  {r['lean_path']}")
+        where = f"  ({r['problem']})" if foreign else ""
+        out.append(f"{r['slug']}  [{r['status']}]  {r['lean_path']}{where}")
         slug, lp, stmt = str(r["slug"]), r["lean_path"], r["statement"]
         strats = strategies_of.get(int(r["id"]), [])
         gate = _strategy_gate_line(strats, str(r["status"]))

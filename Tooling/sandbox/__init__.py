@@ -98,10 +98,24 @@ TIMEOUT_SEC = 900
 #: wants more than this materialises what it should be streaming, and
 #: the kill message says so.
 MEMORY_MB = 512
-#: Output ceiling. The agent pays for every byte in its next turn.
-MAX_OUTPUT_CHARS = 8000
+#: Output ceiling. The agent pays for every byte in its next turn — but
+#: it pays far more for a result it cannot parse. 8,000 cut an 11,984-
+#: char Base64 certificate at exactly position 8000, `JSON.parse` threw
+#: there, and the reviewer recovered the data by re-running the search
+#: split into six 6,000-char prints (2026-09-07, p931/r3): three calls
+#: and a re-computation to move bytes the first reply could have
+#: carried. Sized to the reply the transport actually delivers —
+#: `llm/capabilities.mcp_result_delivery_chars` is 30,000 on the
+#: measured backend, and `RESULT_HEADER` plus a kill note fit beside it
+#: inside the ~36,000-char cap-hit floor measured there.
+MAX_OUTPUT_CHARS = 30_000
 #: Sampling period for the soft (macOS) memory cap.
 _RSS_POLL_SEC = 0.25
+#: `launcher.main`'s exit code for "the agent's code ran out of memory".
+#: A two-file contract inside one package, and the only way the hard
+#: caps (RLIMIT_AS / the Job Object) — which fail the allocation INSIDE
+#: the child — can reach `killed` out here.
+_RC_MEMORY = 4
 #: OS-level ceiling on processes inside the job. Two, not one: a Windows
 #: venv's `python.exe` is a REDIRECTOR that launches the base
 #: interpreter, so a limit of 1 refuses the sandbox's own startup
@@ -133,8 +147,12 @@ class ComputeResult:
         if len(body) > MAX_OUTPUT_CHARS:
             dropped = len(body) - MAX_OUTPUT_CHARS
             body = (body[:MAX_OUTPUT_CHARS]
-                    + f"\n… {dropped} more characters dropped. Print less, "
-                      f"or summarise inside the code.")
+                    + f"\n… {dropped} more characters dropped "
+                      f"({len(self.output):,} printed, ceiling "
+                      f"{MAX_OUTPUT_CHARS:,}). Print less, or summarise "
+                      f"inside the code — and if this was one long "
+                      f"machine-readable line, print it in named chunks "
+                      f"so each call returns a complete piece.")
         if self.killed == "timeout":
             body += (f"\n[compute] stopped at the {TIMEOUT_SEC}s "
                      f"({TIMEOUT_SEC // 60} min) limit. Shrink the search "
@@ -288,8 +306,15 @@ def run(code: str) -> ComputeResult:
     out = "".join(chunks).strip()
     if not out and not killed:
         out = "(no output — the code printed nothing)"
-    # A Windows commit-limit kill surfaces as a MemoryError inside the
-    # child, which is the honest message; only name it ourselves when we
-    # were the one who pulled the trigger.
+    # The cap is enforced from out here on every platform, but only the
+    # macOS watchdog above gets to SAY so: `RLIMIT_AS` and the Windows
+    # Job Object make the allocation fail INSIDE the child, so a Linux
+    # agent that overran the cap never saw "stopped at the 512 MB
+    # limit, enumerate in batches" — it saw a bare `MemoryError` and
+    # read it as a broken sandbox (2026-09-07, p931). `launcher` knows
+    # it happened and says so with rc 4; this is the one place that
+    # turns its exit code back into the framework's own vocabulary.
+    if rc == _RC_MEMORY and not killed:
+        killed = "memory"
     return ComputeResult(rc=rc, output=out,
                          seconds=time.monotonic() - t0, killed=killed)

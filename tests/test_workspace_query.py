@@ -144,6 +144,43 @@ def test_find_distinguishes_empty_scope_and_miss(here: Path) -> None:
     assert "NOT an empty directory" in out3
 
 
+def test_size_lists_directories_instead_of_calling_them_nothing(
+        here: Path) -> None:
+    """The 2026-09-07/08 papers-cache cluster: the dossier mapped
+    `agent/papers/ — 3 entries`, `size` on that glob answered "nothing
+    there" because every match was a directory, and ten theory
+    reviewers wrote the literature cache off as unavailable. A listing
+    that drops what a pattern matched is wrong, not smaller."""
+    shelf = here / "papers"
+    for name in ("1909d747937c", "90443d4ebbdf", "d37cdc541bd5"):
+        (shelf / name).mkdir(parents=True)
+        (shelf / name / "text.md").write_text("body\n", encoding="utf-8")
+    out = wq.run_queries([{"size": "papers/*"}], cwd=here)
+    assert "nothing there" not in out
+    for name in ("1909d747937c", "90443d4ebbdf", "d37cdc541bd5"):
+        assert f"papers/{name}/: directory, 1 entry" in out
+    # …and the way in, so the correction does not cost another round.
+    assert "all 3 match(es) are directories" in out
+    assert '"size": \'papers/*/*\'' in out or "papers/*/*" in out
+
+
+def test_size_still_measures_the_files_a_glob_matches(here: Path) -> None:
+    """Directories are an ADDITION: a mixed match still measures the
+    files, and a files-only match carries no directory footer."""
+    out = wq.run_queries([{"size": "proofs/*.lean"}], cwd=here)
+    assert "proofs/L_a.lean:" in out and "chars" in out
+    assert "are directories" not in out
+
+
+def test_find_marks_a_directory_hit_as_one(here: Path) -> None:
+    """`find` always returned directories and named them exactly like
+    files, so a hit list read as "all of these are readable" and the
+    next `read` came back "IS a directory"."""
+    (here / "papers" / "abc123").mkdir(parents=True)
+    out = wq.run_queries([{"find": "*", "in": "papers"}], cwd=here)
+    assert "papers/abc123/" in out
+
+
 def test_reading_a_directory_lists_its_own_contents(here: Path) -> None:
     """Reading `proofs/` as a file used to answer with the PARENT
     listing, so "empty dir" vs "wrong path" cost an extra probe
@@ -239,6 +276,59 @@ def test_decl_scope_comes_from_the_declared_problem_not_the_cwd(
     # cross-problem Library lookup keeps answering.
     other = wq.run_queries([{"decl": "elsewhere_only"}], cwd=judge)
     assert "no declaration named" in other
+
+
+def test_decl_answers_this_problem_first_and_labels_anything_else(
+        ws: Path, monkeypatch) -> None:
+    """`decl S` on p373 came back as `a_closed_form` (Minif2f) and
+    `a_inv_left_inverse` (Geometry) three times on 2026-09-07/08 — the
+    `s` inside `closed` and `inverse`, because SQLite's `LIKE` is
+    case-insensitive over ASCII and the fallback fired on "nothing
+    local" rather than on "nothing local matches this name".
+
+    Four tiers now, first non-empty wins: this problem exact, this
+    problem substring, any problem exact, any problem substring — and
+    an answer that left the caller's problem SAYS so, because on the
+    line below it looks exactly like a local one."""
+    from Tooling.llm.spawn_guard import PROBLEM_ENV
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    seeded = {"Combinatorics.union_closed": ["uc_deficit", "uc_bound"],
+              "Minif2f.amc12a": ["a_closed_form"],
+              "Geometry.loops": ["a_inv_left_inverse"]}
+    for prob, slugs in seeded.items():
+        conn.execute(
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)", (prob, _db.now()))
+        for slug in slugs:
+            _db.insert_goal(
+                conn, problem=prob, slug=slug,
+                lean_path=f"Problems/{prob.replace('.', '/')}/"
+                          f"proofs/L_{slug}.lean",
+                statement="True", origin="root")
+    conn.commit()
+    conn.close()
+    judge = ws / ".attempts" / "pid9" / "adversary" / "r1"
+    judge.mkdir(parents=True)
+    monkeypatch.setenv(PROBLEM_ENV, "Combinatorics.union_closed")
+
+    # A one-letter CAPITAL is not a wildcard any more: nothing matches,
+    # and the miss names the door that answers a `Defs.lean` name.
+    miss = wq.run_queries([{"decl": "S"}], cwd=judge)
+    assert "a_closed_form" not in miss and "a_inv_left_inverse" not in miss
+    assert "no declaration named" in miss
+    assert '"grep"' in miss
+
+    # This problem's substring answers alone — never beside another
+    # problem's, which is what the single OR-query used to allow.
+    local = wq.run_queries([{"decl": "deficit"}], cwd=judge)
+    assert "uc_deficit" in local
+    assert "OTHER problems" not in local
+
+    # An exact name this problem does not have still answers, LABELLED.
+    away = wq.run_queries([{"decl": "a_closed_form"}], cwd=judge)
+    assert "a_closed_form" in away
+    assert "OTHER problems" in away and "Minif2f.amc12a" in away
 
 
 def _seed_decl(ws: Path, here: Path, *, slug: str, sig_lines: int) -> None:
@@ -1286,6 +1376,45 @@ def test_section_reads_are_size_tiered(here: Path) -> None:
     assert "roster" in out3
     assert '"grep"' in out3 and '"decl"' in out3
     assert "huge roster entry" not in out3, "refusal must not leak content"
+
+
+def test_a_long_prose_section_is_read_not_called_a_roster(here: Path) -> None:
+    """The roster tier exists for CATALOG / TREE listings, and size
+    alone could not tell one from a document: on 2026-09-07/08 four
+    theory reviewers were refused the `Theorems and proofs` section of
+    an ACCEPTED report (28,347 chars of prose and LaTeX) with "a
+    section this size is a roster", in a round whose rubric required
+    re-deriving exactly those theorems. Where the bytes live separates
+    them — a paragraph is a long line, an entry is not."""
+    para = ("The argument proceeds by comparing the two blocks factor "
+            "by factor, and every common prime divides their difference, "
+            "which is bounded above by the displacement plus the shorter "
+            "block length; this is the whole content of the step. ")
+    body = ["# Report", "## Theorems and proofs"]
+    body += [para * 2 for _ in range(60)]          # ~35KB of paragraphs
+    (here / "Report.md").write_text("\n\n".join(body), encoding="utf-8")
+
+    out = wq.run_queries([{"read": "Report.md",
+                           "sections": ["Theorems and proofs"]}], cwd=here)
+    assert "roster" not in out, "an accepted document is not a roster"
+    # Over the budget it is still truncated — but with the resume
+    # address, so nothing is lost and the round is not.
+    assert "truncated at" in out and "Continue from line" in out
+    assert "The argument proceeds" in out
+
+
+def test_the_roster_tier_still_fires_on_a_real_roster(here: Path) -> None:
+    """The giant it was built for: `TREE.md`'s `## Lemmas` renders one
+    record per short line, and every such section past 20KB in the live
+    corpus puts 0.000 of its characters in lines over 200."""
+    body = ["# Erdos.p1 — TREE", "## Lemmas", "```"]
+    body += [f"lemma_{i:04d} [g{10000 + i}]  (proved)" for i in range(900)]
+    body += ["```"]
+    (here / "TREE.md").write_text("\n".join(body), encoding="utf-8")
+    out = wq.run_queries([{"read": "TREE.md", "sections": ["Lemmas"]}],
+                         cwd=here)
+    assert "roster" in out
+    assert "lemma_0500" not in out, "refusal must not leak content"
 
 
 # ── the wrapper's target comes from the RECORD (2026-09-06) ─────────

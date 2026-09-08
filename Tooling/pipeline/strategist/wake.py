@@ -102,7 +102,8 @@ def _format_rebuttal(verdict: dict, round_no: int,
                      rounds_left: int,
                      length_warn: "str | None" = None,
                      since_label: str = "",
-                     since: "list[str] | None" = None) -> str:
+                     since: "list[str] | None" = None,
+                     attempts_dir: "Path | None" = None) -> str:
     crits = "\n".join(f"- {c}" for c in verdict.get("criticisms", []))
     # 07-29 bloat ruling: revisions must not answer objections by
     # accretion (observed: each rebut round ADDED argumentation;
@@ -119,9 +120,11 @@ def _format_rebuttal(verdict: dict, round_no: int,
     # `since.md` in its projection and was told the author receives it
     # with the verdict — so the two must be the same bytes.
     from .. import round_materials as _round_materials
-    head = ("Context.md is your snapshot from spawn. TREE.md, "
-            "CATALOG.md, BATCHES.md, ADJUDICATIONS.md beside it are "
-            "refreshed for this round.\n")
+    # Named from DISK, never from the roster: BATCHES.md and
+    # ADJUDICATIONS.md exist only when there is something to render,
+    # and promising all four cost five Strategists a round's opening
+    # calls proving two of them absent (2026-09-07/08).
+    head = _round_materials.refreshed_sentence(attempts_dir) + "\n"
     block = _round_materials.render(since_label, list(since or []))
     if block:
         head += "\n" + block
@@ -576,7 +579,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     verdict, rounds_used + 1,
                     max_rounds - rounds_used,
                     length_warn=length_warn,
-                    since_label=_label, since=_since)
+                    since_label=_label, since=_since,
+                    attempts_dir=attempts_dir)
                 err_is_rebuttal = True
                 # delta-gate bookkeeping: THIS body is what the judge
                 # rejected; the next revision must change it.
