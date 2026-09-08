@@ -35,12 +35,15 @@ the same, so a wake that died before any ruling still has its
 artifacts = `['report.md']` with the directory already gone. That road
 lands nothing — nobody reviewed it — and `path` stays NULL for it.
 
-WHICH IS WHY THE REVIEWER'S OWN FILES LEAVE WITH THE DOCUMENT. The
-reviewer writes notes and checks into its round dir, and the document it
-accepts cites them by that path; `preserve` copies them beside the
-landed file and rewrites every citation to where the copy is, because
-the alternative is what shipped until 2026-09-08 — an accepted document
-pointing at proofs the pipeline deleted on its way out.
+WHICH IS WHY THE REVIEW'S OWN FILES LEAVE WITH THE DOCUMENT. Both
+sides write into that dir — the reviewer its notes and checks under
+`review/r<n>/`, the author its scripts, tables and retained earlier
+versions at the root — and the document cites both by the path they
+were written at. `preserve` copies them beside the landed file and
+rewrites every citation to where the copy is, because the alternative
+is what shipped until 2026-09-08: 125 `.attempts/` citations on the
+flagship shelf, 125 of them pointing at files the pipeline deleted on
+its way out.
 """
 from __future__ import annotations
 
@@ -214,12 +217,12 @@ def land(workspace: Path, conn: sqlite3.Connection, *, problem: str,
 
     The ruling comes back because landing is where it stops being a
     pointer into a working directory: `attempts_dir` holds the reviewer's
-    own notes and checks, this copies them beside the document, and every
-    citation of one — in the body, in the header, in the reservations the
-    Strategist reads — is rewritten to where the copy actually is
-    (`preserve`). `attempts_dir` has no default on purpose: a caller that
-    could forget it is a caller that lands a document citing files that
-    are about to be deleted."""
+    notes and checks and the author's own attachments, this copies them
+    beside the document, and every citation of one — in the body, in the
+    header, in the reservations the Strategist reads — is rewritten to
+    where the copy actually is (`preserve`). `attempts_dir` has no
+    default on purpose: a caller that could forget it is a caller that
+    lands a document citing files that are about to be deleted."""
     from ...state import project_docs as _project_docs
     from ...state import projects as _projects
     from . import preserve as _preserve

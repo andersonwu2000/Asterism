@@ -460,8 +460,9 @@ def run_theorist(conn: sqlite3.Connection, *, problem: str,
     # the refusal, so nothing on the shelf reads as an accepted result.
     #
     # The RULING comes back from the landing as well: the reviewer's
-    # notes and checks are copied beside the document there, and every
-    # citation of one is rewritten to the copy (`preserve`). So the
+    # notes and checks and the author's own attachments are copied
+    # beside the document there, and every citation of one is rewritten
+    # to the copy (`preserve`). So the
     # verdict recorded below, the reservations the Strategist reads and
     # the header on disk all name the same surviving file — which is why
     # `verdict_json` is taken AFTER this call and not before it.
