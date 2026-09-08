@@ -60,6 +60,80 @@ def context_triggers() -> "frozenset[str]":
     return frozenset(TRIGGER_KINDS) | {THEORY_TRIGGER}
 
 
+#: Every `##` heading the Strategist prompts send the seat to read in
+#: Context.md, with the body to render when there is nothing to put
+#: under it. A HEADING IS A STABLE API OF THIS DOCUMENT; only its body
+#: varies. That rule was already written into `_section_pending_reopens`
+#: for one section on the evidence of eight reports — "dropping the whole
+#: section made 'nothing is due' and 'this Context was compiled wrong'
+#: arrive as the same page, and a reader cannot act on an absence" — and
+#: every other section the prompts name had the same hole. On the night
+#: of 2026-09-07 three Strategists filed it again for five more:
+#: `inspect` outline reported "no sections named 'Your group', 'Active
+#: goals', 'Lines in flight'", and the `inject_batch_done` seat was told
+#: to read `## Completed Inject batches` and `## Pending reopen-promises`
+#: on a Context that contained neither.
+#:
+#: Matched by PREFIX: a rendered heading may carry a state suffix
+#: (`## Programme (rev 3, passed …)`, `## Adversary reservations on rev
+#: 3`), and no entry here is a prefix of another.
+#:
+#: Not here, deliberately: `## Facts` (the seat's own `_plan.md`),
+#: `## Proof` (a section of PROGRAMME.md), and the `Ingest` report's
+#: four (`## Introduction` / `## Main Result` / `## Proof Sketch` /
+#: `## What Remains`) — the prompts name those as things the seat
+#: WRITES, not as sections of this document. `## Routine audit verdict`
+#: and `## Lesson KB (curation surface)` are wake-gated by design and
+#: named inside the paragraph that describes their wake.
+STRATEGIST_CONTEXT_SECTIONS: "tuple[tuple[str, str], ...]" = (
+    ("## Programme",
+     "(none yet — the proposal you deliver this wake founds rev 1.)"),
+    ("## Your group",
+     "(you are this problem's top group — your charter is `## Your "
+     "charter` below, and every verb the static prompt describes is "
+     "yours as written. A sub-group's overrides appear here instead.)"),
+    ("## Active goals",
+     "(none yet — nothing is alive on this problem. Your batch is what "
+     "mints the first goals.)"),
+    ("## Lines in flight",
+     "(none yet — you have dispatched no line that is still unsettled.)"),
+    ("## Recent decisions",
+     "(none — first Strategist run.)"),
+    ("## Adversary reservations",
+     "(none — the judge that passed the current revision left no "
+     "advisory note, or there is no passed revision yet.)"),
+    ("## Your plan note",
+     "(none yet — you have written no cross-wake note. Writing "
+     "`_plan.md` this wake creates it.)"),
+    ("## Completed Inject batches",
+     "(none — no batch of yours has completed since your last look, "
+     "and none is running or parked.)"),
+    ("## Pending reopen-promises",
+     "(none — no shelved goal's promised batch has landed since your "
+     "last look.)"),
+)
+
+
+def _named_sections_backstop(parts: "list[str]"
+                             ) -> "list[tuple[str, list[str]]]":
+    """`(name, lines)` for every heading in `STRATEGIST_CONTEXT_SECTIONS`
+    the assembled document does not already carry.
+
+    The per-section renderers each answer for themselves; this is the
+    guarantee behind them, so that a renderer which starts returning
+    `[]` again — a new early return, a new gate — cannot silently drop a
+    heading the prompts still name. It appends, never rewrites: a
+    section that DID render keeps its own body, whatever that body
+    says."""
+    out: "list[tuple[str, list[str]]]" = []
+    for heading, body in STRATEGIST_CONTEXT_SECTIONS:
+        if any(ln.startswith(heading) for ln in parts):
+            continue
+        out.append((heading.removeprefix("## ").lower().replace(" ", "_"),
+                    [heading, "", body, ""]))
+    return out
+
+
 def _section_trigger(trigger_kind: str, pending_review_id: int | None,
                      conn: sqlite3.Connection,
                      workspace: Path,
@@ -353,7 +427,13 @@ def _section_active_goals(conn: sqlite3.Connection,
         (problem,),
     ))
     if not rows:
-        return []
+        # The heading is a stable API of this document (see
+        # `STRATEGIST_CONTEXT_SECTIONS`): `routine.md` sends the seat
+        # here by name, and on a fresh problem three Strategists were
+        # told on 2026-09-07 that no such section exists.
+        return ["## Active goals", "",
+                "(none yet — nothing is alive on this problem. Your "
+                "batch is what mints the first goals.)", ""]
     # INDEX EAGER, SIGNATURES LAZY (2026-08-10).
     #
     # This section existed to stop a spawn restating a goal that is
@@ -575,7 +655,11 @@ def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
     problem_dir = db.problem_dir(workspace, problem)
     text = _drafts.read_plan_note(problem_dir, group_id)
     if not text or not text.strip():
-        return []
+        # Named by `routine.md`; the heading stays (see
+        # `STRATEGIST_CONTEXT_SECTIONS`).
+        return ["## Your plan note (private, cross-wake)", "",
+                "(none yet — you have written no cross-wake note. "
+                "Writing `_plan.md` this wake creates it.)", ""]
     out = ["## Your plan note (private, cross-wake)", "",
            _plan_note_provenance(conn, problem, group_id), ""]
     if len(text) > _drafts.PLAN_NOTE_SOFT_CAP:
@@ -973,6 +1057,13 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
         parts.extend(sect)
+    # The guarantee behind the per-section renderers: every heading the
+    # prompts name is in this document, always. See
+    # `STRATEGIST_CONTEXT_SECTIONS` for the evidence and the rule.
+    for name, stub in _named_sections_backstop(parts):
+        section_names.append(f"backstop_{name}")
+        sections.append(stub)
+        parts.extend(stub)
     # v35 — the `## Your group` section points a sub-group at
     # `charter.md`; the file has to be there. It existed only inside the
     # JUDGE's projection, so the judge reviewed against the charter while
@@ -1065,15 +1156,26 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     agent trusts the Context copy, so a dynamic section that enumerates
     actions must agree with the static prompt or replace it explicitly.
 
-    Empty for the top group — the static prompt already says everything
-    true for it, so today's single-group runs pay nothing.
+    For the TOP group the section says so and stops. It used to render
+    nothing at all, on the argument that the static prompt is already
+    correct there — true about the CONTENT, and wrong about the heading:
+    `routine.md` sends every seat to `## Your group` by name, and a top
+    group asking `inspect` for it was told there is no such section
+    (2026-09-07, Erdos.p1101 / p282). One line costs nothing and closes
+    the gap between what the prompt names and what this file carries.
     """
     from ...state import groups as _groups
+    top_body = [
+        "## Your group", "",
+        "(you are this problem's top group — your charter is `## Your "
+        "charter` below, and every verb the static prompt describes is "
+        "yours as written. A sub-group's overrides would appear here "
+        "instead.)", ""]
     if group_id is None:
-        return []
+        return top_body
     me = _groups.get(conn, int(group_id))
     if me is None or _groups.is_top(me):
-        return []
+        return top_body
     # Conditional affordance (owner ruling 2026-08-19): the Delegate
     # verb disappears from this group's instructions the moment it is
     # structurally unavailable — an agent told about a verb a gate will

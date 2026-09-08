@@ -144,9 +144,17 @@ _LINE_PARKED = ("NO worker on this line: nothing is computing and no "
 
 def render_lines_section(lines: "list[dict]") -> "list[str]":
     """`## Lines in flight` — what criteria 3 and 4 are ruled on, one
-    line per root. Post-mortems are lazy: `inspect({"decl": slug})`."""
+    line per root. Post-mortems are lazy: `inspect({"decl": slug})`.
+
+    The heading renders even with nothing under it: `routine.md` sends
+    the seat here by name, and on a fresh problem `inspect` answered "no
+    section named 'Lines in flight'" (2026-09-07, Erdos.p1101 / p282) —
+    which reads as a broken Context, not as an empty roster. See
+    `phase2_context.compile.STRATEGIST_CONTEXT_SECTIONS`."""
     if not lines:
-        return []
+        return ["## Lines in flight", "",
+                "(none yet — you have dispatched no line that is still "
+                "unsettled.)", ""]
     out = ["## Lines in flight", "",
            "One line per root you dispatched that is not settled yet — "
            "criteria 3 and 4 are ruled on EACH of these, by `goal_id`. "

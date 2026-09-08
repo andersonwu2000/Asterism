@@ -1037,9 +1037,13 @@ def test_pending_reopens_skips_batch_with_only_confirmshelve_reopen(
 def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
     conn: sqlite3.Connection,
 ) -> None:
-    """Other trigger kinds (routine / pending_review / first_launch)
-    skip this section entirely — the inject_batch_done gate is what
-    makes "promised batch completion" semantically meaningful."""
+    """Other trigger kinds (routine / pending_review / first_launch) do
+    not EVALUATE this section — the inject_batch_done gate is what makes
+    "promised batch completion" semantically meaningful — but the
+    heading still renders, because `inject_batch_done.md` names it and a
+    seat told there is no such section reads the Context as broken
+    (2026-09-07, Erdos.p1093). The body says the wake did not look; it
+    must never say "none", which is a claim nobody checked."""
     _insert_problem(conn)
     _insert_root(conn)
     g = _seed_shelved_goal(conn, slug="g_skip")
@@ -1048,7 +1052,11 @@ def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
         inject_outcomes=["success"],
     )
     for trig in ("routine", "pending_review"):
-        assert phase2_context._section_pending_reopens(conn, "p", trig) == []
+        body = "\n".join(
+            phase2_context._section_pending_reopens(conn, "p", trig))
+        assert body.startswith("## Pending reopen-promises")
+        assert "not evaluated" in body and trig in body
+        assert "g_skip" not in body
 
 
 def test_an_empty_promise_queue_says_none_instead_of_vanishing(
@@ -1069,9 +1077,13 @@ def test_an_empty_promise_queue_says_none_instead_of_vanishing(
     assert "none" in body.lower()
     # …and the trigger gate is a different statement: on a trigger this
     # section does not evaluate, saying "none" would be a claim nobody
-    # checked. It still renders nothing.
-    assert phase2_context._section_pending_reopens(
-        conn, "p", "routine") == []
+    # checked. The heading is there either way; the body is not the
+    # same sentence.
+    other = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "routine"))
+    assert other.startswith(NONE_PENDING)
+    assert "not evaluated" in other
+    assert "no shelved goal's promised batch has landed" not in other
 
 
 def test_an_empty_batch_scoreboard_says_none_instead_of_vanishing(
@@ -1268,10 +1280,15 @@ def test_current_directive_section_silent_when_only_whitespace(
 # Plan note — the Strategist's private cross-wake section (2026-07-05)
 # ---------------------------------------------------------------------
 
-def test_plan_note_section_absent_when_no_note(
+def test_plan_note_section_says_none_when_there_is_no_note(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    assert phase2_context._section_plan_note(conn, workspace, "p") == []
+    """`routine.md` names `## Your plan note`. Nothing written yet is a
+    fact about the body, not a reason to drop the heading."""
+    body = "\n".join(
+        phase2_context._section_plan_note(conn, workspace, "p"))
+    assert body.startswith("## Your plan note")
+    assert "none yet" in body
 
 
 def test_plan_note_section_renders_and_warns_over_cap(
@@ -2337,3 +2354,72 @@ def test_batch_scoreboard_names_the_alias_twin(
         conn, "p", attempts_dir=tmp_path))
     assert "aliased: `restated_fibre_bound` → `canonical_fibre_bound`" \
         in body, body
+
+
+# ── every heading the prompts name is in the document ────────────────
+
+def _prompt_named_headings() -> "set[str]":
+    """The `## …` names the Strategist prompts hand the seat, read off
+    the prompt files themselves — so a new prompt sentence that names a
+    section this file does not render fails here rather than in a wake."""
+    import re as _re
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[1] / "Tooling" / "prompts" \
+        / "strategist"
+    found: "set[str]" = set()
+    for md in sorted(root.glob("*.md")):
+        for m in _re.finditer(r"`(## [^`]+)`", md.read_text(encoding="utf-8")):
+            found.add(m.group(1))
+    return found
+
+
+#: Named by the prompts but NOT sections of Context.md: `## Facts` is
+#: the seat's own `_plan.md`, `## Proof` a section of PROGRAMME.md, and
+#: the last four are the `Ingest` report the seat writes. `## Routine
+#: audit verdict` and `## Lesson KB (curation surface)` are wake-gated
+#: and named inside the paragraph describing their wake.
+_NOT_CONTEXT_SECTIONS = {
+    "## Facts", "## Proof", "## Introduction", "## Main Result",
+    "## Proof Sketch", "## What Remains",
+    "## Routine audit verdict", "## Lesson KB (curation surface)",
+}
+
+
+def test_every_section_the_prompts_name_is_declared() -> None:
+    """The contract, from the prompt side. Three Strategists on
+    2026-09-07 asked `inspect` for 'Your group', 'Active goals', 'Lines
+    in flight', 'Completed Inject batches' and 'Pending reopen-promises'
+    and were told there is no such section."""
+    declared = {h for h, _ in phase2_context.STRATEGIST_CONTEXT_SECTIONS}
+    named = _prompt_named_headings() - _NOT_CONTEXT_SECTIONS
+    assert named <= declared, sorted(named - declared)
+
+
+def test_a_fresh_problem_renders_every_named_section(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """The contract, from the document side — on the wake that has the
+    least to say. Nothing proved, nothing dispatched, no plan note: the
+    exact shape the flagship's ten fresh Erdos problems were in."""
+    _insert_problem(conn)
+    for trigger in ("routine", "inject_batch_done"):
+        attempts_dir = tmp_path / f"_fresh_{trigger}"
+        attempts_dir.mkdir()
+        text = phase2_context.compile_strategist_context(
+            conn, problem="p", trigger_kind=trigger,
+            attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+        ).read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for heading, _ in phase2_context.STRATEGIST_CONTEXT_SECTIONS:
+            assert any(ln.startswith(heading) for ln in lines), (
+                f"{trigger}: no section {heading!r}")
+
+
+def test_the_backstop_never_duplicates_a_section_that_rendered() -> None:
+    """It appends what is missing and nothing else — a section that DID
+    render keeps its own body, whatever that body says."""
+    parts = ["## Active goals", "", "**3 alive** — 3 open", ""]
+    made = dict(phase2_context._named_sections_backstop(parts))
+    assert "active_goals" not in made
+    assert "lines_in_flight" in made
