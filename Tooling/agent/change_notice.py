@@ -127,12 +127,44 @@ def _user_docs_dir(workspace: Path, problem: str) -> "Path | None":
     return None if root is None else root / "user"
 
 
-def _brick_name(slug: str, lean_path: str) -> str:
-    """What to call a proved goal. Its file is `L_<slug>.lean` for every
-    landed brick; a root goal's is `Root.lean`, and there the declaration
-    name (`main`) is what CATALOG.md and the agent both know it by."""
-    stem = Path(str(lean_path or "")).stem
-    return stem if stem.startswith("L_") else str(slug or stem or "?")
+#: The catalog's name in a spawn's attempts dir. Named here rather than
+#: imported from `agent/context` for the reason the whole module keeps
+#: its distance from the framework's own layers: this file is loaded by
+#: the stdio tools server, which does not carry them.
+CATALOG_COMPANION = "CATALOG.md"
+
+
+def _brick_line(slug: str, lean_path: str, catalog: "Path | None") -> str:
+    """One `brick proved:` line, in the two spellings the reader can act
+    on — and no third one it cannot.
+
+    The name is the goal's SLUG, because that is the only string
+    `inspect({"decl": ...})` resolves: `knowledge/decl_answer.answer`
+    matches `goals.slug` (exact first, then substring), scoped to the
+    caller's problem. This used to print the proof file's STEM instead
+    — `L_<slug>` — which resolves to nothing at all: the `L_` prefix is
+    a filename convention and is not in the column the lookup reads. A
+    root's slug (`main`) is already the name its wrapper declares, so
+    the two cases need no branch.
+
+    The pointer is the goal's own `lean_path`, workspace-relative, which
+    is the spelling `inspect({"read": ...})` resolves for every seat
+    (`knowledge/workspace_query._resolve` tries the workspace root) —
+    and a file that exists, unlike the CATALOG the line used to name
+    unconditionally. Eight Theorists on 2026-09-07 were sent to a
+    `CATALOG.md` that a fresh pure-NL problem never writes (nothing
+    proved and no alive goals = no companion) and to a declaration name
+    the record has never held; both halves of that line were
+    unreachable. The catalog is named only when one is actually beside
+    the reader — see `ChangeNotice.__init__`'s `catalog_dir`."""
+    name = str(slug or "").strip() or Path(str(lean_path or "")).stem or "?"
+    rel = str(lean_path or "").replace("\\", "/").strip()
+    out = f"- brick proved: `{name}`"
+    if rel:
+        out += f" — `{rel}`"
+    if catalog is not None:
+        out += f" (also in `{catalog.as_posix()}`)"
+    return out
 
 
 class ChangeNotice:
@@ -144,12 +176,20 @@ class ChangeNotice:
     """
 
     def __init__(self, workspace: "Path | str | None", problem: "str | None",
-                 *, db_path: "Path | str | None" = None) -> None:
+                 *, db_path: "Path | str | None" = None,
+                 catalog_dir: "Path | str | None" = None) -> None:
         self.workspace = Path(workspace) if workspace else None
         self.problem = (problem or "").strip() or None
         self.db_path = (Path(db_path) if db_path is not None
                         else (self.workspace / "asterism.db"
                               if self.workspace else None))
+        # Where THIS spawn's `CATALOG.md` would be, when the caller
+        # knows — the attempts dir. Absent for a caller that does not
+        # (the gateway serves many spawns and holds none of their
+        # attempt dirs), and then no brick line names a catalog: a
+        # pointer nobody can check is the failure this parameter exists
+        # to end, not one to spread to a second server.
+        self.catalog_dir = Path(catalog_dir) if catalog_dir else None
         self._pdir = (_problem_dir(self.workspace, self.problem)
                       if self.workspace and self.problem else None)
         self._docs_dir = (_user_docs_dir(self.workspace, self.problem)
@@ -307,14 +347,27 @@ class ChangeNotice:
                 # needs to be the one this project writes paths in.
                 doc = str(row[1]).replace("\\", "/")
                 lines.append(f"- theory document accepted: `{doc}`")
+        catalog = self._catalog()
         for row in goals:
             if row[0] in self._proved:
                 continue
             self._proved.add(row[0])
             if self._primed:
-                lines.append(f"- brick proved: `{_brick_name(row[1], row[2])}`"
-                             f" (CATALOG.md)")
+                lines.append(_brick_line(row[1], row[2], catalog))
         return lines
+
+    def _catalog(self) -> "Path | None":
+        """This spawn's `CATALOG.md`, or None when there is not one to
+        name. Checked per trailer rather than once at construction: the
+        companion is (re)written per wake, and a spawn whose problem
+        proves its first brick gets one while it works."""
+        if self.catalog_dir is None:
+            return None
+        cand = self.catalog_dir / CATALOG_COMPANION
+        try:
+            return cand if cand.is_file() else None
+        except OSError:
+            return None
 
     def _rows(self, conn: "sqlite3.Connection", sql: str) -> "list[tuple]":
         """One query, or nothing. A workspace whose schema predates a
@@ -339,7 +392,7 @@ _MAX_WATCHERS = 256
 
 
 def for_spawn(key: "str | None", *, workspace, problem: "str | None",
-              db_path=None) -> "ChangeNotice | None":
+              db_path=None, catalog_dir=None) -> "ChangeNotice | None":
     """The watcher for one spawn, created (and baselined) on first ask.
 
     Call it when the spawn STARTS — the gateway does, at `/register` —
@@ -354,7 +407,8 @@ def for_spawn(key: "str | None", *, workspace, problem: "str | None",
                 return found
             if len(_WATCHERS) >= _MAX_WATCHERS:
                 _WATCHERS.clear()
-            made = ChangeNotice(workspace, problem, db_path=db_path)
+            made = ChangeNotice(workspace, problem, db_path=db_path,
+                                catalog_dir=catalog_dir)
             _WATCHERS[key] = made
             return made
     except Exception:  # noqa: BLE001 — see the module docstring

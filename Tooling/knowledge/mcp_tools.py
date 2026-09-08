@@ -1232,8 +1232,11 @@ def _change_notice():
         return None
     own = _wq._own_attempt_dir()
     key = f"{problem}\x1f{own.name if own is not None else ''}"
+    # The attempts dir is also where this spawn's `CATALOG.md` would be,
+    # so the notice can say "also in CATALOG.md" only when there is one
+    # — a fresh pure-NL problem writes none.
     return _notice.for_spawn(key, workspace=_workspace_root(),
-                             problem=problem)
+                             problem=problem, catalog_dir=own)
 
 
 def _suppress_change_notice(name: str, arguments: dict) -> bool:
