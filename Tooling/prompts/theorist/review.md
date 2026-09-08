@@ -35,6 +35,11 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
 4. **Leads**: every lead carries its reason and the test it survived (a case analysis, a construction, a computation), and says what a counterexample would have to look like. A conjecture with no reason and no test, or a next step that is a wish, is not allowed.
 5. **Target**: question the objective as posed. If a more essential shape exists — the posed statement a case or a proxy of it — and this document's results reach it, fire: name the shape and which results carry over (criterion 1 permits answering a better objective). If they do not reach it, write the shape in `reservations` for the Strategist. A question the request has already answered is not re-fired without new grounds.
 
+Failure modes — a document that delivers these as its advance is refused through criterion 1; their legitimate place is `## Leads` or `## Load-bearing work`:
+- excluding the next size / parameter / support bound without proving the remaining class empty;
+- optimizing a finite certificate without controlling every admissible object;
+- adding restrictions to a hypothetical counterexample with no route to a contradiction.
+
 ## Output
 
 Write `{attempts_dir}/verdict.json` — adjudicate every criterion, a list per criterion, one bullet per objection, each bullet a plain string beginning `fired:` or `clear:`:
