@@ -1206,9 +1206,14 @@ def test_a_cousin_branchs_failures_stay_out_of_my_projection(tmp_path):
     assert "A's sub-line" not in groups.charter_digest(conn, p, b)
 
 
-def test_the_your_group_section_is_absent_for_the_top_group(tmp_path):
-    """Conditional by construction: today's single-group runs pay
-    nothing, and a reader is never shown a verb it cannot use."""
+def test_the_your_group_section_says_top_group_instead_of_vanishing(
+        tmp_path):
+    """The CONTENT is still conditional — a reader is never shown a verb
+    it cannot use, and today's single-group runs get one line, not the
+    sub-group's overrides. The HEADING is not: `routine.md` sends every
+    seat to `## Your group` by name, and a top group asking `inspect`
+    for it was told there is no such section (2026-09-07, Erdos.p1101 /
+    p282). See `phase2_context.compile.STRATEGIST_CONTEXT_SECTIONS`."""
     from Tooling.agent import phase2_context as ctx
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.section")
@@ -1216,8 +1221,11 @@ def test_the_your_group_section_is_absent_for_the_top_group(tmp_path):
     sub = groups.open_group(conn, problem=p, parent_group_id=top,
                             charter="claim A")
     conn.commit()
-    assert ctx._section_your_group(conn, p, top) == []
-    assert ctx._section_your_group(conn, p, None) == []
+    for gid in (top, None):
+        lines = ctx._section_your_group(conn, p, gid)
+        assert lines[0] == "## Your group"
+        assert "top group" in "\n".join(lines)
+        assert "ReturnToParent" not in "\n".join(lines)
     body = "\n".join(ctx._section_your_group(conn, p, sub))
     assert "ReturnToParent" in body
     assert "charter.md" in body
