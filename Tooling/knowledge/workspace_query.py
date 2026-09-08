@@ -1336,7 +1336,9 @@ def _big_section_refusal(q: dict, size: int, budget: int) -> str:
     secs = ", ".join(str(s) for s in (q.get("sections") or []))
     rounds = (size + budget - 1) // budget
     return (f"section(s) [{secs}] total {size:,} chars — {rounds}x the "
-            f"{budget:,}-char reply budget. A section this size is a "
+            f"{budget:,}-char per-query budget (a reply carries "
+            f"several answers and has its own, larger, ceiling). "
+            f"A section this size is a "
             f"roster: grep it for the entry you want "
             f'({{"grep": "<name>", "in": {str(q.get("read"))!r}}}), ask '
             f'the live record ({{"decl": "<slug>"}}), or open an exact '
@@ -1361,7 +1363,7 @@ def _whole_read_refusal(q: dict, here: Path, deny, size: int,
     does not scroll to the truncation line. A refusal that names the
     precise asks (sections / lines / grep) turns the same round trip
     into a map instead of a misleading half-answer."""
-    head = (f"whole file is {size:,} chars — more than one reply's "
+    head = (f"whole file is {size:,} chars — more than one answer's "
             f"{budget:,}-char budget, so a whole read could only ever "
             f"deliver a silent prefix. Ask precisely instead:")
     try:
@@ -1550,7 +1552,7 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                         elif len(text) > per_query_chars:
                             block = (head + f"\nraw read is "
                                      f"{len(text):,} chars — over the "
-                                     f"{per_query_chars:,}-char reply "
+                                     f"{per_query_chars:,}-char per-query "
                                      f"budget, and raw never truncates. "
                                      f"Read a `sections`/`lines` slice "
                                      f"(still raw), or drop `raw` to "

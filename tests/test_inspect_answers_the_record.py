@@ -264,7 +264,11 @@ def test_a_refused_read_keeps_its_whole_answer_while_flagging_the_error(
     res = _call_inspect([{"read": "big.md"}], tmp_path)
     assert _is_error(res)
     body = _text_of(res)
-    assert "more than one reply's" in body, body
+    # "one ANSWER's budget", not "one reply's": the 12,000 cap is
+    # per query and a reply carries 30,000, and calling the smaller
+    # number the reply budget is exactly the contradiction four
+    # adversaries filed on 2026-09-07/08.
+    assert "more than one answer's" in body, body
     assert "outline" in body
 
 

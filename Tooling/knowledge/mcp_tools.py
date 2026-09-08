@@ -75,7 +75,7 @@ _LOOGLE_REPEATS: "dict[tuple[str, str], int]" = {}
 #: (explicit `.lake/packages/...` paths override the skip list — owner
 #: ruling 2026-08-22).
 _GREP_THE_SOURCE = (
-    'Grep the source for the current name: inspect([{"grep": '
+    'Grep the source for the current name: inspect(queries=[{"grep": '
     '"<name fragment>", "in": ".lake/packages/mathlib/Mathlib"}]) '
     '— or a subdir of it for speed.')
 

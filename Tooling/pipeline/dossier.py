@@ -77,7 +77,7 @@ def roster_block(name: str, path: Path) -> "list[str]":
         size = "size unknown"
     return [f"### {name} — {size}",
             f'A roster — too many sections to map. Name what you want: '
-            f'`inspect([{{"read": "{name}", "outline": true, '
+            f'`inspect(queries=[{{"read": "{name}", "outline": true, '
             f'"outline_prefix": "<prefix>"}}])` or `"outline_grep": '
             f'"<regex>"` for the headings, `{{"grep": "<name>", "in": '
             f'"{name}"}}` for one entry\'s text, `{{"decl": "<slug>"}}` '
@@ -93,7 +93,7 @@ def dir_block(label: str, path: Path) -> "list[str]":
                 "DOES NOT EXIST — do not probe it.", ""]
     n = sum(1 for _ in path.iterdir())
     return [f"### {label} `{path.as_posix()}` — {n} entr(ies)",
-            f'Not inlined and not mapped. `inspect([{{"grep": "<name>", '
+            f'Not inlined and not mapped. `inspect(queries=[{{"grep": "<name>", '
             f'"in": "{path.as_posix()}/*.lean"}}])`, `{{"find": '
             f'"*<name>*"}}`, `{{"size": "{path.as_posix()}/*"}}`, or '
             f'`{{"decl": "<slug>"}}` for the record\'s own answer.', ""]
@@ -140,7 +140,7 @@ def notes_block(label: str, path: Path, *,
     return ([f"### {label} `{path.as_posix()}` — {notes} note(s), "
              f"listed by name so you can see what already exists"]
             + lines
-            + [f'Bodies are not inlined. `inspect([{{"read": '
+            + [f'Bodies are not inlined. `inspect(queries=[{{"read": '
                f'"{path.as_posix()}/<area>/<name>", "outline": true}}])` '
                f'for one note\'s map, `{{"sections": ["<heading>"]}}` for '
                f'a section, `{{"grep": "<term>", "in": '

@@ -14,13 +14,13 @@ __GOAL__
 Prefer the most local source — a hit there is the cleanest cite. Stop once you have
 the relevant lemmas; do not keep reformulating.
 __COLD_START__
-1. **In-problem** — `inspect({"grep": "<head symbol>", "in": "__PROBLEM_DIR__/proofs"})`
+1. **In-problem** — `inspect(queries=[{"grep": "<head symbol>", "in": "__PROBLEM_DIR__/proofs"}])`
    + read `__PROBLEM_DIR__/TREE.md` for siblings already proved in THIS problem.
-2. **Library** — `inspect({"grep": "<head symbol>", "in": "__LIBRARY_DIR__"})`
+2. **Library** — `inspect(queries=[{"grep": "<head symbol>", "in": "__LIBRARY_DIR__"}])`
    (harvested, reusable; often the exact lemma). Report names in full (`Library.<…>`).
 3. **Mathlib** — loogle for shape/type, e.g.
    `loogle('ContinuousLinearMap.comp _ _ = _')`; or
-   `inspect({"grep": "(theorem|lemma) <name>", "in": "__PACKAGES__"})` by name.
+   `inspect(queries=[{"grep": "(theorem|lemma) <name>", "in": "__PACKAGES__"}])` by name.
    Try a few query shapes; if they miss, move on — leave the
    block thin rather than burning the budget reformulating.
 

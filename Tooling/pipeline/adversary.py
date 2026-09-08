@@ -330,7 +330,8 @@ def dossier_sections(proj: Path, *, proofs_dir: Path,
     out += ["## Table of contents (read on demand)", "",
             "These are NOT inlined — they are big and most rounds need "
             "one section of one of them. Read a section with "
-            '`inspect([{"read": "<file>", "sections": ["<heading>"]}])`; '
+            '`inspect(queries=[{"read": "<file>", "sections": '
+            '["<heading>"]}])`; '
             "the line ranges below are what that call answers from.", ""]
     for name in DOSSIER_OUTLINED:
         p = proj / name
