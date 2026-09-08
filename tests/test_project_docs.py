@@ -424,3 +424,168 @@ def test_owner_notes_section_excludes_the_papers_shelf(ws: Path) -> None:
     pd.write(ws, "Erdos", "user/note.tex", r"\section{x}" + "\n")
     joined = "\n".join(_owner_notes(ws))
     assert "note.tex" in joined and "papers" not in joined
+
+
+# ------------------------- the shelf is the Project's, not the problem's
+
+def _top_group(conn, problem: str) -> int:
+    from Tooling.state import groups as _groups
+    return _groups.ensure_top_group(conn, problem)
+
+
+def _shelf(ws: Path):
+    """A Project whose `_docs/agent/` holds documents of three problems
+    — the flagship shape (46 Erdos problems, one shelf)."""
+    import json as _json
+    from Tooling.state import db as _db
+    from Tooling.state import groups as _groups
+    conn = _db.connect(ws / "t.db")
+    _db.init_schema(conn)
+    gids: "dict[str, int]" = {}
+    for name in ("Erdos.p1", "Erdos.p2", "Erdos.p3", "Erdos.p9"):
+        conn.execute("INSERT INTO problems (name, created_at,"
+                     " bootstrap_done) VALUES (?, ?, 1)", (name, _db.now()))
+        gids[name] = _groups.ensure_top_group(conn, name)
+    conn.commit()
+
+    def _doc(problem: str, name: str, status: str = "accepted") -> None:
+        pd.write(ws, "Erdos", f"agent/{name}", f"# {name} title\n",
+                 area=pd.AREA_AGENT)
+        conn.execute(
+            "INSERT INTO theory_documents (problem, group_id, objective,"
+            " situation, path, status, rounds, verdict_json, created_at)"
+            " VALUES (?, ?, 'o', 's', ?, ?, 2, ?,"
+            " '2026-09-07T12:00:00+00:00')",
+            (problem, gids[problem],
+             f"Problems/Erdos/_docs/agent/{name}", status,
+             _json.dumps({"criteria": {
+                 k: [f"clear: criterion {k} holds"] for k in "1234"}})))
+
+    _doc("Erdos.p1", "g1_20260907-1200_mine.md")
+    _doc("Erdos.p2", "g2_20260907-1201_neighbour.md")
+    _doc("Erdos.p3", "g3_20260907-1202_stranger.md")
+    conn.commit()
+    return conn
+
+
+def test_only_this_problems_documents_are_this_problems_record(
+        ws: Path) -> None:
+    """Nine reports on 2026-09-07 (Strategist / Adversary / Theorist,
+    six problems) said the same thing: `## Notes on this problem` listed
+    documents whose abstracts are about a different Erdos problem
+    entirely, and each seat had to open one to find that out. The shelf
+    is the PROJECT's; `theory_documents.problem` says whose document a
+    document is."""
+    conn = _shelf(ws)
+    lines = _owner_notes(ws, conn=conn)
+    text = "\n".join(lines)
+    own = text.split(_ctx_other_heading())[0]
+    assert "mine.md" in own
+    assert "neighbour.md" not in own and "stranger.md" not in own
+
+    others = text.split(_ctx_other_heading())[1]
+    assert "Erdos.p2 — " in others and "Erdos.p3 — " in others
+    assert "mine.md" not in others
+    # named as what it is, on the line the reader decides from
+    assert "not this problem's record" in _ctx_other_heading()
+
+
+def _ctx_other_heading() -> str:
+    from Tooling.agent import context as _ctx
+    return _ctx.OTHER_PROBLEMS_HEADING
+
+
+def test_the_neighbours_section_is_its_own_top_level_section(
+        ws: Path) -> None:
+    """Not a sub-list under `## Notes on this problem`: everything under
+    that heading must be about this problem, and a `###` would go on
+    being read as one more shelf of the same record."""
+    conn = _shelf(ws)
+    lines = _owner_notes(ws, conn=conn)
+    assert _ctx_other_heading() in lines
+    assert lines.index("## Notes on this problem") < lines.index(
+        _ctx_other_heading())
+
+
+def test_a_document_with_no_row_stays_where_it_is(ws: Path) -> None:
+    """An owner-placed or reviewer-preserved file has no
+    `theory_documents` row, so nothing says it belongs to another
+    problem — and nothing may move it out of this problem's list."""
+    conn = _shelf(ws)
+    pd.write(ws, "Erdos", "agent/unrowed.md", "# no row\n",
+             area=pd.AREA_AGENT)
+    lines = _owner_notes(ws, conn=conn)
+    own = "\n".join(lines).split(_ctx_other_heading())[0]
+    assert "unrowed.md" in own
+
+
+def test_a_neighbours_refused_document_is_counted_not_listed(
+        ws: Path) -> None:
+    """A refused document is its own problem's record of an approach
+    that failed on ITS wall — the refused sub-list's blurb says exactly
+    that — so carrying a neighbour's into this problem's roster is the
+    same misfiling one layer down. Counted, so the shelf is not
+    misrepresented as smaller than it is."""
+    import json as _json
+    conn = _shelf(ws)
+    pd.write(ws, "Erdos", "agent/g2_20260907-1210_refused.md",
+             "# refused\n", area=pd.AREA_AGENT)
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, verdict_json, created_at)"
+        " VALUES ('Erdos.p2', ?, 'o', 's',"
+        " 'Problems/Erdos/_docs/agent/g2_20260907-1210_refused.md',"
+        " 'rejected', 3, ?, '2026-09-07T12:10:00+00:00')",
+        (_top_group(conn, "Erdos.p2"),
+         _json.dumps({"criteria": {"2": ["fired: Lemma 3 is asserted"]}})))
+    conn.commit()
+    text = "\n".join(_owner_notes(ws, conn=conn))
+    assert "refused.md" not in text
+    assert "1 refused document(s) of other problems" in text
+
+
+def test_the_neighbours_list_is_capped_and_says_how_to_see_the_rest(
+        ws: Path) -> None:
+    from Tooling.agent import context as _ctx
+    conn = _shelf(ws)
+    for i in range(_ctx.MAX_OTHER_PROBLEM_DOCS + 4):
+        name = f"g9_20260907-13{i:02d}_bulk{i}.md"
+        pd.write(ws, "Erdos", f"agent/{name}", f"# bulk {i}\n",
+                 area=pd.AREA_AGENT)
+        conn.execute(
+            "INSERT INTO theory_documents (problem, group_id, objective,"
+            " situation, path, status, rounds, created_at)"
+            " VALUES ('Erdos.p9', ?, 'o', 's', ?, 'accepted', 1,"
+            " '2026-09-07T13:00:00+00:00')",
+            (_top_group(conn, "Erdos.p9"),
+             f"Problems/Erdos/_docs/agent/{name}"))
+    conn.commit()
+    text = "\n".join(_owner_notes(ws, conn=conn))
+    others = text.split(_ctx_other_heading())[1]
+    assert others.count("\n- Erdos.") == _ctx.MAX_OTHER_PROBLEM_DOCS
+    assert "not listed" in others
+    assert "Problems/Erdos/_docs/agent" in others
+
+
+def test_no_neighbours_no_section(ws: Path) -> None:
+    """A Project of one problem pays nothing for the split."""
+    import json as _json
+    from Tooling.state import db as _db
+    from Tooling.state import groups as _groups
+    conn = _db.connect(ws / "t.db")
+    _db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+                 " VALUES ('Erdos.p1', ?, 1)", (_db.now(),))
+    gid = _groups.ensure_top_group(conn, "Erdos.p1")
+    pd.write(ws, "Erdos", "agent/g1_20260907-1200_mine.md", "# mine\n",
+             area=pd.AREA_AGENT)
+    conn.execute(
+        "INSERT INTO theory_documents (problem, group_id, objective,"
+        " situation, path, status, rounds, verdict_json, created_at)"
+        " VALUES ('Erdos.p1', ?, 'o', 's',"
+        " 'Problems/Erdos/_docs/agent/g1_20260907-1200_mine.md',"
+        " 'accepted', 1, ?, '2026-09-07T12:00:00+00:00')",
+        (gid, _json.dumps({"criteria": {}})))
+    conn.commit()
+    lines = _owner_notes(ws, conn=conn)
+    assert _ctx_other_heading() not in "\n".join(lines)

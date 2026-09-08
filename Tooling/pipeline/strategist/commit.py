@@ -287,7 +287,8 @@ def _commit_theorize(decision: Decision, conn: sqlite3.Connection, *,
                      group_id: "int | None",
                      batch_id_override: "str | None" = None,
                      step_index: int = 0, batch_size: int = 1,
-                     actor: str = ACTOR_STRATEGIST) -> CommitOutcome:
+                     actor: str = ACTOR_STRATEGIST,
+                     attempts_dir: "Path | None" = None) -> CommitOutcome:
     """File a `Theorize` and dispatch the Theorist that answers it
     (theory_wake_design.md §2-§3).
 
@@ -312,9 +313,18 @@ def _commit_theorize(decision: Decision, conn: sqlite3.Connection, *,
     ts = db.now()
     if group_id is None:
         group_id = _groups.ensure_top_group(conn, problem)
+    # The request is stored as the THEORIST will read it, not as the
+    # Strategist's own document numbered it: a `Context.md line 113` is
+    # a fact about the file in front of the writer and about no other
+    # (`citations`), so it is resolved to the section it named while
+    # that file is still here.
+    from . import citations as _citations
+    asked = _citations.resolve_theory_request(
+        decision.payload,
+        (attempts_dir / "Context.md") if attempts_dir is not None else None)
     row_payload = {
-        "objective": str(decision.payload.get("objective") or ""),
-        "situation": str(decision.payload.get("situation") or ""),
+        "objective": str(asked.get("objective") or ""),
+        "situation": str(asked.get("situation") or ""),
         "step_index": step_index,
         "batch_size": batch_size,
     }
@@ -571,6 +581,7 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      group_id: "int | None" = None,
                      actor: str = ACTOR_STRATEGIST,
                      delivered_batches: "list[str] | None" = None,
+                     attempts_dir: "Path | None" = None,
                      ) -> list[CommitOutcome]:
     """Execute a multi-decision batch in declared order.
 
@@ -594,6 +605,13 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     fires `inject_batch_done` exactly once — when the LAST of the
     Forward / Backward / Builder injects reaches terminal. Each kind
     has its own completion signal (see `_commit_inject_batch`).
+
+    `attempts_dir` is THIS wake's own directory — the one holding the
+    `Context.md` the seat just read. It is here for one reason: a
+    `Theorize` the seat writes is read inside a DIFFERENT document, and
+    a line number of this Context.md means nothing there (see
+    `citations`). Omitted (a human command, a test) the request is
+    stored exactly as written.
 
     `delivered_batches` is the batch roster the wake's Context actually
     carried; the clock bump below may swallow only those and the ones
@@ -645,7 +663,7 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             trigger_kind=trigger_kind, workspace=workspace,
             inject_batch_id=inject_batch_id,
             inject_step_index=idx, inject_batch_size=n_inject,
-            actor=actor, group_id=group_id))
+            actor=actor, group_id=group_id, attempts_dir=attempts_dir))
     # Wake-clock touch — ONE point for the whole batch (task #119).
     # When each per-kind path touched last_strategist_at itself, the
     # early-return paths (Inject / FetchPaper) never
@@ -923,7 +941,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 inject_step_index: int = 0,
                 inject_batch_size: int = 1,
                 actor: str = ACTOR_STRATEGIST,
-                group_id: "int | None" = None) -> CommitOutcome:
+                group_id: "int | None" = None,
+                attempts_dir: "Path | None" = None) -> CommitOutcome:
     """Execute one decision's side effects + INSERT audit row.
 
     Caller must have already passed `verify_decision`. This is the
@@ -963,7 +982,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, group_id=group_id,
             batch_id_override=inject_batch_id, step_index=inject_step_index,
-            batch_size=inject_batch_size, actor=actor)
+            batch_size=inject_batch_size, actor=actor,
+            attempts_dir=attempts_dir)
 
     if k == "CloseGroup":
         return _commit_close_group(

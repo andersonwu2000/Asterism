@@ -1326,7 +1326,11 @@ def test_the_batch_surfaces_name_the_open_theory_request(
         group_id=groups_mod.ensure_top_group(conn, "p"),
         attempts_dir=attempts)
     text = "\n".join(lines)
-    assert "Dispatched, still running" in text
+    # One heading whatever the state (2026-09-07: the state used to be
+    # IN the heading, and the seat sent to `## Completed Inject batches`
+    # by name found no such section) — the state is in the body.
+    assert text.startswith("## Completed Inject batches")
+    assert "dispatched and still running" in text
     companion = (attempts / "BATCHES.md").read_text(encoding="utf-8")
     assert "Theorize — a question for the theory layer" in companion
     assert "**objective** — S such that S implies MAIN" in companion

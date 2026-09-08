@@ -71,6 +71,8 @@ from .outcomes import (
 )
 from .compile import (
     _CATALOG_RECENT_N,
+    STRATEGIST_CONTEXT_SECTIONS,
+    _named_sections_backstop,
     _section_trigger,
     _axiom_certification_note,
     _section_ingest_gate,

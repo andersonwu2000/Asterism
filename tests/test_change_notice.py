@@ -154,10 +154,69 @@ def test_accepted_document_and_proved_brick(tmp_path):
     out = notice.trailer()
     assert ("- theory document accepted: "
             "`Problems/Test/_docs/agent/g691_x.md`") in out
-    assert "- brick proved: `L_shell_closure` (CATALOG.md)" in out
+    # The SLUG (what `inspect decl` resolves) and the proof file (what
+    # `inspect read` resolves) — never the `L_`-prefixed file stem, and
+    # no CATALOG.md, because this spawn has no attempts dir with one.
+    assert ("- brick proved: `shell_closure` — "
+            "`Problems/Test/p1/proofs/L_shell_closure.lean`") in out
+    assert "CATALOG.md" not in out
     # scoped to this problem, and to what is settled
     assert "g692" not in out and "Other" not in out and "open_one" not in out
     assert notice.trailer() == ""
+
+
+def _land_brick(ws, *, slug="shell_closure", gid=10):
+    conn = sqlite3.connect(ws / "asterism.db")
+    conn.execute(
+        "INSERT INTO goals VALUES (?, ?, ?, ?, 'proved')",
+        (gid, PROBLEM, slug, f"Problems/Test/p1/proofs/L_{slug}.lean"))
+    conn.commit()
+    conn.close()
+
+
+def test_the_brick_line_resolves_by_decl_and_by_read(tmp_path):
+    """The 2026-09-07 fleet's most-filed line: eight Theorists were sent
+    to `L_<slug>` (which `decl` cannot resolve — the lookup reads
+    `goals.slug`, and the `L_` is a filename convention) and to a
+    CATALOG.md a fresh pure-NL problem never writes."""
+    ws = _workspace(tmp_path)
+    notice = _notice(ws)
+    _land_brick(ws)
+    out = notice.trailer()
+    # what `inspect({"decl": ...})` matches, verbatim
+    assert "`shell_closure`" in out
+    assert "L_shell_closure`" not in out
+    # what `inspect({"read": ...})` resolves, and it is on disk
+    assert "`Problems/Test/p1/proofs/L_shell_closure.lean`" in out
+
+
+def test_a_root_brick_keeps_the_name_its_wrapper_declares(tmp_path):
+    ws = _workspace(tmp_path)
+    notice = _notice(ws)
+    conn = sqlite3.connect(ws / "asterism.db")
+    conn.execute("INSERT INTO goals VALUES (7, ?, 'main',"
+                 " 'Problems/Test/p1/Root.lean', 'proved')", (PROBLEM,))
+    conn.commit()
+    conn.close()
+    out = notice.trailer()
+    assert ("- brick proved: `main` — `Problems/Test/p1/Root.lean`") in out
+
+
+def test_catalog_named_only_when_one_is_beside_the_reader(tmp_path):
+    ws = _workspace(tmp_path)
+    attempts = ws / ".attempts" / "1234"
+    attempts.mkdir(parents=True)
+    notice = change_notice.ChangeNotice(ws, PROBLEM, catalog_dir=attempts)
+    _land_brick(ws)
+    # No companion yet — a fresh problem writes none, so nothing points
+    # the reader at one.
+    assert "CATALOG.md" not in notice.trailer()
+
+    _write(attempts / "CATALOG.md", "# Proved catalog\n")
+    _land_brick(ws, slug="second_one", gid=11)
+    out = notice.trailer()
+    assert "- brick proved: `second_one`" in out
+    assert f"(also in `{(attempts / 'CATALOG.md').as_posix()}`)" in out
 
 
 def test_missing_tables_are_not_an_error(tmp_path):

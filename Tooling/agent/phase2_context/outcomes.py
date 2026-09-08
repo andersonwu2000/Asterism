@@ -569,16 +569,26 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         if in_flight or other_n or parked or owner_lines:
             _write_batches_companion(conn, attempts_dir, [], {},
                                      lambda r: 0, open_steps=open_steps)
-            head = ("## Dispatched, still running" if in_flight or other_n
-                    else "## Dispatched, now parked" if parked
-                    else "## Open lines")
-            body = ([] if not (in_flight or other_n) else
-                    ["Not finished, and therefore not below: "
+            # ONE HEADING, whatever the state. The state used to be IN
+            # the heading (`## Dispatched, still running` / `## …, now
+            # parked` / `## Open lines`), and `inject_batch_done.md`
+            # sends the seat to `## Completed Inject batches` by name:
+            # the seat looked, found "20 sections with no Completed
+            # Inject batches", and reported the Context as compiled
+            # wrong (2026-09-07, Erdos.p282 / p1093). The state is a
+            # fact about the BODY, so it goes in the body — see
+            # `phase2_context.compile.STRATEGIST_CONTEXT_SECTIONS`.
+            state = ("none completed since your last look; dispatched "
+                     "and still running" if in_flight or other_n
+                     else "none completed; dispatched and now parked"
+                     if parked else "none completed; lines open")
+            body = ([f"({state}.)", ""] if not (in_flight or other_n) else
+                    [f"({state}.) Not finished, and therefore not below: "
                      + (", ".join(in_flight) or "(none of yours)")
                      + others_note
                      + ". Their outcomes reach you on the batch-done "
                        "wake — do not re-dispatch them." + pointer, ""])
-            return ([head, ""] + body
+            return (["## Completed Inject batches", ""] + body
                     + ([parked_line, ""] if parked_line else [])
                     + ([*owner_lines, ""] if owner_lines else [])
                     + tail_lines)
@@ -1109,7 +1119,16 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         # 'stall' rides along (v43 identity split): T4 rescues used to
         # BE inject_batch_done wakes, and a stalled group's pending
         # promises are often exactly what the rescue must adjudicate.
-        return []
+        #
+        # The scoping stands; the SILENCE does not. The heading renders
+        # and says why it is empty — never "(none)", which on a wake
+        # that did not look would be a claim this section has not
+        # earned. Same rule as the empty-queue branch below.
+        return ["## Pending reopen-promises", "",
+                f"(not evaluated on a `{trigger_kind}` wake — a promise "
+                "is surfaced when the batch it named lands, on the "
+                "batch-done and stall wakes. Nothing here says there "
+                "are none.)", ""]
 
     # Find shelved goals whose PROMISE-BEARING ConfirmShelve was
     # committed in a batch whose every sibling Inject row has `outcome
