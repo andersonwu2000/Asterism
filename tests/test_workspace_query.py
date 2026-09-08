@@ -278,6 +278,59 @@ def test_decl_scope_comes_from_the_declared_problem_not_the_cwd(
     assert "no declaration named" in other
 
 
+def test_decl_answers_this_problem_first_and_labels_anything_else(
+        ws: Path, monkeypatch) -> None:
+    """`decl S` on p373 came back as `a_closed_form` (Minif2f) and
+    `a_inv_left_inverse` (Geometry) three times on 2026-09-07/08 — the
+    `s` inside `closed` and `inverse`, because SQLite's `LIKE` is
+    case-insensitive over ASCII and the fallback fired on "nothing
+    local" rather than on "nothing local matches this name".
+
+    Four tiers now, first non-empty wins: this problem exact, this
+    problem substring, any problem exact, any problem substring — and
+    an answer that left the caller's problem SAYS so, because on the
+    line below it looks exactly like a local one."""
+    from Tooling.llm.spawn_guard import PROBLEM_ENV
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    seeded = {"Combinatorics.union_closed": ["uc_deficit", "uc_bound"],
+              "Minif2f.amc12a": ["a_closed_form"],
+              "Geometry.loops": ["a_inv_left_inverse"]}
+    for prob, slugs in seeded.items():
+        conn.execute(
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)", (prob, _db.now()))
+        for slug in slugs:
+            _db.insert_goal(
+                conn, problem=prob, slug=slug,
+                lean_path=f"Problems/{prob.replace('.', '/')}/"
+                          f"proofs/L_{slug}.lean",
+                statement="True", origin="root")
+    conn.commit()
+    conn.close()
+    judge = ws / ".attempts" / "pid9" / "adversary" / "r1"
+    judge.mkdir(parents=True)
+    monkeypatch.setenv(PROBLEM_ENV, "Combinatorics.union_closed")
+
+    # A one-letter CAPITAL is not a wildcard any more: nothing matches,
+    # and the miss names the door that answers a `Defs.lean` name.
+    miss = wq.run_queries([{"decl": "S"}], cwd=judge)
+    assert "a_closed_form" not in miss and "a_inv_left_inverse" not in miss
+    assert "no declaration named" in miss
+    assert '"grep"' in miss
+
+    # This problem's substring answers alone — never beside another
+    # problem's, which is what the single OR-query used to allow.
+    local = wq.run_queries([{"decl": "deficit"}], cwd=judge)
+    assert "uc_deficit" in local
+    assert "OTHER problems" not in local
+
+    # An exact name this problem does not have still answers, LABELLED.
+    away = wq.run_queries([{"decl": "a_closed_form"}], cwd=judge)
+    assert "a_closed_form" in away
+    assert "OTHER problems" in away and "Minif2f.amc12a" in away
+
+
 def _seed_decl(ws: Path, here: Path, *, slug: str, sig_lines: int) -> None:
     """A minimal `asterism.db` + on-disk stub carrying one goal, so
     `_q_decl` resolves `slug` to a REAL full signature the way

@@ -194,10 +194,15 @@ def seeded(tmp_path: Path) -> "tuple[Path, int]":
         encoding="utf-8")
     conn = _db.connect(tmp_path / "asterism.db")
     _db.init_schema(conn)
+    # Dotted `Domain.name`, the way the run stores it — a bare
+    # `union_closed` here disagrees with the name `decl` derives from
+    # the cwd, and the scoped tier this fixture is meant to exercise
+    # would silently answer through the cross-problem fallback.
     conn.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
-                 " VALUES (?, ?, 1)", ("union_closed", _db.now()))
+                 " VALUES (?, ?, 1)",
+                 ("Combinatorics.union_closed", _db.now()))
     gid = _db.insert_goal(
-        conn, problem="union_closed", slug="uc_four",
+        conn, problem="Combinatorics.union_closed", slug="uc_four",
         lean_path="Problems/Combinatorics/union_closed/proofs/L_uc_four.lean",
         statement="True", origin="root")
     conn.commit()
