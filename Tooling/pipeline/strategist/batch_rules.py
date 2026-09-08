@@ -559,7 +559,7 @@ def _shape_line(d: "Decision") -> str:
     if d.kind == "Inject":
         return (f"Inject(target_goal_id={t}, brick=…)" if t is not None
                 else "Inject(brick=…)  ← a mint, no target")
-    return f"{d.kind}({t})" if t is not None else d.kind
+    return f"{d.kind}(target_goal_id={t})" if t is not None else d.kind
 
 
 def compose(decisions: "list[Decision]", refusals: "list[CrossRefusal]",

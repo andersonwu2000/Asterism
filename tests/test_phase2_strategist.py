@@ -2325,7 +2325,7 @@ def test_two_batch_rules_refusing_at_once_name_one_shape_that_fits_both(
     assert "descendant" in err.lower()          # the cascade rule
     assert "review not discharged" in err       # the discharge rule
     # and one shape that satisfies both
-    assert f"DROP ConfirmShelve({anc})" in err
+    assert f"DROP ConfirmShelve(target_goal_id={anc})" in err
     assert f"ADD  Inject(target_goal_id={anc}" in err
     assert (f"ADD  Inject(target_goal_id={pa}" in err
             or f"ADD  Inject(target_goal_id={pb}" in err)
