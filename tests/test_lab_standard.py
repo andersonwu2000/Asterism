@@ -368,6 +368,69 @@ def test_a_daemon_item_is_scored_on_whether_the_root_actually_landed():
     assert not std.score("daemon", exp, old)["ok"]
 
 
+def _fake_db(*, root_status: str, problem_state: str = "active"):
+    """A DB with one problem and its root goal, nothing else. The real
+    schema (not two hand-cut tables): the check reads two columns whose
+    CHECK constraints are the thing under test."""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at, state)"
+                 " VALUES ('Lab.pp2', '2026-09-08T00:00:00Z', ?)",
+                 (problem_state,))
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, origin,"
+        " status, created_at, updated_at) VALUES ('Lab.pp2', 'main',"
+        " 'Problems/Lab/pp2/proofs/main.lean', 'False', 'root', ?,"
+        " '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z')", (root_status,))
+    conn.commit()
+    return conn
+
+
+def test_a_root_settled_by_a_counterexample_reads_as_disproved():
+    """The disprove road never reaches `proved`, so the end-state check
+    an end-to-end item on a FALSE charter is scored by has to be its own
+    question. Either half answers yes: the goal flips to `disproved` the
+    moment the kernel probe certifies, and the Ingest that closes the
+    problem as `refuted` is a LATER Strategist wake a `wall_sec` stop is
+    free to cut off."""
+    assert driver_mod.root_disproved(_fake_db(root_status="disproved"),
+                                     "Lab.pp2") is True
+    assert driver_mod.root_disproved(
+        _fake_db(root_status="open", problem_state="refuted"),
+        "Lab.pp2") is True
+    # and neither half is satisfied by a live run, nor by a PROVED root
+    # (which is `root_proved`'s answer, and the opposite result)
+    assert driver_mod.root_disproved(_fake_db(root_status="open"),
+                                     "Lab.pp2") is False
+    assert driver_mod.root_disproved(_fake_db(root_status="proved"),
+                                     "Lab.pp2") is False
+    assert driver_mod.root_disproved(_fake_db(root_status="open"),
+                                     "Lab.other") is False
+
+
+def test_a_daemon_item_may_expect_the_root_to_be_settled_the_other_way():
+    """`root_proved: false` would pass a run that did nothing at all.
+    `root_disproved` is the check that says the run SETTLED it."""
+    settled = {"kind": "daemon", "outcome": "success", "wall_sec": 900.0,
+               "driver_result": {"produced": {"proved": 1},
+                                 "root_proved": False,
+                                 "root_disproved": True}}
+    open_ = {"kind": "daemon", "outcome": "success", "wall_sec": 900.0,
+             "driver_result": {"produced": {"proved": 0},
+                               "root_proved": False,
+                               "root_disproved": False}}
+    exp = {"outcome": "success", "root_disproved": True}
+    assert std.score("daemon", exp, settled)["ok"]
+    got = std.score("daemon", exp, open_)
+    assert not got["ok"] and got["checks"]["root_disproved"]["got"] is False
+    # a record older than the key cannot claim it: absent = False
+    old = {"kind": "daemon", "outcome": "success", "wall_sec": 1.0,
+           "driver_result": {"produced": {"proved": 1}}}
+    assert not std.score("daemon", exp, old)["ok"]
+
+
 def test_a_provider_probe_is_scored_on_the_tools_its_spawn_actually_called(
         tmp_path):
     """Not on the brick's comment lines — those are a courtesy to the

@@ -996,6 +996,27 @@ def root_proved(conn, problem: str) -> bool:
     return row is not None and str(row[0]) == "proved"
 
 
+def root_disproved(conn, problem: str) -> bool:
+    """Did the scope problem's ROOT goal end SETTLED THE OTHER WAY?
+
+    The mirror of `root_proved`, and the same kind of claim: a root
+    settled either way is a finished problem. `disproved` is what the
+    kernel disproof gate writes on the goal (`pipeline/_disprove`);
+    `refuted` is what the Strategist's `Ingest` then writes on the
+    problem (`strategist/commit`, owner ruling 2026-08-30). EITHER
+    answers yes, because the run may legitimately stop between the two:
+    the goal flips the moment the probe certifies, and the Ingest that
+    closes the problem is a later wake a `wall_sec` stop can cut off."""
+    row = conn.execute(
+        "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
+        " ORDER BY id LIMIT 1", (problem,)).fetchone()
+    if row is not None and str(row[0]) == "disproved":
+        return True
+    row = conn.execute("SELECT state FROM problems WHERE name = ?",
+                       (problem,)).fetchone()
+    return row is not None and str(row[0]) == "refuted"
+
+
 def stop_reached(conn, problem: str, stop: dict, *, baseline: dict,
                  elapsed: float) -> "str | None":
     """Which declared condition has fired, or None.
@@ -1071,6 +1092,7 @@ def run_daemon(spec: dict, ws: Path, out: Path) -> dict:
     try:
         after = baseline_counts(conn, problem)
         rooted = root_proved(conn, problem)
+        refuted = root_disproved(conn, problem)
         usage = _usage_since(conn, t0_iso=started_at)
     finally:
         conn.close()
@@ -1078,7 +1100,7 @@ def run_daemon(spec: dict, ws: Path, out: Path) -> dict:
             "gateway_port": port, "scope": scope, "once": once,
             "stop_fired": fired, "baseline": base, "after": after,
             "produced": {k: after[k] - base[k] for k in base},
-            "root_proved": rooted,
+            "root_proved": rooted, "root_disproved": refuted,
             "usage": usage, "pipeline_ids": [],
             "artefacts": ["daemon.log"]}
 

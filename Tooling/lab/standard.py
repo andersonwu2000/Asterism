@@ -79,7 +79,8 @@ _ITEM_KEYS = ("kind", "expected", "notes") + _INHERITED
 EXPECTED_KEYS: "dict[str, tuple[str, ...]]" = {
     "judge_round": ("verdict", "parsed", "must_fire", "must_not_fire"),
     "daemon": ("outcome", "proved_at_least", "root_proved",
-               "revisions_at_least", "wall_sec_at_most", "tools_touched"),
+               "root_disproved", "revisions_at_least", "wall_sec_at_most",
+               "tools_touched"),
     "theory_wake": ("outcome", "document", "rounds_at_most"),
     # A trap on the THEORY reviewer's own rubric. Same three judge keys,
     # read through `theorist/verdict` rather than the batch judge's
@@ -437,6 +438,16 @@ def _score_daemon(expected: dict, record: dict, result: dict) -> dict:
         checks["root_proved"] = _check(got == bool(expected["root_proved"]),
                                        got=got,
                                        want=bool(expected["root_proved"]))
+    if "root_disproved" in expected:
+        # The SAME end-state question asked the other way. A root that a
+        # kernel-certified counterexample settled is a landed root, and
+        # `root_proved` can never say so — the disprove road ends in
+        # `disproved` / `refuted`, not `proved`. Absent from an older
+        # record reads as False, as above.
+        got = bool(result.get("root_disproved"))
+        checks["root_disproved"] = _check(
+            got == bool(expected["root_disproved"]), got=got,
+            want=bool(expected["root_disproved"]))
     if "wall_sec_at_most" in expected:
         got = float(record.get("wall_sec") or 0.0)
         checks["wall_sec_at_most"] = _check(got <= float(
