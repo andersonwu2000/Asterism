@@ -502,22 +502,80 @@ def _resolution_note(spec: str, cwd: Path) -> str:
     return f" (relative paths resolve against {cwd})"
 
 
-def _nearest_existing(p: Path, cwd: "Path | None" = None) -> str:
+def _dir_listing(d: Path) -> "list[str]":
+    """Up to 20 entry names of `d`, directories marked with a slash."""
+    try:
+        return sorted(x.name + ("/" if x.is_dir() else "")
+                      for x in d.iterdir())[:20]
+    except OSError:
+        return []
+
+
+def _nearest_dir_note(p: Path) -> str:
+    """The deepest existing ancestor of `p`, and what is in it."""
+    for d in p.parents:
+        if d.is_dir():
+            names = _dir_listing(d)
+            listing = ", ".join(names) if names else "(empty)"
+            return f"nearest existing directory is {d} — it holds: {listing}"
+    return "no existing parent directory"
+
+
+def _may_prescribe(spec: "str | None", p: Path, found: Path) -> bool:
+    """Whether a same-named file found elsewhere may be handed over as
+    THE answer ("use that path"), rather than merely named.
+
+    Yes in two cases, and they are the two the basename search was built
+    for:
+
+      * the spec named no directory at all (`CATALOG.md`) — it asked
+        "where is this file", and anywhere is where it is;
+      * the spec's directories are a suffix of the found path, so the
+        hit is under exactly what was asked for;
+      * the directory the spec named does not EXIST — a mistyped
+        `prooofs/L_a.lean` is one document, misspelled, and the file of
+        that name is what was meant (2026-08-15).
+
+    No when the directory the spec named is real and the file simply is
+    not in it. Then a same-named file under other directories is a
+    different document: a reviewer asked for
+    `…/54c1fb01…/review/r2/report.md` and was told, imperatively, "but a
+    file of that name is at …/4fea01b9…/review/r1/report.md — use that
+    path". Another attempt, another round; every segment that identified
+    the document had been dropped by the basename search, and the answer
+    was phrased as an instruction (2026-09-08 field reading).
+    """
+    if spec is None:
+        return True
+    want = [s for s in Path(str(spec).replace("\\", "/")).parts
+            if s not in (".", "/", "")]
+    if len(want) <= 1:
+        return True
+    if list(found.parts)[-len(want):] == want:
+        return True
+    try:
+        return not p.parent.is_dir()
+    except OSError:
+        return False
+
+
+def _nearest_existing(p: Path, cwd: "Path | None" = None,
+                      spec: "str | None" = None) -> str:
     """What a wrong path costs should be nothing.
 
     Before this, a mistyped path cost a whole round-trip: the agent got
     "no such file" and spent its next turn on `ls` to find out what was
-    actually there. Answer both at once."""
+    actually there. Answer both at once.
+
+    `spec` is the path AS TYPED, and it is what decides whether a
+    same-named file found elsewhere may be handed over as the answer —
+    see `_asked_for_this_place`."""
     if p.is_dir():
         # Reading a directory as a file used to answer with the PARENT
         # listing, so telling "empty dir" from "wrong path" cost an
         # extra probe (feedback, 2026-08-25). The path exists — list
         # its own contents.
-        try:
-            names = sorted(x.name + ("/" if x.is_dir() else "")
-                           for x in p.iterdir())[:20]
-        except OSError:
-            names = []
+        names = _dir_listing(p)
         if not names:
             # "it holds: (empty)" beside a resolution note read as "your
             # path was re-pointed somewhere empty". Say the one fact
@@ -529,17 +587,14 @@ def _nearest_existing(p: Path, cwd: "Path | None" = None) -> str:
     if cwd is not None:
         found = _find_by_basename(p.name, cwd)
         if found is not None:
-            return f"but a file of that name is at {found} — use that path"
-    for d in p.parents:
-        if d.is_dir():
-            try:
-                names = sorted(x.name + ("/" if x.is_dir() else "")
-                               for x in d.iterdir())[:20]
-            except OSError:
-                names = []
-            listing = ", ".join(names) if names else "(empty)"
-            return f"nearest existing directory is {d} — it holds: {listing}"
-    return "no existing parent directory"
+            if _may_prescribe(spec, p, found):
+                return f"but a file of that name is at {found} — use that path"
+            # Named, never prescribed: the reader asked about one
+            # attempt / one round and this is another one's document.
+            return (f"a same-named file exists elsewhere ({found}) but it "
+                    f"is a different attempt/round — cite it only if you "
+                    f"mean that one; {_nearest_dir_note(p)}")
+    return _nearest_dir_note(p)
 
 
 def _read_text(p: Path) -> str:
@@ -664,7 +719,7 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         if isinstance(grant, str):
             return [grant]
         return [f"nothing to search at {where!r}; "
-                f"{_nearest_existing(probe, cwd)}"
+                f"{_nearest_existing(probe, cwd, where)}"
                 f"{_resolution_note(where, cwd)}"]
     # `after: "<file>:<line>"` resumes a capped search past its last
     # delivered hit — the old truncation note said only "narrow", which
@@ -852,7 +907,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
                f"BRIEF.md carry what you are meant to know")
         return [NOT_CONTENT + msg]
     if not p.is_file():
-        msg = f"no file at {p}; {_nearest_existing(p, cwd)}"
+        msg = f"no file at {p}; {_nearest_existing(p, cwd, spec)}"
         return [NOT_CONTENT + msg]
     lines = _read_text(p).splitlines()
     secs = _sections(lines)
