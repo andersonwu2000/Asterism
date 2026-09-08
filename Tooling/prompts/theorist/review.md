@@ -23,7 +23,7 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
 
 ## How to judge
 
-1. **Worth**: the document must advance on the present state — something the record, the notes and the literature do not have — and argue how it stands to the MAIN claim (implies it, is equivalent to it, reduces it to a smaller claim, proposes a stronger one, refutes it, and so on). Answering a better objective than the one posed is allowed; the reason must be written. Restating the record, paraphrasing the notes, a wrong direction, or a relation resting on something the record has not proved and the document does not prove, is not allowed.
+1. **Worth**: the document must advance on the present state — something the record, the notes and the literature do not have — and argue how it stands to the MAIN claim (implies it, is equivalent to it, reduces it to a smaller claim, proposes a stronger one, refutes it, and so on; a route-closure stands to the claim through the statement it leaves standing — without it, it is a lead). Answering a better objective than the one posed is allowed; the reason must be written. Restating the record, paraphrasing the notes, a wrong direction, or a relation resting on something the record has not proved and the document does not prove, is not allowed.
 2. **Rigour**: every statement this document adds must have a complete proof — **re-derive it**, and reproduce the computations it leans on. A result cited from an accepted document or the record is checked against its source (it exists there, and says what is claimed), not re-derived. A gap papered over, a check you cannot reproduce, or a citation that does not say what is claimed, is not allowed.
 3. **Challenging the unknown**: the report must attack the open statement itself, and it must say which new ideas it tried. Judge on substance, not success. Attempts that are only announced are not allowed.
 <!-- #if more_rounds -->
@@ -35,7 +35,7 @@ Every file below is INLINED VERBATIM under `## Dossier (inline)` — read it the
 4. **Leads**: every lead carries its reason and the test it survived (a case analysis, a construction, a computation), and says what a counterexample would have to look like. A conjecture with no reason and no test, or a next step that is a wish, is not allowed.
 5. **Target**: question the objective as posed. If a more essential shape exists — the posed statement a case or a proxy of it — and this document's results reach it, fire: name the shape and which results carry over (criterion 1 permits answering a better objective). If they do not reach it, write the shape in `reservations` for the Strategist. A question the request has already answered is not re-fired without new grounds.
 
-Failure modes — a document that delivers these as its advance is refused through criterion 1; their legitimate place is `## Leads` or `## Load-bearing work`:
+Failure modes — judged on the Abstract's claimed advance, from round one; a document that delivers these as its advance is refused through criterion 1; their legitimate place is `## Leads` or `## Load-bearing work`:
 - excluding the next size / parameter / support bound without proving the remaining class empty;
 - optimizing a finite certificate without controlling every admissible object;
 - adding restrictions to a hypothetical counterexample with no route to a contradiction.
