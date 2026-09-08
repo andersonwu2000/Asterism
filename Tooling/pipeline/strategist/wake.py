@@ -728,6 +728,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 decisions, conn, problem=problem, tick=tick,
                 trigger_kind=trigger_kind, workspace=workspace,
                 group_id=group_id, delivered_batches=delivered,
+                attempts_dir=attempts_dir,
             )
         except Exception as e:
             return PipelineResult(
@@ -751,6 +752,9 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             decisions, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, workspace=workspace,
             group_id=group_id, delivered_batches=delivered,
+            # This wake's own Context.md is what a `Theorize`'s line
+            # references were written against — see `citations`.
+            attempts_dir=attempts_dir,
         )
     except Exception as e:
         # Commit must succeed once verify passed; any error here is
