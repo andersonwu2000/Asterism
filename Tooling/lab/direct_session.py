@@ -58,7 +58,11 @@ ARMS = ("lsp", "prod", "shell")
 
 #: The `shell` arm's whole world. One pattern, no trailing free-form
 #: command: the agent checks its own file and can do nothing else.
-SHELL_ALLOW = ("Bash(lake env lean *)",)
+def shell_allow_for(workspace: Path) -> "tuple[str, ...]":
+    """The one grant. `lake -d <workspace>` because the spawn's cwd is the
+    problem dir, where Lake finds no lakefile and Mathlib is not on the
+    search path (measured: the plain form failed every check)."""
+    return (f"Bash(lake -d {workspace.as_posix()} env lean *)",)
 
 #: Wall for ONE cold `lake env lean` verdict.
 LAKE_TIMEOUT_SEC = 600
@@ -325,12 +329,13 @@ _ARM_PROD_EXTRA = (
 
 _ARM_SHELL = (
     "Your only way to check Lean is the shell command "
-    "`lake env lean {patch}` (absolute path; run it as given). Read the "
+    "`lake -d {ws} env lean {patch}` (absolute paths; run it exactly as "
+    "given, alone, no cd and no pipes). Read the "
     "compiler output and fix the file with your file editing tools. "
     "There is no MCP Lean tool.")
 
 
-def build_prompt(arm: str, *, attempts: Path, problem: str,
+def build_prompt(arm: str, *, attempts: Path, problem: str, workspace: Path,
                  defs_text: str, paper_text: str) -> str:
     """The arm's prompt: one common header, one arm-specific block."""
     patch = (attempts / "patch.lean").as_posix()
@@ -340,7 +345,7 @@ def build_prompt(arm: str, *, attempts: Path, problem: str,
     elif arm == "prod":
         arm_block = _ARM_LSP + "\n\n" + _ARM_PROD_EXTRA.format(attempts=att)
     elif arm == "shell":
-        arm_block = _ARM_SHELL.format(patch=patch)
+        arm_block = _ARM_SHELL.format(patch=patch, ws=workspace.as_posix())
     else:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
     return _HEADER.format(
@@ -462,12 +467,12 @@ def run_rep(*, arm: str, rep: int, workspace: Path, problem: str,
     pid = f"direct_{arm}_r{rep}_{uuid.uuid4().hex[:8]}"
     attempts = rt.attempts_dir_for(workspace, pid)
     (attempts / "patch.lean").write_text(root_text, encoding="utf-8")
-    prompt = build_prompt(arm, attempts=attempts, problem=problem,
+    prompt = build_prompt(arm, attempts=attempts, problem=problem, workspace=workspace,
                           defs_text=defs_text, paper_text=paper_text)
     prompt_path = attempts / "direct_prompt.md"
     prompt_path.write_text(prompt, encoding="utf-8")
     problem_dir = db.problem_dir(workspace, problem)
-    shell_allow = SHELL_ALLOW if arm == "shell" else ()
+    shell_allow = shell_allow_for(workspace) if arm == "shell" else ()
 
     if dry_run:
         _dry_run_report(arm, pid, attempts, prompt_path, prompt,
