@@ -507,3 +507,101 @@ def test_collect_sibling_stubs_transitive(tmp_path):
     content = "theorem s1 : True := a.elim\n"
     got = gateway._collect_referenced_sibling_stubs(att, content)
     assert {s for s, _ in got} == {"a", "b"}
+
+
+# ---------------------------------------------------------------------
+# `direct` sessions (the raw arm of the direct-session experiment): the
+# gateway's Lean surface without the framework's commit contract. The
+# problem is not in the DB at all, so every mirror that reads a goal row
+# would be asking about rows that do not exist — and `commit_header` /
+# `parity` describe a commit this session will never make.
+# ---------------------------------------------------------------------
+
+#: Two declarations in one file, the first camelCase, no leading `--`
+#: block: what the `lsp` arm is explicitly allowed to write, and what
+#: the production `Backward` contract rejects.
+_MULTI_DECL = (
+    "theorem helperLemma : True := trivial\n"
+    "\n"
+    "theorem main : True := by\n"
+    "  exact helperLemma\n"
+)
+
+
+def _direct_validate(monkeypatch, tmp_path, kind):
+    """Run `validate_file` once on a session of `kind` over `_MULTI_DECL`."""
+    import asyncio
+    import json
+
+    from Tooling.lsp import gateway as lsp_gateway
+    from tests.test_lsp_gateway import _DiagBackend, _setup_validate_session
+    (tmp_path / "Problems" / "p").mkdir(parents=True)
+    (tmp_path / "x.lean").write_text(_MULTI_DECL, encoding="utf-8")
+    ctx = _setup_validate_session(monkeypatch, tmp_path, _DiagBackend(diags=[]))
+    lsp_gateway._state.sessions["tok-A"].kind = kind
+    try:
+        return json.loads(asyncio.run(lsp_gateway.validate_file()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+
+
+def test_direct_session_validate_carries_no_submission_mirror(
+        monkeypatch, tmp_path):
+    out = _direct_validate(monkeypatch, tmp_path, "direct")
+    assert "commit_will_reject" not in out
+    assert "commit_header" not in out
+    assert "parity" not in out
+    # Only the native_decide axiom mirror may survive: it is a statement
+    # about the Lean term, not about a commit.
+    assert set(out.get("submission") or {}) <= {"axioms"}
+
+
+def test_backward_session_still_reports_the_decl_head_mirror(
+        monkeypatch, tmp_path):
+    """Control for the test above: the mirror is switched off for the
+    `direct` kind only, never globally."""
+    out = _direct_validate(monkeypatch, tmp_path, "Backward")
+    assert out["submission"]["decl_head"]["ok"] is False
+    assert "decl_head" in out["commit_will_reject"]
+
+
+class _JsonRequest:
+    """The one method `/register` uses off a starlette Request."""
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def json(self) -> dict:
+        return self._payload
+
+
+def test_direct_register_takes_no_change_notice_baseline(
+        monkeypatch, tmp_path):
+    """`change_notice` baselines a spawn against the problem's DB rows.
+    A `direct` session's problem has none — it was never `init`ed — so
+    the baseline is a DB open for a question with no answer."""
+    import asyncio
+
+    from Tooling.lsp import gateway as gw
+
+    def _boom(*a, **kw):
+        raise AssertionError(
+            "change_notice.for_spawn must not run for a direct session")
+
+    monkeypatch.setattr(gw._change_notice, "for_spawn", _boom)
+    monkeypatch.setattr(gw, "_register_session_internal",
+                        lambda **kw: ("tok-direct", None))
+    body = {"pipeline_id": "direct_lsp_r1",
+            "target_path": str(tmp_path / "patch.lean"),
+            "problem": "Combinatorics.single_root_direct",
+            "workspace": str(tmp_path), "kind": "direct"}
+    resp = asyncio.run(gw.register(_JsonRequest(body)))
+    assert resp.status_code == 200
+
+    # Control: a production kind still takes its baseline.
+    seen: list = []
+    monkeypatch.setattr(gw._change_notice, "for_spawn",
+                        lambda tok, **kw: seen.append(kw.get("problem")))
+    resp = asyncio.run(gw.register(_JsonRequest({**body, "kind": "Backward"})))
+    assert resp.status_code == 200
+    assert seen == ["Combinatorics.single_root_direct"]

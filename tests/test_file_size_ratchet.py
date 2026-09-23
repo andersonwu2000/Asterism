@@ -676,7 +676,7 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/rpc.py": 950,  # 2026-08-29 wall (CPU-second meter) + native_decide gate; SPLIT before the next bump (gates/wall -> own module)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/gates.py": 540,  # +46 2026-09-07 the locked-signature mirror learns the `-- decline: disprove` road (six pipelines reverted a correct negation on its false warning); it belongs in the mirror it corrects, not in a tenth module  # 2026-08-30 ancestor-cycle refusal at the editing tools
-    "Tooling/lsp/gateway/verify.py": 883,  # +3 2026-09-05: the inlined stub texts are collected once and shared with parity  # +30 2026-08-31: #5 conditional headline hoist
+    "Tooling/lsp/gateway/verify.py": 910,  # +27 2026-09-23: the commit-contract half of validate_file becomes `_commit_mirror`, so the raw `direct` kind skips it in one branch  # +3 2026-09-05: the inlined stub texts are collected once and shared with parity  # +30 2026-08-31: #5 conditional headline hoist
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
     # `Tooling/core/cli.py` (3,307 lines, no prior watermark here) split
     # move-only into `Tooling/core/cli/` by command domain (task A3): the

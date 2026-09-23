@@ -1792,3 +1792,62 @@ def test_allowed_tools_renders_extra_read_dirs(tmp_path) -> None:
         kind="adversary", prompt_path=proj / "prompt.md",
         problem_dir=proj, attempts_dir=proj, timeout_sec=60)
     assert "proofs" not in claude_cli._compose_allowed_tools(req3)
+
+
+# ---------------------------------------------------------------------
+# `shell_allow` — the ONE seat that gets a shell back, named pattern by
+# pattern. The blanket `"Bash"` deny (2026-08-10) is what closes the
+# shell; `--allowed-tools` alone never did, so opening one command means
+# lifting the deny AND naming the pattern.
+# ---------------------------------------------------------------------
+
+def _disallowed_tools(cmd: list) -> list:
+    """The values after `--disallowedTools`, up to the next flag."""
+    i = cmd.index("--disallowedTools") + 1
+    out: list = []
+    while i < len(cmd) and not str(cmd[i]).startswith("--"):
+        out.append(cmd[i])
+        i += 1
+    return out
+
+
+def test_shell_allow_lifts_the_bash_deny_and_names_the_pattern(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="formalizer", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60,
+        shell_allow=("Bash(lake env lean *)",)))
+    cmd = captured[0]
+    allowed = cmd[cmd.index("--allowed-tools") + 1]
+    assert "Bash(lake env lean *)" in allowed, allowed
+    assert "Bash" not in _disallowed_tools(cmd), _disallowed_tools(cmd)
+
+
+def test_default_request_keeps_the_bash_deny(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: an ordinary spawn's argv is untouched."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="formalizer", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60))
+    cmd = captured[0]
+    assert "Bash" in _disallowed_tools(cmd), _disallowed_tools(cmd)

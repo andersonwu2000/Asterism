@@ -233,7 +233,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               usage_problem: str | None = None,
               usage_pipeline_id: str | None = None,
               prompt_flags: "dict[str, bool] | None" = None,
-              extra_read_dirs: "tuple[Path, ...] | None" = None) -> int:
+              extra_read_dirs: "tuple[Path, ...] | None" = None,
+              shell_allow: "tuple[str, ...]" = ()) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind: `ASTERISM_<KIND>_PROVIDER` →
@@ -267,6 +268,10 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     (cold), skips the watchdog (these are short rescue/postmortem
     replacements). Pair with `timeout_sec_override` (typically 180s)
     for tight budgets.
+
+    `shell_allow`: claude-CLI shell patterns this ONE spawn may run
+    (see `LLMRequest.shell_allow`). Empty — the default — leaves the
+    argv untouched and the shell closed.
 
     `usage_workspace` / `usage_problem` / `usage_pipeline_id`: explicit
     spawn_usage attribution for callers whose dirs break the standard
@@ -320,6 +325,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         inline_prompt=inline_prompt,
         prompt_flags=prompt_flags,
         extra_read_dirs=extra_read_dirs,
+        shell_allow=tuple(shell_allow or ()),
     ))
     _record_spawn_usage(kind=kind, attempts_dir=attempts_dir,
                         problem_dir=problem_dir,

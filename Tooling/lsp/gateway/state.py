@@ -171,6 +171,21 @@ class SessionMetadata:
     walled: set = field(default_factory=set)
 
 
+#: The RAW session kind (lab, 2026-09-23): the Lean surface with none of
+#: the framework's commit contract behind it. Its problem is a folder,
+#: not a DB row — never `init`ed, no goals, no intent — so every mirror
+#: that answers "will commit accept this" is answering about a commit
+#: that will never happen, and every DB read is a question about rows
+#: that do not exist. A `direct` session gets elaboration, diagnostics,
+#: the native_decide axiom mirror and the heartbeat gate; nothing else.
+DIRECT_KIND = "direct"
+
+
+def is_direct(meta: "SessionMetadata | None") -> bool:
+    """Whether this session is a raw `direct` one (see `DIRECT_KIND`)."""
+    return (getattr(meta, "kind", None) or "").lower() == DIRECT_KIND
+
+
 # ─── Gateway global state ─────────────────────────────────
 
 @dataclass

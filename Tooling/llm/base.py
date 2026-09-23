@@ -235,6 +235,13 @@ class LLMRequest:
                     widens no independence boundary. Read-only — the
                     write fence is untouched. Providers whose reads are
                     already workspace-wide (agy) need no rendering.
+      shell_allow: claude-CLI shell patterns this ONE spawn may run
+                    (e.g. `("Bash(lake env lean *)",)`). Non-empty lifts
+                    the blanket `Bash` deny and adds each pattern to the
+                    allowlist; empty (the default) leaves the argv
+                    exactly as it was, so the shell stays closed for
+                    every ordinary spawn. Providers other than claude
+                    ignore it.
       inline_prompt: When set, the provider sends this string verbatim
                     as the `-p` payload to claude (bypasses the normal
                     template loading from `prompt_path`). Used for
@@ -261,6 +268,7 @@ class LLMRequest:
     mcp_config_path: Path | None = None
     inline_prompt: str | None = None
     extra_read_dirs: "tuple[Path, ...] | None" = None
+    shell_allow: "tuple[str, ...]" = ()
     # Conditional-block flags for the prompt template (D8 2026-07-24):
     # `<!-- #if name -->…<!-- #endif -->` blocks render only when
     # flags[name] is truthy; absent flag (or None) keeps the block.

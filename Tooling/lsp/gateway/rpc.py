@@ -60,7 +60,7 @@ from .leantext import (
 )
 from .server import _offload_to_thread, mcp
 from .sessions import _acquire_slot, _current_session
-from .state import SessionMetadata, _log_for, _state, _ts_now
+from .state import SessionMetadata, is_direct, _log_for, _state, _ts_now
 from .terse import _cap_region, _terse_report
 from .wall import (  # noqa: F401 — re-exported: verify/__init__ bind rpc.<name>
     _await_elaboration,
@@ -211,7 +211,14 @@ def apply_edit(edits: list = None, verbose: bool = False) -> str:
             {"edit": "held — file unchanged", "elab_wall": _wl,
              "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
             ensure_ascii=False)
-    _cy = _ancestor_cycle(new_content, meta)
+    # Both of the DB-reading gates on this path are skipped for a raw
+    # `direct` session (see `state.DIRECT_KIND`): the cycle predicate
+    # walks this goal's ancestors and the citation mirror classifies
+    # cited slugs, and a direct problem has neither a goal id nor a row
+    # to classify. (`_ancestor_cycle` already returns None on a null
+    # `goal_id`; the guard says WHY rather than relying on that.)
+    _direct = is_direct(meta)
+    _cy = None if _direct else _ancestor_cycle(new_content, meta)
     if _cy is not None:
         _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps(
@@ -359,7 +366,7 @@ def apply_edit(edits: list = None, verbose: bool = False) -> str:
     # something is wrong, so clean edits stay noise-free.
     _own_stubs = {p.stem[len("new_"):]
                   for p in meta.target_path.parent.glob("new_*.lean")}
-    _cite = _citation_submission(
+    _cite = None if _direct else _citation_submission(
         new_content, meta.problem, meta.workspace, _own_stubs,
         kind=meta.kind)
     _n_diags = len(formatted)

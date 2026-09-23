@@ -1165,6 +1165,12 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         for pat in (f"Read({Path(d).as_posix()}/**)",
                     f"Grep({Path(d).as_posix()}/**)")
     ]
+    # Per-spawn shell grant (`LLMRequest.shell_allow`). Naming the
+    # pattern here is only HALF the grant: `--allowed-tools` is additive
+    # pre-approval and never closed the shell, so the blanket `Bash`
+    # deny below has to come off in the same breath — see the comment on
+    # `--disallowedTools` in `spawn`.
+    shell_allow = [str(p) for p in (req.shell_allow or ())]
     # Adversary (research_mode_design.md §3) — projection isolation:
     # the judge's whole world is its assembled directory (problem_dir
     # IS the projection) plus the problem's landed `proofs/` in place
@@ -1180,6 +1186,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
             f"Read({attempts}/**)",
             f"Grep({problem}/**)",
             *extra_reads,
+            *shell_allow,
             *(_TOOLS_MCP_PATTERNS
               if req.mcp_config_path is not None else ()),
         ] if p)
@@ -1209,6 +1216,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         f"Grep({problem}/**)",
         f"Grep({packages}/**)",
         *extra_reads,
+        *shell_allow,
     ]
     # Library/ is the Librarian (cleanup/migrate) pipeline's working set: it
     # reads/greps sibling Library files for cross-file alignment + call sites.
@@ -1574,7 +1582,12 @@ class ClaudeCliProvider:
             # ~91% that was reading, `compute` for the ~3% that was
             # arithmetic, `paper_search`/`paper_fetch` for the Scholar's
             # two curated commands. spawn_guard's refusal names them.
-            "Bash",
+            #
+            # `req.shell_allow` is the ONE way back: a caller that names
+            # its commands pattern by pattern lifts the blanket deny for
+            # that spawn alone (the allowlist then bounds what runs).
+            # Empty — every ordinary spawn — and the deny stands.
+            *(() if req.shell_allow else ("Bash",)),
             "Write(**/problem.json)", "Edit(**/problem.json)",
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",

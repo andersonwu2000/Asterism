@@ -109,10 +109,12 @@ from starlette.responses import JSONResponse
 # name exists.
 
 from .state import (
+    DIRECT_KIND,
     WARMUP_CONTENT,
     WorkerSlot,
     SessionMetadata,
     GatewayState,
+    is_direct,
     _state,
     _session_ctx,
     _log_for,
@@ -260,6 +262,11 @@ def _change_notice_here():
     meta = _current_session()
     if token is None or meta is None:
         return None
+    # A `direct` session's problem has no DB rows to be baselined
+    # against (see `state.DIRECT_KIND`); the watcher would open the DB
+    # once per tool call to ask about goals that do not exist.
+    if is_direct(meta):
+        return None
     return _change_notice.for_spawn(token, workspace=meta.workspace,
                                     problem=meta.problem)
 
@@ -303,8 +310,12 @@ async def register(request: Request):
     # The spawn starts HERE, so this is where its baseline is taken.
     # Deferring it to the first tool call would silently drop every
     # change made while the agent was still reading its brief.
-    _change_notice.for_spawn(token, workspace=Path(data["workspace"]),
-                             problem=str(data["problem"]))
+    # A `direct` session is the exception: its problem is a folder with
+    # no DB rows (see `state.DIRECT_KIND`), so the baseline would open
+    # the DB to ask about goals that do not exist.
+    if str(kind or "").lower() != DIRECT_KIND:
+        _change_notice.for_spawn(token, workspace=Path(data["workspace"]),
+                                 problem=str(data["problem"]))
     return JSONResponse({"session_token": token}, status_code=200)
 
 

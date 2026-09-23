@@ -72,7 +72,7 @@ from .rpc import (
 )
 from .server import _offload_to_thread, mcp
 from .sessions import _acquire_slot, _current_session
-from .state import SessionMetadata, _log_for, _state, _ts_now
+from .state import SessionMetadata, is_direct, _log_for, _state, _ts_now
 
 
 def _hoist_conditional(response: dict) -> dict:
@@ -379,6 +379,62 @@ def validate_file(content: str = "", file: str = "") -> str:
         # citation could be resolved; diagnostics are already remapped to
         # this content's own line numbers.
         response["inlined_siblings"] = inlined_slugs
+    # RAW mode (see `state.DIRECT_KIND`): Lean's verdict and nothing
+    # else. `commit_header` and `parity` describe a commit this session
+    # will never make, and every other submission gate reads goal rows
+    # this problem does not have. `axioms` stays — it is a statement
+    # about the elaborated TERM (the native_decide mirror), measured
+    # above while the slot still held the candidate.
+    if is_direct(meta):
+        submission: "dict" = ({"axioms": axioms_sub}
+                              if axioms_sub is not None else {})
+    else:
+        submission = _commit_mirror(response, content, meta,
+                                    inlined_slugs, axioms_sub)
+    # Top-level `ok` is the LEAN verdict only (zero errors, no timeout);
+    # the submission gates are the COMMIT verdict and were readable only
+    # by walking into `submission`. Two workers keyed on `ok` and shipped
+    # something commit then bounced (2026-08-06 feedback). Say it at the
+    # top level too — the two axes stay separate, but a clean elaboration
+    # can no longer read as "good to ship" while a gate is failing.
+    _failing = sorted(k for k, v in submission.items()
+                      if isinstance(v, dict) and v.get("ok") is False)
+    if _failing:
+        response["commit_will_reject"] = _failing
+    response["submission"] = submission
+    response = _hoist_conditional(response)
+    _log_for(meta, {"event": "tool_call", "name": "validate_file",
+                    "args": {"content_lines": full_content.count("\n") + 1},
+                    "duration_s": dur,
+                    "slot_kind": _slot_kind,
+                    "diagnostic_count": len(formatted),
+                    "has_error": has_error,
+                    "timed_out": timed_out})
+    if _fpath == meta.target_path.resolve():
+        # Identity record for the commit gate: the exact bytes the last
+        # validate saw. Commit compares the file's hash against this —
+        # an edit after the final validate is caught there instead of
+        # sailing through on a stale green (autopsy 2026-08-24).
+        try:
+            (_attempts / "_validated.json").write_text(json.dumps({
+                "sha256": _content_sha, "ok": response["ok"],
+                "at": _ts_now()}), encoding="utf-8")
+        except OSError:
+            pass
+    return json.dumps(response, ensure_ascii=False)
+
+
+def _commit_mirror(response: dict, content: str, meta: SessionMetadata,
+                   inlined_slugs: "list[str]",
+                   axioms_sub: "dict | None") -> dict:
+    """The COMMIT half of a `validate_file` answer: `commit_header` and
+    `parity` onto `response`, and the `submission` gate block returned.
+
+    Split out of `validate_file` 2026-09-23 so the raw `direct` kind can
+    skip the whole contract in one branch instead of guarding each gate
+    (every one of these reads the problem's goal rows, its intent, or
+    its landed files — a `direct` problem has none of them).
+    """
     # The header the framework will inject into this file at commit
     # (already part of this probe's compilation unit) — visibility for
     # the agent, which writes none of these lines itself (task #84).
@@ -465,37 +521,7 @@ def validate_file(content: str = "", file: str = "") -> str:
     so = _stale_olean_submission(content, meta.problem, meta.workspace)
     if so is not None:
         submission["stale_oleans"] = so
-    # Top-level `ok` is the LEAN verdict only (zero errors, no timeout);
-    # the submission gates are the COMMIT verdict and were readable only
-    # by walking into `submission`. Two workers keyed on `ok` and shipped
-    # something commit then bounced (2026-08-06 feedback). Say it at the
-    # top level too — the two axes stay separate, but a clean elaboration
-    # can no longer read as "good to ship" while a gate is failing.
-    _failing = sorted(k for k, v in submission.items()
-                      if isinstance(v, dict) and v.get("ok") is False)
-    if _failing:
-        response["commit_will_reject"] = _failing
-    response["submission"] = submission
-    response = _hoist_conditional(response)
-    _log_for(meta, {"event": "tool_call", "name": "validate_file",
-                    "args": {"content_lines": full_content.count("\n") + 1},
-                    "duration_s": dur,
-                    "slot_kind": _slot_kind,
-                    "diagnostic_count": len(formatted),
-                    "has_error": has_error,
-                    "timed_out": timed_out})
-    if _fpath == meta.target_path.resolve():
-        # Identity record for the commit gate: the exact bytes the last
-        # validate saw. Commit compares the file's hash against this —
-        # an edit after the final validate is caught there instead of
-        # sailing through on a stale green (autopsy 2026-08-24).
-        try:
-            (_attempts / "_validated.json").write_text(json.dumps({
-                "sha256": _content_sha, "ok": response["ok"],
-                "at": _ts_now()}), encoding="utf-8")
-        except OSError:
-            pass
-    return json.dumps(response, ensure_ascii=False)
+    return submission
 
 
 def _interactive_meta(token: str) -> "SessionMetadata | None":
