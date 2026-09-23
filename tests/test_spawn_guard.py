@@ -14,7 +14,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from Tooling.llm.spawn_guard import REPO_ROOT, WRITE_ROOTS_ENV, check
+from Tooling.llm.spawn_guard import (READ_DENY_ROOTS_ENV, REPO_ROOT,
+                                     SHELL_ALLOW_ENV, WRITE_ROOTS_ENV, check,
+                                     shell_allow_prefixes)
 
 CWD = str(REPO_ROOT / "Problems" / "Topology" / "some_problem")
 HOME = Path.home()
@@ -91,6 +93,56 @@ def test_bash_is_refused_and_the_refusal_teaches() -> None:
         reason = check("Bash", {"command": cmd}, CWD)
         assert reason, cmd
         assert "inspect" in reason and "compute" in reason, cmd
+
+
+# ---------- Bash: the per-spawn shell grant ----------
+
+def test_shell_allow_prefixes_unwraps_the_bash_pattern() -> None:
+    """The CLI flag's spelling and the hook's question are different:
+    `--allowed-tools` wants a glob pattern, the hook wants the command
+    prefix. One helper derives the second from the first, so the two
+    fences can never disagree about what was granted."""
+    assert shell_allow_prefixes(
+        ["Bash(lake env lean *)", "lake build"]) == [
+            "lake env lean", "lake build"]
+
+
+def test_shell_allow_opens_exactly_the_granted_command(monkeypatch) -> None:
+    """The grant is the SECOND fence's business too: lifting the CLI's
+    blanket `Bash` deny left this hook refusing every call, so a spawn
+    that was handed `lake env lean` still could not run it (live
+    direct-session arm, 2026-09-23). What the env var opens is the
+    granted prefix as the WHOLE command — a wrapper or a shell operator
+    would carry anything at all past a fence that only read the front."""
+    monkeypatch.setenv(SHELL_ALLOW_ENV, '["lake env lean"]')
+    patch = str(REPO_ROOT / ".attempts" / "x" / "patch.lean")
+    assert check("Bash", {"command": f"lake env lean {patch}"}, CWD) is None
+    assert check("Bash", {"command": "lake env lean"}, CWD) is None
+    assert check("Bash", {"command": "lake build Foo"}, CWD)
+    assert check("Bash", {"command": "rm -rf x"}, CWD)
+    reason = check(
+        "Bash", {"command": f"cd {REPO_ROOT} && lake env lean f.lean"}, CWD)
+    assert reason and "single command" in reason, reason
+
+
+def test_shell_allow_keeps_the_home_and_read_guards(monkeypatch) -> None:
+    """A granted command is still a command: the two path fences the
+    module docstring says cover Bash — the home-directory guard and the
+    operator-private read deny — apply to it. They had no live Bash path
+    to run on while every call was refused up front."""
+    monkeypatch.setenv(SHELL_ALLOW_ENV, '["lake env lean"]')
+    assert check("Bash", {"command": f"lake env lean {_mem()}"}, CWD)
+    priv = str(REPO_ROOT / "docs" / "internal")
+    monkeypatch.setenv(READ_DENY_ROOTS_ENV, priv)
+    assert check("Bash", {"command": f"lake env lean {priv}/STATUS.md"}, CWD)
+
+
+def test_bash_refusal_unchanged_without_the_grant(monkeypatch) -> None:
+    """Control: every ordinary spawn carries no grant, and its refusal
+    is the teaching message, byte for byte."""
+    monkeypatch.delenv(SHELL_ALLOW_ENV, raising=False)
+    reason = check("Bash", {"command": "lake env lean f.lean"}, CWD)
+    assert reason and "inspect" in reason and "compute" in reason
 
 
 # ---------- write family: per-spawn whitelist (task #128) ----------

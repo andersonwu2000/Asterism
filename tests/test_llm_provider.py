@@ -1851,3 +1851,31 @@ def test_default_request_keeps_the_bash_deny(
         problem_dir=pd, attempts_dir=att, timeout_sec=60))
     cmd = captured[0]
     assert "Bash" in _disallowed_tools(cmd), _disallowed_tools(cmd)
+
+
+def test_shell_allow_reaches_the_hook_through_the_env(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The argv is only the CLI's fence. spawn_guard's PreToolUse hook
+    refuses Bash on its own, so the grant has to reach it as well — as
+    command PREFIXES, which is the question that hook asks."""
+    import json
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+    from Tooling.llm.spawn_guard import SHELL_ALLOW_ENV
+
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    calls = _capture_call(monkeypatch)
+    base = dict(kind="formalizer", prompt_path=Path("/x/p.md"),
+                problem_dir=pd, attempts_dir=att, timeout_sec=60)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        **base, shell_allow=("Bash(lake env lean *)",)))
+    env = calls[0]["kwargs"]["env"]
+    assert json.loads(env[SHELL_ALLOW_ENV]) == ["lake env lean"]
+    # Control: an ordinary spawn carries no grant at all.
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(**base))
+    assert SHELL_ALLOW_ENV not in calls[1]["kwargs"]["env"]

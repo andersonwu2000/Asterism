@@ -36,6 +36,11 @@ Policy:
   `cat ../../docs/internal/STATUS.md` is not caught. Spawn cwd is the
   problem dir, which makes that a deliberate traversal rather than an
   accident, and the same limit has always applied to the home guard.
+- Bash: refused outright, unless the spawn cmd injects
+  ASTERISM_SHELL_ALLOW (2026-09-23) — the per-spawn grant that
+  `LLMRequest.shell_allow` opens. A granted prefix is then allowed as
+  the WHOLE command (no operators, no wrapper), and the path fences
+  below still apply to it. Env absent → the refusal, unchanged.
 - Bash: home-directory guard. A command is denied only if it contains
   an absolute-path token that resolves under the user's home dir and
   outside the whitelist (~/.claude, ~/.ssh, ...). Tokens elsewhere are
@@ -76,6 +81,19 @@ WRITE_ROOTS_ENV = "ASTERISM_SPAWN_WRITE_ROOTS"
 # another problem's proofs. Env absent (manual/legacy spawn) → nothing
 # denied, matching the write fence's fallback.
 READ_DENY_ROOTS_ENV = "ASTERISM_SPAWN_READ_DENY_ROOTS"
+
+# Per-spawn SHELL grant, injected by claude_cli from
+# `LLMRequest.shell_allow` (2026-09-23) as a JSON list of command
+# PREFIXES. Lifting the CLI's blanket `Bash` deny opened only the first
+# fence: this hook refused every Bash call unconditionally, so the one
+# seat handed `lake env lean` still met "Bash is not available". Env
+# absent or empty — every ordinary spawn — and that refusal stands.
+SHELL_ALLOW_ENV = "ASTERISM_SHELL_ALLOW"
+
+#: What a granted prefix may NOT be followed by. The grant is a command,
+#: not a shell: with an operator in the line, "the command that runs" is
+#: no longer the one that was named.
+_SHELL_OPERATORS = ("&&", "||", ";", "|", "`", "$(")
 
 # WHICH attempt this spawn owns — the one directory `inspect` may treat
 # as "mine" when a bare `Context.md` misses the problem dir. It is
@@ -274,6 +292,58 @@ def _read_denied(tool_name: str, raw: str, path: Path,
     return None
 
 
+def _bash_path_denied(cmd: str, wl: list[Path],
+                      droots: list[Path]) -> str | None:
+    """The path pass a granted command still owes: the read fence and
+    the home-directory guard (module docstring). Only ABSOLUTE tokens
+    are visible here — the residual gap named there, unchanged."""
+    home = Path.home()
+    for m in _BASH_TOKEN.finditer(cmd):
+        raw = m.group(0)
+        path = _normalize(raw, None)
+        if path is None:
+            continue
+        denied = _read_denied("Bash", raw, path, droots)
+        if denied:
+            return denied
+        if _under(path, home) and not any(_under(path, r) for r in wl):
+            return (
+                f"Bash on {raw} reaches into your home directory, which "
+                "is outside the problem workspace. The repository tree, "
+                "your scratchpad temp dir and the Lean toolchain are the "
+                "only surfaces open to you.")
+    return None
+
+
+def shell_allow_prefixes(patterns) -> list[str]:
+    """Command prefixes from claude-CLI shell patterns: `Bash(lake env
+    lean *)` -> `lake env lean`. A pattern without the wrapper is the
+    prefix verbatim. Both fences go through this, so the flag and the
+    hook cannot disagree about what was granted."""
+    out: list[str] = []
+    for raw in patterns or ():
+        pat = str(raw).strip()
+        m = re.fullmatch(r"Bash\((.*)\)", pat, re.DOTALL)
+        if m:
+            pat = m.group(1).rstrip("*").strip()
+        if pat:
+            out.append(pat)
+    return out
+
+
+def _shell_allow() -> list[str]:
+    """This spawn's granted command prefixes. Absent/empty/garbage → no
+    grant, and the Bash branch refuses exactly as it did before."""
+    raw = (os.environ.get(SHELL_ALLOW_ENV) or "").strip()
+    if not raw:
+        return []
+    try:
+        vals = json.loads(raw)
+    except ValueError:
+        return []
+    return [str(v).strip() for v in vals or () if str(v).strip()]
+
+
 def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
     """Return a deny reason, or None to allow."""
     wl = _whitelist()
@@ -311,6 +381,21 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
                     "directory and .attempts workspace.")
         return None
     if tool_name == "Bash":
+        cmd = str(tool_input.get("command") or "").strip()
+        grant = _shell_allow()
+        if grant:
+            named = next((g for g in grant
+                          if cmd == g or cmd.startswith(g + " ")), None)
+            if named and not any(op in cmd for op in _SHELL_OPERATORS):
+                return _bash_path_denied(cmd, wl, droots)
+            mentioned = named or next((g for g in grant if g in cmd), None)
+            if mentioned:
+                return (
+                    f"Your shell grant is the command `{mentioned}` run "
+                    "ALONE: shell operators (&& || ; | ` $()) and "
+                    "wrappers around it are not available, because what "
+                    "would then run is not what was granted. Run it as a "
+                    f"single command: {mentioned} <file>.")
         # Belt to `--disallowedTools Bash`'s braces (2026-08-10). The
         # flag is the control; this is what an agent READS if a Bash call
         # ever reaches the hook again — a provider change, a legacy

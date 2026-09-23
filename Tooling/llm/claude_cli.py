@@ -1630,7 +1630,8 @@ class ClaudeCliProvider:
         # third provider inherits one definition instead of a third copy.
         from .envelope import envelope_for
         from .spawn_guard import (ATTEMPT_DIR_ENV, READ_DENY_ROOTS_ENV,
-                                  WRITE_ROOTS_ENV)
+                                  SHELL_ALLOW_ENV, WRITE_ROOTS_ENV,
+                                  shell_allow_prefixes)
         spec = envelope_for(req, library_dir=library_dir)
         env[WRITE_ROOTS_ENV] = spec.write_roots_env()
         # Which attempt the MCP tools server is serving. claude passes
@@ -1644,6 +1645,15 @@ class ClaudeCliProvider:
         # `asterism.db`, or another problem's proofs — the exposure that
         # was written up as agy-specific and never was.
         env[READ_DENY_ROOTS_ENV] = spec.read_deny_roots_env()
+        # The shell grant's SECOND fence. Lifting the blanket `Bash`
+        # deny (above) only clears the CLI: spawn_guard refuses every
+        # Bash call on its own, so a granted spawn still met "Bash is
+        # not available" when it ran `lake env lean` (2026-09-23). The
+        # hook asks about command prefixes, not glob patterns, and
+        # derives them with the same helper it reads them back through.
+        if req.shell_allow:
+            env[SHELL_ALLOW_ENV] = json.dumps(
+                shell_allow_prefixes(req.shell_allow))
         # Per-spawn thinking-token cap (restored 2026-05-10 from 9d05d19).
         # Sonnet 4.6's adaptive thinking can produce 30-90K-character
         # single thinking blocks that hit Anthropic's max_tokens stop
