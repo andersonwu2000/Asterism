@@ -400,7 +400,6 @@ def test_dispatch_pool_caps_in_flight_even_in_ledger_mode(
     seeded: list = []
     monkeypatch.setattr(_loop, "bfs_refill", seed_queue_once)
     monkeypatch.setattr(_loop, "strategist_triggers", lambda *a, **k: None)
-    monkeypatch.setattr(_loop, "_librarian_refill", lambda *a, **k: False)
     monkeypatch.setattr(_loop, "cascade_one", lambda *a, **k: None)
 
     seen = threading.Lock()

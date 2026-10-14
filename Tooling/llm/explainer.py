@@ -330,7 +330,6 @@ class ClaudeExplainer(_Backend):
         ws = workspace.as_posix()
         patterns = [
             f"Read({ws}/Problems/**)", f"Grep({ws}/Problems/**)",
-            f"Read({ws}/Library/**/*.lean)", f"Grep({ws}/Library/**)",
             # dev machines carry design docs in-repo; absent in zip installs
             f"Read({ws}/docs/**/*.md)", f"Grep({ws}/docs/**)",
             f"Glob({ws}/**)",

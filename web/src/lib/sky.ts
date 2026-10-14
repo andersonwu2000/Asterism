@@ -1,10 +1,10 @@
 /*
- * Shared sky drawing helpers — the geometry AND the ink both sky
- * surfaces (the problem constellation and the Library module map)
- * must speak identically. The map carried its own bow formula (cap
- * 60, 0.16) beside the constellation's (cap 150, 0.18) — the same
- * two-implementations disease the layout engine and the camera were
- * cured of (owner, 2026-07-10). The star marks moved here on
+ * Shared sky drawing helpers — the geometry AND the ink every sky
+ * surface must speak identically. The retired Library module map
+ * carried its own bow formula (cap 60, 0.16) beside the
+ * constellation's (cap 150, 0.18) — the same two-implementations
+ * disease the layout engine and the camera were cured of (owner,
+ * 2026-07-10). The star marks moved here on
  * 2026-08-26 for the same reason plus one more: a law nobody can
  * import is a law nobody can test (`sky.test.ts`).
  */

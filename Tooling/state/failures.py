@@ -31,9 +31,7 @@ origin           'provider_infra' — provider/transport/spawn never produced
                  'race' — a parallel cascade terminated the target mid-run;
                  'framework' — target/file shape error before any agent ran;
                  'agent' — the agent did real work that failed (forensic
-                 rows kept, attempts burned);
-                 'librarian' — librarian chain unit failures (fail-count
-                 capped by the chain scheduler, not goal attempts).
+                 rows kept, attempts burned).
 terminal_in_loop the in-pipeline retry helper exits its loop instead of
                  re-spawning (structured decline / race moot).
 agent_visible    events.py projects the dead_attempt into the goal's own
@@ -268,7 +266,6 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "worker_exception": _T("framework", agent_visible=False),
 
     # --- agent-side proof/commit failures (defaults) --------------------
-    "agent_error": _T(),
     # Registered 07-30 (audit): emitted positionally via
     # buffer_failure(), which the keyword-only drift scan missed; _T()
     # codifies the default traits it was already receiving.
@@ -312,31 +309,6 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # 2026-08-24). Retryable: the way out is one validate_file() call.
     "stale_validation": _T(),
     "subgoal_slug_collision": _T(),
-
-    # --- librarian chain units (fail-count capped, not goal attempts) ---
-    "librarian_axiom_violation": _T("librarian"),
-    "librarian_bad_work_kind": _T("librarian"),
-    "librarian_bridge_not_mechanical": _T("librarian"),
-    "librarian_cleaned_build_failed": _T("librarian"),
-    "librarian_file_busy": _T("librarian"),
-    "librarian_file_owned_by_other": _T("librarian"),
-    "librarian_gate_failed": _T("librarian"),
-    "librarian_integrity_error": _T("librarian"),
-    "librarian_migrate_build_failed": _T("librarian"),
-    "librarian_migrate_hole_unfilled": _T("librarian"),
-    "librarian_migrate_not_mechanical": _T("librarian"),
-    "librarian_missing_prompt": _T("librarian"),
-    "librarian_needs_upstream_unresolvable": _T("librarian"),
-    "librarian_no_root": _T("librarian"),
-    "librarian_not_classified": _T("librarian"),
-    "librarian_reopened_upstream": _T("librarian"),
-    "librarian_schema_invalid": _T("librarian"),
-    "librarian_verify_failed": _T("librarian"),
-    "librarian_warnings_remain": _T("librarian"),
-
-    # --- scholar (paper v2, D11) ---
-    "scholar_no_query": _T(),
-    "paper_unfetchable": _T(),
 }
 
 

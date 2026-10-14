@@ -6,7 +6,6 @@ verbatim — see git history of core/dispatcher.py for provenance.
 from __future__ import annotations
 
 import dataclasses as _dc
-import json
 import os
 import typing as _typing
 import shutil
@@ -24,8 +23,6 @@ from .. import (config, fsutil, gateway_health, network_wait, quota,
 from ..admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                          DENY_TARGET_COOLED, admission)
 from ..warmup import LEAN_QUEUE_KINDS, NL_QUEUE_KINDS  # noqa: E402
-from ..librarian_sched import (_advance_librarian_chain, _harvest_outstanding,  # noqa: E402
-                               _lib_decode, _lib_encode, _librarian_refill)
 from ...state.transitions import cascade_one, _reconcile_goal_after_strategy_loss  # noqa: E402
 from ...state.recovery import recover_at_startup as _recover_at_startup  # noqa: E402
 from . import (TICK_TIMEOUT, _DRIFT_CHECK_SEC, _quota_ledger,  # noqa: E402
@@ -157,7 +154,7 @@ def run(workspace: Path, *, once: bool = False,
                   flush=True)
     # Batch builds borrow lanes from the gateway (owner ruling
     # 2026-08-30): every daemon-side `lake build` — dedupe pre-flight,
-    # Backward batch, commit verify, Librarian — asks /build/lease for
+    # Backward batch, commit verify — asks /build/lease for
     # threads and the ledger for RAM headroom before it runs. Installed
     # lazily: the gate only talks to the gateway at build time and bounds
     # the build locally while the gateway is unreachable.
@@ -192,8 +189,8 @@ def run(workspace: Path, *, once: bool = False,
     # (update_plan_2026_07 #1) — no Builder→Backward escalation exists;
     # `builder.threshold` / `dispatch.builder_threshold` config keys are
     # no longer read. `thresholds.BUILDER_THRESHOLD` survives only as an
-    # internal small-retry-budget constant (librarian hole-fill + the
-    # undispatched legacy builder module).
+    # internal small-retry-budget constant (the undispatched legacy
+    # builder module).
     thresholds.set_thresholds(
         shelve=config.get("dispatch.shelve_threshold",
                           workspace=workspace))
@@ -266,9 +263,6 @@ def run(workspace: Path, *, once: bool = False,
                 f"dispatch would idle forever and look healthy. If this "
                 f"problem was just reset, run `asterism init <problem>` "
                 f"to re-register it, then start again.")
-    # Restore the Librarian chain fail cap across restarts (#92 B#3): a stuck
-    # unit's tally persists so it STALLs instead of looping forever.
-    st.librarian_fail_counts.update(db.librarian_fail_counts_all(conn))
     # IntentCache reads the DB fresh at each spawn-time access — a UI
     # or CLI charter/word edit is live on the very next access. Cache
     # quacks like dict[str, ProblemIntent] for downstream callers.
@@ -292,7 +286,7 @@ def run(workspace: Path, *, once: bool = False,
         print(f"[sandbox-sweep] startup: {_sb_counters}", flush=True)
 
     # Refresh BRIEF.md for every registered problem at startup. Covers
-    # charter/word edits + Library promotes since the last daemon run
+    # charter/word edits since the last daemon run
     # (daemon has no hot-reload; startup is the canonical refresh point).
     # Lemma resolution can take ~30s when lemma hints are dense; only
     # paid once per startup, off the dispatch path.
@@ -474,16 +468,6 @@ def run(workspace: Path, *, once: bool = False,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
                                 decision_id=meta_decision_id)
-                    # Librarian chain advance (#92). Only COUNTS this unit's
-                    # outcome (per-target_id fail tracking); re-enqueue is owned
-                    # by the tick-level `_librarian_refill` DAG scheduler. A
-                    # unit that keeps failing crosses LIBRARIAN_MAX_CHAIN_RETRIES
-                    # and the refill then skips it (stalled) instead of looping.
-                    if kind == "Librarian":
-                        _advance_librarian_chain(
-                            conn, workspace, tid, outcome=outcome,
-                            reason=reason, fail_counts=st.librarian_fail_counts,
-                            pipeline_id=pid)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
@@ -716,7 +700,7 @@ def run(workspace: Path, *, once: bool = False,
                           flush=True)
                     # A Goal-target failure lands in `dead_attempts`
                     # with its reason and detail; a Problem-target one
-                    # (Strategist / Librarian) lands NOWHERE — the
+                    # (Strategist) lands NOWHERE — the
                     # PipelineResult is dropped after this line and the
                     # attempts dir is rmtree'd on WorkArea exit. Two
                     # b6_1 wakes (07-30) failed with no trace at all,
@@ -910,42 +894,16 @@ def run(workspace: Path, *, once: bool = False,
             # the root, leaving TREE.md frozen at root=attempting.
             tree.write(conn, workspace, problem_name)
 
-        # #92 — Librarian DAG scheduler: enqueue every dispatchable file
-        # (and the serial phase steps), self-starting opted-in proved
-        # problems, so independent files migrate/clean in parallel in the
-        # pool, the same way bfs_refill fans out proving goals. Run BEFORE the
-        # exit gate so its `pending` return can hold the daemon alive while
-        # Library-ization is outstanding (Bug A — proof work alone no longer
-        # keeps the daemon up once every root is proved).
-        librarian_pending = _librarian_refill(
-            conn, workspace, running, intents, scope=scope,
-            fail_counts=st.librarian_fail_counts)
-
         # Workspace-wide exit (Phase 6): every problem has committed its
         # `Ingest` terminal (the Strategist's charter-satisfied judgment —
         # root_proved is its HARD prerequisite when a root exists, enforced
-        # at the Ingest verify gate) AND no Librarian work remains. A
-        # rollback (`verify.root_integrity_gate` → sorryAx cascade) revokes
-        # the Ingest stamp, so this check fails and the loop continues.
+        # at the Ingest verify gate). A rollback
+        # (`verify.root_integrity_gate` → sorryAx cascade) revokes the
+        # Ingest stamp, so this check fails and the loop continues.
         # `scope` filter: a `--scope sylvester_gallai` daemon must gate on its
         # scoped problems only — without this filter, unrelated miniF2F
         # problems sitting in the same workspace hold the gate forever.
-        # `librarian_pending`: without it a scoped run over an already-proved
-        # problem (or the last root proving in any run) exits before the
-        # Library-ization chain — dedup→classify→migrate→bridge→marker —
-        # has a chance to run, since that chain spans many ticks (Bug A).
-        # `_harvest_outstanding`: durable-state backstop. `librarian_pending` is
-        # a transient queue/running snapshot that can read False on the
-        # proof→harvest handoff tick (root just integrity-verified, mechanical
-        # dedup completing in a worker), letting the gate exit and kill the
-        # in-flight Librarian — silently skipping harvest on a clean opted-in
-        # proof. The marker/lifecycle/fail-count check is timing-independent and
-        # holds the daemon until harvest actually finishes (or stalls).
-        if (db.all_problems_ingested(conn, scope=scope)
-                and not librarian_pending
-                and not _harvest_outstanding(
-                    conn, workspace, intents, scope=scope,
-                    fail_counts=st.librarian_fail_counts)):
+        if db.all_problems_ingested(conn, scope=scope):
             print("[dispatcher] all problems ingested", flush=True)
             _exit_pool_fast(pool)
             _released = db.release_own_leases(conn)
@@ -1033,8 +991,8 @@ def run(workspace: Path, *, once: bool = False,
         # reuses PIDs). Covers a CONCURRENT dispatcher that crashed
         # mid-run (its startup recovery isn't coming); our own crashed
         # leases are handled by startup recovery. TTL must exceed the
-        # longest legitimate pipeline wall (librarian audit / backward
-        # retry chains run hours under load).
+        # longest legitimate pipeline wall (backward retry chains run
+        # hours under load).
         from ...agent.sandbox import _pid_alive
         released = db.release_expired_leases(
             conn, scope=scope, ttl_sec=LEASE_TTL_SEC, pid_alive=_pid_alive)
@@ -1116,19 +1074,6 @@ def run(workspace: Path, *, once: bool = False,
             qid = int(row["id"])
             target_id = str(row["target_id"])
             kind = str(row["kind"])
-            # v17 — librarian per-file units carry the file in `payload`
-            # JSON; the IN-PROCESS dispatch identity (running key,
-            # _run_pipeline target, fail_counts key, logs) stays the
-            # composed `problem\x1ffile` string, so everything downstream
-            # of this point is unchanged. The \x1f encoding is retired
-            # from the PERSISTED queue contract only.
-            try:
-                _payload = json.loads(row.get("payload") or "") or {}
-            except (TypeError, ValueError):
-                _payload = {}
-            if kind == "Librarian" and _payload.get("file"):
-                target_id = _lib_encode(str(row["problem"]),
-                                        str(_payload["file"]))
             # Phase 2 — queue.target_kind defaults to 'Goal' (post-
             # migration column), and queue.decision_id is non-NULL when
             # this row was emitted by a Strategist Inject decision.
@@ -1243,12 +1188,7 @@ def run(workspace: Path, *, once: bool = False,
                 # counters yet — debit it so the tight loop cannot
                 # burst past the measured floor.
                 ledger.note_nl_admit()
-            # Librarian per-file rows encode `problem\x1ffile` (#92); the
-            # \x1f is non-printing, so render it readably in the log.
-            _disp_prob, _disp_file = _lib_decode(target_id)
-            _disp_tid = (f"{_disp_prob} file={_disp_file}"
-                         if _disp_file else target_id)
-            print(f"[dispatch] {kind} {target_kind}={_disp_tid} "
+            print(f"[dispatch] {kind} {target_kind}={target_id} "
                   f"pid={pipeline_id[:8]}", flush=True)
 
         # Hand the still-cooling rows back, now that the pop loop cannot

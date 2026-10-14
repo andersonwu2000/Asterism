@@ -4,8 +4,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
  * The sky camera, shared. The problem sky (Constellation.tsx) set the
  * behaviour: fit-to-container on mount, re-fit on resize only while
  * the user hasn't touched the view, wheel zoom about the cursor, drag
- * pan, and a −/+/fit control bar. The Library module map grew its own
- * static shrink-and-scroll instead (owner, 2026-07-09: the two skies
+ * pan, and a −/+/fit control bar. The retired Library module map grew
+ * its own static shrink-and-scroll instead (owner, 2026-07-09: the two skies
  * scaled differently) — this hook is the one camera every non-problem
  * sky mounts. Constants mirror Constellation.tsx exactly (kMax 4,
  * wheel 0.0012, buttons 0.7/1.45, floor at half the fit).

@@ -23,7 +23,6 @@ from .. import (config, fsutil, gateway_health, network_wait, quota,
                 quota_wait, spawn_registry)
 from ..admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                          DENY_TARGET_COOLED, admission)
-from ..librarian_sched import _lib_decode, _derive_librarian_work  # noqa: E402
 from . import _exit_pool_fast  # noqa: E402 — package-head helper
 from .triggers import (_strategist_target, _warn_consecutive_strategist,  # noqa: E402
                        _derive_strategist_trigger)
@@ -147,7 +146,7 @@ DAEMON_START_ISO: "str | None" = None
 
 # v17 queue lease TTL: a lease older than this whose owner PID is dead OR
 # recycled is reclaimable. Must exceed the longest legitimate pipeline wall
-# (librarian audit / backward retry chains run for hours under load).
+# (backward retry chains run for hours under load).
 LEASE_TTL_SEC = 6 * 3600.0
 
 # Re-export (tests + pop loop): the Lean/NL queue-kind partition lives
@@ -199,11 +198,7 @@ class SchedulerState:
     only in scattered comments).
 
     Persistence policy per field — decide + document here when adding one:
-      - `librarian_fail_counts` — DB WRITE-THROUGH (`librarian_fail_counts`
-        table, loaded at startup): a stuck unit's count must survive a
-        restart so it STALLs at LIBRARIAN_MAX_CHAIN_RETRIES instead of
-        looping forever.
-      - everything else — deliberately in-memory; crash ⇒ clean slate IS
+      - every field — deliberately in-memory; crash ⇒ clean slate IS
         the policy: cooldowns lapse (they were timed anyway), the consec
         circuit breakers re-arm (a restart is exactly the operator action
         they exist to force), quota backoff re-probes the provider, and
@@ -276,7 +271,6 @@ class SchedulerState:
     net_wait_channel: "str | None" = None
     net_chan_checked_at: float = 0.0
     # DB write-through — see class docstring.
-    librarian_fail_counts: "dict[str, int]" = field(default_factory=dict)
     # Lazy verify cache: problem → Defs/Root built clean (False =
     # quarantined for this daemon run).
     verified_problems: "dict[str, bool]" = field(default_factory=dict)
@@ -503,97 +497,6 @@ def _run_pipeline(workspace: Path,
                         failure_reason=str(r.failure_reason or "failed"),
                         failure_detail=str(r.failure_detail or ""),
                         artifacts=(_json.dumps(_arts) if _arts else ""),
-                    )
-                return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
-                        r.outcome, str(r.failure_reason or ""))
-
-            if task_kind == "Librarian":
-                # Problem-targeted background harvest (plan §5). Derive
-                # the work_kind from library_decls state — work_kind is
-                # NOT in the queue row (mirrors strategist deriving its
-                # trigger), so a re-enqueued chain step always reflects
-                # the latest state.
-                # #92 — target_id is `problem\x1ffile` for a per-file
-                # migrate/cleanup unit, or a plain `problem` for a serial phase
-                # step (dedup/classify/bridge).
-                problem, target_file = _lib_decode(target_id)
-                if not _ensure_intent(conn, intents, problem):
-                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                       status="failed", outcome="failed")
-                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
-                            "failed", "problem_not_found")
-                if db.problem_ingest_signoff_pending(conn, problem):
-                    # CONSUMER-side hard gate: while a problem awaits human
-                    # sign-off, NO Librarian work runs — regardless of which
-                    # path enqueued the row. The three scheduler-side checks
-                    # (librarian_sched selfstart / refill / outstanding) are
-                    # enqueue-suppression hints; this is the boundary. BUG3
-                    # (149aec6) was exactly a dispatch path that forgot the
-                    # check and drove harvest during sign-off — enforcing at
-                    # the single consumption point closes the class, not the
-                    # instance (2026-07-04 convention audit, finding 1).
-                    print(f"[librarian] {problem}: dispatch blocked — "
-                          f"ingest_signoff_pending (awaiting human sign-off)",
-                          flush=True)
-                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                       status="succeeded",
-                                       outcome="success")
-                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
-                            "success", "")
-                from ...pipeline import librarian
-                if target_file is not None:
-                    # Per-file unit: run THIS file's current step.
-                    work_kind = librarian.file_work_kind(
-                        conn, problem=problem, target_file=target_file)
-                    target = target_file
-                else:
-                    # Serial phase step. If state has advanced to a per-file
-                    # phase (migrate/cleanup), `_librarian_refill` owns it —
-                    # this plain row is a no-op (the per-file rows do the work).
-                    work_kind, target = _derive_librarian_work(
-                        conn, problem, workspace)
-                    if work_kind in ("migrate", "cleanup"):
-                        work_kind = None
-                if work_kind is None:
-                    # Nothing to do for this row (chain drained, or a stale
-                    # plain row whose phase is now per-file). Clean no-op.
-                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                       status="succeeded",
-                                       outcome="success")
-                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
-                            "success", "")
-                # Per-file axiom check uses the operator's authorized
-                # axioms via the ONE whitelist derivation
-                # (`intent_mod.effective_axioms` — empty field falls back to
-                # the framework default, never skips). Only migrate
-                # consumes it.
-                intent = intents[problem]
-                whitelist = intent_mod.effective_axioms(
-                    intent, problem=problem)
-                r = librarian.run_librarian(
-                    conn, problem=problem, work_kind=work_kind,
-                    workspace=workspace, pipeline_id=pipeline_id,
-                    target=target, whitelist=whitelist,
-                )
-                status = ("succeeded" if r.outcome in ("proved", "success")
-                          else "failed")
-                db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                   status=status, outcome=r.outcome)
-                # Problem-targeted forensic uses target_id=0 (mirrors
-                # Forward — dead_attempts.target_id is INTEGER). Librarian
-                # is background: a failure is logged but never blocks
-                # proof work, and the chain does not auto-retry a
-                # schema/verify failure (operator inspects).
-                if status == "failed":
-                    artifacts = pipeline.collect_artifacts(attempts_dir)
-                    db.record_dead_attempt(
-                        conn, target_id=0, target_kind="Problem",
-                        pipeline_id=pipeline_id,
-                        failure_reason=str(r.failure_reason or "failed"),
-                        failure_detail=str(r.failure_detail or ""),
-                        proposal_md=r.proposal_md,
-                        artifacts=(_json.dumps(artifacts) if artifacts
-                                   else ""),
                     )
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))

@@ -3,8 +3,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 
 /*
- * Typeset math for READ-ONLY prose surfaces (Library chapter
- * docstrings/keystones). Deliberately NOT wired into lib/markdown.tsx:
+ * Typeset math for READ-ONLY prose surfaces. Deliberately NOT wired into lib/markdown.tsx:
  * that renderer is the editor overlay's source-faithful colouriser —
  * its glyphs must keep textarea metrics, and typesetting would break
  * caret alignment. Failed parses degrade to the raw source, never

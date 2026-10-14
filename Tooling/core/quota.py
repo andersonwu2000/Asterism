@@ -72,7 +72,6 @@ BOUND: "tuple[frozenset[str], ...]" = (
 DISPATCH_KIND: "dict[str, str]" = {
     "strategist": "Strategist",
     "formalizer": "Formalizer",
-    "librarian": "Librarian",
     "theorist": "Theorist",
 }
 

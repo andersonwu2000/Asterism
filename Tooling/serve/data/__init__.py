@@ -13,17 +13,15 @@ status-chip derivation shared by board() and problem_detail()),
 `edges.py` (citation-edge extraction + `problem_detail` itself, the
 biggest single read), `timeline.py` (the Timeline event log, everything
 from the file's own "Timeline" section onward: Programme reads,
-goal/strategy detail, inbox/review/bridged-library-index), `library.py`
-(the Library chapter: bridged-module parsing for the human-facing read,
-plus the trailing telemetry/papers/file-read leaves that share no call
-edge with anything above them). Every name below is re-exported so
-`data.X` attribute access and `from Tooling.serve import data` both
-keep working unchanged for every caller (`serve/app.py`, `serve/run.py`,
-`serve/chat.py`, the test suite) and the two sites that bypass the
-facade with a direct name import — `serve/app.py`'s lazy `from .data
-import _stmt_head`, `tests/test_serve_run.py`'s `from
-Tooling.serve.data import _context_preamble, _scan_library_file` — both
-resolve through this same re-export.
+goal/strategy detail, inbox/review), `leaves.py` (the telemetry/papers/
+file-read leaves that share no call edge with anything else; they rode
+in the Library-chapter module until the Library was retired). Every
+name below is re-exported so `data.X` attribute access and `from
+Tooling.serve import data` both keep working unchanged for every caller
+(`serve/app.py`, `serve/run.py`, `serve/chat.py`, the test suite) and
+the site that bypasses the facade with a direct name import —
+`serve/app.py`'s lazy `from .data import _stmt_head` — resolves
+through this same re-export.
 
 One call-graph adjustment from the file's literal section boundaries:
 the Programme-read cluster (`_group_clause`, `_programme_events`,
@@ -133,7 +131,6 @@ from .timeline import (
     goal_workarea_draft,
     group_card,
     groups_of,
-    library,
     problem_events,
     programme,
     review,
@@ -154,35 +151,9 @@ from .edges import (
     _uses_name,
     problem_detail,
 )
-from .library import (
-    _chapter_scan_cache,
-    _context_preamble,
-    _CTX_LINE_RE,
-    _DECL_RE,
-    _DOCSTRING_RE,
-    _IMPORT_RE,
-    _MODULE_DOC_RE,
-    _scan_library_file,
-    _scanned_library_file,
+from .leaves import (
     _stmt_head,
-    library_chapter,
     problem_papers_detail,
     read_problem_file,
     telemetry_usage,
 )
-
-# `library.py` (this facade name's submodule, the Library-chapter parser)
-# and `library()` (the function — bridged-decls index, defined in
-# timeline.py alongside `library_chapter`'s sibling reads) collide on
-# this one name. Importing the `.library` submodule above makes CPython
-# bind it as this package's own `library` attribute — a submodule import
-# always shadows a same-named attribute on its parent, independent of
-# import order elsewhere in this file — so the explicit `from .timeline
-# import (..., library, ...)` above is not guaranteed to be the name's
-# last writer. Reassert the function explicitly, once, so `data.library
-# (conn)` keeps calling the read, not the module object (caught live:
-# `_data.library(conn)` raised `TypeError: 'module' object is not
-# callable` in `serve/app.py`'s `/api/library` route before this line).
-from . import timeline  # noqa: E402 — explicit for the line below
-
-library = timeline.library

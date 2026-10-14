@@ -525,10 +525,10 @@ def test_dotenv_reload_on_file_change(tmp_path, monkeypatch):
 def test_ui_blocked_kinds_takes_a_comma_list_and_canonicalizes_it(
         tmp_path: Path) -> None:
     rc, msg = config.set_ui_setting(tmp_path, "dispatch.blocked_kinds",
-                                    " formalizer , LIBRARIAN ")
+                                    " formalizer , STRATEGIST ")
     assert rc == 0, msg
     assert config.get("dispatch.blocked_kinds",
-                      workspace=tmp_path) == "Formalizer,Librarian"
+                      workspace=tmp_path) == "Formalizer,Strategist"
 
 
 def test_ui_blocked_kinds_refuses_a_kind_the_queue_never_heard_of(

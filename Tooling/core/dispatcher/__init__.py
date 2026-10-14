@@ -35,10 +35,9 @@ _quota_ledger = quota.Ledger()
 #: Every pipeline that spawns a model, and therefore every seat that can
 #: run out of quota independently. `presearch` burns its own cheap model
 #: (research_mode_design §0) — a seat even though it is not a
-#: decision-maker. (`scholar` retired 2026-08-22: paper fetching became
-#: the Strategist's own tool surface.)
+#: decision-maker.
 _QUOTA_SEATS = ("strategist", "adversary", "formalizer", "presearch",
-                "librarian", "paper_index",
+                "paper_index",
                 # The theory layer (theory_wake_design.md §1): its
                 # author and its reviewer are two seats of their own,
                 # so the theory layer can be priced — and run out —
@@ -71,26 +70,6 @@ def _pipeline_seats() -> "dict[str, tuple[str, str | None]]":
 # repo's only dependency cycle); the module __getattr__ below keeps
 # `dispatcher.*_THRESHOLD` reads working for historical call sites
 # (read-only aliases — tests monkeypatch `state.thresholds`).
-
-# A Librarian chain step (dedup/classify/migrate/bridge) that fails
-# after its own internal session-retries is re-enqueued up to this many times
-# (the next tick re-derives the same step), then the chain stalls and is left
-# for the operator — bounds a genuinely-stuck step from looping forever while
-# still surviving a transient gateway/harness failure.
-# LIBRARIAN_MAX_CHAIN_RETRIES moved to librarian_sched (re-exported below).
-from ..librarian_sched import (  # noqa: E402 — historical names, tests + runbooks use them
-    LIBRARIAN_MAX_CHAIN_RETRIES,
-    _LIB_SEP,
-    _advance_librarian_chain,
-    _derive_librarian_work,
-    _harvest_outstanding,
-    _lib_decode,
-    _lib_encode,
-    _librarian_index_has,
-    _librarian_invalidate_index,
-    _librarian_refill,
-    _librarian_selfstart_problems,
-)
 
 
 def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:

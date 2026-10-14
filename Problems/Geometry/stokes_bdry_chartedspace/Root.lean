@@ -6,14 +6,11 @@
 import Mathlib
 import Problems.Geometry.stokes_bdry_chartedspace.Defs
 
-open Library.Geometry.ManifoldBoundary.BoundaryChart
-open Library.Geometry.ManifoldBdry.BdryChart
+open Problems.Geometry.stokes_bdry_compact (Bdry)
+open Problems.Geometry.stokes_bdry_chart (chartSource)
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBoundary.HalfSpaceFrontier
-open Library.Geometry.ManifoldBoundary.Defs
 
 namespace Problems.Geometry.stokes_bdry_chartedspace
 

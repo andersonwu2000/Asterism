@@ -52,9 +52,9 @@ CREATE TABLE IF NOT EXISTS problems (
     -- over 5h because 18 event commits kept resetting the shared clock).
     last_routine_at TEXT NULL DEFAULT NULL,
     -- anchor+claim (v14) — set to 1 by a Strategist `Ingest` decision when
-    -- `library.require_signoff` is on: harvest PAUSES here until the human
-    -- runs `asterism approve-ingest` (→ enqueue Librarian) or
-    -- `asterism reject-ingest` (→ back to proving). Default 0.
+    -- `ingest.require_signoff` is on: the problem PAUSES here until the
+    -- human runs `asterism approve-ingest` or `asterism reject-ingest`
+    -- (→ back to proving). Default 0.
     ingest_signoff_pending INTEGER NOT NULL DEFAULT 0
                     CHECK(ingest_signoff_pending IN (0,1)),
     -- Phase 6 (v16) — the problem's TERMINAL state: ISO timestamp of the
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS goals (
                     -- dispatches Backward / Builder on them. See
                     -- `NON_THEOREM_KINDS` in pipeline/forward.py for
                     -- the single source of truth on which kinds skip
-                    -- dispatch / axiom probe / Library promotion gate.
+                    -- dispatch / axiom probe.
                     -- v19 adds 'inductive' (Forward may mint new
                     -- inductive types; sorry-free-only at commit).
                     -- v20 adds 'instance' (named data instances; the
@@ -331,6 +331,8 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
 -- v23 — `kind` adds 'Scholar' (paper pipeline v2: citation resolution +
 -- fetch worker; docs/internal/archive/paper_pipeline_design.md D11).
+-- Scholar retired 2026-08-22, Librarian 2026-10-14: both stay VALID
+-- here for their historical rows (the queue CHECK drops them at v56).
 -- v33 — `kind` adds 'Formalizer' (merged worker, update_plan_2026_07 #1).
 -- v52 — `kind` adds 'Theorist' (theory_wake_design.md §3): the theory
 -- layer's own pipeline, dispatched from a `Theorize` decision the way a
@@ -394,17 +396,12 @@ CREATE TABLE IF NOT EXISTS queue (
     priority    INTEGER NOT NULL DEFAULT 0,
     decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
     -- v17 queue contract (task #3): `problem` scopes every row (scope-safe
-    -- pop/flush/recovery — the #74 class); `payload` carries structured
-    -- per-row data as JSON (librarian per-file units: {"file": ...} — the
-    -- \x1f target_id smuggle is retired from the PERSISTED contract; the
-    -- encoding survives only as the in-process dispatch identity + the
-    -- librarian_fail_counts key, composed at pop). `owner_pid`+`leased_at`
+    -- pop/flush/recovery — the #74 class). `owner_pid`+`leased_at`
     -- are the lease: pop CLAIMS a row (visible to concurrent dispatchers
     -- as in-flight), completion deletes it; expired leases (dead owner OR
     -- TTL — Windows reuses PIDs, so liveness alone is not enough) are
     -- released for re-claim.
     problem     TEXT NOT NULL DEFAULT '',
-    payload     TEXT,
     owner_pid   INTEGER,
     leased_at   TEXT,
     created_at  TEXT NOT NULL
@@ -413,8 +410,8 @@ CREATE TABLE IF NOT EXISTS queue (
 -- Paper pipeline v2 (D13): problem ↔ shelved-paper bindings — the
 -- backend of the frontend's checkbox model. origin: 'manifest' =
 -- migrated from the retired Manifest.md's legacy `paper:` pointer
--- (historical rows only); 'scholar' = fetched by a Scholar pipeline
--- (reason records why); 'user' = bound via CLI/UI. CREATE TABLE IF
+-- (historical rows only); 'scholar' = fetched by the retired Scholar
+-- pipeline (historical rows only); 'user' = bound via CLI/UI. CREATE TABLE IF
 -- NOT EXISTS suffices for fresh + existing DBs (no user_version bump
 -- needed).
 CREATE TABLE IF NOT EXISTS problem_papers (
@@ -509,10 +506,9 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- 'MarkDeliverable' (v13, anchor+claim): Strategist
                             -- flags a Forward node top-level; sets goals.is_deliverable.
                             -- 'Ingest' (v14, anchor+claim): Strategist judges the
-                            -- problem terminal → harvest deliverables to Library.
-                            -- 'FetchPaper' (v23, paper pipeline v2): Strategist
-                            -- requests a cited paper; a Scholar pipeline
-                            -- resolves + fetches it (D11).
+                            -- problem terminal.
+                            -- 'FetchPaper' (v23, paper pipeline v2): LEGACY —
+                            -- its Scholar pipeline retired 2026-08-22.
                             -- 'AttemptDisproof' (v25, feature D): Strategist
                             -- suspects a user-requested claim is FALSE →
                             -- framework mechanically mints the ¬P goal
@@ -634,55 +630,6 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     updated_at          TEXT NOT NULL
 );
 
--- Librarian (docs/archive/design/librarian_plan.md) — per-declaration state
--- for turning a proved problem into a mathlib-shaped Library. One row
--- per original Problems declaration. Pure new table (no FK widening on
--- existing tables), so a plain CREATE TABLE IF NOT EXISTS suffices for
--- both fresh and existing DBs — no user_version bump needed.
---
--- Columns fill across the three Librarian work kinds:
---   dedup    → verdict, citation
---   classify → target_file, target_name, file_order
---   migrate  → lifecycle advances to 'migrated'
---   cleanup  → lifecycle advances to 'cleaned'; a P4 rename records the
---              new name in target_name + the ORIGINAL fqn in renamed_from
---              (so consumer files self-apply the rename via deferred-rewire)
--- `lifecycle` is the per-decl state machine (plan §7). Flow:
--- candidate→deduped→classified→migrated→cleaned. Terminal states:
--- 'cleaned' (migrated + PR-ready: unused hyps removed, variables factored,
--- docstrings — Step 4), 'migrated' (kept + reshaped, pre-cleanup),
--- 'dropped' (reinvents mathlib OR merged into a canonical sibling),
--- 'cited' (mathlib/Library already states it; call sites cite).
-CREATE TABLE IF NOT EXISTS library_decls (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    problem         TEXT NOT NULL REFERENCES problems(name),
-    slug            TEXT NOT NULL,
-    source_goal_id  INTEGER NULL DEFAULT NULL REFERENCES goals(id)
-                        ON DELETE SET NULL,
-    verdict         TEXT NULL DEFAULT NULL,
-    citation        TEXT NULL DEFAULT NULL,
-    target_file     TEXT NULL DEFAULT NULL,
-    target_name     TEXT NULL DEFAULT NULL,
-    file_order      INTEGER NULL DEFAULT NULL,
-    lifecycle       TEXT NOT NULL DEFAULT 'candidate'
-                        CHECK(lifecycle IN (
-                          'candidate','deduped','classified',
-                          'migrated','cleaned','dropped','cited')),
-    reopen_note     TEXT NULL DEFAULT NULL,
-    renamed_from    TEXT NULL DEFAULT NULL,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    UNIQUE(problem, slug)
-);
-
--- librarian_fail_counts — persistent per-unit failure tally for the Librarian
--- chain (#92 cap). The dispatcher keeps an in-memory dict for the hot read path
--- but loads it from here at startup + writes through on every mutation, so a
--- genuinely-stuck unit's count survives a daemon restart and STALLs at the cap
--- instead of looping forever. `target_id` = a `problem` (serial phase step) or
--- `problem\x1ffile` (per-file migrate/cleanup unit). Pure new table → a plain
--- CREATE TABLE IF NOT EXISTS suffices for fresh + existing DBs (no user_version
--- bump; init_schema re-runs SCHEMA each start).
 -- theory_documents (v52, theory_wake_design.md §4) — what the theory
 -- layer produced, one row per Theorist pipeline that reached a verdict.
 -- The Theorist's product is a DOCUMENT, the one artifact the decision
@@ -788,12 +735,6 @@ CREATE TABLE IF NOT EXISTS bricks (
 CREATE INDEX IF NOT EXISTS idx_bricks_name
     ON bricks(problem, name);
 
-CREATE TABLE IF NOT EXISTS librarian_fail_counts (
-    target_id   TEXT PRIMARY KEY,
-    n           INTEGER NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
 -- kb_entries — Phase 12 informal knowledge base (the LESSON revamp). One row
 -- per title+body knowledge entry. Breadth reads off `node_id` alone: NULL =
 -- problem-wide / global (type-2, promotable), set = bound to that goal node
@@ -864,7 +805,6 @@ CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
 CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
-CREATE INDEX IF NOT EXISTS idx_libdecls_problem ON library_decls(problem);
 -- Hot path: tree.render's `_walk_goal` and db.open_goals both filter
 -- strategies by goal_id. Without this index the (10k-row and growing)
 -- table is full-scanned once per goal, making the dispatcher's periodic
@@ -962,7 +902,7 @@ def scope_matches(conn: sqlite3.Connection, scope: "str | None",
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 55
+_CURRENT_USER_VERSION = 56
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

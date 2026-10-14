@@ -10,7 +10,6 @@
     "forbidden_lemmas": [
       "*integral2_divergence_prod*",
       "*integral_divergence_of_hasFDerivAt*"
-    ],
-    "library": false
+    ]
   }
 }

@@ -324,10 +324,12 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # downstream `needs-upstream` decline passes to a re-opened upstream's
         # re-cleanup). Plain ADD COLUMN (nullable) — no table rebuild. Guarded
         # so a fresh DB built from the updated SCHEMA (column already present)
-        # doesn't double-add.
+        # doesn't double-add. An EMPTY column set means the table is
+        # gone (v56 retired it, and a fresh SCHEMA no longer creates it):
+        # nothing to alter.
         cols = {r[1] for r in conn.execute(
             "PRAGMA table_info(library_decls)")}
-        if "reopen_note" not in cols:
+        if cols and "reopen_note" not in cols:
             conn.execute(
                 "ALTER TABLE library_decls ADD COLUMN reopen_note TEXT")
         conn.execute("PRAGMA user_version = 9")
@@ -338,9 +340,10 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # read {renamed_from → target_name} as deferred-rewire renames. Plain
         # ADD COLUMN (nullable) — no table rebuild. Guarded so a fresh DB built
         # from the updated SCHEMA (column already present) doesn't double-add.
+        # Empty column set = table retired (v56): nothing to alter.
         cols = {r[1] for r in conn.execute(
             "PRAGMA table_info(library_decls)")}
-        if "renamed_from" not in cols:
+        if cols and "renamed_from" not in cols:
             conn.execute(
                 "ALTER TABLE library_decls ADD COLUMN renamed_from TEXT")
         conn.execute("PRAGMA user_version = 10")
@@ -456,10 +459,11 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # the DB file's parent) and mark its sections' problems bridged, so
         # already-harvested problems don't re-bridge after the cut-over.
         # :memory: / fresh DBs have no file and skip.
+        # Empty column set = table retired (v56): nothing to alter.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(library_decls)")}
-        if "signature" not in cols:
+        if cols and "signature" not in cols:
             conn.execute("ALTER TABLE library_decls ADD COLUMN signature TEXT")
-        if "decl_kind" not in cols:
+        if cols and "decl_kind" not in cols:
             conn.execute("ALTER TABLE library_decls ADD COLUMN decl_kind TEXT")
         pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
         if "library_bridged_at" not in pcols:
@@ -555,10 +559,11 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # Backfill for already-bridged problems: one-shot
         # `asterism library-backfill-declinfo` (needs a warm gateway, so
         # not done here in-migration).
+        # Empty column set = table retired (v56): nothing to alter.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(library_decls)")}
-        if "docstring" not in cols:
+        if cols and "docstring" not in cols:
             conn.execute("ALTER TABLE library_decls ADD COLUMN docstring TEXT")
-        if "src_line" not in cols:
+        if cols and "src_line" not in cols:
             conn.execute("ALTER TABLE library_decls ADD COLUMN src_line INTEGER")
         conn.execute("PRAGMA user_version = 24")
         conn.commit()
@@ -1139,6 +1144,17 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         # carried (the history IS the record).
         _migrate_to_v55(conn)
         conn.execute("PRAGMA user_version = 55")
+        conn.commit()
+    if v < 56:
+        # v56 — the Librarian is retired (owner ruling 2026-10-14), and
+        # with it the Library it built. Its two tables go, the two
+        # `problems` columns that marked a harvest go, the retired
+        # `library` setting rows go, and the queue stops accepting the
+        # two retired kinds. `pipelines` keeps both kinds in its CHECK:
+        # it is the record, and its historical rows stay valid the way
+        # Builder/Backward/Forward did.
+        _migrate_to_v56(conn)
+        conn.execute("PRAGMA user_version = 56")
         conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
@@ -3372,6 +3388,104 @@ def _migrate_to_v55(conn: sqlite3.Connection) -> None:
     to guess: a table whose CHECK this edit cannot find stops the
     step."""
     _widen_checks(conn, _V55_WIDENINGS, tag="v55")
+
+
+#: v56 — queue kinds the retired pipelines dispatched. The queue is
+#: live work, not the record, so a row of either kind is work nothing
+#: will ever pick up again.
+_V56_RETIRED_QUEUE_KINDS = ("Librarian", "Scholar")
+
+
+def _migrate_to_v56(conn: sqlite3.Connection) -> None:
+    """Retire the Librarian's state (owner ruling 2026-10-14).
+
+      1. DROP `library_decls` and `librarian_fail_counts` — the chain's
+         per-declaration state and its per-unit failure tally. Nothing
+         reads either any more.
+      2. DROP `problems.library_bridged_at` / `library_bridge_note` —
+         the harvest's done-marker.
+      3. DELETE the retired `library` rows from `problem_settings`; the
+         reader already treats an unknown key as absent, this keeps the
+         table honest.
+      4. NARROW `queue.kind`: its rows of the two retired kinds are
+         deleted first (they are work no worker will take), then the
+         table is rebuilt off its OWN sqlite_master text with the two
+         values removed from the CHECK — the v52 channel in reverse, so
+         every index and foreign key survives by construction.
+      5. DROP `queue.payload` — per-row JSON whose only writer was the
+         Librarian's per-file units.
+
+    Idempotent: DROP ... IF EXISTS, a column probe before each column
+    drop, and a CHECK that no longer names the values skips the
+    rebuild. A queue CHECK this edit cannot parse stops the step rather
+    than guessing at its shape.
+    """
+    conn.execute("DROP INDEX IF EXISTS idx_libdecls_problem")
+    conn.execute("DROP TABLE IF EXISTS library_decls")
+    conn.execute("DROP TABLE IF EXISTS librarian_fail_counts")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+    for col in ("library_bridged_at", "library_bridge_note"):
+        if col in pcols:
+            conn.execute(f"ALTER TABLE problems DROP COLUMN {col}")
+    try:
+        conn.execute("DELETE FROM problem_settings WHERE key = 'library'")
+    except sqlite3.OperationalError:
+        pass  # a disk that never minted problem_settings
+    if "payload" in {r[1] for r in conn.execute("PRAGMA table_info(queue)")}:
+        conn.execute("ALTER TABLE queue DROP COLUMN payload")
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'queue'").fetchone()
+    sql = (row["sql"] or "") if row is not None else ""
+    if not sql:
+        return
+    m = re.search(r"CHECK\s*\(\s*kind\s+IN\s*\(([^)]*)\)\s*\)", sql)
+    if m is None:
+        raise RuntimeError(
+            "v56: queue.kind has no CHECK(kind IN (...)) this edit can "
+            "read — refusing to guess at its shape")
+    members = [x.strip() for x in m.group(1).split(",") if x.strip()]
+    retired = {f"'{k}'" for k in _V56_RETIRED_QUEUE_KINDS}
+    kept = [x for x in members if x not in retired]
+    if len(kept) == len(members):
+        return  # already narrowed
+    ph = ",".join("?" * len(_V56_RETIRED_QUEUE_KINDS))
+    n_dropped = conn.execute(
+        f"DELETE FROM queue WHERE kind IN ({ph})",
+        _V56_RETIRED_QUEUE_KINDS).rowcount
+    if n_dropped:
+        print(f"[v56] dropped {n_dropped} queued row(s) of a retired kind"
+              f" ({', '.join(_V56_RETIRED_QUEUE_KINDS)})", flush=True)
+    new_check = f"CHECK(kind IN ({','.join(kept)}))"
+    new_sql = sql[:m.start()] + new_check + sql[m.end():]
+    tmp = "_queue_v56"
+    new_sql = re.sub(r'CREATE TABLE\s+"?queue"?',
+                     f"CREATE TABLE {tmp}", new_sql, count=1)
+    indexes = [r["sql"] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index'"
+        " AND tbl_name = 'queue' AND sql IS NOT NULL")]
+    conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+    # Save and RESTORE, never force ON (the v51 rule): the step commits
+    # inside the rebuild, so a blanket ON in the finally would take
+    # effect and decide enforcement for a caller that opened without it.
+    fk_here = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    _disarm_foreign_keys(conn, "v56 queue rebuild")
+    try:
+        conn.execute(new_sql)
+        n_rows = conn.execute(
+            f"INSERT INTO {tmp} SELECT * FROM queue").rowcount
+        conn.execute("DROP TABLE queue")
+        conn.execute(f"ALTER TABLE {tmp} RENAME TO queue")
+        for stmt in indexes:
+            conn.execute(stmt)
+        conn.commit()
+        if n_rows:
+            print(f"[v56] queue rebuilt without the retired kinds in its"
+                  f" CHECK ({n_rows} row(s) carried)", flush=True)
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {'ON' if fk_here else 'OFF'}")
 
 
 def _migrate_to_v51(conn: sqlite3.Connection) -> None:

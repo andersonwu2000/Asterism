@@ -1,7 +1,7 @@
 """core.warmup — NL-first gateway warm-up (research era, 2026-07-18).
 
 The NL argumentation layer (Strategist wakes incl. their Adversary
-rounds — loogle is a local index — plus Scholar) needs no Lean, so the
+rounds — loogle is a local index — and the Theorist) needs no Lean, so the
 daemon warms the gateway in the BACKGROUND and dispatches NL kinds
 immediately; Lean kinds stay queued (unleased, keeping their queue
 position) until the warm finishes AND the Lean interface-contract gate
@@ -18,17 +18,16 @@ from pathlib import Path
 
 # Queue kinds that need the warm Lean gateway. A drift test pins this
 # against the queue-kind enum so a new kind must pick a side of the
-# partition (NL side today: Strategist, Scholar, Theorist).
+# partition (NL side today: Strategist, Theorist).
 # Forward/Backward/Builder are pre-merge legacy rows; Formalizer is
 # the live worker.
 LEAN_QUEUE_KINDS: "tuple[str, ...]" = (
-    "Formalizer", "Forward", "Backward", "Builder", "Librarian", "Verify")
+    "Formalizer", "Forward", "Backward", "Builder", "Verify")
 
 #: The other side of the same partition — the RAM ledger's NL admission
 #: excludes these when only Lean capacity is available (and vice
 #: versa). The partition drift test pins LEAN | NL == the queue enum.
-NL_QUEUE_KINDS: "tuple[str, ...]" = ("Strategist", "Scholar",
-                                     "Theorist")
+NL_QUEUE_KINDS: "tuple[str, ...]" = ("Strategist", "Theorist")
 
 
 def start_background(workspace: Path) -> dict:

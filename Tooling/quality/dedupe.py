@@ -79,7 +79,6 @@ theorem candidate_slug <original binders> : <conclusion> := by
 """
 from __future__ import annotations
 
-import math
 import re
 import sqlite3
 from pathlib import Path
@@ -235,8 +234,7 @@ def _type_colon_pos(signature: str) -> int:
     `∀ x : T, …`, `fun y : T => …`) comes AFTER the type colon, so the FIRST
     depth-0 colon is the true split. Returns -1 if none (no binders, e.g. a
     bare conclusion). The old LAST-depth-0-colon scan mangled ∃/∀/fun-bearing
-    conclusions — this is the canonical splitter both `_to_forall_form` and
-    `_conclusion_of_signature` use; `librarian.dedup.sig_to_forall` shares it."""
+    conclusions — this is the canonical splitter `_to_forall_form` uses."""
     dp = db_ = dk = da = 0
     for i, c in enumerate(signature):
         if c == "(": dp += 1
@@ -301,220 +299,6 @@ def _extract_theorem_name(text: str) -> str | None:
     Returns None if none found."""
     m = _THM_NAME_RE.search(_strip_comments(text))
     return m.group(1) if m else None
-
-
-# ---------------------------------------------------------------------
-# Library reuse pool (A — cross-problem dedup)
-#
-# A freshly-proposed Backward sub-goal that an already-proved `Library/`
-# decl can close via `apply @<fqn> <;> assumption` should be aliased to
-# that decl (proved immediately) instead of being re-derived. This is the
-# in-problem dedup machinery pointed at a cross-problem pool: the
-# canonical lives in Library/, not the `goals` table, so it carries
-# (module, fqn) rather than a goal row. Domain-scoped; pre-filtered by
-# binder count + distinctive-token overlap so the probe never imports the
-# whole domain Library (import-closure cost, not pair count, dominates).
-# Source of truth = the DB (v18): bridged problems' placed decls via
-# `db.bridged_library_index`; module = fqn minus last segment.
-# ---------------------------------------------------------------------
-
-
-_LIB_DECL_HEAD_RE = re.compile(
-    r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
-    r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+)*"
-    r"(theorem|lemma|def)[ \t]+([A-Za-z_][\w'.]*)")
-_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
-# Identifiers too common to be distinctive for the overlap pre-filter.
-_LIB_STOPWORDS = frozenset({
-    "fun", "Type", "Prop", "Sort", "by", "with", "fun", "Eq", "And", "Or",
-})
-
-
-def _conclusion_of_signature(signature: str) -> str:
-    """The `<conclusion>` of `<binders> : <conclusion>` — text after the type
-    colon (`_type_colon_pos`, the FIRST depth-0 `:`). A `∃ x : T,` / `∀ x : T,`
-    / `fun y : T =>` colon in the conclusion is NOT the boundary (the old
-    LAST-colon scan returned a mangled tail for those)."""
-    p = _type_colon_pos(signature)
-    return signature[p + 1:].strip() if p >= 0 else signature.strip()
-
-
-def _distinctive_tokens(text: str) -> "frozenset[str]":
-    """Identifier tokens (len > 1, minus stopwords) in a conclusion — the
-    cheap signal for the overlap pre-filter. No Lean parsing, so robust to
-    notation / pretty-printing differences."""
-    return frozenset(t for t in _IDENT_RE.findall(text)
-                     if len(t) > 1 and t not in _LIB_STOPWORDS)
-
-
-def _parse_library_decl_sigs(text: str) -> "dict[str, tuple[int, str]]":
-    """Map each theorem/lemma decl in a (multi-decl) Library file to
-    (binder_count, conclusion). `def`s are skipped: `apply @def` rarely
-    discharges a goal and `def foo := v` has no signature to extract. Each
-    decl's text chunk (header → next header) runs through the SAME tested
-    `_extract_full_signature` / `_signature_binder_count` used for
-    single-decl sub-goal files."""
-    heads = list(_LIB_DECL_HEAD_RE.finditer(text))
-    out: dict[str, tuple[int, str]] = {}
-    for i, m in enumerate(heads):
-        if m.group(1) == "def":
-            continue
-        name = m.group(2)
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        chunk = text[m.start():end]
-        sig = _extract_full_signature(chunk)
-        if sig is None or not sig.strip():
-            continue
-        out[name] = (_signature_binder_count(chunk),
-                     _conclusion_of_signature(sig))
-    return out
-
-
-class _LibCanon(NamedTuple):
-    fqn: str            # fully-qualified name to `apply @`
-    module: str         # Library module to import
-    binder_count: int
-    concl_tokens: "frozenset[str]"
-
-
-# Per-(file, mtime) signature-parse cache for the NULL-signature fallback:
-# a file whose decls lack a DB signature is parsed once per content version.
-# The DB read itself is cheap and uncached (v18 — was: a whole-pool cache
-# keyed on INDEX.md mtime, invalidated wholesale by every bridge rewrite).
-_LIB_SIG_FILE_CACHE: "dict[tuple[str, float], dict]" = {}
-
-
-def _library_canonicals(conn, workspace: Path,
-                        domain: str) -> "list[_LibCanon]":
-    """All theorem/lemma Library decls in `domain`, with binder count +
-    conclusion tokens. v18: rows come from the DB (bridged problems'
-    placed decls — `db.bridged_library_index`); binder/conclusion come
-    from the kernel-true `signature` column when backfilled, else from
-    parsing the .lean file (per-file mtime cache) — today's behavior as
-    the fallback."""
-    from ..state import db as _db
-    by_file: "dict[str, list]" = {}
-    for rows in _db.bridged_library_index(conn).values():
-        for r in rows:
-            rel = str(r["target_file"] or "")
-            fqn = str(r["target_name"] or "")
-            if not rel or not fqn:
-                continue
-            parts = rel.replace("\\", "/").split("/")
-            if len(parts) >= 2 and parts[0] == "Library" and (
-                    domain == "*" or parts[1] == domain):
-                by_file.setdefault(rel, []).append(r)
-    out: list[_LibCanon] = []
-    for rel, rows in by_file.items():
-        file_sigs: "dict | None" = None
-        for r in rows:
-            fqn = str(r["target_name"])
-            decl = fqn.rsplit(".", 1)[-1]
-            sig = r["signature"] if "signature" in r.keys() else None
-            kind = (str(r["decl_kind"]) if "decl_kind" in r.keys()
-                    and r["decl_kind"] else "")
-            if sig:
-                if kind and kind not in ("thm",):
-                    continue  # data decl → not an apply-canonical
-                # ppSignature shape: `<name> <binders> : <conclusion>` —
-                # strip the leading name, reuse the existing sig parsers.
-                body = str(sig)
-                if body.startswith(fqn):
-                    body = body[len(fqn):].strip()
-                else:
-                    body = body.split(" ", 1)[1] if " " in body else body
-                bc = _signature_binder_count(f"theorem x {body} := sorry")
-                concl = _conclusion_of_signature(body)
-                if not kind and not concl:
-                    continue  # unparsable + kind unknown → skip like before
-                out.append(_LibCanon(
-                    fqn=fqn, module=fqn.rsplit(".", 1)[0],
-                    binder_count=bc,
-                    concl_tokens=_distinctive_tokens(concl)))
-                continue
-            # NULL signature → parse the file once (mtime-cached).
-            if file_sigs is None:
-                fp = workspace / rel
-                try:
-                    key = (str(fp), fp.stat().st_mtime)
-                except OSError:
-                    file_sigs = {}
-                else:
-                    hit = _LIB_SIG_FILE_CACHE.get(key)
-                    if hit is None:
-                        try:
-                            hit = _parse_library_decl_sigs(
-                                fp.read_text(encoding="utf-8"))
-                        except OSError:
-                            hit = {}
-                        if len(_LIB_SIG_FILE_CACHE) > 512:
-                            _LIB_SIG_FILE_CACHE.clear()
-                        _LIB_SIG_FILE_CACHE[key] = hit
-                    file_sigs = hit
-            sc = file_sigs.get(decl)
-            if sc is None:
-                continue  # def / unparsed → not an apply-canonical
-            bc, concl = sc
-            out.append(_LibCanon(
-                fqn=fqn, module=fqn.rsplit(".", 1)[0],
-                binder_count=bc, concl_tokens=_distinctive_tokens(concl)))
-    return out
-
-
-# Safety bound on how many Library decls a single candidate probes against
-# (caps the probe's import closure — measured to dominate cost). Logged,
-# never silent, when it bites. With IDF ranking a real reuse match shares
-# RARE tokens → high score → ranks within the cap, so a modest K is safe.
-# Calibrated by measurement (task #108).
-_LIBRARY_MAX_PAIRS_PER_CAND = 25
-
-
-def _eligible_library(conn, workspace: Path, *, domain: str,
-                      candidate_count: int, candidate_concl: str,
-                      ) -> "list[tuple[str, str]]":
-    """Library decls in `domain` that plausibly close a candidate with
-    conclusion `candidate_concl` and `candidate_count` binder groups.
-    Pre-filter: binder_count ≤ candidate_count (specialization direction,
-    same rule as the in-problem pools) AND ≥1 shared distinctive token (so
-    the probe imports only matched modules, not the whole domain). Ranked
-    by overlap, capped at `_LIBRARY_MAX_PAIRS_PER_CAND`. Returns
-    (module, fqn)."""
-    canons = _library_canonicals(conn, workspace, domain)
-    if not canons:
-        return []
-    cand_tokens = _distinctive_tokens(candidate_concl)
-    if not cand_tokens:
-        return []
-    # IDF-weighted overlap. Plain "≥1 shared token" is far too loose:
-    # measured, ~40+ LinearAlgebra decls share a token (Submodule /
-    # finrank / LinearMap…) with any LA sub-goal. So rank by the RARITY of
-    # the shared tokens — a shared `singularValues` / `jordan` is real
-    # reuse signal; a shared `Submodule` is noise. df = how many domain
-    # canonicals contain the token; idf down-weights ubiquitous ones.
-    n_docs = len(canons)
-    df: dict[str, int] = {}
-    for c in canons:
-        for t in c.concl_tokens:
-            df[t] = df.get(t, 0) + 1
-
-    def _idf(t: str) -> float:
-        return math.log((n_docs + 1) / (df.get(t, 0) + 1)) + 1.0
-
-    scored: list[tuple[float, tuple[str, str]]] = []
-    for c in canons:
-        if c.binder_count > candidate_count:
-            continue
-        shared = cand_tokens & c.concl_tokens
-        if not shared:
-            continue
-        scored.append((sum(_idf(t) for t in shared), (c.module, c.fqn)))
-    scored.sort(key=lambda t: t[0], reverse=True)
-    if len(scored) > _LIBRARY_MAX_PAIRS_PER_CAND:
-        print(f"[dedupe] library pool ({domain}): {len(scored)} plausible "
-              f"decls over cap {_LIBRARY_MAX_PAIRS_PER_CAND}; probing top "
-              f"{_LIBRARY_MAX_PAIRS_PER_CAND} by token overlap", flush=True)
-        scored = scored[:_LIBRARY_MAX_PAIRS_PER_CAND]
-    return [mf for _, mf in scored]
 
 
 def _sig_split_binders(sig: str) -> "tuple[str, str] | None":
@@ -904,11 +688,6 @@ class CanonicalMatch(NamedTuple):
         decline-and-RETRY: re-prompt the same agent to decompose into
         strictly smaller sub-goals or prove the goal directly. `goal_id`
         is the matched ancestor/self for the message.
-      - `"library_alias"` (A — cross-problem reuse): canonical is an
-        already-proved `Library/` decl (no in-DB goal). Caller writes an
-        alias delegating to `library_fqn` (importing `library_module`)
-        and inserts the candidate as `proved`. `goal_id` is -1 (no goal);
-        the citation is `library_fqn`.
       - `"reuse"` (#2 — in-problem NON-proved twin): canonical is an
         `open`/`attempting`/`pending_strategist_review`/`shelved` goal in
         the same problem (a cross-branch or parked twin), NOT proved.
@@ -924,9 +703,7 @@ class CanonicalMatch(NamedTuple):
         churn the reuse tier exists to collapse).
     """
     goal_id: int
-    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias" | "reuse"
-    library_module: str | None = None  # set iff kind == "library_alias"
-    library_fqn: str | None = None
+    kind: str  # "alias" | "disproved" | "no_progress" | "reuse"
 
 
 _SLUG_DUP_SUFFIXES = ("_alias", "_2", "_3", "_4", "_5")
@@ -1036,9 +813,9 @@ def find_canonicals_batch(
     KIND_NO_PROGRESS = "no_progress"
     KIND_REUSE = "reuse"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
-    # Reuse pool kept separate so it can be appended to `pairs` AFTER the
-    # Library tier — low priority (a proved alias always beats linking
-    # an unproved twin). Aligned 1:1 with `candidates`.
+    # Reuse pool kept separate so it can be appended to `pairs` last —
+    # low priority (a proved alias always beats linking an unproved
+    # twin). Aligned 1:1 with `candidates`.
     cand_reusable: list[list[tuple[sqlite3.Row, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         sig = _extract_full_signature(full_text)
@@ -1114,19 +891,10 @@ def find_canonicals_batch(
     # name in some framework-promoted / aliased cases, where the file
     # body is `def <slug> := @s<sid>` — see _THM_HEAD_RE comment).
     pairs: list[tuple[str, str, str]] = []
-    # origin per pair: (cand_idx, kind, payload). payload is an sqlite Row
-    # for the in-problem tiers, or a (module, fqn) tuple for the Library
-    # tier (A). Kept uniform so the result loop dispatches on `kind`.
+    # origin per pair: (cand_idx, kind, row) — the canonical's goal row,
+    # so the result loop dispatches on `kind`.
     pair_origin: list[tuple[int, str, object]] = []
     from ..pipeline._lake import lean_path_to_module
-    # Task #6: the Library pool spans ALL domains — the old hard filter
-    # (problem's first dotted segment) structurally blocked cross-domain
-    # reuse (a Geometry problem could never see a LinearAlgebra keystone;
-    # de Rham currents-style work spans analysis+geometry+algebra). Cost
-    # stays bounded: the IDF-weighted token-overlap prefilter now ranks
-    # over the whole corpus (rarity weighting improves with it) and the
-    # per-candidate pair cap is unchanged.
-    domain = "*"
     for ci, (slug, full_text) in enumerate(candidates):
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
@@ -1202,19 +970,8 @@ def find_canonicals_batch(
                              if canonical_thm else "")
             pairs.append((cand_sig, canonical_module, canonical_fqn))
             pair_origin.append((ci, kind, anc_row))
-        # Library tier (A) — cross-problem reuse. Appended LAST so an
-        # in-problem match (alias/disproved/no_progress) shadows it on
-        # first-hit: prefer local reuse, keep deps in-problem; only reach
-        # to Library when nothing in-problem matches.
-        cand_count = _signature_binder_count(full_text)
-        cand_concl = _conclusion_of_signature(cand_sig)
-        for lib_module, lib_fqn in _eligible_library(
-                conn, workspace, domain=domain, candidate_count=cand_count,
-                candidate_concl=cand_concl):
-            pairs.append((cand_sig, lib_module, lib_fqn))
-            pair_origin.append((ci, "library_alias", (lib_module, lib_fqn)))
         # Reuse tier (#2) — appended LAST (lowest priority): a proved
-        # alias (in-problem or Library) is always preferable to linking
+        # alias is always preferable to linking
         # an unproved twin. Same FQN construction as the in-problem pools.
         for reuse_row, reuse_text in cand_reusable[ci]:
             # Task #6: reuse pairs are additionally gated on statement
@@ -1262,14 +1019,8 @@ def find_canonicals_batch(
             continue
         if result[ci] is not None:
             continue
-        if kind == "library_alias":
-            lib_module, lib_fqn = payload  # type: ignore[misc]
-            result[ci] = CanonicalMatch(
-                goal_id=-1, kind="library_alias",
-                library_module=lib_module, library_fqn=lib_fqn)
-        else:
-            result[ci] = CanonicalMatch(
-                goal_id=int(payload["id"]), kind=kind)  # type: ignore[index]
+        result[ci] = CanonicalMatch(
+            goal_id=int(payload["id"]), kind=kind)  # type: ignore[index]
     # P1 (2026-07-11, b6 twin-minting churn): statement-defeq reuse for
     # SHELVED twins the binder-verbatim shape gate missed. The paraphrase
     # dimension (binder renames, notation drift) is exactly what walled
@@ -1327,20 +1078,18 @@ def find_canonicals_batch(
                       flush=True)
 
     # Lightweight metric — surfaces dedupe effectiveness in the daemon
-    # log so Phase 2 design (Strategist/Forward/Librarian) has empirical
-    # input on alias hit rate and disproved-collision frequency. `library`
-    # is the cross-problem reuse counter (A) — the seed of the reuse
-    # instrumentation. Pre-fix the entire Windows-side dedupe pipeline was
+    # log so Phase 2 design (Strategist/Forward) has empirical input on
+    # alias hit rate and disproved-collision frequency. Pre-fix the
+    # entire Windows-side dedupe pipeline was
     # silently producing zeros here; this print catches any regression.
     n_alias = sum(1 for m in result if m and m.kind == "alias")
     n_disproved = sum(1 for m in result if m and m.kind == "disproved")
     n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
-    n_library = sum(1 for m in result if m and m.kind == "library_alias")
     n_reuse = sum(1 for m in result if m and m.kind == "reuse")
     n_unchecked = sum(1 for f in flags if f is None)
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
-          f"no_progress={n_noprog} library={n_library} reuse={n_reuse} "
+          f"no_progress={n_noprog} reuse={n_reuse} "
           f"(defeq={n_defeq})"
           + (f" — WARNING: {n_unchecked} pair(s) UNCHECKED (probe did "
              f"not answer; a duplicate here would not have been seen)"
@@ -1376,18 +1125,13 @@ def leading_decl_attrs(text: str, slug: str) -> str:
 
 def build_alias_content(*, original_content: str,
                         canonical_module: str,
-                        canonical_slug: str,
-                        apply_expr: str | None = None) -> str:
+                        canonical_slug: str) -> str:
     """Take the candidate's original sub-goal lean text and produce its
     alias version: inject `import canonical_module` and rewrite the
     sorry-stub body to delegate to canonical via tactics.
 
-    `apply_expr` overrides what follows `apply ` in the body. In-problem
-    aliases leave it None → `apply <canonical_slug>` (bare slug resolves
-    because the alias file shares the canonical's `Problems.<problem>`
-    namespace). The Library tier (A) passes `@<fqn>` because a Library
-    decl's namespace (`Library.<...>`) is NOT open in the sub-goal file —
-    only the fully-qualified name resolves.
+    The body is `apply <canonical_slug>`: the bare slug resolves because
+    the alias file shares the canonical's `Problems.<problem>` namespace.
     """
     if f"import {canonical_module}" not in original_content:
         lines = original_content.split("\n")
@@ -1401,9 +1145,8 @@ def build_alias_content(*, original_content: str,
             lines.insert(0, f"import {canonical_module}")
         original_content = "\n".join(lines)
 
-    body = apply_expr if apply_expr is not None else canonical_slug
     return _SORRY_BODY_RE.sub(
-        f":= by apply {body} <;> assumption",
+        f":= by apply {canonical_slug} <;> assumption",
         original_content,
         count=1,
     )

@@ -382,7 +382,7 @@ test('a failed document read can be retried without closing its tab', async ({ p
 
 test('saving task instructions retains newer edits and recognizes an undone change', async ({ page }) => {
   const writes: unknown[] = []
-  const disk = { charter: 'Prove the claim.', word: '', settings: { library: false, axioms_whitelist: [], forbidden_lemmas: [] } }
+  const disk = { charter: 'Prove the claim.', word: '', settings: { axioms_whitelist: [], forbidden_lemmas: [] } }
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })
   await page.route('**/api/problems/Example.first/intent', async route => {
@@ -415,7 +415,7 @@ test('saving task instructions retains newer edits and recognizes an undone chan
 })
 
 test('task instruction drafts survive navigation and a save that finishes after returning', async ({ page }) => {
-  const disk = { charter: 'Prove the claim.', word: '', settings: { library: false, axioms_whitelist: [], forbidden_lemmas: [] } }
+  const disk = { charter: 'Prove the claim.', word: '', settings: { axioms_whitelist: [], forbidden_lemmas: [] } }
   const writes: unknown[] = []
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })

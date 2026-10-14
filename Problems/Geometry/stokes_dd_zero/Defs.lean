@@ -9,15 +9,16 @@
   cited P5 smoothness lemma applied to `I φ`.
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle    -- DiffForm, formBundleCore, instForm*
-import Library.Geometry.Manifold.MExtDerivCoord     -- mextDerivFun, formInCoord
-import Library.Geometry.Manifold.MExtDeriv          -- contMDiff_mextDerivFun (smoothness)
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_mextderiv.Root
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_smooth
+import Problems.Geometry.stokes_mextderiv.proofs.L_mext_deriv_triv_read
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
-open Library.Geometry.Manifold.MExtDeriv
+open Problems.Geometry.stokes_form_bundle (DiffForm)
+open Problems.Geometry.stokes_mextderiv (mextDerivFun)
 
 namespace Problems.Geometry.stokes_dd_zero
 
@@ -31,6 +32,6 @@ variable
     `mextDerivFun` (data, P5) + P5's smoothness witness. GENUINE (no `sorry`). -/
 noncomputable def mextDeriv {k : ℕ} (φ : DiffForm I M k) : DiffForm I M (k + 1) where
   toFun := mextDerivFun I φ
-  contMDiff_toFun := contMDiff_mextDerivFun I φ
+  contMDiff_toFun := Problems.Geometry.stokes_mextderiv.main I φ
 
 end Problems.Geometry.stokes_dd_zero

@@ -1,7 +1,7 @@
 """Remaining operational commands: `asterism reject`, `asterism
 approve-ingest`/`reject-ingest` (anchor+claim sign-off), `asterism repin`/
-`charter`/`word` (user-intent baselines), `asterism revive`, `asterism
-library-backfill-declinfo`, `asterism prune`, `asterism paper-add`/
+`charter`/`word` (user-intent baselines), `asterism revive`,
+`asterism prune`, `asterism paper-add`/
 `paper-index`, `asterism kb-migrate`. Split out of `Tooling/core/cli.py`
 (task A3, move-only) into the `core/cli/` package; `Tooling/core/cli/
 __init__.py` re-exports this module's public (and tested private)
@@ -188,16 +188,6 @@ def _claude_login_email() -> "str | None":
         return None
 
 
-def _effective_library_flag(conn, problem: str) -> bool:
-    """The harvest decision as the librarian scheduler will see it:
-    the `problem_settings` row; absent/unreadable reads False (no
-    harvest without an explicit opt-in — mirrors the `library`
-    default)."""
-    from ...state import settings as _settings
-    val = _settings.read(conn, problem).get("library")
-    return val if isinstance(val, bool) else False
-
-
 def _signoff_record(conn, problem: str,
                     signer: "str | None") -> dict:
     """The signature written at approve: the operator's claim (name),
@@ -221,16 +211,12 @@ def _signoff_record(conn, problem: str,
 
 
 def cmd_approve_ingest(args: argparse.Namespace) -> int:
-    """anchor+claim: approve a paused ingest → harvest to Library.
+    """anchor+claim: approve a paused ingest.
 
     The single resume action of the sign-off gate (not a per-anchor
-    checklist): clears the pause, RECORDS THE SIGNATURE (v27 — who
-    signed, when, sealing exactly what was reviewed), and enqueues the
-    Librarian iff the effective `library` flag says harvest (the serve
-    endpoint writes the signer's Library decision through the settings
-    chokepoint BEFORE calling here — signing with library:false must
-    not start a harvest). Reject specific anchors/claims BEFORE
-    approving via `asterism reject`."""
+    checklist): clears the pause and RECORDS THE SIGNATURE (v27 — who
+    signed, when, sealing exactly what was reviewed). Reject specific
+    anchors/claims BEFORE approving via `asterism reject`."""
     conn = db.connect()
     db.init_schema(conn)
     problem = args.problem
@@ -246,14 +232,7 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
     _transitions.apply_problem_transition(
         conn, problem, "ingested", event="signoff_approved")
     signed = f" signed by {record['name']}" if record["name"] else ""
-    if _effective_library_flag(conn, problem):
-        db.enqueue(conn, kind="Librarian", target_id=problem,
-                   target_kind="Problem", priority=0, problem=problem)
-        print(f"approved ingest for {problem}{signed} — enqueued "
-              f"Librarian; harvest runs on the next dispatcher tick.")
-    else:
-        print(f"approved ingest for {problem}{signed} — library: false, "
-              f"no harvest.")
+    print(f"approved ingest for {problem}{signed}.")
     conn.close()
     return 0
 
@@ -264,7 +243,7 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
     Use when the deliverables aren't actually complete yet (no specific
     anchor/claim is wrong — the work just isn't done). Clears the pause,
     records the reason as a Strategist directive, and re-wakes the
-    Strategist to keep proving. No harvest."""
+    Strategist to keep proving."""
     conn = db.connect()
     db.init_schema(conn)
     problem = args.problem
@@ -421,7 +400,7 @@ def cmd_unbench(args: argparse.Namespace) -> int:
 def cmd_revive(args: argparse.Namespace) -> int:
     """Problem FSM §2.1: re-enter a REVOKED problem (post-Ingest
     un-prove quarantine) into the live path. The incident announcement
-    (seal torn, Library un-harvested) already happened automatically;
+    (seal torn) already happened automatically;
     this is the operator's re-grind decision. Clears `ingested_at` so
     the liveness machinery resumes wakes/dispatch."""
     from ...state import transitions as _transitions
@@ -446,53 +425,6 @@ def cmd_revive(args: argparse.Namespace) -> int:
     print(f"[revive] {problem}: back on the live path — wakes and "
           f"dispatch resume on the next daemon tick.")
     conn.close()
-    return 0
-
-
-def cmd_library_backfill_declinfo(args: argparse.Namespace) -> int:
-    """One-shot v24 backfill: re-run the bridge's declInfo pass over every
-    already-bridged problem so `library_decls.{signature, decl_kind,
-    docstring, src_line}` are filled for pre-oracle harvests too (new
-    bridges persist them inline). Idempotent — re-running overwrites with
-    the same kernel-true facts. Needs a warm gateway (started here);
-    best-effort per file, same contract as the bridge-time pass."""
-    from ...lsp import lifecycle as gateway_lifecycle
-    from ...pipeline.librarian.bridge import _backfill_decl_signatures
-    workspace = Path.cwd()
-    conn = db.connect()
-    try:
-        probs = [str(r["name"]) for r in conn.execute(
-            "SELECT DISTINCT p.name FROM problems p"
-            " JOIN library_decls ld ON ld.problem = p.name"
-            " WHERE p.library_bridged_at IS NOT NULL"
-            " AND ld.lifecycle IN ('migrated','cleaned')"
-            " ORDER BY p.name")]
-        only = getattr(args, "scope", None)
-        if only:
-            probs = [p for p in probs if only in p]
-        if not probs:
-            print("nothing to backfill")
-            return 0
-        gateway_lifecycle.start_gateway(workspace)
-        for i, prob in enumerate(probs, 1):
-            # resume-friendly: a problem whose placed rows all carry
-            # src_line is done (oracle-miss rows re-elaborate on --force)
-            missing = conn.execute(
-                "SELECT COUNT(*) FROM library_decls WHERE problem = ?"
-                " AND lifecycle IN ('migrated','cleaned')"
-                " AND src_line IS NULL", (prob,)).fetchone()[0]
-            if not missing and not getattr(args, "force", False):
-                print(f"[{i}/{len(probs)}] {prob} — complete, skipped",
-                      flush=True)
-                continue
-            print(f"[{i}/{len(probs)}] {prob}", flush=True)
-            _backfill_decl_signatures(conn, problem=prob, workspace=workspace)
-        n_total, n_done = conn.execute(
-            "SELECT COUNT(*), SUM(src_line IS NOT NULL) FROM library_decls"
-            " WHERE lifecycle IN ('migrated','cleaned')").fetchone()
-        print(f"done: {n_done}/{n_total} placed decls carry declInfo facts")
-    finally:
-        conn.close()
     return 0
 
 

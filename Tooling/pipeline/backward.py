@@ -437,8 +437,7 @@ def _try_promote_sorry_free(
 
 # Legacy `-- entry_kind:` directive line (routing retired v33 — the
 # Formalizer decides prove-vs-split itself). The strip survives so a
-# legacy-shaped stub's directive comment doesn't linger in proofs/ or
-# propagate into the curated Library on migrate.
+# legacy-shaped stub's directive comment doesn't linger in proofs/.
 _ENTRY_KIND_LINE_RE = re.compile(
     r"(?m)^[ \t]*--[ \t]*entry_kind[ \t]*:[ \t]*(?:Builder|Backward)\b.*\r?\n?"
 )
@@ -1965,28 +1964,16 @@ def _backward_parse_and_commit(
                 # Build the alias body on top of import/opens-injected
                 # content so the file elaborates standalone (agent
                 # `new_<slug>.lean` files often omit `import Mathlib`).
-                if match.kind == "library_alias":
-                    # A — cross-problem reuse: canonical is a proved
-                    # `Library/` decl (no in-DB goal). Delegate via the
-                    # fully-qualified name (its namespace isn't open here).
-                    alias_content = dedupe.build_alias_content(
-                        original_content=_novel_content(raw, slug),
-                        canonical_module=match.library_module,
-                        canonical_slug=match.library_fqn,
-                        apply_expr=f"@{match.library_fqn}",
-                    )
-                    canonical_label = f"Library {match.library_fqn}"
-                else:
-                    canonical_id = match.goal_id
-                    canonical = db.get_goal(conn, canonical_id)
-                    canonical_module = _lean_path_to_module(
-                        workspace, workspace / canonical["lean_path"])
-                    alias_content = dedupe.build_alias_content(
-                        original_content=_novel_content(raw, slug),
-                        canonical_module=canonical_module,
-                        canonical_slug=canonical["slug"],
-                    )
-                    canonical_label = f"goal {canonical_id} ({canonical['slug']})"
+                canonical_id = match.goal_id
+                canonical = db.get_goal(conn, canonical_id)
+                canonical_module = _lean_path_to_module(
+                    workspace, workspace / canonical["lean_path"])
+                alias_content = dedupe.build_alias_content(
+                    original_content=_novel_content(raw, slug),
+                    canonical_module=canonical_module,
+                    canonical_slug=canonical["slug"],
+                )
+                canonical_label = f"goal {canonical_id} ({canonical['slug']})"
                 _place_unowned(conn, workspace, dest, alias_content)
                 # Build-verify the alias before trusting the dedupe probe.
                 # The probe (`_batch_provable_via_apply`) elaborates the
@@ -2245,7 +2232,7 @@ def _backward_parse_and_commit(
             raw = dest.read_text(encoding="utf-8")
             # entry_kind routing retired (v33). Legacy-shaped stubs may
             # still carry the `-- entry_kind:` comment — strip it so it
-            # doesn't linger in proofs/ or propagate into the Library.
+            # doesn't linger in proofs/.
             cleaned = _strip_entry_kind(raw)
             if cleaned != raw:
                 _place_unowned(conn, workspace, dest, cleaned)
@@ -2256,24 +2243,17 @@ def _backward_parse_and_commit(
             )
             if match is not None:
                 # Past the same_as_disproved / no_progress early-returns →
-                # kind is "alias" (in-problem) or "library_alias" (A).
+                # kind is "alias".
                 transitions.apply_goal_transition(
                     conn, new_gid, "proved", event="backward_alias_proved",
                     receipt=transitions.ProvedReceipt(
                         "alias_induction",
                         f"dedupe {match.kind} → g{match.goal_id} "
                         f"(build-verified)"))
-                if match.kind == "library_alias":
-                    # Canonical is a committed Library decl, not an in-DB
-                    # goal — no alias_target_id (prune doesn't manage
-                    # Library; the proof IS the `apply @<fqn>` body on
-                    # disk). The reuse citation is logged at dedupe time.
-                    pass
-                else:
-                    # Record alias relationship so prune retains the
-                    # canonical (in case it's an orphan from a dead
-                    # strategy) for as long as this alias is alive.
-                    db.set_alias_target(conn, new_gid, match.goal_id)
+                # Record alias relationship so prune retains the
+                # canonical (in case it's an orphan from a dead
+                # strategy) for as long as this alias is alive.
+                db.set_alias_target(conn, new_gid, match.goal_id)
             else:
                 # effective_axioms: an unset whitelist used to hit
                 # axiom_probe's fail-closed branch (promotion refused

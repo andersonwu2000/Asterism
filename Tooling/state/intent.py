@@ -14,7 +14,7 @@ three live in the DB:
     replaced by any group's charter. The machine reads it and never
     writes it: there is no RequestUserAmend path to the word.
   * **settings** — `problem_settings` rows (axioms_whitelist,
-    forbidden_lemmas, library, signoff). An absent key means the
+    forbidden_lemmas, signoff). An absent key means the
     framework default; there is no file fallback anymore.
 
 Root.lean / Defs.lean stay hand-authored files (the formal ground
@@ -46,11 +46,6 @@ class ProblemIntent:
     word: str = ""
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
-    # Opt-in: should this Problem's proved decls be Library-ized for
-    # cross-problem reuse + mathlib upstreaming (see
-    # docs/archive/design/librarian_plan.md). Scope flag, NOT a safety gate —
-    # default False so a missing/garbled row never auto-promotes.
-    library: bool = False
     # Machine channel (benchmark adapters ONLY — never surfaced in the
     # UI): `signoff: false` opts a problem out of the human Ingest
     # sign-off pause, for unattended batch runs. Default True — an

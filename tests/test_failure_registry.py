@@ -207,16 +207,15 @@ def test_return_value_emitted_reasons_registered():
     """Blind-spot pin (2026-07-06 doc audit): `_emitted_reasons()`'s AST
     scan only sees `failure_reason="x"` keyword literals. Reasons that
     travel via a RETURN VALUE (`_spawn_failure()` → agent_timeout /
-    agent_rc_nonzero) or a positional helper arg (librarian
-    `_reject("librarian_schema_invalid", …)`) were invisible, and all
-    four were silently missing from the REGISTRY while doc + emitters
-    agreed they exist. Pin them explicitly."""
+    agent_rc_nonzero) or a positional helper arg were invisible, and
+    were silently missing from the REGISTRY while doc + emitters agreed
+    they exist. Pin them explicitly. (The librarian `_reject(...)`
+    reasons left with the Librarian, 2026-10-14.)"""
     # 08-12: both verify-error reasons travel the same way — one through
     # a local `reason = …` (the keyword scan grabbed `"transient"` out of
     # the `v.get("transient")` inside an inline conditional and demanded
     # THAT be registered), one positionally through backward's `_abort`.
     for r in ("agent_timeout", "agent_rc_nonzero",
-              "librarian_schema_invalid", "librarian_verify_failed",
               "verify_infra", "framework_verify_error"):
         assert r in failures.REGISTRY, (
             f"{r} is emitted via a non-keyword path and must stay "

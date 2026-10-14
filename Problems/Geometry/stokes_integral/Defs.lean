@@ -7,14 +7,14 @@
   operator. Cites P4 (`DiffForm`) and P5 (`formInCoord`). The Root is `∫_N 0 = 0`.
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle    -- DiffForm
-import Library.Geometry.Manifold.MExtDerivCoord     -- formInCoord
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
 open MeasureTheory
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
+open Problems.Geometry.stokes_form_bundle (DiffForm)
+open Problems.Geometry.stokes_mextderiv (formInCoord)
 
 namespace Problems.Geometry.stokes_integral
 

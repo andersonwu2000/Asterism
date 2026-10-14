@@ -1,8 +1,7 @@
 """Client-side wrapper of the `Asterism.declInfo` RPC — the syntactic oracle.
 
 Consumers that previously re-derived Lean declaration structure from source
-text with regexes (librarian astslice being the first migrated client) ask
-this oracle instead. The oracle's facts come from the parsed syntax tree +
+text with regexes ask this oracle instead. The oracle's facts come from the parsed syntax tree +
 the elaborated environment (see `Asterism/GatewayRpc.lean`), so the recorded
 regex bug family — `noncomputable` lost under `noncomputable section`,
 decl-keyword prose in comments read as declarations, docstrings orphaned
@@ -264,8 +263,7 @@ class DeclOracle:
                         workspace: "Path | None" = None
                         ) -> "DeclOracle | None":
         """`for_file` behind an (path, mtime, size)-keyed cache — hot
-        callers (inventory.defs_decls has ~10 call sites per librarian
-        run) must not pay one elaborate each. Failures are cached under
+        callers must not pay one elaborate each. Failures are cached under
         the same key with a short TTL so a downed gateway costs one
         fast probe per file per minute, not one per call — and recovery
         is picked up without waiting for the file to change."""

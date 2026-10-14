@@ -131,7 +131,7 @@ inject: prepare it, say what it would close, hand it over.
 2. Grounded. Anchor answers in what you can actually read (the context \
 block, files under the workspace, the public notes site for design \
 rationale). Cite objects with bracket tokens so the UI can link them: \
-[problem:NAME], [goal:PROBLEM:SLUG], [library:PROBLEM], [paper:ID]. \
+[problem:NAME], [goal:PROBLEM:SLUG], [paper:ID]. \
 Use the token forms exactly; never write URLs or file paths as \
 citations. If you are not sure, say so plainly.
 3. Audience. Plain mathematical language first, engine vocabulary \
@@ -445,12 +445,6 @@ def _page_context(workspace: Path, page: "dict | None", *,
             return key, f"Page: {kind}. (No database yet — fresh workspace.)"
         if kind == "problem" and name:
             return key, _decorate(conn, _problem_context(conn, str(name)))
-        if kind == "library" and name:
-            return key, _decorate(conn, (
-                f"Library chapter page for problem {name!r}: the archived,"
-                f" human-signed form of its proofs. Sources live under"
-                f" Library/ (Lean files; Read them for exact statements)."
-            ))
         if kind == "engine":
             # the console IS an overview surface — give it the board's
             # whole-run context (QA: an Engine-page question got "the
@@ -603,7 +597,7 @@ def _session_key(project: "str | None") -> str:
 class ChatBody(BaseModel):
     """One question.
 
-    `page` is the frozen screen ({kind: board|problem|library|engine,
+    `page` is the frozen screen ({kind: board|problem|engine,
     name?}). `project` binds the conversation (§1.1-2); omit it
     on the picker page. `focus` is what the person has OPEN on that
     screen and carries one or more of:
@@ -621,7 +615,7 @@ class ChatBody(BaseModel):
 
     message: str
     session_id: str              # the transcript this turn is filed on
-    page: "dict | None" = None   # {kind: board|problem|library|engine, name?}
+    page: "dict | None" = None   # {kind: board|problem|engine, name?}
     model: "str | None" = None   # one of /api/chat/state's `groups`
     project: "str | None" = None
     focus: "dict | None" = None

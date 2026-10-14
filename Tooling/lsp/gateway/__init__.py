@@ -677,10 +677,8 @@ async def verify_route(request: Request):
 @mcp.custom_route("/verify_session", methods=["POST"])
 async def verify_session(request: Request):
     """Verify candidate `content` on the slot CLAIMED by a registered session
-    (claimed mode, no borrow eviction) — the warm-slot path for framework-side
-    gates that hold a session, notably the Library cleanup mechanical gates
-    (ONE file-level session per file, verifying whole-file candidates against
-    its already-loaded import closure).
+    (claimed mode, no borrow eviction) — the warm-slot path for a pipeline
+    that holds a session (the axiom gate verifies on its own slot).
 
     Body: { "token": <session token>, "content": <full Lean source>,
             "write_olean": false, "axioms_for": null, "decl_info": false,
@@ -1074,8 +1072,8 @@ def main() -> None:
     threading.Thread(target=_wedge_watchdog_loop,
                      daemon=True, name="gateway-wedge-watchdog").start()
     # The warm is watched from a thread and HTTP opens NOW, rather than
-    # after it (2026-08-12). `core/warmup` dispatches Strategist and
-    # Scholar during this window on purpose — a cold slot-0 warm was
+    # after it (2026-08-12). `core/warmup` dispatches the NL kinds
+    # during this window on purpose — a cold slot-0 warm was
     # measured at 300s+, once seven minutes — and `compute` lives in
     # this process, so waiting here left the NL layer without its
     # calculator for exactly the minutes it is the only thing running.

@@ -189,14 +189,13 @@ _FEEDBACK_PROMPTS = sorted(
 
 def test_the_block_reaches_every_seat_prompt() -> None:
     """The seats that filed nothing under the retired survivor leg —
-    presearch, the librarian family, the intake turn — are exactly the
-    ones that had no channel. Adding the tool without telling them
-    would have reproduced that silence."""
+    presearch, the (since retired) librarian family, the intake turn —
+    are exactly the ones that had no channel. Adding the tool without
+    telling them would have reproduced that silence."""
     names = {p.name for p in _FEEDBACK_PROMPTS}
     assert {"adversary.md", "routine.md", "inject_batch_done.md",
             "theory.md", "review.md", "formalize.md", "mint.md",
-            "intake.md", "presearch.md", "classify.md",
-            "migrate.md"} <= names, sorted(names)
+            "intake.md", "presearch.md"} <= names, sorted(names)
 
 
 @pytest.mark.parametrize("path", _FEEDBACK_PROMPTS, ids=lambda p: p.name)

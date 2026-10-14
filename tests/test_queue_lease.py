@@ -1,4 +1,4 @@
-"""v17 queue contract — scope + lease + payload (arch-review task #3).
+"""v17 queue contract — scope + lease (arch-review task #3).
 
 The pre-v17 queue relied on "one dispatcher at a time" as an unenforced
 discipline: recovery cleared the WHOLE table (#74), pop took the global
@@ -57,7 +57,6 @@ def test_leased_rows_still_count_as_in_queue():
                target_kind="Problem")
     db.pop_queue(conn)                                       # claim it
     assert db.is_in_queue(conn, target_id="p", kind="Strategist")
-    assert db.queue_contains(conn, kind="Strategist", target_id="p")
     assert db.queue_count(conn, target_id="p", kind="Strategist") == 1
 
 
@@ -208,30 +207,6 @@ def test_recovery_unscoped_still_spares_live_leases(monkeypatch):
     remaining = [r["target_id"] for r in conn.execute(
         "SELECT target_id FROM queue")]
     assert remaining == ["2"]
-
-
-# ---------------------------------------------------------------------
-# payload (librarian per-file units)
-# ---------------------------------------------------------------------
-
-def test_payload_rides_json_and_contains_discriminates():
-    conn = _mem()
-    _seed(conn, "p")
-    db.enqueue(conn, kind="Librarian", target_id="p", problem="p",
-               target_kind="Problem", payload={"file": "Library/P/a.lean"})
-    # per-file dedup sees exactly its unit
-    assert db.queue_contains(conn, kind="Librarian", target_id="p",
-                             payload_file="Library/P/a.lean")
-    assert not db.queue_contains(conn, kind="Librarian", target_id="p",
-                                 payload_file="Library/P/b.lean")
-    # the serial-phase dedup must NOT mistake a per-file unit for its
-    # own plain row (same target_id since v17)
-    assert not db.queue_contains(conn, kind="Librarian", target_id="p",
-                                 no_payload=True)
-    db.enqueue(conn, kind="Librarian", target_id="p", problem="p",
-               target_kind="Problem")
-    assert db.queue_contains(conn, kind="Librarian", target_id="p",
-                             no_payload=True)
 
 
 # ---------------------------------------------------------------------

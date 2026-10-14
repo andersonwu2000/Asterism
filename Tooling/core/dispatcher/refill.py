@@ -21,7 +21,6 @@ from ... import agent, pipeline
 from .. import config, fsutil, gateway_health, network_wait, quota, quota_wait
 from ..admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                          DENY_TARGET_COOLED, admission)
-from ..librarian_sched import _lib_decode  # noqa: E402
 from ...state import db, thresholds, transitions, tree
 from ...state import intent as intent_mod
 from ...state import failures as _failures
@@ -40,9 +39,7 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
     target_id=problem name); everything else targets a goal whose
     `problem` column we look up."""
     if target_kind == "Problem":
-        # Strip a Librarian per-file suffix (problem\x1ffile); a plain
-        # problem (Forward / phase-step Librarian) is returned unchanged.
-        return _lib_decode(target_id)[0]
+        return target_id
     if target_kind == "Group":
         # v35 — a Strategist row carries a GROUP id. Falling through to
         # the goal lookup below would read it as a goal id and hand back
@@ -60,7 +57,7 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
 
 def env_blocked_kinds(workspace=None) -> "set[str]":
     """Operator hold on dispatch kinds (2026-08-30): a comma list of
-    queue kinds (`Formalizer`, `Strategist`, `Librarian`,
+    queue kinds (`Formalizer`, `Strategist`, `Theorist`,
     case-insensitive) the daemon must not dispatch — the same lever the
     quota ledger pulls when a seat is out of quota, by hand. Lets an
     experiment run one kind alone on a live tree (a routine audit

@@ -1,6 +1,6 @@
 """target-1 v1 pre-search (`Tooling/pipeline/_presearch.py`) unit tests.
 
-Cover the framework-side 3-block verification + render + Context injection.
+Cover the framework-side 2-block verification + render + Context injection.
 The agent spawn itself is exercised live, not here."""
 from Tooling.pipeline import _presearch
 from Tooling.agent import context
@@ -35,35 +35,6 @@ def test_verify_keeps_when_lookup_unavailable(monkeypatch, tmp_path):
         {"mathlib": [{"name": "Real.add_comm"}]}, tmp_path, tmp_path)
 
 
-def test_verify_library_against_db_index(tmp_path):
-    """Library candidates are kept only when among the DB's placed+bridged
-    decl names (v18 — exact FQN or leaf match; was an INDEX.md substring
-    probe). conn=None keeps all (defensive fallback)."""
-    from Tooling.state import db as _dbm
-    conn = _dbm.connect(":memory:")
-    _dbm.init_schema(conn)
-    conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("INSERT INTO problems (name, created_at,"
-                 " bootstrap_done) VALUES ('p','t',1)")
-    conn.execute("INSERT INTO library_decls (problem, slug, target_name,"
-                 " target_file, lifecycle, created_at, updated_at)"
-                 " VALUES ('p','real_thing','Library.X.real_thing',"
-                 "'Library/X.lean','migrated','t','t')")
-    _dbm.mark_library_bridged(conn, "p")
-    blocks = {"library": [{"name": "Library.X.real_thing"},
-                          {"name": "Library.X.ghost"}]}
-    names = [c["name"] for c in _presearch._verify(blocks, tmp_path, tmp_path,
-                                                   conn=conn)]
-    assert "Library.X.real_thing" in names
-    assert "Library.X.ghost" not in names
-    # module-qualified report with matching LEAF also passes
-    blocks = {"library": [{"name": "Library.Other.Path.real_thing"}]}
-    assert _presearch._verify(blocks, tmp_path, tmp_path, conn=conn)
-    # conn=None -> keep all (no filter available)
-    blocks = {"library": [{"name": "Library.X.ghost"}]}
-    assert _presearch._verify(blocks, tmp_path, tmp_path)
-
-
 def test_verify_in_problem_existence_guard(tmp_path):
     """In-problem names are kept only if their decl appears in `proofs/` — a
     light guard against padded / invented sibling names."""
@@ -78,32 +49,31 @@ def test_verify_in_problem_existence_guard(tmp_path):
     assert "Problems.p.ghost_sib" not in names
 
 
-def test_verify_caps_each_block(tmp_path):
-    """Each block is capped at `_MAX_PER_BLOCK` (no INDEX → library kept as-is,
-    so the per-block cap is what limits the count)."""
-    (tmp_path / "Library").mkdir()
-    blocks = {"library": [{"name": f"Library.X.n{i}"} for i in range(25)]}
+def test_verify_caps_each_block(monkeypatch, tmp_path):
+    """Each block is capped at `_MAX_PER_BLOCK` (lookup offline → mathlib kept
+    unverified, so the per-block cap is what limits the count)."""
+    from Tooling.knowledge import lemma_lookup
+    monkeypatch.setattr(
+        lemma_lookup, "lookup_batch",
+        lambda names, ws: (_ for _ in ()).throw(RuntimeError("offline")))
+    blocks = {"mathlib": [{"name": f"Real.n{i}"} for i in range(25)]}
     out = _presearch._verify(blocks, tmp_path, tmp_path)
     assert len(out) == _presearch._MAX_PER_BLOCK
 
 
-def test_verify_orders_in_problem_library_mathlib(monkeypatch, tmp_path):
-    """Output is ordered in_problem → library → mathlib (cleanest cite first)."""
+def test_verify_orders_in_problem_mathlib(monkeypatch, tmp_path):
+    """Output is ordered in_problem → mathlib (cleanest cite first)."""
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch",
                         lambda names, ws: {"Real.x": _Info(True, "s")})
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "- `Library.Y.z`\n", encoding="utf-8")
     pdir = tmp_path / "Problems" / "p"
     (pdir / "proofs").mkdir(parents=True)
     (pdir / "proofs" / "L_sib.lean").write_text(
         "theorem sib : True := trivial\n", encoding="utf-8")
     blocks = {"mathlib": [{"name": "Real.x"}],
-              "library": [{"name": "Library.Y.z"}],
               "in_problem": [{"name": "Problems.p.sib"}]}
     srcs = [c["source"] for c in _presearch._verify(blocks, tmp_path, pdir)]
-    assert srcs == ["in_problem", "library", "mathlib"]
+    assert srcs == ["in_problem", "mathlib"]
 
 
 def test_section_present_when_cache_exists(tmp_path):
@@ -248,7 +218,7 @@ def test_verify_excludes_goal_own_slug(tmp_path):
     blocks = {"in_problem": [
         {"name": "my_goal", "why": "matches"},
         {"name": "sibling_done", "why": "proved sibling"},
-    ], "library": [], "mathlib": []}
+    ], "mathlib": []}
     out = _presearch._verify(blocks, tmp_path, pdir, exclude_slug="my_goal")
     names = [e["name"] for e in out]
     assert "my_goal" not in names

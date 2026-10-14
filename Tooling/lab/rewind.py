@@ -139,9 +139,8 @@ def open_copy_for_rewind(path: Path) -> sqlite3.Connection:
 #: the rewound copy and points here, which turns the first shape into a
 #: refusal that names the table.
 #:
-#: NOT here on purpose: `library_decls` and its siblings are global by
-#: design (an export carries them whole against a pruned `problems`), and
-#: `problem_settings` is configuration rather than history — its
+#: NOT here on purpose: `problem_settings` is configuration rather than
+#: history — its
 #: `updated_at` dates the last edit, so a date sweep would delete a
 #: setting that existed all along.
 DATED_PROBLEM_TABLES: "tuple[tuple[str, str], ...]" = (

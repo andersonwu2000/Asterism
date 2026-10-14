@@ -79,12 +79,9 @@ class RejectIngestBody(BaseModel):
 
 
 class ApproveIngestBody(BaseModel):
-    """The Library decision is made HERE, information in hand (owner:
-    a human signs; nothing enters the Library automatically). None =
-    keep the standing flag. `signer` is the displayed name of the
-    signature record (v27) — the record's evidence half (Claude login,
-    OS user, host, content seal) is captured server-side, never typed."""
-    library: bool | None = None
+    """`signer` is the displayed name of the signature record (v27) —
+    the record's evidence half (Claude login, OS user, host, content
+    seal) is captured server-side, never typed."""
     signer: str | None = None
 
 
@@ -494,7 +491,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         from ..core import config as _cfg
         roles: list[dict] = []
         for role in ("strategist", "adversary", "formalizer", "presearch",
-                     "librarian", "scholar", "explainer",
+                     "explainer",
                      "theorist", "theory_reviewer"):
             try:
                 prov = _cfg.get(f"{role}.provider", workspace=workspace)
@@ -852,7 +849,6 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             merged = {
                 "axioms_whitelist": list(pintent.axioms_whitelist),
                 "forbidden_lemmas": list(pintent.forbidden_lemmas),
-                "library": bool(pintent.library),
             }
             merged.update(_settings.read(conn, problem))
             row = conn.execute(
@@ -903,7 +899,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             conn = db.connect(workspace / "asterism.db")
             try:
                 known = conn.execute(
-                    "SELECT library_bridged_at FROM problems WHERE name = ?",
+                    "SELECT 1 FROM problems WHERE name = ?",
                     (problem,)).fetchone()
                 if known is None:
                     raise HTTPException(status_code=404,
@@ -914,8 +910,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 # soundness under live (and past) proofs — the one
                 # genuinely dangerous knob. Enforced here, not just
                 # hidden in the UI.
-                current = {
-                    "axioms_whitelist": [], "library": False}
+                current = {"axioms_whitelist": []}
                 current.update(_settings.read(conn, problem))
                 if "axioms_whitelist" in body.settings:
                     asked = sorted(str(a) for a in
@@ -927,16 +922,6 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                             detail="AXIOMS_LOCKED: the axiom gate is fixed"
                                    " when the problem is created — it never"
                                    " changes mid-life")
-                # `library` settles once the harvest bridged: flipping
-                # it after that is a no-op wearing a control's face.
-                if ("library" in body.settings
-                        and known["library_bridged_at"] is not None
-                        and bool(body.settings["library"])
-                        != bool(current["library"])):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="LIBRARY_SETTLED: this problem's work is"
-                               " already in the Library")
                 for key, value in body.settings.items():
                     try:
                         _settings.write(conn, problem, key, value)
@@ -1124,28 +1109,6 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                                 detail="no such binding")
         return {"message": f"unbound {pid} from {problem}"}
 
-    @app.get("/api/library")
-    def library() -> dict:
-        if not (workspace / "asterism.db").exists():
-            return {"problems": []}
-        with _ro(workspace) as conn:
-            return _data.library(conn)
-
-    @app.get("/api/library/{problem}")
-    def library_chapter(problem: str) -> dict:
-        """The harvested Library modules ONE problem contributed —
-        the reading surface (curated text), not the engine record."""
-        with _ro(workspace) as conn:
-            d = _data.library_chapter(conn, workspace, problem)
-            if d is not None:
-                # the chapter header names its signer - the trust
-                # record travels with the reading surface (v27)
-                d["signoff"] = _data.signoff_with_seal(conn, problem)
-        if d is None:
-            raise HTTPException(status_code=404,
-                                detail=f"{problem} has no bridged Library work")
-        return d
-
     @app.get("/api/telemetry/usage")
     def usage(project: "str | None" = None) -> dict:
         """Burn figures. While a daemon runs, the window is THIS run
@@ -1187,18 +1150,6 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                        body: "ApproveIngestBody | None" = None) -> dict:
         import argparse
         from ..core import cli as _cli
-        # the harvest decision lands with the signature: write the
-        # library flag through the chokepoint BEFORE approving (the
-        # librarian scheduler reads it after sign-off, so this is the
-        # last honest moment to set it)
-        if body is not None and body.library is not None:
-            from ..state import settings as _settings
-            conn = db.connect(workspace / "asterism.db")
-            try:
-                _settings.write(conn, problem, "library",
-                                bool(body.library))
-            finally:
-                conn.close()
         code = _cli.cmd_approve_ingest(argparse.Namespace(
             problem=problem,
             signer=None if body is None else body.signer))
@@ -1206,18 +1157,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=f"{problem!r} is not awaiting ingest sign-off")
-        # "harvest to Library" means harvest NOW, not on some future
-        # run the user has to know to start (owner call: the click IS
-        # the go signal). Best-effort: a busy engine doesn't undo the
-        # approval — the harvest then rides the next run naturally.
-        harvest_run = None
-        if body is not None and body.library:
-            from ..core.cli import daemon_start
-            rc, msg = daemon_start(workspace, scope=problem, once=True)
-            harvest_run = "started" if rc == 0 else f"not started: {msg}"
-        return {"problem": problem, "action": "approve-ingest",
-                "library": None if body is None else body.library,
-                "harvest_run": harvest_run}
+        return {"problem": problem, "action": "approve-ingest"}
 
     @app.post("/api/problems/{problem}/reject-ingest")
     def reject_ingest(problem: str, body: RejectIngestBody) -> dict:
@@ -1296,13 +1236,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     @app.post("/api/problems/{problem}/delete")
     def delete_problem_ep(problem: str) -> dict:
         """Destruction tier (owner): the UI gates this behind a
-        type-the-name confirm; the REAL guards (bridged refuses,
-        engine-busy refuses) live in the chokepoint."""
+        type-the-name confirm; the REAL guard (engine-busy refuses)
+        lives in the chokepoint."""
         from ..core.cli import delete_problem
         rc, msg = delete_problem(workspace, problem)
         if rc == 1:
             raise HTTPException(status_code=404, detail=msg)
-        if rc in (2, 3):
+        if rc == 3:
             raise HTTPException(status_code=409, detail=msg)
         if rc != 0:
             raise HTTPException(status_code=500, detail=msg)

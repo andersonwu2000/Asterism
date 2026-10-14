@@ -8,7 +8,6 @@
       "Classical.choice"
     ],
     "forbidden_lemmas": [],
-    "library": false,
     "signoff": false
   },
   "word": "The sub-claim 'the k-smooth gap below n is eventually empty' was proved FALSE for k ≥ 7 in the 2026-08 run — do not re-charter it. The finish needs S-unit / Thue–Siegel finiteness, which Mathlib does not have: treat it as a named open statement for the theory layer, not a brick. Barreto's conditional answer to part (ii) on the problem page rests on its own hypotheses — check them before relying on it."

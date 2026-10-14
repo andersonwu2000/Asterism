@@ -146,10 +146,9 @@ def test_board_fresh_workspace_is_empty_not_error(workspace: Path) -> None:
     assert r.json() == {"problems": []}
 
 
-def test_inbox_and_library_fresh_workspace(workspace: Path) -> None:
+def test_inbox_and_telemetry_fresh_workspace(workspace: Path) -> None:
     c = _client(workspace)
     assert c.get("/api/inbox").json() == {"amends": [], "signoffs": []}
-    assert c.get("/api/library").json() == {"problems": []}
     assert c.get("/api/telemetry/usage").json() == {
         "problems": [], "window": "all", "since": None}
 
@@ -196,8 +195,6 @@ def test_board_status_chips(workspace: Path) -> None:
                  ingested_at=db.now())
     # terminal states
     _add_problem(conn, "ingested_p", ingested_at=db.now())
-    _add_problem(conn, "bridged_p", ingested_at=db.now(),
-                 library_bridged_at=db.now())
     conn.commit()
     conn.close()
 
@@ -228,7 +225,6 @@ def test_board_status_chips(workspace: Path) -> None:
     assert rows["amend_p"]["status"] == "awaiting_human"
     assert rows["signoff_p"]["status"] == "signoff_pending"
     assert rows["ingested_p"]["status"] == "ingested"
-    assert rows["bridged_p"]["status"] == "bridged"
 
 
 def _fake_daemon(monkeypatch, *, pid: int = 4321,
@@ -696,61 +692,30 @@ def test_amend_bad_action_and_unknown_id(workspace: Path) -> None:
 # ---------------------------------------------------------------------
 
 def test_approve_ingest_via_api(workspace: Path, monkeypatch) -> None:
-    from Tooling.state import settings as _settings
     conn = _open_db(workspace)
     _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
-    # opted-in problem: approval must enqueue the harvest
-    _settings.write(conn, "p", "library", True)
     conn.close()
     monkeypatch.chdir(workspace)  # chokepoints open the cwd-relative DB
     c = _client(workspace)
     assert c.get("/api/inbox").json()["signoffs"][0]["problem"] == "p"
-    r = c.post("/api/problems/p/approve-ingest")
+    r = c.post("/api/problems/p/approve-ingest", json={"signer": "ada"})
     assert r.status_code == 200
+    assert r.json() == {"problem": "p", "action": "approve-ingest"}
     conn = db.connect(workspace / "asterism.db")
     assert not db.problem_ingest_signoff_pending(conn, "p")
-    assert db.is_in_queue(conn, target_id="p", kind="Librarian")
+    assert db.get_ingest_signoff(conn, "p")["name"] == "ada"
     conn.close()
     # not pending anymore → 409
     assert c.post("/api/problems/p/approve-ingest").status_code == 409
 
 
-def test_approve_ingest_carries_the_library_decision(
-        workspace: Path, monkeypatch) -> None:
-    """The Library decision is made AT SIGN-OFF (owner: a human signs,
-    nothing is harvested automatically): approve {library: false}
-    writes the flag through the settings chokepoint before approving;
-    a bodyless approve keeps the standing flag (legacy callers)."""
-    from Tooling.state import settings as _settings
-    conn = _open_db(workspace)
-    _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
-    _settings.write(conn, "p", "library", True)
-    conn.commit()
-    conn.close()
-    monkeypatch.chdir(workspace)
-    c = _client(workspace)
-    r = c.post("/api/problems/p/approve-ingest", json={"library": False})
-    assert r.status_code == 200
-    assert r.json()["library"] is False
-    conn = db.connect(workspace / "asterism.db")
-    assert _settings.read(conn, "p")["library"] is False
-    assert not db.problem_ingest_signoff_pending(conn, "p")
-    # signing with library:false must not start a harvest (2026-07-18:
-    # the old unconditional enqueue was a BUG3-class gate bypass)
-    assert not db.is_in_queue(conn, target_id="p", kind="Librarian")
-    conn.close()
-
-
 def test_delete_problem_guards_and_deletes(workspace: Path,
                                            monkeypatch) -> None:
-    """Deletion is chokepoint-guarded: bridged problems 409 (their
-    chapter imports the proofs), and a clean delete removes the DB
+    """Deletion is chokepoint-guarded: a clean delete removes the DB
     row AND the directory in one act (rule 10)."""
     from Tooling.state import db as _db
     conn = _open_db(workspace)
     _add_problem(conn, "p")
-    _add_problem(conn, "q")
-    _db.mark_library_bridged(conn, "q")
     conn.commit()
     conn.close()
     pdir = workspace / "Problems" / "p"
@@ -759,10 +724,6 @@ def test_delete_problem_guards_and_deletes(workspace: Path,
         '{"problem": "p", "charter": "x"}', encoding="utf-8")
     monkeypatch.chdir(workspace)
     c = _client(workspace)
-    # bridged refuses
-    r = c.post("/api/problems/q/delete")
-    assert r.status_code == 409
-    assert "Library" in r.json()["detail"]
     # unknown 404s
     assert c.post("/api/problems/nope/delete").status_code == 404
     # clean delete: row gone, dir gone
@@ -773,28 +734,6 @@ def test_delete_problem_guards_and_deletes(workspace: Path,
     assert conn.execute(
         "SELECT 1 FROM problems WHERE name='p'").fetchone() is None
     conn.close()
-
-
-def test_approve_harvest_starts_the_run(workspace: Path,
-                                        monkeypatch) -> None:
-    """'Harvest to Library' harvests NOW (owner call: the click IS the
-    go signal) — approve {library: true} best-effort starts a scoped
-    once-run; a busy engine must not undo the approval."""
-    import Tooling.core.cli as _cli
-    calls: list = []
-    monkeypatch.setattr(
-        _cli, "daemon_start",
-        lambda ws, scope=None, once=False: (calls.append((scope, once))
-                                            or (0, "started pid 1")))
-    conn = _open_db(workspace)
-    _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
-    conn.close()
-    monkeypatch.chdir(workspace)
-    r = _client(workspace).post("/api/problems/p/approve-ingest",
-                                json={"library": True})
-    assert r.status_code == 200
-    assert r.json()["harvest_run"] == "started"
-    assert calls == [("p", True)]
 
 
 def test_reject_ingest_via_api(workspace: Path, monkeypatch) -> None:
@@ -817,7 +756,7 @@ def test_reject_ingest_via_api(workspace: Path, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------
-# review snapshot / telemetry / library
+# review snapshot / telemetry
 # ---------------------------------------------------------------------
 
 def test_anchor_edges_derived_from_snapshot(workspace: Path) -> None:
@@ -917,90 +856,6 @@ def test_telemetry_usage_windows_to_running_daemon(
     assert r2["window"] == "run"
     assert r2["since"] == "2025-01-01T00:00:00+00:00"
     assert r2["problems"][0]["spawns"] == 1
-
-
-def test_library_lists_bridged_decls(workspace: Path) -> None:
-    conn = _open_db(workspace)
-    _add_problem(conn, "p", library_bridged_at=db.now())
-    ts = db.now()
-    conn.execute(
-        "INSERT INTO library_decls (problem, slug, lifecycle, target_file,"
-        " target_name, signature, decl_kind, created_at, updated_at)"
-        " VALUES ('p', 'main_thm', 'cleaned', 'Library/X.lean',"
-        " 'Asterism.mainThm', 'theorem mainThm : True', 'theorem', ?, ?)",
-        (ts, ts))
-    conn.commit()
-    conn.close()
-    lib = _client(workspace).get("/api/library").json()
-    assert lib["problems"][0]["problem"] == "p"
-    assert lib["problems"][0]["decls"][0]["name"] == "Asterism.mainThm"
-
-
-def test_library_chapter_reads_curated_modules(workspace: Path) -> None:
-    """GET /api/library/{p}: modules in import order, decls in source
-    order with docstrings from the curated file, deliverable flag from
-    the goal side. 404 for unbridged problems."""
-    conn = _open_db(workspace)
-    _add_problem(conn, "p", library_bridged_at=db.now())
-    gid = db.insert_goal(conn, problem="p", slug="main_thm",
-                         lean_path="Problems/p/proofs/main_thm.lean",
-                         statement="True", origin="root", status="proved")
-    db.mark_deliverable(conn, gid, True)
-    ts = db.now()
-    for slug, tf, tn, sig, kind in [
-            ("main_thm", "Library/X/Main.lean", "Lib.X.Main.mainThm",
-             "sig", "theorem"),
-            ("helper", "Library/X/Main.lean", "Lib.X.Main.helper",
-             "sig", "theorem"),
-            # pre-oracle harvest row: no stored signature/kind — the
-            # curated source text stands in (display fallback)
-            ("base_def", "Library/X/Defs.lean", "Lib.X.Defs.baseDef",
-             None, None)]:
-        conn.execute(
-            "INSERT INTO library_decls (problem, slug, lifecycle,"
-            " target_file, target_name, signature, decl_kind, created_at,"
-            " updated_at) VALUES ('p', ?, 'cleaned', ?, ?, ?, ?, ?, ?)",
-            (slug, tf, tn, sig, kind, ts, ts))
-    conn.commit()
-    conn.close()
-    (workspace / "Library" / "X").mkdir(parents=True)
-    (workspace / "Library" / "X" / "Defs.lean").write_text(
-        "import Mathlib\n/-!\n# Base defs\nThe vocabulary.\n-/\n"
-        "/-- The base object. -/\ndef baseDef : Nat := 0\n",
-        encoding="utf-8")
-    (workspace / "Library" / "X" / "Main.lean").write_text(
-        "import Library.X.Defs\n/-!\n# Main\n-/\n"
-        "/-- A helper step. -/\ntheorem helper : baseDef = 0 := rfl\n"
-        "/-- The main result. -/\n@[simp]\ntheorem mainThm : True := trivial\n",
-        encoding="utf-8")
-
-    c = _client(workspace)
-    ch = c.get("/api/library/p").json()
-    # Defs precedes Main (Main imports it), regardless of path order
-    assert [f["path"] for f in ch["files"]] == [
-        "Library/X/Defs.lean", "Library/X/Main.lean"]
-    assert "vocabulary" in ch["files"][0]["module_doc"]
-    main = ch["files"][1]
-    # source order, not DB order: helper is declared first
-    assert [d["slug"] for d in main["decls"]] == ["helper", "main_thm"]
-    # docstring attaches across the @[simp] attribute line
-    assert main["decls"][1]["doc"] == "The main result."
-    assert main["decls"][1]["is_deliverable"] is True
-    assert main["decls"][0]["is_deliverable"] is False
-    # stored oracle signature wins; a pre-oracle row falls back to the
-    # curated source header (statement, no proof body)
-    assert main["decls"][0]["signature"] == "sig"
-    base = ch["files"][0]["decls"][0]
-    assert base["signature"] == "def baseDef : Nat"
-    assert base["decl_kind"] == "def"
-    # keystone weight: baseDef is reached for from Main.lean; helper
-    # is not used outside its own module
-    assert base["used_by"] == 1
-    assert main["decls"][0]["used_by"] == 0
-    # the file-level sky: Main imports Defs, within this problem
-    assert main["imports_within"] == ["Library/X/Defs.lean"]
-    assert ch["files"][0]["imports_within"] == []
-    assert c.get("/api/library/nope").status_code == 404
 
 
 def test_review_refresh_async_job(workspace: Path, monkeypatch) -> None:
@@ -1413,12 +1268,12 @@ def test_create_settings_and_papers_are_authoritative(
                  content=b"# Ref\n\nbody").json()["id"]
     r = c.post("/api/problems/create", json={
         "name": "Test.cite", "charter": "prove the thing",
-        "settings": {"forbidden_lemmas": ["bad*"], "library": False},
+        "settings": {"forbidden_lemmas": ["bad*"], "signoff": False},
         "papers": [pid]})
     assert r.status_code == 200, r.json()
     got = c.get("/api/problems/Test.cite/intent").json()["settings"]
     assert got["forbidden_lemmas"] == ["bad*"]
-    assert got["library"] is False
+    assert got["signoff"] is False
     bound = c.get("/api/problems/Test.cite/papers").json()["papers"]
     assert [(b["id"], b["origin"]) for b in bound] == [(pid, "user")]
 
@@ -1610,7 +1465,7 @@ def test_create_settings_land_in_db_and_seed_mirror(workspace: Path) -> None:
     r = c.post("/api/problems/create", json={
         "name": "Test.structured",
         "charter": "# Test.structured\n\n## Statement\n\nProve it.\n",
-        "settings": {"forbidden_lemmas": ["sperner*"], "library": True},
+        "settings": {"forbidden_lemmas": ["sperner*"], "signoff": True},
     })
     assert r.status_code == 200, r.text
     conn = db.connect(workspace / "asterism.db")
@@ -1619,13 +1474,13 @@ def test_create_settings_land_in_db_and_seed_mirror(workspace: Path) -> None:
     finally:
         conn.close()
     assert stored["forbidden_lemmas"] == ["sperner*"]
-    assert stored["library"] is True
+    assert stored["signoff"] is True
     seed = _intent.read_seed(
         workspace / "Problems" / "Test" / "structured" / "problem.json")
     assert seed is not None
     assert "## Statement" in seed["charter"]
     assert seed["settings"]["forbidden_lemmas"] == ["sperner*"]
-    assert seed["settings"]["library"] is True
+    assert seed["settings"]["signoff"] is True
 
 
 def test_intent_get_and_update(workspace: Path) -> None:
@@ -1633,21 +1488,21 @@ def test_intent_get_and_update(workspace: Path) -> None:
     c.post("/api/problems/create", json={
         "name": "Test.editme",
         "charter": "# Test.editme\n\nOld body.\n",
-        "settings": {"library": False},
+        "settings": {"signoff": False},
     })
     got = c.get("/api/problems/Test.editme/intent").json()
-    assert got["settings"]["library"] is False
+    assert got["settings"]["signoff"] is False
     assert "Old body." in got["charter"]
     assert got["word"] == ""
     assert got["pending_amend"] is False
     r = c.post("/api/problems/Test.editme/intent", json={
         "charter": "\n# Test.editme\n\nNew body.\n",
         "word": "stay on the analytic route",
-        "settings": {"library": True, "forbidden_lemmas": ["kuhn*"]},
+        "settings": {"signoff": True, "forbidden_lemmas": ["kuhn*"]},
     })
     assert r.status_code == 200, r.text
     got2 = c.get("/api/problems/Test.editme/intent").json()
-    assert got2["settings"]["library"] is True
+    assert got2["settings"]["signoff"] is True
     assert got2["settings"]["forbidden_lemmas"] == ["kuhn*"]
     assert "New body." in got2["charter"]
     assert got2["word"] == "stay on the analytic route"
@@ -1736,26 +1591,6 @@ def test_intent_axiom_gate_locked_after_creation(workspace: Path) -> None:
     assert r.status_code == 200, r.text
     got = c.get("/api/problems/Test.gate/intent").json()["settings"]
     assert got["forbidden_lemmas"] == ["kuhn*"]
-
-
-def test_intent_library_settles_after_bridge(workspace: Path) -> None:
-    c = _client(workspace)
-    c.post("/api/problems/create", json={
-        "name": "Test.settled", "charter": "# Test.settled\n",
-        "settings": {"library": True}})
-    conn = _open_db(workspace)
-    conn.execute("UPDATE problems SET library_bridged_at = ? WHERE name = ?",
-                 (db.now(), "Test.settled"))
-    conn.commit()
-    conn.close()
-    r = c.post("/api/problems/Test.settled/intent", json={
-        "settings": {"library": False}})
-    assert r.status_code == 409
-    assert "LIBRARY_SETTLED" in r.json()["detail"]
-    # same-value round-trip stays fine
-    r = c.post("/api/problems/Test.settled/intent", json={
-        "settings": {"library": True}})
-    assert r.status_code == 200, r.text
 
 
 def test_intent_charter_update_blocked_by_pending_amend(
@@ -1997,7 +1832,6 @@ def test_the_three_layers_follow_the_ranking_not_the_names() -> None:
     assert seats["adversary"]["model"] == "claude-opus-5"
     assert seats["formalizer"]["model"] == "claude-sonnet-5"
     assert seats["presearch"]["model"] == "claude-sonnet-5"
-    assert seats["librarian"]["model"] == "claude-sonnet-5"
     # claude reads no depth of its own, so none is written for it
     assert "effort" not in seats["theorist"]
 

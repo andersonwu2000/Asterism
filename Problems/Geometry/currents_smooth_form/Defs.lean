@@ -1,9 +1,9 @@
 import Mathlib
-import Library.Geometry.Currents.BoundarySquareZero
+import Problems.Geometry.currents_boundary_zero.Defs
 
 open scoped Distributions ContDiff
 open TestFunction TopologicalSpace MeasureTheory
-open Library.Geometry.Currents.BoundarySquareZero
+open Problems.Geometry.currents_boundary_zero (Current)
 
 namespace Problems.Geometry.currents_smooth_form
 

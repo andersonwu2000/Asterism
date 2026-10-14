@@ -249,91 +249,16 @@ def test_claude_spawn_includes_trim_flags(
     assert "--exclude-dynamic-system-prompt-sections" in cmd
 
 
-def test_librarian_spawn_adds_library_dir(
+def test_spawn_never_grants_library_dir(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Librarian spawns (cleanup/bridge edit Library files in place) get
-    --add-dir <workspace>/Library so the agent can Read/Grep the target.
-    Also exercises namespaced-problem workspace resolution (3 levels deep)."""
+    """The Library subsystem is retired: even with a leftover `Library/`
+    on disk, a spawn gets no --add-dir for it."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
 
     (tmp_path / "Library").mkdir()
-    pd = tmp_path / "Problems" / "LinearAlgebra" / "jordan_normal_form"
-    pd.mkdir(parents=True)
-    att = tmp_path / ".attempts" / "x"
-    att.mkdir(parents=True)
-    captured = _capture_cmd(monkeypatch)
-    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
-        kind="librarian", prompt_path=Path("/x/p.md"),
-        problem_dir=pd, attempts_dir=att, timeout_sec=60))
-    cmd = captured[0]
-    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
-    assert str(tmp_path / "Library") in add_dirs, add_dirs
-
-
-def test_librarian_spawn_scopes_grep_read_to_library(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Library/ is the Librarian's working set — Grep/Read must be allow-scoped
-    to it, not just --add-dir'd. Without the allow-pattern the agent's Grep/Read
-    on Library are permission-denied, it falls back to (blocked) `Bash grep`, and
-    loops to the spawn timeout (residue_thm cleanup, 2026-06-17)."""
-    from pathlib import Path
-    from Tooling import llm
-    from Tooling.llm import claude_cli
-
-    (tmp_path / "Library").mkdir()
-    pd = tmp_path / "Problems" / "residue_thm"
-    pd.mkdir(parents=True)
-    att = tmp_path / ".attempts" / "x"
-    att.mkdir(parents=True)
-    captured = _capture_cmd(monkeypatch)
-    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
-        kind="librarian", prompt_path=Path("/x/p.md"),
-        problem_dir=pd, attempts_dir=att, timeout_sec=60))
-    cmd = captured[0]
-    allowed = cmd[cmd.index("--allowed-tools") + 1]
-    lib = (tmp_path / "Library").as_posix()
-    assert f"Grep({lib}/**)" in allowed, allowed
-    assert f"Read({lib}/**/*.lean)" in allowed, allowed
-
-
-def test_proving_spawn_adds_library_dir(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Library-as-input: proving workers ALSO get --add-dir <workspace>/Library
-    so they can Read/Grep and CITE reusable theorems harvested from prior
-    proved Problems (policy reversed — Library is a citable input, not just a
-    librarian-edited staging tree). Cross-problem citation is cycle-safe."""
-    from pathlib import Path
-    from Tooling import llm
-    from Tooling.llm import claude_cli
-
-    (tmp_path / "Library").mkdir()
-    pd = tmp_path / "Problems" / "p"
-    pd.mkdir(parents=True)
-    att = tmp_path / ".attempts" / "x"
-    att.mkdir(parents=True)
-    captured = _capture_cmd(monkeypatch)
-    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
-        kind="backward", prompt_path=Path("/x/p.md"),
-        problem_dir=pd, attempts_dir=att, timeout_sec=60))
-    cmd = captured[0]
-    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
-    assert str(tmp_path / "Library") in add_dirs, add_dirs
-
-
-def test_spawn_no_library_dir_when_absent(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No `Library/` on disk (fresh checkout) → no --add-dir for it
-    (claude CLI errors on a missing --add-dir path)."""
-    from pathlib import Path
-    from Tooling import llm
-    from Tooling.llm import claude_cli
-
     pd = tmp_path / "Problems" / "p"
     pd.mkdir(parents=True)
     att = tmp_path / ".attempts" / "x"

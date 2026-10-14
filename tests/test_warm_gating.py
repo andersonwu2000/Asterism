@@ -1,5 +1,5 @@
 """NL-first startup (2026-07-18): while the gateway warms in the
-background, only NL queue kinds (Strategist, Scholar) dispatch; Lean
+background, only NL queue kinds (Strategist, Theorist) dispatch; Lean
 kinds stay queued WITHOUT losing their queue position (no lease, no
 discard). Guards: pop_queue's exclude_kinds filter and the
 LEAN_QUEUE_KINDS partition against the queue-kind enum.
@@ -15,7 +15,7 @@ from Tooling.state import db
 
 # Theorist joined 2026-09-04 (theory_wake_design.md §3): an NL wake
 # like the Strategist — no Lean file open, so no warm gateway slot.
-_NL_KINDS = {"Strategist", "Scholar", "Theorist"}
+_NL_KINDS = {"Strategist", "Theorist"}
 
 
 @pytest.fixture

@@ -1,16 +1,18 @@
 /-
   Defs.lean — owns the boundary chart DATA (`faceProj` + the per-point `toFun` /
-  `invFun` / `source` / `target`), citing `Library…HalfSpaceFrontier` for `Bdry`,
-  `faceEmbed`, and `faceEmbed_symm_mem_boundary` (the guarded `invFun`'s membership).
+  `invFun` / `source` / `target`), citing `Problems.Geometry.stokes_bdry_invfun_mem` for `Bdry`,
+  `faceEmbed`, and `Problems.Geometry.stokes_bdry_invfun_mem.main` (the guarded `invFun`'s membership).
   The partial-equiv laws about this data are the Root.
 -/
 import Mathlib
-import Library.Geometry.ManifoldBoundary.HalfSpaceFrontier
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_bdry_invfun_mem.Defs
+import Problems.Geometry.stokes_bdry_invfun_mem.Root
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBoundary.HalfSpaceFrontier
+open Problems.Geometry.stokes_bdry_compact (Bdry)
+open Problems.Geometry.stokes_bdry_invfun_mem (faceEmbed)
 
 namespace Problems.Geometry.stokes_bdry_chart
 
@@ -39,7 +41,7 @@ noncomputable def chartInvFun (p : Bdry n M) (z : EuclideanSpace ℝ (Fin n)) : 
   haveI : Decidable (faceEmbed z ∈ (extChartAt (𝓡∂ (n + 1)) p.val).target) :=
     Classical.propDecidable _
   if h : faceEmbed z ∈ (extChartAt (𝓡∂ (n + 1)) p.val).target then
-    ⟨(extChartAt (𝓡∂ (n + 1)) p.val).symm (faceEmbed z), faceEmbed_symm_mem_boundary p z h⟩
+    ⟨(extChartAt (𝓡∂ (n + 1)) p.val).symm (faceEmbed z), Problems.Geometry.stokes_bdry_invfun_mem.main p z h⟩
   else p
 
 end Problems.Geometry.stokes_bdry_chart

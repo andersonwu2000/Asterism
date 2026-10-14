@@ -1,8 +1,8 @@
 """Per-problem machine settings — the DB chokepoint (frontmatter
 dissolve, 2026-07-07; sole source since the v40 Manifest retirement).
 
-The four machine settings (`axioms_whitelist`, `forbidden_lemmas`,
-`library`, `signoff`) live in the `problem_settings` table. Every read
+The three machine settings (`axioms_whitelist`, `forbidden_lemmas`,
+`signoff`) live in the `problem_settings` table. Every read
 and write goes through this module.
 
   * A key PRESENT in the DB is the value. An ABSENT key means the
@@ -28,15 +28,16 @@ from .db import now
 if TYPE_CHECKING:  # circular-import guard (intent imports us lazily)
     from .intent import ProblemIntent
 
-#: the settings this table owns: the UI trio plus the machine-owned
+#: the settings this table owns: the UI pair plus the machine-owned
 #: `signoff` (benchmark adapters' unattended opt-out; never surfaced
-#: in the UI).
+#: in the UI). A row under a retired key (`library`, the Librarian
+#: opt-in) reads as absent.
 SETTING_KEYS: tuple[str, ...] = (
-    "axioms_whitelist", "forbidden_lemmas", "library", "signoff",
+    "axioms_whitelist", "forbidden_lemmas", "signoff",
 )
 
 _LIST_KEYS = ("axioms_whitelist", "forbidden_lemmas")
-_BOOL_KEYS = ("library", "signoff")
+_BOOL_KEYS = ("signoff",)
 
 
 def _valid(key: str, value: object) -> bool:

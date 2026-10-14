@@ -1,15 +1,3 @@
-/** `Library/Foo/Bar.lean` → `Library.Foo.Bar` — the import-line name
- * of a repo file (Library and LibraryChapter each grew a private
- * copy of this expression). */
-export function moduleOf(path: string): string {
-  return path.replace(/\.lean$/, '').split('/').join('.')
-}
-
-/** the module's last name component — labels, captions */
-export function leafOf(path: string): string {
-  return moduleOf(path).split('.').pop() ?? path
-}
-
 /** Stable machine identities, written exactly as agents cite them. */
 export function goalCode(id: number): string {
   return `g${id}`

@@ -15,22 +15,18 @@ Strategy  = AND : all sub-Goals succeed → Strategy succeeds
 ```
 
 Leaf goals are closed directly by an LLM writing tactics; non-leaf goals are
-decomposed into strategies. Four worker roles drive the loop:
+decomposed into strategies. Two worker roles drive the loop:
 
 - **Formalizer** — the sole proving worker: triages intake, proves leaves,
   splits goals, mints toolkit lemmas.
 - **Strategist** — plans at the problem level: proposes decision batches as
   written research proposals, judged round-by-round by an isolated
   **Adversary** before anything commits.
-- **Scholar** — fetches and indexes papers into a citable shelf.
-- **Librarian** — harvests proved results through a five-stage chain into a
-  growing Library whose entries must re-pass every gate.
 
 Soundness is the one non-negotiable: `proved` is only marked after the proof's
 axiom set is verified against a whitelist; deduplication goes through Lean
-kernel probes; and harvested results pass per-declaration axiom gates again
-after every high-risk rewrite. A human signs off before anything enters the
-Library. The full design lives in [docs/architecture.md](docs/architecture.md).
+kernel probes; and a human signs off before a problem is closed. The full
+design lives in [docs/architecture.md](docs/architecture.md).
 
 ## Results
 
@@ -96,8 +92,7 @@ One serve process per workspace; the whole lifecycle runs in the browser.
 A live run strip names the phase and each agent's unit; the constellation
 draws the proof's true shape — root-grown work above a horizon, forward work
 beneath it with citation threads crossing where it is used. Papers live on a
-shelf you can bind citations from; the Library page draws the harvested
-corpus as one searchable sky. An inbox collects everything that needs a
+shelf you can bind citations from. An inbox collects everything that needs a
 human, with age escalation on blocking requests. The UI is read-only against
 the engine database; every action goes through the same chokepoints as the CLI.
 

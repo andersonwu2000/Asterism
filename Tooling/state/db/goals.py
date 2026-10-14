@@ -179,7 +179,7 @@ def bind_paper(conn: sqlite3.Connection, *, problem: str, paper_id: str,
     """Bind a shelved paper to a problem (paper pipeline v2, D13).
     Idempotent: an existing (problem, paper_id) binding is left as-is
     (first origin wins — a manifest binding is not demoted by a later
-    scholar fetch). Returns True iff a new binding was inserted."""
+    fetch). Returns True iff a new binding was inserted."""
     cur = conn.execute(
         "INSERT OR IGNORE INTO problem_papers"
         " (problem, paper_id, origin, reason, created_at)"
@@ -209,15 +209,6 @@ def paper_bindings(conn: sqlite3.Connection,
         " ORDER BY CASE origin WHEN 'manifest' THEN 0"
         " WHEN 'user' THEN 1 ELSE 2 END, created_at, paper_id",
         (problem,)).fetchall()
-
-
-def scholar_fetch_count(conn: sqlite3.Connection, problem: str) -> int:
-    """Scholar-origin bindings for `problem` — the D15 per-problem
-    fetch-cap counter."""
-    return int(conn.execute(
-        "SELECT COUNT(*) FROM problem_papers"
-        " WHERE problem = ? AND origin = 'scholar'",
-        (problem,)).fetchone()[0])
 
 
 def top_group_id(conn: sqlite3.Connection,
@@ -260,9 +251,6 @@ def deliverables(conn: sqlite3.Connection,
         were internal hand-offs between sub-groups.
       * `core/cli._find_reject_victims` — its companion: a person can
         only reject a claim they were shown.
-      * `pipeline/librarian/run` — harvest seeds. The Library is
-        curated FOR people, so what reaches it is what the top group
-        promoted. A sub-group result not promoted is scaffolding.
 
     And which do NOT, because the premise above does not hold for them:
 
@@ -299,9 +287,9 @@ def deliverables(conn: sqlite3.Connection,
 def set_ingest_signoff_pending(conn: sqlite3.Connection, problem: str,
                                pending: bool = True) -> None:
     """anchor+claim (v14) — set/clear the per-problem ingest sign-off
-    pause. Set by a Strategist `Ingest` under `library.require_signoff`;
-    cleared by `asterism approve-ingest` (→ enqueue Librarian) or
-    `asterism reject-ingest` (→ back to proving)."""
+    pause. Set by a Strategist `Ingest` under `ingest.require_signoff`;
+    cleared by `asterism approve-ingest` or `asterism reject-ingest`
+    (→ back to proving)."""
     conn.execute(
         "UPDATE problems SET ingest_signoff_pending = ? WHERE name = ?",
         (1 if pending else 0, problem),

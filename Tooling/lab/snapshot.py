@@ -4,7 +4,7 @@ of a live workspace, optionally rewound to a historical instant.
 A slice is a `carry` bundle and deliberately nothing else:
 
     carry.db             the DB pruned to this problem's rows, with
-                         `library_*` / `projects` carried whole
+                         `projects` carried whole
     files.tar.gz         the problem directory, the papers bound to it,
                          and the Project's `_docs/{user,agent}`
     manifest.json        carry's manifest plus the lab's four questions:

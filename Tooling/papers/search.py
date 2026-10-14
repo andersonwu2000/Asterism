@@ -1,4 +1,4 @@
-"""`python -m Tooling.papers.search '<query>'` — the Scholar agent's
+"""`python -m Tooling.papers.search '<query>'` — the paper_search tool's
 citation-resolution command (paper v2, D12).
 
 One curated network surface: aggregates OpenAlex (fuzzy citation →

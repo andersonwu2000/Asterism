@@ -1,9 +1,9 @@
-"""Phase 7 migration: pipelines.kind + queue.kind CHECK accept 'Librarian'.
-
-Guards the schema contract the Librarian dispatch trigger depends on — a
-fresh DB is at the expected version and accepts the new kind, an old (v6)
-DB upgrades in place without losing rows, and re-running init_schema is a
+"""Schema version ladder: a fresh DB is at the expected version, old
+DBs upgrade in place without losing rows, and re-running init_schema is a
 no-op. Invariant test per CLAUDE.md rule 6 (schema CHECKs get tests too).
+Born as the Phase 7 'Librarian' kind test; the Librarian is retired at
+v56 (`pipelines.kind` keeps the value for its historical rows, `queue`
+drops it).
 """
 import re
 import sqlite3
@@ -24,7 +24,8 @@ from Tooling.state import db
 # 2026-09-04: the Theorist layer (theory_wake_design.md §4) - four
 # CHECK widenings and one new table. 52→53 2026-09-06:
 # `strategist_decisions.infra_deaths` — the bound on re-queueing a
-# request whose worker died on infra.
+# request whose worker died on infra. 55→56 2026-10-14 v56: Librarian
+# retired (library tables/columns dropped, queue.kind CHECK narrowed).
 
 
 def _fresh(tmp_path):
@@ -35,19 +36,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
-
-
-def test_queue_accepts_librarian(tmp_path):
-    c = _fresh(tmp_path)
-    c.execute("INSERT INTO problems (name, created_at,"
-              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
-    c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
-              " created_at) VALUES ('Librarian','p','Problem',5,?)",
-              (db.now(),))
-    c.commit()
-    assert c.execute("SELECT count(*) FROM queue WHERE kind='Librarian'"
-                     ).fetchone()[0] == 1
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
 
 
 def test_pipelines_accepts_librarian(tmp_path):
@@ -70,8 +59,8 @@ def test_queue_still_rejects_unknown_kind(tmp_path):
 
 
 def test_v6_upgrades_preserving_rows(tmp_path):
-    """An old v6 DB with Builder/Backward rows upgrades to v7 in place,
-    keeps every row, and then accepts 'Librarian'."""
+    """An old v6 DB with Builder/Backward rows upgrades in place, keeps
+    every row, and `pipelines` then accepts the historical 'Librarian'."""
     c = _fresh(tmp_path)
     c.execute("INSERT INTO problems (name, created_at,"
               " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
@@ -86,12 +75,13 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
-    c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
-              " created_at) VALUES ('Librarian','p','Problem',5,?)",
-              (db.now(),))
+    c.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
+              " status, outcome, started_at, finished_at)"
+              " VALUES ('p2','Librarian','p','Problem','succeeded','success',"
+              "'t','t')")
     c.commit()  # no IntegrityError → CHECK widened
 
 
@@ -99,100 +89,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
-
-
-# --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
-
-def _seed_lib_decl(c, slug, lifecycle):
-    c.execute("INSERT INTO problems (name, created_at,"
-              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
-    c.execute("INSERT INTO library_decls (problem, slug, lifecycle,"
-              " created_at, updated_at) VALUES ('p',?,?,?,?)",
-              (slug, lifecycle, db.now(), db.now()))
-
-
-def test_fresh_db_library_decls_accepts_cleaned(tmp_path):
-    c = _fresh(tmp_path)
-    _seed_lib_decl(c, "foo", "cleaned")
-    c.commit()
-    assert c.execute("SELECT count(*) FROM library_decls WHERE"
-                     " lifecycle='cleaned'").fetchone()[0] == 1
-
-
-def test_library_decls_still_rejects_unknown_lifecycle(tmp_path):
-    c = _fresh(tmp_path)
-    with pytest.raises(sqlite3.IntegrityError):
-        _seed_lib_decl(c, "bar", "bogus")
-
-
-def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
-    """An old v7 DB with a 'migrated' library_decls row upgrades to v8,
-    keeps the row, and then accepts 'cleaned'."""
-    c = _fresh(tmp_path)
-    _seed_lib_decl(c, "keep", "migrated")
-    c.execute("PRAGMA user_version = 7")
-    c.commit()
-
-    db.init_schema(c)  # phase8 fires → rebuild library_decls
-
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
-    assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
-                     ).fetchone()[0] == "migrated"     # row preserved
-    db.mark_library_cleaned(c, problem="p", slug="keep")
-    assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
-                     ).fetchone()[0] == "cleaned"      # CHECK widened
-
-
-# --- Phase 10: library_decls.renamed_from (P4 rename deferred-rewire) ---
-
-def test_fresh_db_has_renamed_from(tmp_path):
-    c = _fresh(tmp_path)
-    cols = {r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
-    assert "renamed_from" in cols
-
-
-def test_v9_db_gains_renamed_from(tmp_path):
-    """An old v9 DB (library_decls without renamed_from) upgrades to v10 via a
-    plain ADD COLUMN, keeping rows."""
-    c = _fresh(tmp_path)
-    _seed_lib_decl(c, "keep", "migrated")
-    c.execute("ALTER TABLE library_decls DROP COLUMN renamed_from")
-    c.execute("PRAGMA user_version = 9")
-    c.commit()
-    assert "renamed_from" not in {
-        r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
-
-    db.init_schema(c)  # phase10 fires → ADD COLUMN
-
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
-    assert "renamed_from" in {
-        r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
-    assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
-                     ).fetchone()[0] == "migrated"     # row preserved
-
-
-def test_set_library_renamed_records_old_and_new(tmp_path):
-    c = _fresh(tmp_path)
-    _seed_lib_decl(c, "foo", "cleaned")
-    c.execute("UPDATE library_decls SET target_name='Library.M.old_name'"
-              " WHERE slug='foo'")
-    c.commit()
-    db.set_library_renamed(c, problem="p", slug="foo",
-                           old_fqn="Library.M.old_name",
-                           new_fqn="Library.M.new_name")
-    row = c.execute("SELECT target_name, renamed_from FROM library_decls"
-                    " WHERE slug='foo'").fetchone()
-    assert row["target_name"] == "Library.M.new_name"
-    assert row["renamed_from"] == "Library.M.old_name"
-    # COALESCE: a second rename keeps the ORIGINAL renamed_from.
-    db.set_library_renamed(c, problem="p", slug="foo",
-                           old_fqn="Library.M.new_name",
-                           new_fqn="Library.M.newer_name")
-    row = c.execute("SELECT target_name, renamed_from FROM library_decls"
-                    " WHERE slug='foo'").fetchone()
-    assert row["target_name"] == "Library.M.newer_name"
-    assert row["renamed_from"] == "Library.M.old_name"   # earliest preserved
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
 
 
 # --- v16: problems.ingested_at (Phase 6 problem terminal state) ---
@@ -242,7 +139,7 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"
@@ -373,7 +270,7 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 
     db.init_schema(c)
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     assert c.execute("SELECT status FROM goals WHERE id = ?",
                      (gid,)).fetchone()[0] == "shelved"
     assert c.execute("SELECT status FROM goals WHERE id = ?",
@@ -395,7 +292,7 @@ def test_v51_maps_dead_goals_to_shelved_with_a_history_row(tmp_path):
 def test_v51_is_idempotent_on_a_dead_free_db(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     assert c.execute("SELECT count(*) FROM goal_events").fetchone()[0] == 0
 
 
@@ -412,8 +309,9 @@ def _downgrade_to_v51(c) -> None:
              "'CloseGroup')"),
             ("pipelines", "'Scholar','Formalizer','Theorist')",
              "'Scholar','Formalizer')"),
-            ("queue", "'Scholar','Formalizer','Theorist')",
-             "'Scholar','Formalizer')"),
+            # v51 queue still carried the kinds v56 later retired
+            ("queue", "'Formalizer','Theorist')",
+             "'Librarian','Scholar','Formalizer')"),
             ("human_commands", "'Signal','Theory')", "'Signal')"),
             ("problem_papers", "'presearch','theorist')",
              "'presearch')")):
@@ -453,7 +351,7 @@ def test_v52_widens_the_four_checks_the_theory_layer_needs(tmp_path):
     assert c.execute("PRAGMA user_version").fetchone()[0] == 51
 
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     ts = db.now()
     c.execute("INSERT INTO strategist_decisions (problem,"
               " triggered_at_tick, trigger_kind, decision_kind, payload,"
@@ -533,7 +431,7 @@ def test_v52_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
 
 
 # -- v55: user_file_history.source gains 'framework' ------------------
@@ -583,7 +481,7 @@ def test_v55_widens_user_file_history_source_and_carries_its_rows(tmp_path):
                   "'framework')", (ts,))
 
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
     assert c.execute("SELECT sha FROM user_file_history").fetchone()[0] == "aa"
     c.execute("INSERT INTO user_file_history (problem, file, sha, body,"
               " seen_at, source) VALUES ('p','Root.lean','bb','alias',?,"
@@ -608,4 +506,120 @@ def test_v55_is_idempotent_and_matches_a_fresh_disk(tmp_path):
     # ALTER TABLE ... RENAME quotes the name it writes; everything the
     # constraint says is what this compares.
     assert got.replace('"user_file_history"', "user_file_history") == fresh_sql
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
+
+
+# -- v56: the Librarian is retired ------------------------------------
+
+
+def _upgrade_back_to_v55(c) -> None:
+    """Put a fresh disk back to the v55 shape: the two library tables,
+    the two `problems` harvest columns, and a queue CHECK that still
+    names 'Librarian' and 'Scholar'. The queue rebuild is the
+    migration's own live-DDL edit run backwards."""
+    c.execute("CREATE TABLE library_decls ("
+              " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+              " problem TEXT NOT NULL REFERENCES problems(name),"
+              " slug TEXT NOT NULL, lifecycle TEXT NOT NULL DEFAULT"
+              " 'candidate', created_at TEXT NOT NULL,"
+              " updated_at TEXT NOT NULL, UNIQUE(problem, slug))")
+    c.execute("CREATE INDEX idx_libdecls_problem ON library_decls(problem)")
+    c.execute("CREATE TABLE librarian_fail_counts ("
+              " target_id TEXT PRIMARY KEY, n INTEGER NOT NULL,"
+              " updated_at TEXT NOT NULL)")
+    c.execute("ALTER TABLE problems ADD COLUMN library_bridged_at TEXT")
+    c.execute("ALTER TABLE problems ADD COLUMN library_bridge_note TEXT")
+    sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table'"
+                    " AND name='queue'").fetchone()[0]
+    old = "'Forward','Formalizer','Theorist')"
+    assert old in sql, sql
+    idx = [r[0] for r in c.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index'"
+        " AND tbl_name='queue' AND sql IS NOT NULL")]
+    c.commit()
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute(re.sub(r'CREATE TABLE\s+"?queue"?', "CREATE TABLE _q_old",
+                     sql.replace(old, "'Forward','Librarian','Scholar',"
+                                      "'Formalizer','Theorist')", 1),
+                     count=1))
+    c.execute("INSERT INTO _q_old SELECT * FROM queue")
+    c.execute("DROP TABLE queue")
+    c.execute("ALTER TABLE _q_old RENAME TO queue")
+    for s in idx:
+        c.execute(s)
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("PRAGMA user_version = 55")
+    c.commit()
+
+
+def _shape(c):
+    return sorted(tuple(r) for r in c.execute(
+        "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"))
+
+
+def test_v56_retires_the_librarian_state_and_carries_live_queue_rows(
+        tmp_path):
+    """The Library and its chain are gone: both tables, both harvest
+    columns, the `library` setting, and the two retired queue kinds
+    (their queued rows are work nothing will pick up). Every other
+    queued row is live work and is carried; the record (`pipelines`)
+    keeps both kinds."""
+    c = _fresh(tmp_path)
+    fresh_shape = _shape(c)
+    ts = db.now()
+    c.execute("INSERT INTO problems (name, created_at, bootstrap_done)"
+              " VALUES ('p',?,1)", (ts,))
+    c.commit()
+    _upgrade_back_to_v55(c)
+    c.execute("INSERT INTO library_decls (problem, slug, created_at,"
+              " updated_at) VALUES ('p','foo',?,?)", (ts, ts))
+    c.execute("INSERT INTO librarian_fail_counts VALUES ('p\x1fA.lean',2,?)",
+              (ts,))
+    c.execute("UPDATE problems SET library_bridged_at=? WHERE name='p'",
+              (ts,))
+    c.execute("INSERT INTO problem_settings (problem, key, value,"
+              " updated_at) VALUES ('p','library','on',?)", (ts,))
+    c.execute("INSERT INTO problem_settings (problem, key, value,"
+              " updated_at) VALUES ('p','other','x',?)", (ts,))
+    for kind in ("Librarian", "Scholar", "Strategist", "Formalizer"):
+        c.execute("INSERT INTO queue (kind, target_id, target_kind,"
+                  " problem, created_at) VALUES (?,'p','Problem','p',?)",
+                  (kind, ts))
+    c.commit()
+
+    db.init_schema(c)
+
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56
+    tables = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "library_decls" not in tables
+    assert "librarian_fail_counts" not in tables
+    pcols = {r[1] for r in c.execute("PRAGMA table_info(problems)")}
+    assert not pcols & {"library_bridged_at", "library_bridge_note"}
+    assert [r[0] for r in c.execute(
+        "SELECT key FROM problem_settings WHERE problem='p'")] == ["other"]
+    assert sorted(r[0] for r in c.execute("SELECT kind FROM queue")) == [
+        "Formalizer", "Strategist"]
+    for kind in ("Librarian", "Scholar"):
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute("INSERT INTO queue (kind, target_id, target_kind,"
+                      " problem, created_at) VALUES (?,'p','Problem','p',?)",
+                      (kind, ts))
+    c.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
+              " status, started_at) VALUES ('h','Librarian','p','Problem',"
+              " 'succeeded',?)", (ts,))
+    c.commit()
+
+    # A migrated disk ends the shape a fresh one starts in (modulo the
+    # quote ALTER ... RENAME writes around the rebuilt table's name).
+    def norm(shape):
+        return [(t, n, (s or "").replace('"queue"', "queue"))
+                for t, n, s in shape]
+    assert norm(_shape(c)) == norm(fresh_shape)
+
+    # And a second run is a no-op.
+    before = _shape(c), c.execute("SELECT count(*) FROM queue").fetchone()
+    db.init_schema(c)
+    assert (_shape(c), c.execute("SELECT count(*) FROM queue").fetchone()
+            ) == before
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 56

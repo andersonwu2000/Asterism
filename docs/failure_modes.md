@@ -13,7 +13,7 @@ Every completed pipeline has an `outcome`; a non-success outcome normally also h
 
 | Trait | Question answered |
 |---|---|
-| `origin` | Did the provider, pipeline, framework, agent, a race, or a Librarian unit fail? |
+| `origin` | Did the provider, pipeline, framework, agent, or a race fail? |
 | `terminal_in_loop` | Must the in-session retry loop stop immediately? |
 | `agent_visible` | Is this evidence useful in the next goal context? |
 | `cooldown_scope` | Should dispatch cool down this target or the whole worker kind? |
@@ -69,8 +69,7 @@ from the English name.
 
 A Formalizer mint targets a `Problem`, not a `Goal`, so it never changes goal attempts.
 Infrastructure failure requeues the same Inject decision when no product was committed.
-Strategist failures likewise do not touch goal attempts. Librarian uses a persistent per-file
-unit fail count; `librarian_file_busy` is a wait signal and does not consume that count.
+Strategist failures likewise do not touch goal attempts.
 
 ## 3. Provider and transport failures
 
@@ -141,7 +140,6 @@ goal attempt when the helper records them.
 
 | Reason | Gate or condition |
 |---|---|
-| `agent_error` | A generic agent-side failure, currently used by Librarian integration paths. |
 | `agent_stuck_thinking` | Watchdog takeover and recovery still yielded no terminal artifact. |
 | `agent_no_annotation` | A required leading rationale annotation is absent. |
 | `agent_no_output` | The expected patch, decision, verdict, or unit output was not written. |
@@ -181,31 +179,16 @@ not lessons for the next proving agent and therefore are not projected into its 
 | `unknown_kind` | Dispatch received an unsupported task kind. |
 | `worker_exception` | A worker thread raised an uncaught non-infrastructure exception; the dispatcher preserves forensic evidence. |
 
-## 8. Librarian unit failures
+## 8. Historical-only vocabulary
 
-Librarian targets a `(problem, file)` unit. Its chain scheduler persists consecutive failure
-counts and stalls a unit after the configured cap; ordinary goal attempts and goal history are
-unaffected.
+The runtime no longer dispatches Scholar (retired 2026-08-22; paper search/fetch is a
+Strategist tool) or Librarian (retired 2026-10-14). Their reasons — `scholar_no_query`,
+`paper_unfetchable`, `agent_error` and the `librarian_*` family — left the registry with them;
+historical rows that carry one stay as forensic text. Old
+`Builder`, `Backward`, `Forward`, `Verify`, `Scholar` and `Librarian` pipeline rows remain valid
+historical data even though current dispatch uses Formalizer, Strategist, and Theorist.
 
-| Stage | Reasons |
-|---|---|
-| migrate | `librarian_migrate_not_mechanical`, `librarian_migrate_hole_unfilled`, `librarian_migrate_build_failed` |
-| classify/dispatch | `librarian_not_classified`, `librarian_schema_invalid`, `librarian_bad_work_kind`, `librarian_missing_prompt` |
-| cleanup/gates | `librarian_cleaned_build_failed`, `librarian_warnings_remain`, `librarian_verify_failed`, `librarian_gate_failed`, `librarian_axiom_violation` |
-| bridge/root | `librarian_bridge_not_mechanical`, `librarian_no_root` |
-| ownership/integrity | `librarian_file_busy`, `librarian_file_owned_by_other`, `librarian_integrity_error`, `librarian_needs_upstream_unresolvable`, `librarian_reopened_upstream` |
-
-`librarian_file_busy` means another worker currently owns the file, so it waits without consuming
-the unit retry count. Shared `agent_error`, `agent_no_output`, and `agent_declined` may also occur.
-
-## 9. Historical-only vocabulary
-
-The runtime no longer dispatches Scholar. `scholar_no_query` and `paper_unfetchable` remain in
-the registry so historical rows are interpretable; paper search/fetch is now a Strategist tool.
-Old `Builder`, `Backward`, `Forward`, `Verify`, and `Scholar` pipeline rows likewise remain valid
-historical data even though current dispatch uses Formalizer, Strategist, and Librarian.
-
-## 10. Event projection
+## 9. Event projection
 
 `Tooling/state/events.py` turns actionable durable evidence into goal context:
 
@@ -220,7 +203,7 @@ historical data even though current dispatch uses Formalizer, Strategist, and Li
 `return_to_nl` reaches the Strategist through review context, not goal history. Projection is
 derived from registry traits; do not maintain a second handwritten exclusion list.
 
-## 11. Maintenance checklist
+## 10. Maintenance checklist
 
 When adding or changing a failure:
 
@@ -229,8 +212,7 @@ When adding or changing a failure:
 3. Verify whether the retry helper or terminal cascade owns the attempt increment—never both.
 4. Test cooldown, event projection, and target-specific cascade where the traits change behavior.
 5. If the path adds a new multi-commit recovery window, document its reconciler in
-   [data-flow.md](data-flow.md#11-failure-interruption-and-recovery).
+   [data-flow.md](data-flow.md#10-failure-interruption-and-recovery).
 
 Primary implementation map: `Tooling/state/failures.py`, `Tooling/pipeline/_retry.py`,
-`Tooling/state/transitions.py`, `Tooling/state/events.py`, and
-`Tooling/core/librarian_sched.py`.
+`Tooling/state/transitions.py`, and `Tooling/state/events.py`.

@@ -8,8 +8,7 @@ them there, they share no helper with the event log, and the module was
 at its size watermark.
 
 Named `human_inbox` rather than `inbox` on purpose — a submodule named
-for the function it exports shadows that function on the package (the
-`data.library` collision the facade still has to undo by hand).
+for the function it exports shadows that function on the package.
 """
 from __future__ import annotations
 

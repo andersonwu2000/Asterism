@@ -592,25 +592,6 @@ def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
     conn.close()
 
 
-def test_fetch_cap_enforced(tmp_path: Path, monkeypatch) -> None:
-    import sqlite3
-    from Tooling.papers import fetch
-    from Tooling.state import db as _db
-    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
-    conn.row_factory = sqlite3.Row
-    _db.init_schema(conn)
-    conn.execute(
-        "INSERT INTO problems (name, created_at) VALUES"
-        " ('Test.px', 'ts')")
-    for i in range(fetch.MAX_SCHOLAR_FETCHES_PER_PROBLEM):
-        _db.bind_paper(conn, problem="Test.px", paper_id=f"p{i}",
-                       origin="scholar")
-    conn.close()
-    with pytest.raises(RuntimeError, match="fetch cap"):
-        fetch.fetch_and_shelve(tmp_path, "2605.23679",
-                               problem="Test.px", reason=None)
-
-
 def test_search_aggregates_sources(monkeypatch) -> None:
     from Tooling.papers import search
     monkeypatch.setattr(search, "_get_json", lambda url: {
@@ -670,9 +651,9 @@ def test_release_own_leases_frees_claimed_rows(tmp_path: Path) -> None:
     import os
     from Tooling.state import db as _db
     conn = _v2_conn(tmp_path)
-    _db.enqueue(conn, kind="Scholar", target_id="Test.px",
+    _db.enqueue(conn, kind="Formalizer", target_id="Test.px",
                 target_kind="Problem", problem="Test.px")
-    _db.enqueue(conn, kind="Scholar", target_id="Test.px",
+    _db.enqueue(conn, kind="Formalizer", target_id="Test.px",
                 target_kind="Problem", problem="Test.px", priority=1)
     row = _db.pop_queue(conn)  # leases to os.getpid()
     assert row is not None

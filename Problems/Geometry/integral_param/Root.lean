@@ -1,15 +1,16 @@
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle
-import Library.Geometry.Manifold.MExtDerivCoord
-import Library.Geometry.Manifold.StokesIntegralDefs
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_pullback
 import Problems.Geometry.integral_param.Defs
 import Problems.Geometry.integral_param.proofs.L_top_coeff_comp_det
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.Manifold.MExtDerivCoord
+open Problems.Geometry.stokes_form_bundle (DiffForm)
+open Problems.Geometry.stokes_integral (localCoeff)
+open Problems.Geometry.stokes_mextderiv (form_in_coord_pullback)
 
 namespace Problems.Geometry.integral_param
 

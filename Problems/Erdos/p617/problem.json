@@ -8,7 +8,6 @@
       "Classical.choice"
     ],
     "forbidden_lemmas": [],
-    "library": false,
     "signoff": false
   },
   "word": "r = 3 and r = 4 are published (Erdős–Gyárfás 1999) — do not spend on them; the charter starts at r = 5. R(4,3) = 9 is a Mathlib gap: mint it as a standalone brick only if the route consumes it. A refutation is one explicit balanced colouring; at r = 5 that is 325 edge labels, checkable by decide."

@@ -3,10 +3,8 @@
 -- boundary integral vanishes because its localCoeff hypothesis is vacuous on
 -- the empty boundary (`isEmptyElim`).
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle
-import Library.Geometry.Manifold.DDZero
-import Library.Geometry.Manifold.StokesIntegralDefs
-import Library.Geometry.ManifoldBoundary.CompactBdry
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
 import Problems.Geometry.stokes_closed.Defs
 import Problems.Geometry.stokes_closed.proofs._strategy_s17711
 

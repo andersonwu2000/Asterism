@@ -1,6 +1,5 @@
 """CLI: asterism init <p> | asterism run [--once] | asterism reset <p>
-       | asterism status <p> [--json] | asterism prune [<p>] [--dry-run]
-       | asterism library-verify [--no-build].
+       | asterism status <p> [--json] | asterism prune [<p>] [--dry-run].
 
 See docs/architecture.md.
 
@@ -65,17 +64,15 @@ from .problems import (
     wipe_problem_rows,
 )
 
-# diagnose.py — health-check surfaces: status/doctor/library-verify/
+# diagnose.py — health-check surfaces: status/doctor/
 # review/regress/knowledge-stats/drift-check/logs/config.
 from .diagnose import (
-    _library_consistency_findings,
     _status_payload,
     cmd_config,
     cmd_doctor,
     cmd_doctor_cloud,
     cmd_drift_check,
     cmd_knowledge_stats,
-    cmd_library_verify,
     cmd_logs,
     cmd_regress,
     cmd_review,
@@ -83,12 +80,10 @@ from .diagnose import (
 )
 
 # maint.py — remaining operational commands: reject / approve-ingest /
-# reject-ingest / repin / charter / word / revive /
-# library-backfill-declinfo / prune / paper-add / paper-index / kb-migrate.
+# reject-ingest / repin / charter / word / revive / prune / paper-add / paper-index / kb-migrate.
 from .maint import (
     _claude_login_email,
     _cmd_intent_value,
-    _effective_library_flag,
     _find_reject_victims,
     _resolve_reject_target,
     _rewake_strategist,
@@ -96,7 +91,6 @@ from .maint import (
     cmd_approve_ingest,
     cmd_charter,
     cmd_kb_migrate,
-    cmd_library_backfill_declinfo,
     cmd_paper_add,
     cmd_paper_index,
     cmd_prune,

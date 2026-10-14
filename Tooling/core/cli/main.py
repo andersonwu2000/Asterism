@@ -12,7 +12,6 @@ from .diagnose import (
     cmd_doctor,
     cmd_drift_check,
     cmd_knowledge_stats,
-    cmd_library_verify,
     cmd_logs,
     cmd_regress,
     cmd_review,
@@ -23,7 +22,6 @@ from .maint import (
     cmd_charter,
     cmd_kb_migrate,
     cmd_papers_migrate,
-    cmd_library_backfill_declinfo,
     cmd_paper_add,
     cmd_paper_index,
     cmd_prune,
@@ -198,19 +196,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_doctor.set_defaults(func=cmd_doctor)
 
-    p_libverify = sub.add_parser(
-        "library-verify",
-        help="whole-Library coherence gate: DB<->disk consistency "
-             "+ `lake build Library`",
-    )
-    p_libverify.add_argument(
-        "--no-build", action="store_true",
-        help="skip `lake build Library` (fast consistency-only pass)")
-    p_libverify.add_argument(
-        "--build-timeout", type=int, default=1800, metavar="SEC",
-        help="timeout (seconds) for `lake build Library` (default 1800)")
-    p_libverify.set_defaults(func=cmd_library_verify)
-
     p_catverify = sub.add_parser(
         "catalog-verify",
         help="cold-build every proof module of a problem through the build "
@@ -288,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_approve = sub.add_parser(
         "approve-ingest",
-        help="approve a paused ingest → harvest deliverables to Library")
+        help="approve a paused ingest (records the sign-off)")
     p_approve.add_argument("problem", help="problem name")
     p_approve.add_argument("--signer", default=None,
                            help="who signs off (the record also captures "
@@ -411,18 +396,6 @@ def main(argv: list[str] | None = None) -> int:
         "--problem", type=str, default=None, metavar="LIKE",
         help="SQL LIKE filter, e.g. 'Putnam.%%'")
     p_kstats.set_defaults(func=cmd_knowledge_stats)
-
-    p_libbackfill = sub.add_parser(
-        "library-backfill-declinfo",
-        help="one-shot v24 backfill: fill library_decls docstring/src_line "
-             "(+signature/kind) from the declInfo oracle for bridged problems")
-    p_libbackfill.add_argument(
-        "--scope", type=str, default=None, metavar="PROBLEM",
-        help="limit to problems whose name contains this substring")
-    p_libbackfill.add_argument(
-        "--force", action="store_true",
-        help="re-elaborate problems already marked complete")
-    p_libbackfill.set_defaults(func=cmd_library_backfill_declinfo)
 
     p_prune = sub.add_parser(
         "prune",

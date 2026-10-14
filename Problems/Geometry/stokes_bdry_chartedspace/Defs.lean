@@ -1,7 +1,7 @@
 /-
   Defs.lean — PARKED (not yet buildable). Owns `bdryChart`, the boundary chart as
   an `OpenPartialHomeomorph`, assembled from the cited chart DATA + the partial-equiv
-  laws (`Library…BoundaryChart`) + the topological laws (P7c, `stokes_bdry_chart_topo`).
+  laws (`Problems.Geometry.stokes_bdry_chart`) + the topological laws (P7c, `stokes_bdry_chart_topo`).
 
   ⚠️ FINALIZE AFTER P7c MIGRATES: the import + names of the four topological laws
   (`chart_source_is_open` / `chart_target_is_open` / `chart_to_fun_continuous_on` /
@@ -10,17 +10,21 @@
   Update the `import`/open and possibly lambda-wrap the strict-implicit chart fields.
 -/
 import Mathlib
-import Library.Geometry.ManifoldBoundary.Defs          -- chart data
-import Library.Geometry.ManifoldBoundary.BoundaryChart  -- chart_map_source/_target/left/right_inv
-import Library.Geometry.ManifoldBdry.BdryChart          -- P7c: isOpen_* / continuousOn_*
+import Problems.Geometry.stokes_bdry_chart.Defs
+import Problems.Geometry.stokes_bdry_chart.proofs.L_chart_left_inv
+import Problems.Geometry.stokes_bdry_chart.proofs.L_chart_map_source
+import Problems.Geometry.stokes_bdry_chart.proofs.L_chart_map_target
+import Problems.Geometry.stokes_bdry_chart.proofs.L_chart_right_inv
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_inv_fun_continuous_on
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_source_is_open
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_target_is_open
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_to_fun_continuous_on
+import Problems.Geometry.stokes_bdry_compact.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBoundary.HalfSpaceFrontier
-open Library.Geometry.ManifoldBoundary.Defs
-open Library.Geometry.ManifoldBoundary.BoundaryChart
-open Library.Geometry.ManifoldBdry.BdryChart
+open Problems.Geometry.stokes_bdry_compact (Bdry)
+open Problems.Geometry.stokes_bdry_chart (chartInvFun chartSource chartTarget chartToFun chart_left_inv chart_map_source chart_map_target chart_right_inv)
 
 namespace Problems.Geometry.stokes_bdry_chartedspace
 
@@ -40,9 +44,9 @@ noncomputable def bdryChart (p : Bdry n M) :
   map_target' := chart_map_target p
   left_inv' := chart_left_inv p
   right_inv' := chart_right_inv p
-  open_source := isOpen_chartSource p
-  open_target := isOpen_chartTarget p
-  continuousOn_toFun := continuousOn_chartToFun p
-  continuousOn_invFun := continuousOn_chartInvFun p
+  open_source := Problems.Geometry.stokes_bdry_chart_topo.chart_source_is_open p
+  open_target := Problems.Geometry.stokes_bdry_chart_topo.chart_target_is_open p
+  continuousOn_toFun := Problems.Geometry.stokes_bdry_chart_topo.chart_to_fun_continuous_on p
+  continuousOn_invFun := Problems.Geometry.stokes_bdry_chart_topo.chart_inv_fun_continuous_on p
 
 end Problems.Geometry.stokes_bdry_chartedspace

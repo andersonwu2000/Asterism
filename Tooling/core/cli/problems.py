@@ -86,11 +86,8 @@ def delete_problem(workspace: Path, problem: str) -> tuple[int, str]:
     Problems/<p>/ directory, in one chokepoint (rule 10: files and DB
     move together; shared by the CLI and the serve API).
 
-    Guards, enforced HERE and not just in a UI:
-      - a Library-bridged problem refuses: its chapter files import
-        Problems.<p>.proofs.* and deleting them breaks the Library
-        build — un-harvest first (rc 2).
-      - a daemon currently working this problem refuses (rc 3).
+    Guard, enforced HERE and not just in a UI: a daemon currently
+    working this problem refuses (rc 3).
     """
     import shutil
     import time
@@ -100,14 +97,11 @@ def delete_problem(workspace: Path, problem: str) -> tuple[int, str]:
         db.init_schema(conn)
         conn.execute("PRAGMA foreign_keys = ON")
         row = conn.execute(
-            "SELECT library_bridged_at FROM problems WHERE name = ?",
+            "SELECT 1 FROM problems WHERE name = ?",
             (problem,)).fetchone()
         in_db = row is not None
         if not in_db and not pdir.exists():
             return 1, f"unknown problem {problem!r}"
-        if row and row["library_bridged_at"]:
-            return 2, (f"{problem} is in the Library — its chapter imports"
-                       " these proofs; un-harvest it first")
         st = daemon_status(workspace)
         if st.get("running") and st.get("scope") == problem:
             return 3, "the engine is working this problem — stop the run first"
@@ -202,15 +196,10 @@ def init_problem(workspace: Path, problem: str, *,
         # own `Problems.<problem>.` namespace prefix. The theorem already
         # lives inside `namespace Problems.<problem>` (+ `import …Defs`), so
         # every self-namespace name resolves bare — writing the fully-
-        # qualified form is a style slip, not a necessity. It matters
-        # downstream: the Librarian re-derives this exact statement from a
-        # Defs-free Library bridge (Gate B 秒殺). A bare `IsJordanForm`
-        # re-resolves to the migrated `Library.…` version by swapping the
-        # import/open; a hard-coded `Problems.<problem>.IsJordanForm` would
-        # have to be string-rewritten — fragile, and the whole reason to
-        # catch it at the source. (Cross-problem `Problems.<other>.` refs
-        # are out of scope: 0 exist today, and a real one should be a
-        # Library citation, not a raw Problems reference.)
+        # qualified form is a style slip, not a necessity, and a
+        # hard-coded `Problems.<problem>.Foo` ties the statement to one
+        # namespace spelling. (Cross-problem `Problems.<other>.` refs are
+        # out of scope.)
         self_prefix = f"Problems.{problem}."
         if self_prefix in statement:
             return 1, (
@@ -220,9 +209,7 @@ def init_problem(workspace: Path, problem: str, *,
                 f"already inside\n"
                 f"  `namespace Problems.{problem}` with `import "
                 f"Problems.{problem}.Defs`,\n"
-                f"  so e.g. `{self_prefix}Foo` should be written `Foo`.\n"
-                f"  (Keeps the statement Library-portable for the "
-                f"Librarian's re-derivation gate.)")
+                f"  so e.g. `{self_prefix}Foo` should be written `Foo`.")
 
     proofs_dir = pdir / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +327,7 @@ def init_problem(workspace: Path, problem: str, *,
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
     # Initial BRIEF.md — framework-rendered cross-spawn stable context
-    # (sandbox / forbidden lemmas / goal / user word / library).
+    # (sandbox / forbidden lemmas / goal / user word).
     # Refreshed at daemon startup if the intent changed.
     pintent = intent_mod.read(conn, problem)
     if pintent is not None:
@@ -610,23 +597,15 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
 
     Problem-keyed FK children, cleared FIRST (unconditional). Every table with
     a `problem → problems(name)` FK blocks the `DELETE FROM problems` below if
-    it still has rows; `library_decls` also has a `source_goal_id → goals.id`
-    FK that blocks the goals DELETE. The FK children of `problems(name)` are:
-    goals + strategist_decisions (handled below by gid/problem) and these two:
-      - `library_decls`: a (partially) library-ized problem's classified decls.
-      - `kb_entries`: lessons/antipatterns (KB-as-SoT — the old flat LESSONS.md
-        sweep's successor; reflection writes a row per global lesson).
-    Both observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY
-    constraint failed` at DELETE FROM problems — first on library_decls (2
-    classified), then on a kb_entries global lesson the run wrote.
+    it still has rows. The FK children of `problems(name)` are: goals +
+    strategist_decisions (handled below by gid/problem) and `kb_entries`:
+    lessons/antipatterns (KB-as-SoT — the old flat LESSONS.md sweep's
+    successor; reflection writes a row per global lesson). Observed
+    2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY constraint
+    failed` at DELETE FROM problems on a kb_entries global lesson the run
+    wrote.
     """
-    conn.execute("DELETE FROM library_decls WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM kb_entries WHERE problem = ?", (problem,))
-    # v18: the bridge done-marker lives on the problems row — clear it with
-    # the library_decls rows, or selfstart reads a bridged problem with zero
-    # placed decls (the stale-marker FAIL library-verify flags). Retires the
-    # manual `_drop_index_section` step from the reset recipe (STATUS rule 2).
-    db.clear_library_bridged(conn, problem)
 
     gids = [r[0] for r in conn.execute(
         "SELECT id FROM goals WHERE problem = ?", (problem,)).fetchall()]
@@ -686,7 +665,7 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # `target_kind` copied from the pipeline's own kind — so a sentinel
     # off a Goal- or Strategy-kind pipeline matched neither sweep and
     # stranded on the `DELETE FROM pipelines` here, FK and all. Today
-    # every write site happens to be Strategist/Forward/Librarian, which
+    # every write site happens to be Strategist/Forward, which
     # is a fact about the callers, not about the schema.
     if gids:
         ph = ",".join("?" * len(gids))
@@ -722,9 +701,10 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # missing the 'Problem' kind Forward writes).
     #
     # Two key shapes live in `pipelines.target_id` under this one kind:
-    # the bare problem name (Forward) and the Librarian's composed
-    # `problem\x1ffile` unit key. An exact `= ?` reads only the first,
-    # so every per-file Librarian row outlived its problem — the same
+    # the bare problem name (Forward) and, on historical rows, the retired
+    # Librarian's composed `problem\x1ffile` unit key. An exact `= ?`
+    # read only the first, so every per-file Librarian row outlived its
+    # problem — the same
     # gap as the Group targets above, found the same day by the same
     # audit, and larger. Both callers ask through the ONE decoder in
     # `state.satellites`, so the wipe and the auditor cannot disagree
@@ -756,9 +736,7 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # problem_papers had this latent gap since v23, user_file_history
     # since v28 (the actual b6 run-2 reset blocker, 2026-07-18),
     # kb_entries' problem-scoped lessons likewise, programme_revisions
-    # since v30. Deliberately NOT wiped: library_decls — a bridged
-    # problem must be un-harvested first, and its FK failing here is
-    # the (crude) backstop for that rule.
+    # since v30.
     conn.execute("DELETE FROM problem_settings WHERE problem = ?",
                  (problem,))
     conn.execute("DELETE FROM problem_papers WHERE problem = ?",

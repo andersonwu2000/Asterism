@@ -95,7 +95,7 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
 
     After verify-unification, axiom probing goes through TWO paths:
       1. `_axiom.axiom_probe(_file)` — direct callers (Builder
-         Phase 1 hint, library.promote, etc.).
+         Phase 1 hint, etc.).
       2. `gateway_lifecycle.verify_file(..., axioms_for=...)` —
          verify_strategy / Builder Phase 2 verify use this. Reject
          via the `axioms` field returning a sorryAx; the rogue
@@ -336,7 +336,7 @@ def test_verify_housekeeping_does_not_skip_probe_with_no_intents(
 
 
 # ---------------------------------------------------------------------
-# root_integrity_gate — library opt-in enqueues the Librarian (Phase 2)
+# root_integrity_gate — verifies, never enqueues
 # ---------------------------------------------------------------------
 
 def _seed_proved_root(conn, problem="p"):
@@ -359,17 +359,15 @@ def _queue_rows(conn):
         "SELECT kind, target_id, target_kind, priority FROM queue"))
 
 
-def test_gate_does_not_enqueue_librarian_even_when_library_optin(
+def test_gate_verifies_a_clean_root_and_enqueues_nothing(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Phase 6 — the root-proved auto-Librarian trigger is RETIRED:
-    harvest is strictly Ingest-driven (strategist._commit_ingest owns
-    the enqueue, behind the sign-off gate). A clean, fully-proved root
-    with `library: true` opt-in passes the gate (integrity_verified
-    set) but enqueues NOTHING. The autouse conftest stub returns an
-    axiom-clean probe → happy path."""
+    """A clean, fully-proved root passes the gate (integrity_verified
+    set) but enqueues NOTHING — the gate is a verifier, not a trigger.
+    The autouse conftest stub returns an axiom-clean probe → happy
+    path."""
     gid = _seed_proved_root(conn)
-    pi = intent.ProblemIntent(problem="p", charter="True", library=True)
+    pi = intent.ProblemIntent(problem="p", charter="True")
     verify.root_integrity_gate(conn, tmp_path, "p", pi)
     assert _queue_rows(conn) == []
     row = conn.execute(
@@ -378,23 +376,12 @@ def test_gate_does_not_enqueue_librarian_even_when_library_optin(
     assert row["integrity_verified"] == 1
 
 
-def test_gate_no_librarian_when_library_optout(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """Default (`library` unset) must NOT harvest — opt-in only."""
-    _seed_proved_root(conn)
-    pi = intent.ProblemIntent(problem="p", charter="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", pi)
-    assert _queue_rows(conn) == []
-
-
-def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
+def test_gate_enqueues_nothing_on_rogue_axiom(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dirty root (rogue axioms) must never be harvested, even with
-    the opt-in set — the gate returns at the probe-failure branch,
-    before the integrity-verified + enqueue block."""
+    """A dirty root (rogue axioms): the gate returns at the
+    probe-failure branch, before the integrity-verified block."""
     _seed_proved_root(conn)
     monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
                         lambda *a, **k: (False, "rogue axioms: ['sorryAx']"))
@@ -403,7 +390,7 @@ def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
     # the gate logs and returns without enqueueing.
     monkeypatch.setattr(verify, "bisect_sorryax_source",
                         lambda *a, **k: None)
-    pi = intent.ProblemIntent(problem="p", charter="True", library=True)
+    pi = intent.ProblemIntent(problem="p", charter="True")
     verify.root_integrity_gate(conn, tmp_path, "p", pi)
     assert _queue_rows(conn) == []
 

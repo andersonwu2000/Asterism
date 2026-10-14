@@ -1,9 +1,10 @@
 import Mathlib
-import Library.Geometry.Manifold.ExtDerivCLMSquareZero
+import Problems.Geometry.derham_dd_zero.Defs
+import Problems.Geometry.derham_dd_zero.Root
 
 open scoped Distributions ContDiff
 open TestFunction TopologicalSpace
-open Library.Geometry.Manifold.ExtDerivCLMSquareZero
+open Problems.Geometry.derham_dd_zero (extDerivCLM)
 
 namespace Problems.Geometry.currents_boundary_zero
 

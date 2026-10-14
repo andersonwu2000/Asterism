@@ -17,7 +17,7 @@ from Tooling.state import db
 
 @pytest.mark.parametrize("raw,want", [
     ("Formalizer", {"Formalizer"}),
-    (" formalizer , LIBRARIAN ", {"Formalizer", "Librarian"}),
+    (" formalizer , STRATEGIST ", {"Formalizer", "Strategist"}),
     ("", set()),
     (None, set()),
     ("bogus", set()),
@@ -56,11 +56,11 @@ def test_blocked_kinds_reads_the_yaml_key_with_env_precedence(
     _cfg._reset_cache()
     monkeypatch.delenv("ASTERISM_BLOCKED_KINDS", raising=False)
     (tmp_path / "Asterism.yaml").write_text(
-        "dispatch:\n  blocked_kinds: Formalizer,Librarian\n",
+        "dispatch:\n  blocked_kinds: Formalizer,Theorist\n",
         encoding="utf-8")
     try:
         assert refill.env_blocked_kinds(tmp_path) == {"Formalizer",
-                                                      "Librarian"}
+                                                      "Theorist"}
         monkeypatch.setenv("ASTERISM_BLOCKED_KINDS", "Strategist")
         assert refill.env_blocked_kinds(tmp_path) == {"Strategist"}
     finally:

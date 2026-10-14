@@ -7,17 +7,30 @@
   The Root proves `pullbackBdryFun` is a `C^∞` section (so `ι*` is a genuine form).
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle        -- DiffForm, formBundleCore, instForm*
-import Library.Geometry.Manifold.MExtDerivCoord         -- formInCoord, instFormBundleContMDiff
-import Library.Geometry.ManifoldBoundary.CompactBdry     -- Bdry, TopologicalSpace
-import Library.Geometry.ManifoldBdry.BdryIsManifold      -- instBdryChartedSpace, isManifold_bdry
+import Problems.Geometry.stokes_bdry_chart.Defs
+import Problems.Geometry.stokes_bdry_chart.proofs.L_boundary_ext_chart_at_coord_zero
+import Problems.Geometry.stokes_bdry_chart.proofs.L_face_embed_face_proj_of_coord_zero
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_inv_fun_val_eq_symm_face_embed
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_target_eq_face_embed_preimage
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_target_is_open
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_bdry_invfun_mem.Defs
+import Problems.Geometry.stokes_bdry_invfun_mem.proofs.L_faceembed_mem_frontier_range
+import Problems.Geometry.stokes_bdry_manifold.Defs
+import Problems.Geometry.stokes_bdry_manifold.Root
+import Problems.Geometry.stokes_bdry_manifold.proofs.L_smooth_face_embed
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_form_coord_comp.Defs
+import Problems.Geometry.stokes_form_coord_self.Root
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_eq_coord_change
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_smooth
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBdry.BdryIsManifold
+open Problems.Geometry.stokes_form_bundle (DiffForm formBundleCore)
+open Problems.Geometry.stokes_mextderiv (formInCoord)
+open Problems.Geometry.stokes_bdry_compact (Bdry)
 
 namespace Problems.Geometry.stokes_pullback
 

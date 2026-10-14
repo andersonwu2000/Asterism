@@ -36,13 +36,13 @@ def _seed_problem(conn: sqlite3.Connection, name: str = "P",
 def test_read_assembles_charter_word_settings(
         conn: sqlite3.Connection) -> None:
     _seed_problem(conn, "P", charter="Settle Frankl.")
-    _settings.write(conn, "P", "library", True)
+    _settings.write(conn, "P", "forbidden_lemmas", ["frankl*"])
     intent.set_word(conn, "P", "Fold the tree.")
     pi = intent.read(conn, "P")
     assert pi is not None
     assert pi.charter == "Settle Frankl."
     assert pi.word == "Fold the tree."
-    assert pi.library is True
+    assert pi.forbidden_lemmas == ["frankl*"]
     assert pi.signoff is True          # absent key → framework default
 
 
@@ -135,11 +135,11 @@ def test_writers_mirror_the_seed(tmp_path: Path) -> None:
 
 def test_settings_write_mirrors_the_seed(tmp_path: Path) -> None:
     conn = _file_workspace(tmp_path, "P")
-    _settings.write(conn, "P", "library", True)
+    _settings.write(conn, "P", "signoff", False)
     seed = json.loads(
         (tmp_path / "Problems" / "P" / "problem.json").read_text(
             encoding="utf-8"))
-    assert seed["settings"]["library"] is True
+    assert seed["settings"]["signoff"] is False
     conn.close()
 
 

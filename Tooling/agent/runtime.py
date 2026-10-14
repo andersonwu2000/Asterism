@@ -228,7 +228,6 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               mcp_config_path: Path | None = None,
               inline_prompt: str | None = None,
               timeout_sec_override: int | None = None,
-              trap_check_sec_override: int | None = None,
               usage_workspace: Path | None = None,
               usage_problem: str | None = None,
               usage_pipeline_id: str | None = None,
@@ -314,7 +313,6 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         problem_dir=problem_dir,
         attempts_dir=attempts_dir,
         timeout_sec=timeout_sec,
-        trap_check_sec=trap_check_sec_override,
         session_id=session_id,
         is_retry=is_retry,
         retry_context=retry_context,
@@ -340,12 +338,11 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
 
 #: Repo regions where a write DURING a spawn is expected, so a change
 #: there is not evidence of anything: the spawn sandboxes, the
-#: framework's own runtime state, the harvest target, and the benchmark
-#: ledger. `Problems/**/proofs/` needs no entry — it is gitignored,
+#: framework's own runtime state, and the benchmark ledger. `Problems/**/proofs/` needs no entry — it is gitignored,
 #: hence invisible to `_repo_status`; so is the papers tree a fetch
 #: shelves into (`Problems/**/_docs/*/papers/`, §3.9).
 _EXPECTED_WRITE_PREFIXES = (
-    ".attempts/", ".asterism/", "Library/", "Benchmarks/",
+    ".attempts/", ".asterism/", "Benchmarks/",
 )
 
 #: Where a violation is recorded, one JSON object per audit. A log line

@@ -770,31 +770,6 @@ def test_tail_strips_the_prelude_for_lean_only(tmp_path: Path) -> None:
                                 "end state: two bricks land")
 
 
-def test_context_preamble_extraction() -> None:
-    """_context_preamble: opens + multi-line variable block ride along;
-    docstring prose starting with "open" does not leak in."""
-    from Tooling.serve.data import _context_preamble, _scan_library_file
-    text = (
-        "import Mathlib\n\n"
-        "/-! # Module\nopen problems are listed here\n-/\n\n"
-        "open Bundle MeasureTheory\n"
-        "open scoped Manifold Topology\n\n"
-        "namespace Lib.X\n\n"
-        "variable {d : Nat} {EH : Type _} [TopologicalSpace EH]\n"
-        "    {N : Type _} [TopologicalSpace N] [T2Space N]\n\n"
-        "/-- doc -/\n"
-        "theorem foo (p : N) : True := trivial\n")
-    pos = text.index("theorem foo")
-    ctx = _context_preamble(text, pos)
-    assert "open Bundle MeasureTheory" in ctx
-    assert "open scoped Manifold Topology" in ctx
-    assert "[TopologicalSpace N] [T2Space N]" in ctx  # continuation line
-    assert "open problems are listed" not in ctx      # docstring prose
-    assert "namespace" not in ctx                     # ns handled by seed
-    _, docs, _, ctx2 = _scan_library_file(text)
-    assert ctx2 == ctx and "foo" in docs
-
-
 def test_pattern_scope_resolves_to_real_problems(
         workspace: Path, monkeypatch) -> None:
     """A wildcard scope must never reach the UI as the focus problem —

@@ -6,8 +6,6 @@ the milestone commit itself (mechanism, not operator discipline):
 
   * `terminal="ingested"` — the Strategist's Ingest landed (the problem's
     terminal judgment; `problems.ingested_at`);
-  * `terminal="bridged"`  — bridge/Gate B PASSED (the harvest is in the
-    Library; `problems.library_bridged_at`);
   * `terminal="refuted"`  — the root was DISPROVED in the kernel and the
     Ingest closed the problem the other way (owner ruling 2026-08-30;
     `problems.state='refuted'`, stamped with `ingested_at` like any
@@ -15,7 +13,7 @@ the milestone commit itself (mechanism, not operator discipline):
     "which problems were ever settled, at which commit, on which
     toolchain" is exactly what this file is for.
 
-Why it exists: the DB resets (dev-scratch), the Library resets, the
+Why it exists: the DB resets (dev-scratch), the
 README progress log is prose, and INDEX.md (the one git-tracked
 provenance) retired in v18 — so "which problems were EVER proved, at
 which commit, on which toolchain" was not reconstructable, and a
@@ -50,7 +48,9 @@ MANIFEST_REL = Path("Benchmarks") / "proved_manifest.jsonl"
 #: ever disproved in that window: the certification probe was broken the
 #: whole time (`9ba21ce3`), and the lab's first `false_root_e2e` run
 #: found this the moment the road opened.
-TERMINALS = ("ingested", "bridged", "refuted")
+#: `bridged` (the retired Librarian's harvest milestone) is no longer
+#: written; manifest lines that carry it read as an ingested terminal.
+TERMINALS = ("ingested", "refuted")
 
 
 def _git_head(workspace: Path) -> str:
@@ -65,7 +65,7 @@ def _git_head(workspace: Path) -> str:
 
 
 def record_terminal(workspace: Path, *, problem: str, terminal: str,
-                    deliverables: int = 0, harvest_files: int = 0,
+                    deliverables: int = 0,
                     note: str = "",
                     settings: "dict | None" = None) -> None:
     """Append one milestone line. Best-effort by contract — any failure
@@ -84,7 +84,6 @@ def record_terminal(workspace: Path, *, problem: str, terminal: str,
             "toolchain": toolchain_fingerprint(workspace)[:16],
             "at": now(),
             "deliverables": int(deliverables),
-            "harvest_files": int(harvest_files),
         }
         if note:
             entry["note"] = note
@@ -117,7 +116,6 @@ def load(workspace: Path) -> "list[dict]":
 def report(conn, workspace: Path) -> "list[tuple[str, str]]":
     """Manifest vs current workspace — [(status, message)]. Statuses:
       RESET     recorded terminal, current DB has none → re-verify CANDIDATE
-      PARTIAL   recorded bridged, DB has only ingested (harvest undone)
       DRIFT     current toolchain differs from the last recorded line's
       OK        recorded terminal still holds
     Report semantics only — resets are a normal workflow, not failures."""
@@ -130,19 +128,14 @@ def report(conn, workspace: Path) -> "list[tuple[str, str]]":
     out: "list[tuple[str, str]]" = []
     for problem, e in sorted(latest.items()):
         row = conn.execute(
-            "SELECT ingested_at, library_bridged_at FROM problems"
+            "SELECT ingested_at FROM problems"
             " WHERE name = ?", (problem,)).fetchone()
         ingested = bool(row and row["ingested_at"])
-        bridged = bool(row and row["library_bridged_at"])
         want = str(e.get("terminal"))
-        if row is None or not (ingested or bridged):
+        if row is None or not ingested:
             out.append(("RESET", f"{problem}: recorded {want} "
                                  f"@ {e.get('commit')} but absent/reset in "
                                  f"the current DB — re-verification candidate"))
-            continue
-        if want == "bridged" and not bridged:
-            out.append(("PARTIAL", f"{problem}: recorded bridged but only "
-                                   f"ingested now (harvest undone?)"))
             continue
         if str(e.get("toolchain")) != cur_fp:
             out.append(("DRIFT", f"{problem}: last verified on toolchain "

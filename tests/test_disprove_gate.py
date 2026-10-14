@@ -459,13 +459,26 @@ end AsterismDisproofBridgeTest
 
 @pytest.mark.real_lake
 def test_the_bridge_accepts_a_correct_negation_and_refuses_a_wrong_one():
-    from Tooling.quality import lake_probe
+    import re
+    import subprocess
+    import uuid
     workspace = Path(__file__).resolve().parents[1]
-    run = lake_probe.run_lean_source(workspace, _BRIDGE_PROBE,
-                                     prefix="_disproof_bridge")
-    assert not run.infra, run.output
+    tmp = workspace / ".attempts" / f"_disproof_bridge_{uuid.uuid4().hex}.lean"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(_BRIDGE_PROBE, encoding="utf-8")
+    try:
+        r = subprocess.run(["lake", "env", "lean", str(tmp)],
+                           cwd=str(workspace), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=600)
+    finally:
+        tmp.unlink(missing_ok=True)
+    output = r.stdout + "\n" + r.stderr
+    error_lines = {int(m.group(1)) for m in re.finditer(
+        r"^.+?:(\d+):\d+:\s*error", output, re.MULTILINE)}
+    assert error_lines, output   # no error line at all = broken env
     # exactly ONE error, on the (C) bridge — arms A and B certified
     wrong_bridge = _BRIDGE_PROBE.splitlines().index(
         "      | (push_neg; exact claimC))") + 1
-    assert run.error_lines == frozenset({wrong_bridge}), run.output
-    assert "claimC" in run.output and "expected to have type" in run.output
+    assert error_lines == {wrong_bridge}, output
+    assert "claimC" in output and "expected to have type" in output

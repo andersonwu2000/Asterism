@@ -52,7 +52,7 @@ class Key(NamedTuple):
     supplied its own `default=` / `cast=` / `env_var=`, so a key had as
     many defaults as it had call sites: `dispatch.spawn_timeout_sec`
     read 900 in the registry, 1800 in the dispatcher AND the gateway,
-    960 in the librarian — four answers, and nothing could say which
+    960 in a third pipeline — four answers, and nothing could say which
     one a run would use. The fields below ARE the answer now;
     `config.get(key)` with no other argument resolves exactly what is
     written here.
@@ -93,7 +93,7 @@ _KIND_EFFORT = Key(
 
 # ── CONFIG_SPEC — the key registry (task #10) ──────────────────────────
 # key → Key(...). `<kind>` is the dynamic per-pipeline placeholder
-# (formalizer/strategist/librarian/…); a concrete `formalizer.model`
+# (formalizer/strategist/theorist/…); a concrete `formalizer.model`
 # resolves against the `<kind>.model` row.
 # Adding a `config.get` call with a new key? Register it here — the drift
 # test fails otherwise (typo → silent-default is the bug class this
@@ -123,7 +123,7 @@ CONFIG_SPEC: "dict[str, Key]" = {
         "", None, "ASTERISM_RAM_BUDGET"),
     "dispatch.blocked_kinds": Key(
         "operator hold — comma list of queue kinds this machine must not "
-        "dispatch, e.g. 'Formalizer,Librarian'; unknown names are ignored, "
+        "dispatch, e.g. 'Formalizer,Theorist'; unknown names are ignored, "
         "so a typo holds nothing",
         "", None, "ASTERISM_BLOCKED_KINDS"),
     "dispatch.budget_sec": Key(
@@ -171,10 +171,6 @@ CONFIG_SPEC: "dict[str, Key]" = {
     "dispatch.completion_grace_sec": Key(
         "watchdog completion-reclaim grace",
         20, int, "ASTERISM_COMPLETION_GRACE_SEC"),
-    "dispatch.classify_trap_cap_sec": Key(
-        "librarian classify trap cap ceiling", 2400, int),
-    "dispatch.classify_trap_per_decl_sec": Key(
-        "classify trap budget per kept decl", 4, int),
     "gateway.port": Key(
         "LSP gateway HTTP port", 8765, int, "ASTERISM_GATEWAY_PORT"),
     "gateway.interactive_slots": Key(
@@ -233,7 +229,7 @@ CONFIG_SPEC: "dict[str, Key]" = {
     "presearch.timeout_sec": Key(
         "pre-search agent budget",
         420, None, "ASTERISM_PRESEARCH_TIMEOUT_SEC"),
-    "library.require_signoff": Key(
+    "ingest.require_signoff": Key(
         "Ingest pauses for approve-ingest", True),
     "paper_index.timeout_sec": Key(
         "paper-map one-shot spawn budget", 1200, int),
@@ -551,14 +547,13 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
 #: key families cannot drift apart — a seat that can pick a model must
 #: be able to pick the backend that runs it (2026-08-14: three backends
 #: are live and `<kind>.provider` was yaml-only).
-UI_SEATS = ("formalizer", "strategist", "presearch", "librarian",
+UI_SEATS = ("formalizer", "strategist", "presearch",
             "adversary", "theorist", "theory_reviewer")
 
 UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "formalizer.model": (str, "model that turns the argued proof into Lean (prove/split/mint)"),
     "strategist.model": (str, "model that plans the campaign"),
     "presearch.model": (str, "model that scouts Mathlib before proving"),
-    "librarian.model": (str, "model that curates the Library"),
     "adversary.model": (str, "model that adversarially reviews the research programme"),
     "theorist.model": (str, "model that writes the theory the programme is missing"),
     "theory_reviewer.model": (str, "model that reviews the theory document"),
@@ -579,7 +574,7 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     # env-only, so setting either meant editing a file the UI cannot see.
     "dispatch.blocked_kinds": (
         str,
-        "queue kinds this machine must not dispatch (comma list: Formalizer, Strategist, Librarian; empty = no hold)",
+        "queue kinds this machine must not dispatch (comma list: Formalizer, Strategist, Theorist; empty = no hold)",
     ),
     "dispatch.ram_budget": (
         str,

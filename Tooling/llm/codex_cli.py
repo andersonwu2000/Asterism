@@ -1579,7 +1579,6 @@ class CodexCliProvider:
                 kwargs={"stuck_flag": stuck_flag, "done_flag": done_flag,
                         "timeout_sec": req.timeout_sec, "parser": parser,
                         "kind": req.kind, "provider": PROVIDER_NAME,
-                        "trap_check_sec_override": req.trap_check_sec,
                         # Third clock: the zen shim touches this per
                         # tool-loop iteration — codex reports at item
                         # granularity, so a long healthy loop is

@@ -7,15 +7,13 @@
   the heavy Stokes proof tower, so init + cold builds stay fast.
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle          -- DiffForm
-import Library.Geometry.Manifold.MExtDerivCoord           -- formInCoord, form_in_coord_pullback
-import Library.Geometry.Manifold.StokesIntegralDefs       -- localCoeff, topCoeff
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_pullback
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
-open Library.Geometry.Manifold.StokesIntegralDefs
 
 namespace Problems.Geometry.integral_param
 

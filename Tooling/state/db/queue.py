@@ -36,7 +36,7 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
             problem: str,
             priority: int = 0, target_kind: str = "Goal",
             decision_id: int | None = None,
-            payload: "dict | None" = None) -> None:
+) -> None:
     """Insert a dispatch queue entry.
 
     Phase 2 — `target_kind` defaults to 'Goal' (matches every pre-Phase 2
@@ -47,17 +47,14 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
     via this FK at cold-start (see `compile_context`).
 
     v17 — `problem` is REQUIRED (scope-safe pop/flush/recovery keys on
-    it); `payload` is optional structured per-row data (JSON-encoded
-    here): librarian per-file units pass `{"file": <rel path>}` with a
-    plain `target_id=problem` instead of the retired \\x1f smuggle.
+    it).
     """
-    import json as _json
     conn.execute(
         "INSERT INTO queue (kind, target_id, target_kind, priority,"
-        " decision_id, problem, payload, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        " decision_id, problem, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (kind, target_id, target_kind, priority, decision_id, problem,
-         _json.dumps(payload) if payload else None, now()),
+         now()),
     )
     conn.commit()
 
@@ -70,8 +67,8 @@ def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
     translating a retired kind name on the way out (`_RETIRED_KINDS`).
 
     The row is NOT deleted: it gets `owner_pid`+`leased_at` stamped and
-    stays visible to every in-queue check (`is_in_queue`/`queue_contains`
-    count leased rows — a claimed-but-unfinished unit must still read as
+    stays visible to every in-queue check (`is_in_queue` counts leased
+    rows — a claimed-but-unfinished unit must still read as
     "in queue" or refill re-enqueues a duplicate). The dispatcher deletes
     it via `complete_queue_row` when the pipeline finishes (or when a
     pop-loop skip discards it); a crashed owner's lease is released by
@@ -210,41 +207,5 @@ def flush_queue_kind(conn: sqlite3.Connection, *, kind: str,
         (kind, *_scope_args))
     conn.commit()
     return cur.rowcount or 0
-
-
-def queue_contains(conn: sqlite3.Connection, *, kind: str,
-                   target_id: str,
-                   payload_file: "str | None" = None,
-                   no_payload: bool = False) -> bool:
-    """True iff a queue entry of `kind` for `target_id` is pending — leased
-    rows count (see `is_in_queue`).
-
-    The dispatcher's pop loop dedups only against the in-flight `running`
-    set; it does NOT dedup two queued rows against each other (and a row
-    popped while a same-key job runs is silently dropped). The Librarian
-    re-enqueue path calls this before enqueueing so a chain step is never
-    queued twice for one problem. `payload_file` narrows the match to a
-    per-file unit (v17: the file rides `payload` JSON, not target_id);
-    `no_payload=True` matches only PLAIN rows — the serial-phase dedup
-    must not mistake a queued per-file unit (same target_id since v17)
-    for its own serial row."""
-    if payload_file is not None:
-        row = conn.execute(
-            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ?"
-            " AND json_extract(payload, '$.file') = ? LIMIT 1",
-            (kind, target_id, payload_file),
-        ).fetchone()
-    elif no_payload:
-        row = conn.execute(
-            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ?"
-            " AND payload IS NULL LIMIT 1",
-            (kind, target_id),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ? LIMIT 1",
-            (kind, target_id),
-        ).fetchone()
-    return row is not None
 
 

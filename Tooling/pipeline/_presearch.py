@@ -1,9 +1,8 @@
 """Per-node pre-search (target-1 v1).
 
 Before a goal node is dispatched to a prover, a separate lightweight
-pre-search agent searches for relevant lemmas across three sources —
-Mathlib (via loogle), the project Library (via grep), and in-problem
-proved siblings (via grep). The framework `#check`-verifies the
+pre-search agent searches for relevant lemmas across two sources —
+Mathlib (via loogle) and in-problem proved siblings (via grep). The framework `#check`-verifies the
 candidates (dropping hallucinated Mathlib names), ranks them, and caches
 a `## Candidate lemmas` section that `compile_context` injects into the
 node's Context.md. The agent's raw search stays in its own (discarded)
@@ -61,8 +60,7 @@ _OUT_FILENAME = "_presearch.json"
 #: and `release_expired_leases` un-claims on age alone.
 _PARK_BUDGET_FRACTION = 0.5
 
-_SOURCE_TAG = {"mathlib": "Mathlib", "library": "Library",
-               "in_problem": "this problem"}
+_SOURCE_TAG = {"mathlib": "Mathlib", "in_problem": "this problem"}
 
 
 def presearch_path(problem_dir: Path, goal_id: int) -> Path:
@@ -143,9 +141,9 @@ def _presearch_enabled(workspace: Path | None) -> bool:
 
 def _timeout_sec(workspace: Path | None) -> int:
     """Pre-search agent budget in seconds (Asterism.yaml `presearch.timeout_sec`
-    / env, default `_DEFAULT_TIMEOUT_SEC`). The 3-source search (in-problem +
-    Library + Mathlib loogle) legitimately takes longer than the old Mathlib-only
-    pass — the budget must cover all three plus writing the output."""
+    / env, default `_DEFAULT_TIMEOUT_SEC`). The 2-source search (in-problem +
+    Mathlib loogle) legitimately takes longer than the old Mathlib-only
+    pass — the budget must cover both plus writing the output."""
     from ..core import config
     raw = config.get("presearch.timeout_sec", workspace=workspace)
     try:
@@ -179,18 +177,14 @@ def _ancestor_slugs(conn, goal_id: "int | None") -> "set[str]":
 def _verify(blocks, workspace: Path, problem_dir: Path,
             conn=None, exclude_slug: str = "", problem: str = "",
             goal_id: "int | None" = None) -> list:
-    """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
+    """Verify a 2-block pre-search result `{in_problem, mathlib}`,
     each a list of `{name, why}`. Per source:
       - in_problem: keep names whose decl appears in the problem's `proofs/`
         or `TREE.md` (grep-found siblings; light guard against padded names);
-      - library: keep names among the DB's placed+bridged decls
-        (`db.library_decl_names` — exact membership; was: an INDEX.md
-        substring probe with short-name false positives, whose missing-file
-        fallback silently kept EVERYTHING);
       - mathlib: `#check` via `lemma_lookup`, drop hallucinations, attach
         signatures; keep unverified if the lookup is unavailable.
     Each block is capped at `_MAX_PER_BLOCK`. Output is a flat list ordered
-    in_problem → library → mathlib (cleanest cite first), each entry
+    in_problem → mathlib (cleanest cite first), each entry
     `{name, source, why[, signature]}`.
 
     An ANCESTOR of `goal_id` never appears (owner ruling 2026-09-07):
@@ -281,28 +275,6 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
                     item["status"] = "not a goal"
                 out.append(item)
 
-    # library — keep names among the DB-indexed placed decls. Match on the
-    # full FQN or its leaf (agents report `Library.<Domain>.<File>.<decl>`
-    # module-qualified names while the DB stores the declared FQN — leaf
-    # equality bridges the two). conn=None (defensive) keeps all, the old
-    # missing-INDEX fallback.
-    known: "set[str] | None" = None
-    if conn is not None:
-        try:
-            from ..state import db as _db
-            known = _db.library_decl_names(conn)
-        except Exception:  # noqa: BLE001 — filter is best-effort
-            known = None
-    known_leaves = ({n.rsplit(".", 1)[-1] for n in known}
-                    if known is not None else None)
-    for entry in _block("library"):
-        name, why = _clean(entry)
-        if not name:
-            continue
-        if (known is None or name in known
-                or name.rsplit(".", 1)[-1] in known_leaves):
-            out.append({"name": name, "source": "library", "why": why})
-
     # mathlib — #check; drop hallucinations, attach signatures.
     mathlib = _block("mathlib")
     names = [n for n, _ in (_clean(e) for e in mathlib) if n]
@@ -372,7 +344,7 @@ _DRY_SECTION = (
     "## Candidate lemmas (pre-search)\n"
     "\n"
     "Pre-search ran for this goal and verified NO candidates — in-problem "
-    "siblings, Library and Mathlib all came up dry. If you believe a "
+    "siblings and Mathlib both came up dry. If you believe a "
     "relevant lemma exists, search yourself (grep / loogle).\n"
 )
 
@@ -471,7 +443,6 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
             .replace("__COLD_START__", cold_note)
             .replace("__GOAL__", statement)
             .replace("__PACKAGES__", (workspace / ".lake" / "packages").as_posix())
-            .replace("__LIBRARY_DIR__", (workspace / "Library").as_posix())
             .replace("__PROBLEM_DIR__", problem_dir.as_posix())
             .replace("__OUT_PATH__", out_path.as_posix())
             .replace("__TIMEOUT_MIN__", str(max(1, timeout // 60)))

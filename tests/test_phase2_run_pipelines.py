@@ -30,7 +30,6 @@ def _intake_degraded(monkeypatch):
         lambda **kw: _intake.IntakeOutcome(sid=None))
 
 
-
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
@@ -967,53 +966,6 @@ def test_run_forward_dedupe_alias_registers_proved_alias(
                   / "L_my_alias.lean").read_text(encoding="utf-8")
     assert "apply canon <;> assumption" in alias_file
     assert "import Problems.p.proofs.L_canon" in alias_file
-
-
-def test_run_forward_dedupe_library_alias_no_alias_target(
-    workspace: Path, conn: sqlite3.Connection,
-    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
-    mock_lsp_verify,
-) -> None:
-    """Point 3 (library tier): a hit on a proved `Library/` decl registers
-    a proved alias delegating to the fully-qualified name — and records NO
-    `alias_target_id` (no in-DB goal for prune to retain)."""
-    from Tooling.quality import dedupe
-    _insert_root(conn)
-
-    def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_forward.lean").write_text(
-            "namespace Problems.p\n"
-            "-- Forward rationale: restates a Library decl.\n"
-            "-- entry_kind: Backward\n"
-            "theorem lib_alias : True := by sorry\n"
-            "end Problems.p\n",
-            encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    monkeypatch.setattr(
-        dedupe, "find_canonicals_batch",
-        lambda *a, **k: [dedupe.CanonicalMatch(
-            goal_id=-1, kind="library_alias",
-            library_module="Library.Foo",
-            library_fqn="Library.Foo.bar")],
-    )
-
-    r = forward.run_forward(
-        conn, problem="p", workspace=workspace, intent=mfst,
-        pipeline_id="test-fwd-libalias",
-    )
-    assert r.outcome == "proved"
-    g = conn.execute(
-        "SELECT status, alias_target_id FROM goals"
-        " WHERE problem='p' AND slug='lib_alias'"
-    ).fetchone()
-    assert g is not None
-    assert g["status"] == "proved"
-    assert g["alias_target_id"] is None
-    alias_file = (workspace / "Problems" / "p" / "proofs"
-                  / "L_lib_alias.lean").read_text(encoding="utf-8")
-    assert "apply @Library.Foo.bar <;> assumption" in alias_file
-    assert "import Library.Foo" in alias_file
 
 
 def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(

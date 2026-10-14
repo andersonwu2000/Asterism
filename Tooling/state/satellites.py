@@ -27,8 +27,8 @@ Three parts:
     table_info` / `foreign_key_list`), not from a list: a table is
     problem-keyed if it carries a `problem` column or reaches
     `problems` through FKs. Only linkage the schema cannot express
-    (polymorphic target_kind/target_id, the librarian's prefix-encoded
-    key) is declared by hand, and a test fails on any table in neither
+    (polymorphic target_kind/target_id, the retired Librarian's
+    prefix-encoded key) is declared by hand, and a test fails on any table in neither
     bucket — a new table cannot arrive unclassified.
   * Auditors — `db_leftovers` (per-problem complement, run after a
     wipe) and `orphan_rows` (global referential complement). REPORT
@@ -141,7 +141,7 @@ FILE_SATELLITES: "tuple[FileSatellite, ...]" = (
                   "sorry-stub manually before re-init"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "BRIEF.md", KEPT, False,
                   "auto-regenerated at daemon startup from "
-                  "intent+Library — sweeping it buys nothing"),
+                  "intent — sweeping it buys nothing"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "proofs", KEPT, True,
                   "the directory itself; its RUN-owned contents are the "
                   "proofs-scope swept entries above"),
@@ -210,7 +210,7 @@ def file_complement(pdir: Path) -> "list[str]":
 #: `dead_attempts.target_id` is an INTEGER column, so a failure that is
 #: not ABOUT a goal / strategy / group has no id to record and writes
 #: this SENTINEL instead — a Strategist wake that died, a Forward or a
-#: Librarian pipeline (`dispatcher/worker.py` writes `target_id=0` with
+#: (retired) Librarian pipeline (`dispatcher/worker.py` writes `target_id=0` with
 #: `target_kind` copied from the PIPELINE's own kind). Such a row's
 #: subject is its `pipeline_id`, and nothing else.
 #:
@@ -229,7 +229,8 @@ DEAD_ATTEMPT_NO_TARGET = 0
 NAMES_A_TARGET = f"target_id <> {DEAD_ATTEMPT_NO_TARGET}"
 
 #: `pipelines.target_id` for a Problem-kind row is either the problem
-#: name or the Librarian's composed `problem\x1ffile` key. This SQL
+#: name or, on historical rows, the retired Librarian's composed
+#: `problem\x1ffile` key. This SQL
 #: fragment is the decoder both the per-problem question and the global
 #: orphan audit ask through — one spelling of one fact, because the two
 #: asking it differently is how the audit came to disagree with the
@@ -256,11 +257,6 @@ POLYMORPHIC_TABLES: "dict[str, tuple[str | None, str]]" = {
         None,
         "polymorphic target + pipeline_id FK; per-problem rows hang off "
         "pipelines the wipe deletes first"),
-    "librarian_fail_counts": (
-        "target_id = :p OR target_id LIKE :p || char(31) || '%'",
-        "key encodes the problem as 'problem' or 'problem\\x1ffile' "
-        "(#92); a fresh classify clears its own, so reset leaves them "
-        "defused-but-present"),
 }
 
 #: Problem-keyed tables a wipe DELIBERATELY leaves alone. Each entry is
@@ -273,11 +269,6 @@ SURVIVES_RESET: "dict[str, str]" = {
     # owner's ruling was to WIPE it, so it left this dict for
     # `wipe_problem_rows` — which is the intended traffic direction
     # here. An entry is a standing ruling, not a resting place.
-    "librarian_fail_counts": (
-        "defused at the next classify "
-        "(clear_librarian_fail_counts_for_problem) rather than swept; "
-        "rows for a DELETED problem linger until then — owner may "
-        "prefer the wipe to clear the prefix rows."),
 }
 
 
@@ -443,9 +434,9 @@ def orphan_rows(conn: sqlite3.Connection) -> "dict[str, int]":
             "SELECT COUNT(*) FROM pipelines WHERE target_kind='Group' "
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM groups)",
         # Two key shapes share this column. A Forward pipeline's
-        # target_id IS the problem name; a Librarian per-file unit's is
-        # the composed `problem\x1ffile` (the in-process dispatch
-        # identity, see `dispatcher._lib_encode`). Comparing the raw
+        # target_id IS the problem name; a historical Librarian per-file
+        # unit's is the composed `problem\x1ffile` (the retired
+        # chain's dispatch identity). Comparing the raw
         # column against `problems` therefore indicted 1,063 rows on
         # 2026-08-14 whose problems all exist — an auditor that cries
         # wolf a thousand times is one nobody reads, which is the exact

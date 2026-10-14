@@ -162,7 +162,7 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     monkeypatch.chdir(tmp_path)
     _seed_via_init(tmp_path)
     conn = db.connect()
-    _settings.write(conn, "wilson", "library", True)
+    _settings.write(conn, "wilson", "signoff", True)
     db.bind_paper(conn, problem="wilson", paper_id="abc123",
                   origin="user")
     # programme_revisions (v30), user_file_history (v28) and
@@ -373,30 +373,20 @@ def test_reset_clears_strategist_decisions_referencing_goals(
     ).fetchone()[0] == 0
 
 
-def test_reset_clears_library_decls_and_kb_entries(
+def test_reset_clears_kb_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A library-ized problem that also accumulated KB lessons carries two more
-    `problem → problems(name)` FK children that block reset: `library_decls`
-    (also `source_goal_id → goals.id`) and `kb_entries` (KB-as-SoT lessons).
-    Observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY constraint
-    failed` at `DELETE FROM problems` — first on 2 classified library_decls,
-    then on a global lesson the run wrote. Fix: clear both up front."""
+    """A problem that accumulated KB lessons carries a `problem →
+    problems(name)` FK child that blocks reset: `kb_entries` (KB-as-SoT
+    lessons). Observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN
+    KEY constraint failed` at `DELETE FROM problems` on a global lesson
+    the run wrote. Fix: clear it up front. (The same incident's other
+    child, `library_decls`, was retired with the Librarian at v56.)"""
     _setup_problem(tmp_path, "lib")
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="lib", force=True))
     conn = db.connect()
-    gid = int(conn.execute(
-        "SELECT id FROM goals WHERE problem='lib'").fetchone()["id"])
-    # Classified library_decl (Librarian classify stage) + a global KB lesson
-    # (reflection global_add) — both FK-reference the problem.
-    conn.execute(
-        "INSERT INTO library_decls "
-        "(problem, slug, source_goal_id, verdict, target_file, file_order,"
-        " lifecycle, created_at, updated_at) "
-        "VALUES ('lib', 'main', ?, 'keep', 'Library/X.lean', 0,"
-        " 'classified', ?, ?)",
-        (gid, db.now(), db.now()))
+    # A global KB lesson (reflection global_add) FK-references the problem.
     conn.execute(
         "INSERT INTO kb_entries (type, title, body, problem, node_id,"
         " provenance, created_at) "
@@ -408,7 +398,7 @@ def test_reset_clears_library_decls_and_kb_entries(
     cmd_reset(argparse.Namespace(problem="lib"))
 
     conn = db.connect()
-    for tbl in ("library_decls", "kb_entries", "goals"):
+    for tbl in ("kb_entries", "goals"):
         assert conn.execute(
             f"SELECT count(*) FROM {tbl} WHERE problem='lib'"
         ).fetchone()[0] == 0, f"{tbl} not cleared"

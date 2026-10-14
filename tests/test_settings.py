@@ -39,11 +39,9 @@ def _intent(**kw) -> intent.ProblemIntent:
 
 def test_write_read_round_trip(conn) -> None:
     settings.write(conn, "p", "axioms_whitelist", ["propext", "Custom.ax"])
-    settings.write(conn, "p", "library", True)
     settings.write(conn, "p", "signoff", False)
     got = settings.read(conn, "p")
     assert got["axioms_whitelist"] == ["propext", "Custom.ax"]
-    assert got["library"] is True
     assert got["signoff"] is False
     assert "forbidden_lemmas" not in got  # absent = framework default
 
@@ -52,7 +50,7 @@ def test_write_validates_key_and_type(conn) -> None:
     with pytest.raises(ValueError):
         settings.write(conn, "p", "no_such_key", [])
     with pytest.raises(ValueError):
-        settings.write(conn, "p", "library", "yes")  # str is not bool
+        settings.write(conn, "p", "signoff", "yes")  # str is not bool
     with pytest.raises(ValueError):
         settings.write(conn, "p", "axioms_whitelist", "propext")  # not list
 
@@ -73,16 +71,28 @@ def test_malformed_rows_are_dropped_not_honored(conn) -> None:
         " VALUES ('p', 'axioms_whitelist', 'not json{', ?)", (db.now(),))
     conn.execute(
         "INSERT INTO problem_settings (problem, key, value, updated_at)"
-        " VALUES ('p', 'library', '\"yes\"', ?)", (db.now(),))  # wrong type
+        " VALUES ('p', 'signoff', '\"yes\"', ?)", (db.now(),))  # wrong type
     conn.commit()
     assert settings.read(conn, "p") == {}
 
 
+def test_retired_key_row_reads_as_absent(conn) -> None:
+    """A row left under a retired key (`library`, the Librarian opt-in)
+    is not a setting any more: it is neither readable nor writable."""
+    conn.execute(
+        "INSERT INTO problem_settings (problem, key, value, updated_at)"
+        " VALUES ('p', 'library', 'true', ?)", (db.now(),))
+    conn.commit()
+    assert settings.read(conn, "p") == {}
+    with pytest.raises(ValueError):
+        settings.write(conn, "p", "library", True)
+
+
 def test_overlay_stamps_dataclass_fields(conn) -> None:
-    pi = _intent(axioms_whitelist=["seed.ax"], library=False)
-    settings.overlay(pi, {"axioms_whitelist": ["db.ax"], "library": True})
+    pi = _intent(axioms_whitelist=["seed.ax"], signoff=True)
+    settings.overlay(pi, {"axioms_whitelist": ["db.ax"], "signoff": False})
     assert pi.axioms_whitelist == ["db.ax"]
-    assert pi.library is True
+    assert pi.signoff is False
     # untouched keys keep their prior values
     assert pi.forbidden_lemmas == []
 
@@ -201,6 +211,6 @@ def test_intent_cache_db_edit_hot_reloads(tmp_path: Path) -> None:
     # no file touch — the DB edit must still reach the next access
     assert cache["p"].axioms_whitelist == ["db.ax"]
 
-    settings.write(conn, "p", "library", True)
-    assert cache["p"].library is True
+    settings.write(conn, "p", "signoff", False)
+    assert cache["p"].signoff is False
     conn.close()

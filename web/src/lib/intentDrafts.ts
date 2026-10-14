@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react'
 import type { IntentData } from './types'
 
 export type IntentFields = Pick<IntentData, 'charter' | 'word'> & {
-  settings: Pick<IntentData['settings'], 'library' | 'forbidden_lemmas'>
+  settings: Pick<IntentData['settings'], 'forbidden_lemmas'>
 }
 export type IntentPatch = Partial<IntentFields>
 interface IntentDraft { patch: IntentPatch; saving: boolean }

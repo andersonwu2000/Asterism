@@ -218,10 +218,6 @@ export default function New({ project }: { project?: string | null }) {
         charter: desc.trim(),
         ...(word.trim() === '' ? {} : { word: word.trim() }),
         settings: {
-          // whether finished work enters the Library is decided by a
-          // human AT SIGN-OFF (owner: no automatic harvest) — true
-          // here just raises that review gate when the problem ends
-          library: true,
           axioms_whitelist: axioms,
           forbidden_lemmas: forbidden,
         },
@@ -288,7 +284,7 @@ export default function New({ project }: { project?: string | null }) {
           'Describe the mathematics in natural language: the objects involved, the ' +
           'statements you want, any routes to prefer or avoid.\n\nExample: Compute the ' +
           'singular homology of the n-sphere with coefficients in an arbitrary ring R. ' +
-          'The Mayer–Vietoris machinery is already in the Library — cite it, do not rebuild it.'
+          'The Mayer–Vietoris machinery is already in Mathlib — cite it, do not rebuild it.'
         }
         value={desc}
         onChange={(e) => setDesc(e.target.value)}

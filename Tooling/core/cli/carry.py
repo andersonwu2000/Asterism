@@ -13,8 +13,8 @@ bundle on disk, and the target workspace it lands in.
 A bundle is a directory:
 
     carry.db        a `VACUUM INTO` snapshot pruned to P's rows, with
-                    `library_*` and `projects` carried whole (global
-                    assets, not one problem's)
+                    `projects` carried whole (a global asset, not one
+                    problem's)
     files.tar.gz    P's problem directory + the papers bound to P, at
                     workspace-relative paths
     manifest.json   source HEAD, schema user_version, per-table row
@@ -593,14 +593,6 @@ def _apply_rows(plan: Plan) -> None:
         tconn.execute("PRAGMA foreign_keys = OFF")
         from .problems import wipe_problem_rows
         wipe_problem_rows(tconn, plan.problem)
-        # `librarian_fail_counts` is a declared reset SURVIVOR, so the
-        # wipe leaves it — but carry REPLACES, and a surviving row would
-        # collide with the bundle's on the text PK.
-        pred, argv = carry.belongs_to(
-            "librarian_fail_counts",
-            carry.Scope(plan.problem))
-        tconn.execute(
-            f"DELETE FROM librarian_fail_counts WHERE {pred}", argv)
         left = satellites.db_leftovers(tconn, plan.problem)
         if left:
             raise RuntimeError(
@@ -723,8 +715,7 @@ def _post_checks(plan: Plan, baseline: "set[tuple]") -> int:
             for row in sorted(found)[:20]:
                 print(f"    ? {row}")
             return RC_UNCLEAN
-        print("  [  OK] foreign_key_check clean "
-              "(library_decls cross-problem rows excepted)")
+        print("  [  OK] foreign_key_check clean")
         # TREE.md renders the rows, and its `[gNNNN]` labels are exactly
         # the ids a remap just moved.
         tree.write(conn, plan.workspace, plan.problem)

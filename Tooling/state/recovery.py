@@ -128,7 +128,8 @@ def _pipeline_problem(conn: sqlite3.Connection, target_id: str,
     filtering), or None when the target no longer resolves. Mirrors the
     dispatcher's `_problem_of_target` shapes without importing core
     (state must stay import-clean of core): 'Problem' targets carry the
-    name directly (Librarian per-file rows compose `problem\\x1ffile`),
+    name directly (historical Librarian per-file rows compose
+    `problem\\x1ffile`),
     the rest resolve through their tables."""
     if target_kind == "Problem":
         return target_id.split("\x1f", 1)[0]
@@ -452,7 +453,6 @@ def recover_at_startup(conn: sqlite3.Connection,
     backups_handled = 0
     tmps_removed = 0
     patches_salvaged = 0
-    probes_removed = 0
     orphans_swept = 0
     orphans_kept_cited = 0
     if workspace is not None:
@@ -516,22 +516,6 @@ def recover_at_startup(conn: sqlite3.Connection,
 
         backups_handled, tmps_removed = sweep_lean_backups(conn, workspace)
 
-        # Stale Library/_migrate_probe_* (#104): the Librarian Gate B /
-        # migrate verify writes a temp probe under Library/ and unlinks
-        # it in a `finally` — but a hard kill (Stop-Process / power loss)
-        # mid-verify skips the finally, orphaning the probe in the
-        # curated Library/, where it pollutes the import closure and the
-        # next inventory. The prefix is framework-owned, so sweeping it is
-        # always safe. Best-effort.
-        libdir = workspace / "Library"
-        if libdir.exists():
-            for p in libdir.glob("_migrate_probe_*"):
-                try:
-                    p.unlink()
-                    probes_removed += 1
-                except OSError:
-                    pass
-
         # Orphan proof-file sweep (rule 10 — DB↔file paired): a Backward
         # placement that died before its goal-row commit leaves a
         # sorry-bearing stub with no row; uncited ones are deleted, cited
@@ -556,7 +540,7 @@ def recover_at_startup(conn: sqlite3.Connection,
             or attempts_cleared or attempts_live_skipped
             or attempts_kept_theory or sessions_released
             or backups_handled or tmps_removed
-            or patches_salvaged or probes_removed
+            or patches_salvaged
             or orphans_swept or orphans_kept_cited
             or groups_orphaned):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
@@ -579,7 +563,6 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"handed back {sessions_released} gateway slot(s)), "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files, "
-              f"swept {probes_removed} stale migrate probes, "
               f"swept {orphans_swept} orphan proof files "
               f"(kept {orphans_kept_cited} cited — need repair)",
               flush=True)

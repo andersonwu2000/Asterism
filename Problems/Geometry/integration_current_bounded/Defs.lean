@@ -1,7 +1,10 @@
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle              -- DiffForm
-import Library.Geometry.Manifold.StokesIntegralDefs           -- OrientedManifold, DiffForm.integral
-import Library.Geometry.ManifoldBdry.PullbackFlatDNat         -- pullbackFlatForm
+import Problems.Geometry.pullback_flat_dnat.Defs
+import Problems.Geometry.pullback_flat_dnat.proofs.L_coord_rep_pullback
+import Problems.Geometry.pullback_flat_form.proofs.L_pullback_flat_fderiv_within_chart_contdiffon
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
 
 /-!
 Setup for the **LF-continuity crux** of the de Rham integration current. The final
@@ -12,9 +15,6 @@ on the integral. This problem isolates that estimate; it is the one genuinely-ne
 lemma of the bridge (no existing bound on `DiffForm.integral` in Library or Mathlib).
 -/
 
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.ManifoldBdry.PullbackFlatDNat
 open scoped Manifold Bundle ContDiff
 
 namespace Problems.Geometry.integration_current_bounded

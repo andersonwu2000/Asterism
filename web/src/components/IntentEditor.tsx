@@ -135,8 +135,7 @@ function PapersBlock({ problem, project }: { problem: string; project: string })
               <span
                 className="text-[10px] text-ink-faint"
                 title={
-                  // 'agent' since the Scholar pipeline retired
-                  // (020ebf85; 'scholar' survives on legacy rows)
+                  // 'scholar' survives on legacy rows (020ebf85)
                   b.origin === 'scholar' || b.origin === 'agent'
                     ? 'fetched by the engine during a run'
                     : b.origin === 'manifest'
@@ -185,7 +184,6 @@ export default function IntentEditor({
   problem,
   project,
   onDirtyChange,
-  bridged = false,
   shelfHref,
 }: {
   problem: string
@@ -196,8 +194,6 @@ export default function IntentEditor({
   /** where the decisions waiting on the human are — the Project's own
    * shelf, since the inbox is no longer a destination of its own */
   shelfHref?: string
-  /** work already in the Library — the `library` flag is settled */
-  bridged?: boolean
 }) {
   const [data, setData] = useState<IntentData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -369,35 +365,14 @@ export default function IntentEditor({
           disabled={data.pending_amend}
           className="flex flex-col gap-2.5 rounded-xl border border-edge bg-surface px-3.5 py-3"
         >
-          <label
-            className={`flex items-center gap-2 text-xs text-ink-dim ${bridged ? 'opacity-60' : ''}`}
-            title={bridged ? "settled — this problem's work is already in the Library" : undefined}
-          >
-            <input
-              type="checkbox"
-              checked={settings.library}
-              disabled={bridged}
-              onChange={(e) => {
-                setIntentField(problem, 'settings', {
-                  library: e.target.checked, forbidden_lemmas: settings.forbidden_lemmas,
-                }, { library: data.settings.library, forbidden_lemmas: data.settings.forbidden_lemmas })
-                touch()
-              }}
-            />
-            harvest finished work into the Library
-            {bridged && (
-              <span className="text-[10px] text-ink-faint">· already in the Library</span>
-            )}
-          </label>
           <ListField
             inline
             label="forbidden lemmas"
             hint="add pattern (e.g. sperner*)"
             values={settings.forbidden_lemmas}
             onChange={(v) => {
-              setIntentField(problem, 'settings', {
-                library: settings.library, forbidden_lemmas: v,
-              }, { library: data.settings.library, forbidden_lemmas: data.settings.forbidden_lemmas })
+              setIntentField(problem, 'settings', { forbidden_lemmas: v },
+                { forbidden_lemmas: data.settings.forbidden_lemmas })
               touch()
             }}
           />

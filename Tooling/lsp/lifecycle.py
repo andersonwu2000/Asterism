@@ -908,7 +908,7 @@ def verify_file(target_path: Path,
     `timeout` is the HTTP read budget. The gateway's inner writeOlean /
     printAxioms RPC budget is derived as `max(30, timeout - 30)` — the
     30s slack covers HTTP + slot acquire + elaborate before the RPC
-    runs. Library promotion / big-Root callers bump `timeout` to give
+    runs. Big-Root callers bump `timeout` to give
     writeOlean enough room to serialize a heavy environment; short-path
     callers stay on the 120s default and get a 90s RPC budget.
 
@@ -1001,15 +1001,13 @@ def verify_in_session(token: str, content: str, *,
                       _retry_delays: tuple[float, ...] | None = None) -> dict:
     """POST /verify_session: verify `content` on the slot CLAIMED by the
     registered session `token` (claimed mode — the session's OWN warm slot,
-    no borrow eviction). For framework-side gates that hold a session and
-    verify WHOLE-FILE candidates against an already-loaded import closure
-    (Library cleanup mechanical gates).
+    no borrow eviction). The pipeline's axiom gate (`pipeline/_axiom.py`)
+    verifies on the slot its own session already holds.
 
     Same response shape as `verify_file` (`{ok, diagnostics, olean_written,
     axioms, …}`, plus `timed_out`) and the same transient semantics — but
-    NO retries by default: the caller (cleanup gate) has a reliable cold
-    `lake env lean` fallback, so a transient gateway fault should fail fast to
-    cold rather than burn the verify_file retry budget. On gateway-unreachable
+    NO retries by default: a caller that wants them passes `_retry_delays`
+    (the axiom gate passes `_VERIFY_RETRY_DELAYS`). On gateway-unreachable
     returns `{error, transient=True}`."""
     import json
     if not token:
@@ -1060,49 +1058,6 @@ def verify_in_session(token: str, content: str, *,
             continue
     return last_err or {"error": "gateway unreachable (unknown)",
                         "transient": True}
-
-
-def register_session(*, pipeline_id: str, target_path: Path, problem: str,
-                     workspace: Path, log_path: Path | None = None,
-                     timeout: float = 30.0) -> "str | None":
-    """POST /register to claim a worker slot for a FRAMEWORK-held session and
-    return its token (None on ANY failure → caller falls back to cold). Unlike
-    `_write_mcp_config` (which also writes the agent's MCP config), this is for
-    framework-only sessions with no agent attached: the Library cleanup
-    mechanical span holds ONE to verify its whole-file gates on a single warm
-    claimed slot (the file's import closure loaded once) instead of a fresh cold
-    `lake env lean` per gate. Pair with `release_session`. A pool-exhausted
-    register (HTTP 500) or an unreachable gateway both return None — the gate
-    then runs cold, never blocks."""
-    import json
-    if not target_path.exists():
-        return None
-    body: dict = {"pipeline_id": pipeline_id, "target_path": str(target_path),
-                  "problem": problem, "workspace": str(workspace)}
-    if log_path is not None:
-        body["log_path"] = str(log_path)
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{_gateway_port(workspace)}/register",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        tok = data.get("session_token")
-        return tok or None
-    except urllib.error.HTTPError as exc:
-        # Falling back to cold is correct and stays correct — but do it
-        # OUT LOUD with the gateway's own sentence. Silence here means a
-        # pool that has been exhausted for an hour looks identical to a
-        # gateway that is simply busy, and the cleanup span just gets
-        # quietly slower forever.
-        print(f"[gateway] {read_http_error(exc, endpoint='/register')} "
-              f"— this gate runs cold", flush=True)
-        return None
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
-        return None
 
 
 def release_session(token: str) -> None:

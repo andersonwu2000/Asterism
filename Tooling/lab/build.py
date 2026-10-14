@@ -5,7 +5,7 @@ framework in, that can never reach the live one.
                                  commit: `Tooling/`, `Asterism/`, the
                                  Lean project files and `Asterism.yaml`
                                  from `git archive <commit>`, plus empty
-                                 `Library/`, `Benchmarks/` and
+                                 `Benchmarks/` and
                                  `Problems/README.md`
     <root>/runs/<exp>/<arm>_r<n>/  a copy of it, with the slice imported,
                                  the arm's overlay applied and `.lake`
@@ -56,7 +56,7 @@ ARCHIVE_PATHS = ("Tooling", "Asterism", "Asterism.yaml", "lakefile.lean",
 
 #: Created empty in the base — a workspace with no problems in it is
 #: still a valid one, and `carry import` mints the rest.
-EMPTY_TREES = ("Library", "Benchmarks", "Problems")
+EMPTY_TREES = ("Benchmarks", "Problems")
 
 #: What `Problems/README.md` says. The directory has to exist for the
 #: lakefile's glob and for `db.problem_dir`; a marker file is how it

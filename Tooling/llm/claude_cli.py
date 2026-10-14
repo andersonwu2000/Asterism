@@ -687,7 +687,6 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
               parser: StreamParser,
               kind: str = "",
               provider: str = PROVIDER_NAME,
-              trap_check_sec_override: int | None = None,
               heartbeat_path: "str | None" = None) -> None:
     """Two jobs while the spawn runs:
 
@@ -731,13 +730,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     Runs in a daemon thread.
     """
     from ..core import config as _cfg
-    if trap_check_sec_override is not None:
-        # Per-spawn override (classify: scales with the kept-decl count, see
-        # librarian._classify_trap_budget) — a legitimately long single think
-        # over N decls must not be mistaken for a trap at the global 660s.
-        trap_check_sec = trap_check_sec_override
-    else:
-        trap_check_sec = _cfg.get("dispatch.trap_check_sec")
+    trap_check_sec = _cfg.get("dispatch.trap_check_sec")
     silence_threshold_sec = _cfg.get("dispatch.silence_threshold_sec")
     spawn_start = time.monotonic()
     # Floor on trap_check_sec so misconfigured tiny timeouts don't
@@ -941,8 +934,7 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 # enough to overwrite a proved brick with valid JSON. It was described
 # for two months as "a structured, side-effect-free validator", which is
 # what the module does in the shape the agents used, not what the module
-# can do. Scholar still adds its two curated network commands; that is
-# the whole remaining shell surface.
+# can do.
 DEFAULT_BASH_ALLOWED = ""
 
 #: Framework tools, exposed over MCP so every provider reaches them the
@@ -1176,7 +1168,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # IS the projection) plus the problem's landed `proofs/` in place
     # (extra_read_dirs, 2026-08-04 — the cited-file staging + cap
     # truncated the judge's evidence on big problems); no
-    # Library/_docs/mathlib surfaces. Loogle stays available for
+    # _docs/mathlib surfaces. Loogle stays available for
     # checking "mathlib has X" claims.
     if req.kind == "adversary":
         return " ".join(p for p in [
@@ -1193,11 +1185,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
-        # Scholar (paper v2, D12): the two curated network commands are
-        # this kind's ONLY extra surface — the LLM judges, the commands
-        # touch the network (search = open metadata APIs; fetch =
-        # whitelisted hosts + caps, see Tooling/papers/fetch.py).
-        # (Scholar's two curated commands used to be granted here as
+        # (The retired Scholar's two curated commands used to be granted here as
         # `Bash(python -m Tooling.papers.… *)`. They are MCP tools now —
         # `paper_search` / `paper_fetch` — which is what made closing
         # Bash possible without decapitating that role. A trailing `*`
@@ -1218,19 +1206,6 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         *extra_reads,
         *shell_allow,
     ]
-    # Library/ is the Librarian (cleanup/migrate) pipeline's working set: it
-    # reads/greps sibling Library files for cross-file alignment + call sites.
-    # `--add-dir Library` (spawn cmd) already grants FS access, but WITHOUT the
-    # matching Grep/Read allow-pattern the agent's Grep/Read on Library are
-    # permission-denied; it falls back to `Bash grep`, which is ALSO blocked
-    # (Bash = loogle only), leaving it no tool to explore Library — so it loops
-    # on denied calls until the spawn times out (residue_thm cleanup spawns each
-    # burned their full 960s × retries this way, 2026-06-17). Proving pipelines
-    # never hit this: their working set is problem_dir + Mathlib, both scoped.
-    library = workspace / "Library"
-    if library.is_dir():
-        lib = library.as_posix()
-        patterns += [f"Read({lib}/**/*.lean)", f"Grep({lib}/**)"]
     # The spawn's OWN Project documents (§3.9): its papers' normalized
     # text / maps, and whatever else the Project keeps beside them. The
     # original .pdf is the extraction-failure fallback (Read renders PDF
@@ -1265,7 +1240,7 @@ def _workspace_from_problem_dir(problem_dir: Path) -> Path:
     → 3 levels deep), so locate the `Problems` path component instead of
     assuming a fixed `.parent.parent` depth — the old hard-coded 2-level walk
     silently returned `…/Problems` for namespaced problems, which dropped the
-    `.lake/packages` (mathlib) and `Library/` --add-dir grants."""
+    `.lake/packages` (mathlib) --add-dir grant."""
     p = Path(problem_dir)
     for parent in p.parents:
         if parent.name == "Problems":
@@ -1322,8 +1297,8 @@ def _operator_state_deny_rules() -> list[str]:
     cause); these deny rules block re-entry via absolute paths learned
     from month-old notes. Bash cat/echo stays physically possible —
     same accepted porosity as the user-file deny in the spawn cmd.
-    Sanctioned cross-wake stores remain the plan note, LESSONS.md,
-    directives and Library.
+    Sanctioned cross-wake stores remain the plan note, LESSONS.md and
+    directives.
 
     Permission rules match paths in POSIX form; on Windows C:\\Users\\x
     is addressed as //c/Users/x (docs permissions.md#read-and-edit).
@@ -1462,29 +1437,14 @@ class ClaudeCliProvider:
                         / ".lake" / "packages")
         add_dir_packages: list[str] = (
             ["--add-dir", str(packages_dir)] if packages_dir.is_dir() else [])
-        # `Library/` (reusable theorems harvested from prior proved
-        # Problems) lives outside problem_dir. Granted to ALL spawn kinds:
-        #   - librarian (migrate / cleanup / bridge) edits Library files in
-        #     place and must Read/Grep them + their call-site importers.
-        #   - proving / forward / strategist workers READ it to CITE existing
-        #     Library theorems instead of re-deriving (Library-as-input;
-        #     surfaced in Context.md by `_section_library_available`). A
-        #     cross-problem citation is sound — Library holds only OTHER,
-        #     already-proved problems, so no cycle is possible, and the verify
-        #     lake build resolves the `import Library.…` against its olean.
-        library_dir = _workspace_from_problem_dir(req.problem_dir) / "Library"
-        add_dir_library: list[str] = (
-            ["--add-dir", str(library_dir)] if library_dir.is_dir() else [])
         # Adversary hard isolation (research_mode_design.md §3): the
         # projection directory IS req.problem_dir, and the trust
-        # boundary must stop there — no mathlib/Library/_docs grants.
+        # boundary must stop there — no mathlib/_docs grants.
         if req.kind == "adversary":
             add_dir_packages = []
-            add_dir_library = []
         # The spawn's own Project `_docs/` (its papers live there since
-        # §3.9) — same trust-boundary reasoning as Library: the
-        # allowlist patterns above only take effect inside
-        # `cwd ∪ --add-dir`.
+        # §3.9) lives outside problem_dir: the allowlist patterns above
+        # only take effect inside `cwd ∪ --add-dir`.
         from .envelope import project_docs_dir as _project_docs_dir
         _docs_dir = _project_docs_dir(req.problem_dir)
         add_dir_papers: list[str] = (
@@ -1580,8 +1540,8 @@ class ClaudeCliProvider:
             # a shell execution tool" with it.
             # What replaced the 33k measured calls: `inspect` for the
             # ~91% that was reading, `compute` for the ~3% that was
-            # arithmetic, `paper_search`/`paper_fetch` for the Scholar's
-            # two curated commands. spawn_guard's refusal names them.
+            # arithmetic, `paper_search`/`paper_fetch` for the retired
+            # Scholar's two curated commands. spawn_guard's refusal names them.
             #
             # `req.shell_allow` is the ONE way back: a caller that names
             # its commands pattern by pattern lifts the blanket deny for
@@ -1607,7 +1567,6 @@ class ClaudeCliProvider:
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
-            *add_dir_library,
             *add_dir_papers,
             *add_dir_extra,
             *mcp_flags,
@@ -1621,10 +1580,9 @@ class ClaudeCliProvider:
         # Per-spawn write whitelist for spawn_guard's write-family fence
         # (task #128): file-tool WRITES are default-deny outside these
         # roots — the attempts sandbox, plus the kind's sanctioned edit
-        # surface (the librarian family edits Library in place; every
-        # other persisted artifact is written by framework code, not
-        # spawn tools). Attempts dir stays FIRST — the deny message
-        # points at roots[0].
+        # surface (every other persisted artifact is written by framework
+        # code, not spawn tools). Attempts dir stays FIRST — the deny
+        # message points at roots[0].
         # The roots themselves come from `envelope.envelope_for` — the
         # same grants agy renders into its per-spawn settings.json, so a
         # third provider inherits one definition instead of a third copy.
@@ -1632,7 +1590,7 @@ class ClaudeCliProvider:
         from .spawn_guard import (ATTEMPT_DIR_ENV, READ_DENY_ROOTS_ENV,
                                   SHELL_ALLOW_ENV, WRITE_ROOTS_ENV,
                                   shell_allow_prefixes)
-        spec = envelope_for(req, library_dir=library_dir)
+        spec = envelope_for(req)
         env[WRITE_ROOTS_ENV] = spec.write_roots_env()
         # Which attempt the MCP tools server is serving. claude passes
         # its whole environment to that child, so setting it here is the
@@ -1800,7 +1758,6 @@ class ClaudeCliProvider:
                     "timeout_sec": req.timeout_sec,
                     "parser": parser,
                     "kind": req.kind,
-                    "trap_check_sec_override": req.trap_check_sec,
                 },
                 daemon=True,
             )

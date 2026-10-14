@@ -54,9 +54,8 @@ is not on this list is a hole):
   * `pipeline/backward.py`, `pipeline/forward.py` — the commit gates
     (`forbidden_metaprogramming`), because a file can reach disk with no
     LSP tool call at all.
-  * `quality/lake_probe.py` `run_lean_source`, `quality/dedupe.py`
-    batch probes — the paths that shell out to `lake env lean` on a
-    throwaway file, bypassing the gateway entirely.
+  * `quality/dedupe_probe.py` batch probes — the path that shells out to
+    `lake env lean` on a throwaway file, bypassing the gateway entirely.
 
 Related fence, same disease: `knowledge/lemma_lookup.py` splices
 requested names into an elaborated `.lean`, so it restricts them to the

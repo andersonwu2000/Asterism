@@ -111,17 +111,6 @@ dispatch:
                               # and catches agents that have been
                               # silent through the entire window
                               # [trap_check - 300, trap_check].
-  # classify is the ONE kind whose input is unbounded: it lays out the whole
-  # kept-decl set (N) in a single thinking block, so its think time scales with
-  # N. The flat trap_check_sec (calibrated for bounded builder/backward/migrate
-  # spawns) killed residue's 271-decl classify mid-think (~650s > 660). For
-  # classify ONLY, the watchdog trap_check = min(cap, trap_check_sec +
-  # per_decl*N), and the overall spawn timeout keeps the same post-trap window
-  # (spawn_timeout_sec - trap_check_sec). Other kinds are unaffected.
-  # (librarian._classify_trap_budget; code defaults 4 / 2400 are the SoT.)
-  classify_trap_per_decl_sec: 4    # +seconds of think budget per kept decl
-  classify_trap_cap_sec: 2400      # ceiling (~435 decls; beyond this a one-shot
-                                   # layout is the wrong shape, not a time issue)
 
 
 # Formalizer — the merged worker (update_plan_2026_07 #1): one kind
@@ -281,23 +270,6 @@ presearch:
                                # wrote output (3-block run 2026-06-29). Blocks prover dispatch,
                                # so raising it adds per-node latency — tune to taste.
 
-# Library-ization cleanup spawns (mark / simplify / decide / audit / migrate
-# hole-fill — all dispatch with kind="librarian"). Was implicit: with no entry
-# here, resolve_model("librarian") fell through to DEFAULT_MODEL (sonnet). Made
-# explicit so the model is yaml-controlled like every other pipeline. (classify
-# is a separate kind="classify"; it shares this default unless given its own
-# entry.)
-librarian:
-  provider: codex
-  model: gpt-5.6-luna
-  reasoning_effort: xhigh      # 2026-09-07 gpt day (owner)
-  # model: claude-sonnet-5       # bulk, mechanical-ish per-file polish; the
-                               # highest-volume librarian spawns. Upgraded from
-                               # claude-sonnet-4-6 to next-gen sonnet-5
-                               # (2026-07-02, CLI-verified). WATCH cost/latency
-                               # (sonnet-5 pricing not yet benchmarked); revert
-                               # to sonnet-4-6 if the bulk cost regresses.
-
 # Developer-only agent framework feedback. Off by default. When on:
 # every seat's prompt names the `feedback(note, evidence)` MCP tool, and
 # an agent that a tool, gate or Context line misleads files one sentence
@@ -309,9 +281,6 @@ librarian:
 # shared checkout neither has it nor triggers it.
 feedback:
   enabled: true                # developer mode (user 2026-07-29). Since 2026-09-07 this costs NO extra spawn: the end-of-run questionnaire leg is retired and the tool is called mid-turn.
-
-# (scholar seat retired 2026-08-22 — paper fetching is the Strategist's
-# own tool surface now; the Scholar pipeline is gone.)
 
 adversary:
   # 2026-08-18: back to the claude baseline (user) — save codex quota

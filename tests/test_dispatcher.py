@@ -958,32 +958,6 @@ def test_recovery_reparks_a_drifted_anchor(
     assert ev is not None and ev["event"] == "recovery_anchor_repark"
 
 
-def test_recover_at_startup_sweeps_stale_migrate_probes(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """#104 — crash-orphan Library/_migrate_probe_* (the Librarian Gate B
-    verify temp, normally unlinked in a finally, leaked by a hard kill)
-    are swept at startup; real Library files stay untouched."""
-    from Tooling.core.dispatcher import _recover_at_startup
-    libdir = tmp_path / "Library"
-    (libdir / "LinearAlgebra").mkdir(parents=True)
-    probe1 = libdir / "_migrate_probe_abc123.lean"
-    probe2 = libdir / "_migrate_probe_def456.lean"
-    index = libdir / "INDEX.md"
-    real_lean = libdir / "LinearAlgebra" / "SVD.lean"
-    for f, body in ((probe1, "-- probe\n"), (probe2, "-- probe\n"),
-                    (index, "# index\n"),
-                    (real_lean, "theorem t : True := trivial\n")):
-        f.write_text(body, encoding="utf-8")
-
-    _recover_at_startup(conn, tmp_path)
-
-    assert not probe1.exists()
-    assert not probe2.exists()
-    assert index.exists()        # real Library file untouched
-    assert real_lean.exists()    # nested real file untouched
-
-
 def test_recover_at_startup_sweeps_orphan_proof_files(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
@@ -2019,13 +1993,13 @@ def test_bfs_refill_kind_cooldown_blocks_enqueue(
 def test_bfs_refill_kind_cooldown_only_affects_matching_kind(
     conn: sqlite3.Connection,
 ) -> None:
-    """#103 — cooling an unrelated kind (e.g. Librarian) does not block
+    """#103 — cooling an unrelated kind (e.g. Strategist) does not block
     Formalizer targets. Per-kind isolation."""
     import time
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn, problem="sg")
     bfs_refill(conn, running=set(),
-               kind_backoff={"Librarian": time.time() + 60.0})
+               kind_backoff={"Strategist": time.time() + 60.0})
     assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
@@ -2060,7 +2034,7 @@ def test_flush_queue_kind_drops_only_matching(
     )
     from Tooling.core.dispatcher import bfs_refill
     bfs_refill(conn, running=set())  # enqueues 2 Formalizer rows
-    db.enqueue(conn, kind="Librarian", target_id="pn", target_kind="Problem",
+    db.enqueue(conn, kind="Strategist", target_id="pn", target_kind="Problem",
                priority=0, decision_id=None, problem="pn")
     assert db.queue_size(conn) == 3
 
@@ -2068,7 +2042,7 @@ def test_flush_queue_kind_drops_only_matching(
     assert n == 2
     assert db.queue_size(conn) == 1
     rest = db.pop_queue(conn)
-    assert rest is not None and rest["kind"] == "Librarian"
+    assert rest is not None and rest["kind"] == "Strategist"
 
 
 def test_open_goals_excludes_frozen_root(

@@ -767,10 +767,9 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
 
     Why this exists alongside `/verify` (borrow): a borrow evicts the slot's
     content (forcing the owner a re-warmup) and grabs an arbitrary slot, so it
-    can't reuse a held session's already-loaded import closure. A framework
-    caller that holds a session (the Library cleanup mechanical gates: ONE
-    file-level session per file) wants the OPPOSITE — verify whole-file
-    candidates against the slot whose closure is already that file's. The first
+    can't reuse a held session's already-loaded import closure. A caller
+    that holds a session (the pipeline's axiom gate) wants the OPPOSITE —
+    verify candidates against the slot whose closure is already loaded. The first
     didChange pays the import load (~25s); every subsequent whole-file gate on
     the held slot is a ~4-5s body re-elaborate instead of a fresh ~25s `lake env
     lean`. Mirrors `_verify_sync` but uses the claimed slot + an explicit

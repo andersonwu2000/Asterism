@@ -1,6 +1,7 @@
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle          -- DiffForm, formBundleCore, instForm*
-import Library.Geometry.Manifold.AlternatingMapContDiff   -- contdiff_comp_continuous_linear_map_clm
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_form_bundle.proofs.L_contdiff_comp_continuous_linear_map_clm
+import Problems.Geometry.stokes_form_coord_comp.Defs
 
 /-!
 Setup for the integration-current bridge's first brick: the pullback of a *flat*
@@ -15,11 +16,11 @@ two-sided `fderiv`): on `∂N` the chart `.symm` has a `max 0` clamp, so full `f
 is the junk value `0` and discontinuous there (matching the Library convention
 `ext_deriv_locality_pullback`).
 Its fibrewise smoothness is the proved analytic core
-`Library…AlternatingMapContDiff.contdiff_comp_continuous_linear_map_clm`.
+`Problems.Geometry.stokes_form_bundle.contdiff_comp_continuous_linear_map_clm`.
 -/
 
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
+open Problems.Geometry.stokes_form_bundle (formBundleCore)
 open scoped Manifold Bundle ContDiff
 
 namespace Problems.Geometry.pullback_flat_form

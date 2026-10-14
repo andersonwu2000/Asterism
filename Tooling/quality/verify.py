@@ -795,7 +795,7 @@ def rollback_cascade_chain(
     conn.commit()
     # Problem FSM §2.1 `revoked` (2026-07-12, splits the old auto edge):
     # post-Ingest un-prove ANNOUNCES the incident automatically — tear
-    # the seal, un-harvest, quarantine — but re-entering the grind is
+    # the seal, quarantine — but re-entering the grind is
     # the OPERATOR's call (`asterism revive`), not the machine's:
     # `ingested_at` stays SET so every liveness reader (stall/T4/exit/
     # stale-row drop) keeps the problem quiet, and the machine never
@@ -810,12 +810,10 @@ def rollback_cascade_chain(
         _transitions.apply_problem_transition(
             conn, touched_problem, "revoked", event="unprove_revoked")
         print(f"[rollback] {touched_problem}: Ingest REVOKED "
-              f"(post-Ingest un-prove) — seal torn, Library un-harvested, "
+              f"(post-Ingest un-prove) — seal torn, "
               f"problem QUARANTINED. Re-enter with "
               f"`asterism revive {touched_problem}` after adjudicating.",
               flush=True)
-        from ..pipeline.librarian import un_harvest as _un_harvest
-        _un_harvest(conn, workspace, touched_problem)
     # TREE refresh — rollback walked one parent chain (all in the same
     # problem), so one write covers every touched goal. Caller's
     # subsequent re-Backward dispatch will overwrite this if it
@@ -1043,11 +1041,9 @@ def root_integrity_gate(
     ).fetchone()
     if root_id is not None:
         db.set_integrity_verified(conn, int(root_id["id"]))
-        # Phase 6 — the root-proved-auto Librarian trigger that lived here
-        # is RETIRED: harvest is strictly Ingest-driven now (the Strategist
-        # commits the terminal judgment; sign-off gates the enqueue). A
-        # proved root merely makes the problem stall-when-idle, which wakes
-        # the Strategist to judge the charter and commit Ingest.
+        # Phase 6 — a proved root merely makes the problem
+        # stall-when-idle, which wakes the Strategist to judge the
+        # charter and commit Ingest.
     print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
     n = cleanup_cascade_backups(conn, workspace, problem)
     if n:

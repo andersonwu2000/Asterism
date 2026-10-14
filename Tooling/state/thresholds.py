@@ -14,8 +14,8 @@ Semantics:
   BUILDER_THRESHOLD — routing semantics RETIRED with the Formalizer
                       merge (update_plan_2026_07 #1: no Builder→Backward
                       escalation exists). Survives only as an internal
-                      small-retry-budget constant (librarian hole-fill +
-                      the undispatched legacy builder module); no config
+                      small-retry-budget constant (the undispatched
+                      legacy builder module); no config
                       key reads it anymore.
 
 Read the LIVE value at call time (`thresholds.SHELVE_THRESHOLD`), never

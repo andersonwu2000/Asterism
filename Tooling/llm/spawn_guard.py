@@ -20,8 +20,8 @@ Policy:
   temp}. The repo tree stays readable but is NOT a write surface —
   problem files are framework- or user-owned (07-29: a strategist wrote
   its plan note to the problem root and the persist chain silently
-  missed it; same rule closes worker writes into mathlib packages /
-  Library). Env absent (manual/legacy spawn) → broad whitelist as
+  missed it; same rule closes worker writes into mathlib packages).
+  Env absent (manual/legacy spawn) → broad whitelist as
   before.
 - Read fence (all file tools + Bash), when the spawn cmd injects
   ASTERISM_SPAWN_READ_DENY_ROOTS (#162, 2026-08-10): the repo tree was
@@ -274,7 +274,7 @@ def _read_denied(tool_name: str, raw: str, path: Path,
                 f"{tool_name} on {raw} is inside {root}, which is "
                 "operator-private: the framework's own notes, earlier "
                 "runs' databases, and other problems' proofs. Your "
-                "problem's own files, Library/ and your Project's "
+                "problem's own files and your Project's "
                 "_docs/ are the surfaces meant for you — everything "
                 "you are supposed to know is in Context.md and "
                 "BRIEF.md.")
@@ -287,8 +287,8 @@ def _read_denied(tool_name: str, raw: str, path: Path,
             return (
                 f"{tool_name} rooted at {raw} would search "
                 f"{inside[0]} and the other operator-private subtrees "
-                "under it. Narrow the search to your problem directory, "
-                "Library/ or your Project's _docs/.")
+                "under it. Narrow the search to your problem directory "
+                "or your Project's _docs/.")
     return None
 
 

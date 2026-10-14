@@ -108,9 +108,9 @@ function openMention(id: number): void {
 }
 
 /* `to: null` = the citation names something real and there is nowhere
- * to send the reader. The Library surface left the shell (HID §1.4-3)
- * and the papers page retired (§3.9), so `/library/X` and `/papers/ID`
- * resolve to nothing and drop the reader on the project picker with no
+ * to send the reader. The Library retired (HID §1.4-3; legacy prose
+ * still cites it) and the papers page retired (§3.9), so `/library/X`
+ * and `/papers/ID` resolve to nothing and drop the reader on the project picker with no
  * explanation. The label still names the thing; only the offer to open
  * it is gone. */
 function citeTarget(
@@ -205,7 +205,7 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
 }
 
 /** Inline pipeline, exported for renderers that keep their own block
- * shell (the Library chapter's docstring cards). `code` spans go
+ * shell (the Engine Console's charter and objective lines). `code` spans go
  * through the Lean tokenizer — code is the one coloured thing on every
  * screen (DESIGN.md) — then $math$, then **bold** / *emphasis* /
  * citation tokens on the rest. */

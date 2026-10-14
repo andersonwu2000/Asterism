@@ -205,7 +205,6 @@ function SignoffCard({
     }
   }, [s.problem])
   const [rejecting, setRejecting] = useState(false)
-  const [confirmingHarvest, setConfirmingHarvest] = useState(false)
   const [reason, setReason] = useState('')
   // the signature's displayed name — the operator's claim, remembered
   // per browser; the record's evidence half (Claude login, OS user,
@@ -217,9 +216,7 @@ function SignoffCard({
   const [error, setError] = useState<string | null>(null)
   const signed = signer.trim().length > 0
 
-  // the Library decision is made HERE, statements in hand — approving
-  // carries it (owner: a human signs; nothing is harvested by default)
-  const act = async (action: 'harvest' | 'archive' | 'reject') => {
+  const act = async (action: 'approve' | 'reject') => {
     setBusy(true)
     setError(null)
     try {
@@ -230,7 +227,6 @@ function SignoffCard({
       } else {
         localStorage.setItem('asterism.signer', signer.trim())
         await apiPost(`/api/problems/${encodeURIComponent(s.problem)}/approve-ingest`, {
-          library: action === 'harvest',
           signer: signer.trim(),
         })
       }
@@ -302,38 +298,10 @@ function SignoffCard({
         <Button
           variant="star"
           disabled={busy || !signed}
-          onClick={() =>
-            confirmingHarvest ? void act('harvest') : setConfirmingHarvest(true)
-          }
-          title={
-            !signed
-              ? 'type your name above — the approval is signed'
-              : confirmingHarvest
-                ? 'approves and starts the harvest run right away'
-                : undefined
-          }
+          onClick={() => void act('approve')}
+          title={!signed ? 'type your name above — the approval is signed' : undefined}
         >
-          {confirmingHarvest ? 'Confirm — engine runs now' : 'Approve — harvest to Library'}
-        </Button>
-        {confirmingHarvest && (
-          <span className="text-[11px] text-ink-faint">
-            the engine starts harvesting immediately
-          </span>
-        )}
-        <Button
-          variant="outline"
-          disabled={busy || !signed}
-          onClick={() => {
-            setConfirmingHarvest(false)
-            void act('archive')
-          }}
-          title={
-            !signed
-              ? 'type your name above — the approval is signed'
-              : 'accept the results but keep them out of the Library — the proofs stay archived with the problem'
-          }
-        >
-          Approve — archive only
+          Approve
         </Button>
         <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">
           {rejecting && (

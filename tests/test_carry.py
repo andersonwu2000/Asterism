@@ -98,7 +98,7 @@ def _seed_problem(conn: sqlite3.Connection, ws: Path, name: str,
                  " VALUES (?, 1, 'route', 'passed', ?, ?)",
                  (name, gid_top, ts))
     conn.execute("INSERT INTO problem_settings (problem, key, value,"
-                 " updated_at) VALUES (?, 'library', 'true', ?)", (name, ts))
+                 " updated_at) VALUES (?, 'signoff', 'true', ?)", (name, ts))
     conn.execute("INSERT INTO problem_papers (problem, paper_id, origin,"
                  " created_at) VALUES (?, ?, 'user', ?)",
                  (name, f"paper{len(name)}", ts))
@@ -116,9 +116,6 @@ def _seed_problem(conn: sqlite3.Connection, ws: Path, name: str,
                  " VALUES (?, ?, ?, ?, ?, ?)",
                  (name, gid_top, pipe, json.dumps({"verdict": "pass"}),
                   json.dumps([{"goal_id": lemma}]), ts))
-    conn.execute("INSERT INTO library_decls (problem, slug, source_goal_id,"
-                 " created_at, updated_at) VALUES (?, 'lemma', ?, ?, ?)",
-                 (name, lemma, ts, ts))
     conn.commit()
 
     (pdir / "problem.json").write_text(
@@ -214,8 +211,8 @@ def test_every_table_is_classified(tmp_path: Path) -> None:
 def test_export_prunes_to_the_problem_and_keeps_the_global_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """carry.db holds P's rows and nobody else's — except `projects`
-    and `library*`, which are global assets and travel whole."""
+    """carry.db holds P's rows and nobody else's — except `projects`,
+    a global asset that travels whole."""
     ws, _ = _workspace(tmp_path / "src", "Erdos.p1", "Erdos.p2")
     out = tmp_path / "bundle"
     assert _export(ws, "Erdos.p1", out, monkeypatch) == 0
@@ -231,7 +228,6 @@ def test_export_prunes_to_the_problem_and_keeps_the_global_assets(
         assert others == [(0,)], f"{table} kept another problem's rows"
     # global assets travel whole
     assert sorted(_rows(cdb, "SELECT name FROM projects")) == [("Erdos",)]
-    assert len(_rows(cdb, "SELECT id FROM library_decls")) == 2
 
 
 def test_export_leaves_no_orphan_in_the_goal_keyed_tables(

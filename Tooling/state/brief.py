@@ -2,13 +2,13 @@
 
 Holds the cross-spawn invariants the framework would otherwise re-inject
 into every Context.md: sandbox rules, forbidden lemmas, the problem's
-goal and the user's word, Library entries.
+goal and the user's word.
 
 Re-render triggers:
   * `cli init`         — create initial BRIEF when a Problem is registered.
-  * daemon startup     — refresh from current intent + Library state
-                         (covers charter/word edits + library promotes
-                         from the previous run; daemon has no hot-reload).
+  * daemon startup     — refresh from current intent (covers charter/
+                         word edits from the previous run; daemon has no
+                         hot-reload).
 
 Atomicity: write via tmp file + os.replace so an in-flight `cat
 BRIEF.md` from the operator never sees a half-written file.
@@ -39,7 +39,6 @@ def render(workspace: Path, intent: intent_mod.ProblemIntent,
       2. FORBIDDEN_LEMMAS
       3. The problem's goal (the top group's charter)
       4. The user's word
-      5. Library available
     """
     # Late import: context → pipeline → agent → context cycle would
     # break a top-level import here. brief.render is only ever called
@@ -59,7 +58,6 @@ def render(workspace: Path, intent: intent_mod.ProblemIntent,
         context._section_forbidden(intent),
         context._section_goal(intent),
         context._section_user_word(intent),
-        context._section_library_available(conn, intent),
     ]
     parts: list[str] = []
     for s in sections:
@@ -99,15 +97,14 @@ def write_for_all_problems(conn: sqlite3.Connection, workspace: Path,
                             intents: dict[str, intent_mod.ProblemIntent],
                             ) -> None:
     """Re-render BRIEF for every registered problem. Called at daemon
-    startup so any charter/word edits / Library promotes since the last
-    run land in BRIEF before the first dispatch.
+    startup so any charter/word edits since the last run land in BRIEF
+    before the first dispatch.
     """
     for problem_name, intent in intents.items():
         try:
             # `conn` was held and not passed until 2026-09-08, which
             # cost the render every question it can only answer from the
-            # record — the Library menu, and now whether this problem
-            # has a catalog worth naming.
+            # record — whether this problem has a catalog worth naming.
             write(workspace, intent, conn=conn)
         except Exception as exc:  # noqa: BLE001
             # BRIEF render failure must not block the daemon. Log and
@@ -121,7 +118,7 @@ def _section_brief_header(intent: intent_mod.ProblemIntent) -> list[str]:
     return [
         f"# {intent.problem} — BRIEF",
         "",
-        f"_Auto-rendered from the problem's intent + `Library/`. The_",
+        f"_Auto-rendered from the problem's intent. The_",
         f"_framework inlines this file into `Context.md` for every_",
         f"_dispatch on this problem._",
         "",

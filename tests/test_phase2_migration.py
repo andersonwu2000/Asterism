@@ -25,7 +25,9 @@ from Tooling.state import db
 # `strategist_decisions.report_carried_at` — additive, and since v15
 # additive columns ship as version steps too. 52→53 2026-09-06:
 # `strategist_decisions.infra_deaths` — same channel, and it is what
-# bounds re-queueing a request whose worker died on infra.
+# bounds re-queueing a request whose worker died on infra. 55→56
+# 2026-10-14 v56: Librarian retired (queue.kind drops 'Librarian' and
+# 'Scholar'; pipelines.kind keeps both for its historical rows).
 
 
 # ---------------------------------------------------------------------
@@ -237,7 +239,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -379,7 +381,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     conn.close()
 
 
@@ -477,11 +479,12 @@ def test_v23_scholar_and_fetchpaper_widens(tmp_path: Path) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     db.init_schema(conn)
 
-    for table in ("pipelines", "queue"):
-        sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name=?", (table,)
-        ).fetchone()[0]
-        assert "'Scholar'" in sql, table
+    # v56 narrows `queue.kind` again (Scholar retired); `pipelines` keeps
+    # the value for its historical rows.
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='pipelines'"
+    ).fetchone()[0]
+    assert "'Scholar'" in sql
     sd_sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='strategist_decisions'"
     ).fetchone()[0]
@@ -499,7 +502,6 @@ def test_v23_scholar_and_fetchpaper_widens(tmp_path: Path) -> None:
     rows = db.paper_bindings(conn, "alpha")
     assert [r["paper_id"] for r in rows] == ["abc123", "def456"]
     assert rows[0]["origin"] == "manifest"
-    assert db.scholar_fetch_count(conn, "alpha") == 1
     fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
     assert fk_violations == [], f"FK violations: {fk_violations}"
     conn.close()
@@ -519,7 +521,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -559,7 +561,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -606,7 +608,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -743,8 +745,6 @@ def test_connect_auto_migrates_stale_populated_db(tmp_path):
     c1 = db.connect(p)                       # stale + populated → auto-migrate
     assert (c1.execute("PRAGMA user_version").fetchone()[0]
             == db._CURRENT_USER_VERSION)
-    cols = {r[1] for r in c1.execute("PRAGMA table_info(library_decls)")}
-    assert "reopen_note" in cols             # phase-9 column present after migrate
     c1.close()
 
 
@@ -945,7 +945,7 @@ def test_v41_retires_stranded_manifest_amend_rows(tmp_path, monkeypatch):
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     rows = {str(r["problem"]): (str(r["outcome"]),
                                 str(r["outcome_detail"] or ""))
             for r in conn.execute(
@@ -1249,7 +1249,7 @@ def test_v48_backfills_every_problem_into_a_project(tmp_path: Path) -> None:
                    ("Erdos.p1", "Erdos.p10", "union_closed"))
     db.init_schema(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     assert {str(r["name"]): str(r["project"]) for r in conn.execute(
         "SELECT name, project FROM problems")} == {
         "Erdos.p1": "Erdos", "Erdos.p10": "Erdos",
@@ -1286,7 +1286,7 @@ def test_v48_completes_on_a_populated_disk(tmp_path: Path) -> None:
 
     db.init_schema(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     assert "summary" in {r[1] for r in conn.execute(
         "PRAGMA table_info(programme_revisions)")}
     assert int(conn.execute(
@@ -1456,7 +1456,7 @@ def test_v49_carries_the_queue_and_admits_a_signal(tmp_path: Path) -> None:
 
     db.init_schema(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 55
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 56
     rows = conn.execute(
         "SELECT id, kind, idempotency_key, status FROM human_commands"
     ).fetchall()
@@ -1527,7 +1527,7 @@ def test_v49_migrated_human_commands_matches_a_fresh_one(
     assert old.execute(q).fetchone()[0] == fresh.execute(q).fetchone()[0]
     assert (old.execute("PRAGMA user_version").fetchone()[0]
             == fresh.execute("PRAGMA user_version").fetchone()[0]
-            == db._CURRENT_USER_VERSION == 55)
+            == db._CURRENT_USER_VERSION == 56)
     old.close()
     fresh.close()
 

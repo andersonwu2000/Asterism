@@ -471,15 +471,20 @@ def test_audit_covers_the_whole_repo_except_the_output_regions(
     (ws / "Problems" / "other").mkdir(parents=True)
     (ws / "Problems" / "other" / "Root.lean").write_text("t\n",
                                                          encoding="utf-8")
-    for region in (".attempts", ".asterism", "Library"):
+    for region in (".attempts", ".asterism", "Benchmarks"):
         (ws / region).mkdir()
         (ws / region / "note.txt").write_text("fine\n", encoding="utf-8")
+    # `Library/` stopped being an output region with the Librarian
+    # (retired 2026-10-14): nothing the framework runs writes there now.
+    (ws / "Library").mkdir()
+    (ws / "Library" / "note.txt").write_text("x\n", encoding="utf-8")
 
     found = runtime._artifact_audit(
         kind="strategist", problem_dir=pdir, workspace=ws, problem="p",
         attempts_dir=tmp_path / ".attempts" / "x", before=before)
     assert {v["path"] for v in found} == {"Tooling/hack.py",
-                                          "Problems/other/Root.lean"}
+                                          "Problems/other/Root.lean",
+                                          "Library/note.txt"}
     assert {v["layer"] for v in found} == {"repo"}
 
 

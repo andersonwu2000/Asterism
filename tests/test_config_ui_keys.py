@@ -25,12 +25,10 @@ _PINNED = {
     "formalizer.provider",
     "strategist.provider",
     "presearch.provider",
-    "librarian.provider",
     "adversary.provider",
     "formalizer.model",
     "strategist.model",
     "presearch.model",
-    "librarian.model",
     "adversary.model",
     # 2026-09-04 (theory_wake_design.md §1): the theory layer is two
     # seats of its own, and a seat whose model the page cannot show
@@ -59,7 +57,6 @@ _PINNED = {
     "formalizer.reasoning_effort",
     "strategist.reasoning_effort",
     "presearch.reasoning_effort",
-    "librarian.reasoning_effort",
     "adversary.reasoning_effort",
     "theorist.reasoning_effort",
     "theory_reviewer.reasoning_effort",

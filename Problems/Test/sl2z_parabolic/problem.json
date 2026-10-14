@@ -7,8 +7,7 @@
       "Quot.sound",
       "Classical.choice"
     ],
-    "forbidden_lemmas": [],
-    "library": false
+    "forbidden_lemmas": []
   },
   "papers": [
     "1d60ef74ee5d"

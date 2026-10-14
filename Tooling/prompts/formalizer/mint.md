@@ -41,7 +41,7 @@ end Problems.<problem>
 - Edit only `new_forward.lean`, one declaration per invocation — do NOT create other `new_*.lean` files.
 - `<slug>` is the brick's name (`### <name>` in `## The argument for this brick`); the declaration head MUST carry it — another name fails the commit.
 - When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT take a name `Defs.lean` already defines — that vocabulary is user-owned.
-- Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
+- Keep the seeded imports; add `import` lines only to cite proved siblings.
 - If the proof is easy, prove it directly — it must then be sorry-free and `validate_file`-clean.
 
 ## Decline

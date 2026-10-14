@@ -16,17 +16,15 @@ the relevant lemmas; do not keep reformulating.
 __COLD_START__
 1. **In-problem** — `inspect(queries=[{"grep": "<head symbol>", "in": "__PROBLEM_DIR__/proofs"}])`
    + read `__PROBLEM_DIR__/TREE.md` for siblings already proved in THIS problem.
-2. **Library** — `inspect(queries=[{"grep": "<head symbol>", "in": "__LIBRARY_DIR__"}])`
-   (harvested, reusable; often the exact lemma). Report names in full (`Library.<…>`).
-3. **Mathlib** — loogle for shape/type, e.g.
+2. **Mathlib** — loogle for shape/type, e.g.
    `loogle('ContinuousLinearMap.comp _ _ = _')`; or
    `inspect(queries=[{"grep": "(theorem|lemma) <name>", "in": "__PACKAGES__"}])` by name.
    Try a few query shapes; if they miss, move on — leave the
    block thin rather than burning the budget reformulating.
 
 ## Output — overwrite `__OUT_PATH__` after EACH finished block; after the last, stop
-A JSON object with three arrays (each ≤10 entries, any may be empty):
-`{"in_problem": [...], "library": [...], "mathlib": [...]}`
+A JSON object with two arrays (each ≤10 entries, either may be empty):
+`{"in_problem": [...], "mathlib": [...]}`
 Each entry: `{"name": "<fully-qualified name>", "why": "<reason, ≤8 words>"}`
 
 Put only genuinely relevant lemmas in each block — do not pad it; an empty block is

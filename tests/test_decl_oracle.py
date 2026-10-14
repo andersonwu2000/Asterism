@@ -4,18 +4,13 @@ oracle; task: retire regex extraction).
 All Lean-free: oracles are built from canned declInfo JSON over synthetic
 file text. The RPC's own behavior is pinned by the `decl_info_oracle`
 lean-contract (real_lake); these tests pin the CLIENT-side logic — position
-plumbing, scope walks, modifier reconstruction, and the astslice fallback
-seams.
+plumbing, scope walks, and modifier reconstruction.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from Tooling.lsp import decl_oracle as do
-from Tooling.pipeline.librarian.astslice import (
-    _defs_decl_namespace,
-    _defs_decl_source,
-)
 
 _NS = "Lean.Parser.Command.namespace"
 _SEC = "Lean.Parser.Command.section"
@@ -98,18 +93,6 @@ def test_decl_source_reconstructs_noncomputable_and_variables():
                    "noncomputable def sq : Nat := n * n")
 
 
-def test_astslice_defs_decl_source_oracle_beats_regex_on_section_modifier():
-    """End-seam check: the astslice entry point with the oracle returns the
-    modifier the regex path loses — the live gap, fixed at the layer migrate
-    actually calls."""
-    text, cmds, decls = _noncomputable_section_fixture()
-    oracle = do.DeclOracle(text, cmds, decls)
-    with_oracle = _defs_decl_source(text, "sq", oracle=oracle)
-    assert "noncomputable def sq" in with_oracle
-    regex_only = _defs_decl_source(text, "sq")
-    assert "noncomputable" not in regex_only   # the gap this closes
-
-
 def test_decl_source_variable_scope_dies_with_its_section():
     """A `variable` inside a CLOSED sibling section must not leak into a
     later decl's slice (depth bookkeeping)."""
@@ -142,7 +125,7 @@ def test_decl_source_open_in_composite_keeps_prefix():
                                        "def g : Prop := True")
 
 
-def test_namespace_stack_and_astslice_namespace_seam():
+def test_namespace_stack_reads_foreign_namespace():
     """Foreign namespace detection (`namespace Complex` under the problem
     file) via syntax kinds; `end` pops sections too."""
     b = _Builder()
@@ -158,13 +141,12 @@ def test_namespace_stack_and_astslice_namespace_seam():
     decls = [_decl("Complex.windingNumber", r_def,
                    (r_def[0], 4, r_def[0], 17), cmd_idx=3)]
     oracle = do.DeclOracle(b.text, cmds, decls)
-    assert _defs_decl_namespace(b.text, "windingNumber",
-                                oracle=oracle) == "Complex"
+    assert oracle.namespace_stack(oracle.find("windingNumber")) == ["Complex"]
 
 
-def test_find_ambiguous_returns_none_and_regex_falls_back():
+def test_find_ambiguous_returns_none():
     """Two primaries sharing a leaf name → find refuses (no answer beats the
-    wrong decl); the astslice seam then runs the regex walk."""
+    wrong decl)."""
     b = _Builder()
     r1 = b.add("namespace A")
     r_d1 = b.add("def dup : Nat := 1")
@@ -180,20 +162,6 @@ def test_find_ambiguous_returns_none_and_regex_falls_back():
     ]
     oracle = do.DeclOracle(b.text, cmds, decls)
     assert oracle.find("dup") is None
-    # seam: falls back to the regex walk, which returns the FIRST match —
-    # the pre-oracle behavior, unchanged.
-    src = _defs_decl_source(b.text, "dup", oracle=oracle)
-    assert ":= 1" in src
-
-
-def test_astslice_oracle_text_drift_falls_back_to_regex():
-    """An oracle bound to different text than the caller's copy must be
-    ignored entirely (file changed between reads)."""
-    text, cmds, decls = _noncomputable_section_fixture()
-    oracle = do.DeclOracle(text, cmds, decls)
-    drifted = text + "-- trailing edit\n"
-    src = _defs_decl_source(drifted, "sq", oracle=oracle)
-    assert src is not None and "noncomputable" not in src   # regex path
 
 
 def test_primary_decl_selection_within_command_group():
@@ -236,31 +204,6 @@ def test_surface_decl_names_named_only_source_order():
     ]
     oracle = do.DeclOracle(b.text, cmds, decls)
     assert oracle.surface_decl_names() == ["alpha", "DiffForm.integral"]
-
-
-def test_inventory_defs_decls_oracle_first(monkeypatch, tmp_path):
-    """inventory.defs_decls consults the cached oracle; regex is the
-    fallback when the oracle is unavailable."""
-    from Tooling.quality.librarian import inventory as inv
-    from Tooling.state import db as _db
-    pdir = _db.problem_dir(tmp_path, "p1")
-    pdir.mkdir(parents=True)
-    # Prose in the docstring would regex-match a phantom decl without the
-    # comment strip; the oracle never sees comments at all.
-    (pdir / "Defs.lean").write_text(
-        "/-- the analytic lemma of the bridge -/\n"
-        "def realOne : Nat := 1\n", encoding="utf-8")
-
-    fake = do.DeclOracle(
-        "x", [{**_cmd(_DECL, (1, 0, 2, 22)), "declNames": ["realOne"]}],
-        [_decl("realOne", (1, 0, 2, 22), (2, 4, 2, 11), cmd_idx=0)])
-    monkeypatch.setattr(do.DeclOracle, "cached_for_file",
-                        classmethod(lambda cls, path, workspace=None: fake))
-    assert inv.defs_decls(tmp_path, "p1") == ["realOne"]
-
-    monkeypatch.setattr(do.DeclOracle, "cached_for_file",
-                        classmethod(lambda cls, path, workspace=None: None))
-    assert inv.defs_decls(tmp_path, "p1") == ["realOne"]   # regex fallback
 
 
 def test_cached_for_file_mtime_key_and_negative_ttl(monkeypatch, tmp_path):
@@ -315,26 +258,6 @@ def test_primary_user_names_from_raw_info():
         ],
     }
     assert do.primary_user_names(info) == ["t1", "instInhabitedNat"]
-
-
-def test_defs_decl_fqn_oracle_gives_kernel_name():
-    """Gate D's FQN resolution: the oracle answer IS the env userName —
-    a foreign-namespace decl (`Complex.windingNumber`) resolves without
-    any stack walk; regex fallback preserved on oracle miss."""
-    from Tooling.pipeline.librarian.astslice import _defs_decl_fqn
-    b = _Builder()
-    r_ns = b.add("namespace Complex")
-    r_def = b.add("def windingNumber : Nat := 0")
-    r_end = b.add("end Complex")
-    cmds = [_cmd(_NS, r_ns, "Complex"), _cmd(_DECL, r_def),
-            _cmd(_END, r_end, "Complex")]
-    decls = [_decl("Complex.windingNumber", r_def,
-                   (r_def[0], 4, r_def[0], 17), cmd_idx=1)]
-    oracle = do.DeclOracle(b.text, cmds, decls)
-    assert _defs_decl_fqn(b.text, "windingNumber", problem="p",
-                          oracle=oracle) == "Complex.windingNumber"
-    assert _defs_decl_fqn(b.text, "nope", problem="p",
-                          oracle=oracle) == "Problems.p.nope"   # fallback
 
 
 def test_for_file_degrades_to_none(monkeypatch, tmp_path):

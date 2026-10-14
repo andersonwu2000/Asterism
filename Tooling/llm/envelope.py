@@ -32,11 +32,6 @@ from pathlib import Path
 
 from .base import LLMRequest
 
-#: Kinds whose sanctioned edit surface is `Library/` — the librarian
-#: family edits it in place. Every other persisted artifact is written by
-#: framework code, not by a spawn's tools.
-_LIBRARY_EDITING_KINDS = ("librarian", "migrate", "classify", "alias")
-
 # ── Per-seat asterism_tools surface (owner ruling 2026-08-22) ─────────
 #
 # The `mcp_tools` server used to expose every tool to every seat on the
@@ -110,7 +105,6 @@ SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
     "presearch": _NL_TOOLS,
     "formalizer": _NL_TOOLS,     # intake/mint turns; Lean phase adds
                                  # the lsp server via _write_mcp_config
-    "librarian": _NL_TOOLS,
     # The theory layer (theory_wake_design.md §5). The author reads
     # the literature — it is the one seat whose errand is the
     # unknown, and the record is not where the answer is — so it
@@ -131,7 +125,7 @@ SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
 #: capability one seat needs and another does not — the seat that hits a
 #: gate worded on a false premise is whichever seat happened to hit it,
 #: and the retired leg's own lesson was that the seats with no channel
-#: (presearch, the librarian family) were exactly the ones nothing was
+#: (presearch, the retired Librarian) were exactly the ones nothing was
 #: ever heard from. Unioned in below so a seat added to the table above
 #: cannot be born mute, and so `claude_cli._TOOLS_MCP_PATTERNS`, which
 #: derives its allow list from these values, covers it.
@@ -153,13 +147,11 @@ def asterism_tools_for(seat: str) -> "frozenset[str]":
 
 
 def seat_of_kind(kind: str) -> str:
-    """Pipeline kind → tool-surface seat. The Formalizer's arms and the
-    librarian family each share one seat; everything else is itself."""
+    """Pipeline kind → tool-surface seat. The Formalizer's arms share
+    one seat; everything else is itself."""
     if kind in ("forward", "backward", "builder", "mint", "intake",
                 "formalizer", "prove", "split"):
         return "formalizer"
-    if kind in _LIBRARY_EDITING_KINDS or kind.startswith("cleanup"):
-        return "librarian"
     return kind
 
 
@@ -310,8 +302,9 @@ def spawn_env(base: "dict[str, str] | None" = None) -> "dict[str, str]":
     with THIS interpreter's directory first on PATH.
 
     Agents are handed shell commands that start with a bare `python`
-    (scholar's `python -m Tooling.papers.fetch`, and the allowlist
-    patterns that authorize exactly that spelling). A bare name is
+    (the retired Scholar's `python -m Tooling.papers.fetch` was the
+    first, with allowlist patterns authorizing exactly that spelling).
+    A bare name is
     resolved against PATH, and the PATH a spawn inherits is the one the
     operator's shell happened to have when the daemon started — so an
     unrelated venv sitting earlier on it hands the agent an interpreter
@@ -359,8 +352,8 @@ def spawn_env(base: "dict[str, str] | None" = None) -> "dict[str, str]":
 #:                  problem), caches, daemon runtime state.
 #:   asterism.db    the live run: every goal, decision and dead attempt.
 #:
-#: `Library/` and the spawn's own Project `_docs/` are deliberately
-#: absent — both are surfaces the framework hands out on purpose.
+#: The spawn's own Project `_docs/` is deliberately absent — it is a
+#: surface the framework hands out on purpose.
 PRIVATE_READ_SUBTREES = ("docs", ".asterism", "asterism.db")
 
 
@@ -460,12 +453,9 @@ def read_deny_roots(workspace: "Path | None",
     return tuple(roots)
 
 
-def envelope_for(req: LLMRequest, *, library_dir: "Path | None" = None
-                 ) -> Envelope:
+def envelope_for(req: LLMRequest) -> Envelope:
     """The grants this spawn gets, independent of who will render them."""
     roots: "list[Path]" = [Path(req.attempts_dir)]
-    if req.kind in _LIBRARY_EDITING_KINDS and library_dir is not None:
-        roots.append(Path(library_dir))
     if req.kind == "paper_index":
         # Its problem_dir IS the paper's own directory on the Project's
         # document shelf, and the agent's contract is to write map.md

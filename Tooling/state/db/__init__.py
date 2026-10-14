@@ -47,7 +47,6 @@ from .goals import (
     bind_paper,
     unbind_paper,
     paper_bindings,
-    scholar_fetch_count,
     top_group_id,
     deliverables,
     set_ingest_signoff_pending,
@@ -154,7 +153,6 @@ from .queue import (
     release_own_leases,
     release_expired_leases,
     flush_queue_kind,
-    queue_contains,
 )
 
 # deaths.py — Dead attempt helpers
@@ -163,23 +161,3 @@ from .deaths import (
     recent_dead_attempts,
 )
 
-# library.py — library_decls + Library index
-from .library import (
-    upsert_library_decl,
-    set_library_verdict,
-    set_library_classification,
-    mark_library_migrated,
-    mark_library_cleaned,
-    set_library_renamed,
-    mark_library_bridged,
-    clear_library_bridged,
-    problem_library_bridged,
-    bridged_library_index,
-    library_decl_names,
-    set_library_signature,
-    librarian_fail_counts_all,
-    set_librarian_fail_count,
-    clear_librarian_fail_count,
-    clear_librarian_fail_counts_for_problem,
-    library_decls_for,
-)

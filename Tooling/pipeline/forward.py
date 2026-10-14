@@ -430,8 +430,7 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
 
     `body`: the candidate's import-prepended source (same text fed to
     `find_canonicals_batch`). `match`: the `CanonicalMatch` whose kind is
-    `'alias'` (in-DB proved goal) or `'library_alias'` (proved `Library/`
-    decl) — both are proved canonicals.
+    `'alias'` (an in-DB proved goal).
 
     Returns a `CommitOutcome` (status='proved') on build-verified success,
     or `None` when the alias body fails to build — the dedupe probe
@@ -473,28 +472,15 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     proofs_dir.mkdir(parents=True, exist_ok=True)
     dest = proofs_dir / f"L_{metadata.slug}.lean"
 
-    if match.kind == "library_alias":
-        # Canonical is a committed Library decl (no in-DB goal). Delegate
-        # via the fully-qualified name — its namespace isn't open here.
-        alias_content = dedupe.build_alias_content(
-            original_content=body,
-            canonical_module=match.library_module,
-            canonical_slug=match.library_fqn,
-            apply_expr=f"@{match.library_fqn}",
-        )
-        canonical_label = f"Library {match.library_fqn}"
-        canonical_goal_id: int | None = None
-    else:
-        canonical = db.get_goal(conn, match.goal_id)
-        canonical_module = lean_path_to_module(
-            workspace, workspace / canonical["lean_path"])
-        alias_content = dedupe.build_alias_content(
-            original_content=body,
-            canonical_module=canonical_module,
-            canonical_slug=canonical["slug"],
-        )
-        canonical_label = f"goal {match.goal_id} ({canonical['slug']})"
-        canonical_goal_id = match.goal_id
+    canonical = db.get_goal(conn, match.goal_id)
+    canonical_module = lean_path_to_module(
+        workspace, workspace / canonical["lean_path"])
+    alias_content = dedupe.build_alias_content(
+        original_content=body,
+        canonical_module=canonical_module,
+        canonical_slug=canonical["slug"],
+    )
+    canonical_label = f"goal {match.goal_id} ({canonical['slug']})"
 
     # Ownership-guarded placement: refuse if a DIFFERENT goal already owns this
     # path (orphan file with no row is reclaimable; a real DB collision raises
@@ -545,10 +531,9 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         receipt=transitions.ProvedReceipt(
             "alias_induction",
             f"forward alias → {canonical_label} (build-verified)"))
-    if canonical_goal_id is not None:
-        # Record the alias edge so prune retains the canonical while this
-        # alias is alive (library_alias has no in-DB goal → skip).
-        db.set_alias_target(conn, goal_id, canonical_goal_id)
+    # Record the alias edge so prune retains the canonical while this
+    # alias is alive.
+    db.set_alias_target(conn, goal_id, match.goal_id)
     conn.commit()
     return CommitOutcome(goal_id=goal_id, lean_path=rel_lean_path,
                          status="proved")
@@ -963,9 +948,8 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                     ),
                 )
 
-        # Dedupe: a hit on a PROVED canonical (kind 'alias' /
-        # 'library_alias') means the agent's lemma is already in the
-        # library / alive tree.
+        # Dedupe: a hit on a PROVED canonical (kind 'alias') means the
+        # agent's lemma is already in the alive tree.
         from ..quality import dedupe
         hits = dedupe.find_canonicals_batch(
             conn, workspace, problem=problem, parent_goal_id=0,
@@ -1023,7 +1007,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 produced_goal_id=x_id,
             )
         alias_committed = False
-        if h is not None and h.kind in ("alias", "library_alias"):
+        if h is not None and h.kind == "alias":
             try:
                 outcome = commit_forward_alias(
                     conn, problem=problem, workspace=workspace,

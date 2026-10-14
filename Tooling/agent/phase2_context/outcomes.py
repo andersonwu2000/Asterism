@@ -299,10 +299,9 @@ def _landing_suffix(row) -> str:
 
 
 def _alias_twin(row) -> str:
-    """The decl a dedupe alias delegates to (`goals.alias_target_id`),
-    when it is an in-problem goal. A `library_alias` has no in-DB goal —
-    the canonical is a committed `Library/` decl — so there is nothing
-    to name and the caller falls back to the bare form."""
+    """The decl a dedupe alias delegates to (`goals.alias_target_id`);
+    empty when the row carries none, and the caller falls back to the
+    bare form."""
     try:
         return str(row["alias_twin_slug"] or "")
     except (IndexError, KeyError):

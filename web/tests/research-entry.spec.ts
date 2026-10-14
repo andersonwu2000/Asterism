@@ -46,7 +46,7 @@ async function fixture(page: Page, options: { empty?: boolean; failed?: boolean;
       : path === `/api/problems/${task.name}` ? { name: task.name, goals, strategies: [{ id: 1, goal_id: 1, status: 'succeeded' }],
         strategy_edges: [{ strategy_id: 1, subgoal_id: 2, position: 0 }], anchor_edges: [], citation_edges: [] }
       : path.endsWith('/intent') ? { problem: task.name, charter: 'Prove the union-closed sets conjecture. For $x \\in F$, read the mathematical statement.', word: '',
-        settings: { axioms_whitelist: [], forbidden_lemmas: [], library: false }, pending_amend: options.pending ?? false }
+        settings: { axioms_whitelist: [], forbidden_lemmas: [] }, pending_amend: options.pending ?? false }
       : path.endsWith('/papers') ? { papers: [] }
       : {}
     await route.fulfill({ json: body })

@@ -15,7 +15,7 @@ current ownership split is:
 
 | Concern | Authoritative source | Derived or secondary forms |
 |---|---|---|
-| Graph, lifecycle, queue, pipelines, decisions, groups, Programme revisions, Library lifecycle, usage and forensics | SQLite schema and rows under `Tooling/state/db/` | `TREE.md`, `PROGRAMME.md`, UI projections |
+| Graph, lifecycle, queue, pipelines, decisions, groups, Programme revisions, usage and forensics | SQLite schema and rows under `Tooling/state/db/` | `TREE.md`, `PROGRAMME.md`, UI projections |
 | Goal, strategy, problem and group state vocabularies | `Tooling/state/transitions.py`, `Tooling/state/groups.py` | schema `CHECK` constraints, documentation |
 | Failure taxonomy and traits | `Tooling/state/failures.py::REGISTRY` | retry/cooldown/projection sets, this document's narrative companion |
 | Strategist decisions and triggers | `Tooling/pipeline/strategist/model.py` | schema accepts additional historical values |
@@ -47,38 +47,38 @@ strategy edge records its provenance:
 There are two supported endgames:
 
 - **Root proof**: the root goal is proved, the root integrity gate passes, and the top group
-  commits `Ingest`. Library promotion is optional.
+  commits `Ingest`.
 - **Anchor and claims**: a natural-language charter drives minted claims; the Strategist marks
   deliverables, then commits `Ingest` when the charter is satisfied. A human sign-off may be
-  required before Library work. `Root.lean` and `Defs.lean` are optional for a pure-NL problem.
+  required to complete it. `Root.lean` and `Defs.lean` are optional for a pure-NL problem.
 
 `Ingest` is the problem-level completion decision. Root proof is a hard prerequisite when a
 root exists, but root proof by itself does not terminate the problem.
 
 ## 3. Runtime roles
 
-The live dispatcher has three pipeline kinds. The Adversary and Verify are intentionally not
+The live dispatcher has three pipeline kinds: Formalizer, Strategist and Theorist (the
+theory layer; `theory_wake_design.md`). The Adversary and Verify are intentionally not
 independent queue workers.
 
 | Role | Live target | Responsibility |
 |---|---|---|
 | **Formalizer** | `Goal` or `Problem` | Goal target: prove or split in one session. Problem target: mint one toolkit declaration from a Strategist `Inject`. Implemented by `pipeline/backward.py` and `pipeline/forward.py`. |
 | **Strategist** | `Group` | Maintain one group's Programme, adjudicate reviews and stalls, and commit decision batches after mechanical checks and Adversary review. |
-| **Librarian** | `Problem`, optionally one file in queue payload | Turn an ingested, opted-in problem into checked `Library/` declarations through a derived work DAG. |
 | **Adversary** | sub-spawn inside a Strategist wake | Judge a proposal package in an isolated projection; it has no queue kind or independent seat. |
 | **Verify housekeeping** | main dispatcher thread | Promote ready strategies, revive aliases, and run root-level integrity work; it is pure framework work, not an LLM pipeline. |
 
-The schema still accepts `Builder`, `Backward`, `Forward`, `Verify`, and `Scholar` in historical
-pipeline/queue rows. Dispatch compatibility routes the former proving names to Formalizer.
-Scholar is retired: paper search and fetch are Strategist tools, and no Scholar pipeline or
-prompt remains.
+The schema still accepts `Builder`, `Backward`, `Forward`, `Verify`, `Scholar` and `Librarian`
+in historical pipeline rows. Dispatch compatibility routes the former proving names to
+Formalizer. Scholar is retired: paper search and fetch are Strategist tools. The Librarian and
+the `Library/` it built are retired (v56 dropped their tables and the queue's acceptance of the
+kind).
 
 Concurrency is scoped by the work's identity:
 
 - one organic Formalizer pipeline per goal; OR expansion is passive rather than eager;
 - one Strategist seat per active group, so sibling groups may run concurrently;
-- mint siblings are distinguished by `decision_id` and may run in parallel;
-- Librarian migration and cleanup parallelize by file while serial stages remain problem-wide.
+- mint siblings are distinguished by `decision_id` and may run in parallel.
 
 ## 4. Persistent and filesystem state
 
@@ -167,8 +167,8 @@ immutable; a completion relay wakes the authoring group.
 
 ## 7. Soundness boundary
 
-The controlling principle is: **no goal enters `proved`, and no declaration enters the
-Library, without the relevant kernel-facing gate**.
+The controlling principle is: **no goal enters `proved` without the relevant kernel-facing
+gate**.
 
 | Gate | Boundary |
 |---|---|
@@ -176,7 +176,6 @@ Library, without the relevant kernel-facing gate**.
 | Validate/commit parity gates | Name collisions, ancestor cycles, stale validation, forbidden metaprogramming, citations, declaration shape, and other commit-time refusals are mirrored as early as possible in the editing tools. Commit remains authoritative. |
 | Verify promotion | A ready strategy is promoted mechanically only after all linked goals are proved; the checked transition supplies a receipt. |
 | Root integrity gate | Rechecks the complete root closure, statement pin, and axioms; on escaped `sorryAx` it bisects and rolls back the culprit chain. |
-| Librarian gates | Import closure, whole-file verification, per-declaration axioms, no `axiom` declarations, def-equivalence for definitions, final rewrite recheck, and root/deliverable bridge. |
 
 When `axioms_whitelist` is absent, `state.intent.effective_axioms` uses the framework default
 (`Classical.choice`, `propext`, `Quot.sound`) and warns; absence never disables checking.
@@ -191,7 +190,7 @@ Runtime intent has three independent channels:
 - `problems.user_word` is the human's standing, verbatim direction and is shown at every group
   depth;
 - `problem_settings` contains machine settings such as forbidden lemmas, axiom whitelist,
-  Library opt-in, and sign-off behavior; paper bindings live in `problem_papers`.
+  and sign-off behavior; paper bindings live in `problem_papers`.
 
 `problem.json` seeds those values during init and is refreshed best-effort by sanctioned
 writers. The daemon does not poll it as runtime authority.
@@ -211,7 +210,7 @@ For a rooted problem, `Root.lean` moves through three conceptual forms:
   `running` rows after a daemon crash.
 - Per-retry evidence is written before its paired `goals.attempts` increment, so the remaining
   crash window can under-count an attempt rather than leave an unexplained increment.
-- Ready strategies, Librarian work, and most queue contents are re-derived from durable state.
+- Ready strategies and most queue contents are re-derived from durable state.
   Pending-review and unresolved batch relays also have a per-tick reconciler.
 - Proof writes use atomic replacement and backups; startup recovery, consistency sweep, and
   root integrity are separate correction layers.
@@ -247,7 +246,7 @@ Tooling/
     dispatcher/       main loop, refill, triggers, worker boundary, singleton lock
     config.py         config registry and precedence
     ram_ledger.py     adaptive Lean/NL admission
-    librarian_sched.py, quota*.py, network_wait.py, degraded.py
+    quota*.py, network_wait.py, degraded.py
   state/
     db/               schema facade split by domain
     transitions.py    checked state transitions and cascade
@@ -259,12 +258,10 @@ Tooling/
     _retry.py         shared session/retry lifecycle
     strategist/       decision model, verification, commit, wake
     adversary.py
-    librarian/
     events.py, _axiom.py, _cite_gate.py, _disprove.py, _presearch.py
   quality/
     verify.py         ready-strategy/revival/root housekeeping
     dedupe.py, dedupe_probe.py, names.py
-    librarian/
   agent/
     context.py, phase2_context/   Context and companion compilation
     runtime.py, sandbox.py
@@ -275,7 +272,7 @@ Tooling/
     lifecycle.py, client.py, decl_oracle.py
   knowledge/          inspect, loogle, compute, validation and paper tools
   papers/             paper shelf/search/fetch/index
-  prompts/            formalizer, strategist, adversary, librarian, shared prompts
+  prompts/            formalizer, strategist, adversary, theorist, shared prompts
   serve/              console/API projections and chat explainer
 ```
 
@@ -290,7 +287,7 @@ Tooling/
 7. Treat a live child group as an in-flight batch product in both stall and anti-idle queries.
 8. Keep exactly one top group per problem; top/child human-interface restrictions belong in
    the decision verifier.
-9. Do not let a non-active problem accept automatic wakes or Librarian work during sign-off.
+9. Do not let a non-active problem accept automatic wakes during sign-off.
 10. Keep validation mirrors helpful, but make commit gates authoritative and fail closed at
     soundness boundaries.
 11. Add schema changes through a versioned migration and bind new enums to their code SoT.

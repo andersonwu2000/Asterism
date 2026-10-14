@@ -162,8 +162,8 @@ def _section_sandbox(strategy_id: int | None = None,
         # hunting the very file its brief had pointed it at.
         "- `Grep`/`Glob` search the root you give them, so a root ABOVE "
         "those dirs walks the operator-private trees and is refused. "
-        "Omit the path — it defaults to your cwd — or name `Library/` "
-        "or your Project's `_docs/` (where its papers are).",
+        "Omit the path — it defaults to your cwd — or name your "
+        "Project's `_docs/` (where its papers are).",
         f"- {companions} sit in Context.md's own directory (NOT your "
         f"cwd) and are read-only.{catalog_line}",
         "- `patch.lean` is your output; sub-goal stubs go in "
@@ -425,8 +425,8 @@ def _ago(ts_iso: str | None) -> str:
 def _section_brief_inline(problem_dir: Path) -> list[str]:
     """Inline `Problems/<p>/BRIEF.md` content into Context.md so the
     agent's read surface stays single-file (BRIEF is framework-rendered
-    cross-spawn stable context — sandbox / forbidden /
-    library / strategic notes; see `Tooling/brief.py`). Returns [] when
+    cross-spawn stable context — sandbox / forbidden / goal / user
+    word; see `Tooling/state/brief.py`). Returns [] when
     BRIEF.md is missing (legacy init, mid-reset race) — Context.md
     proceeds without it; safer than crashing dispatch on a missing
     optional file."""
@@ -986,56 +986,6 @@ def _section_proved_goals(conn: sqlite3.Connection,
         "rationale block.")
     lines.append("")
     return lines
-
-
-def _section_library_available(conn, intent) -> list[str]:
-    """Surface the reusable Library — theorems Asterism already proved and
-    harvested from prior Problems — to the PROVING agent, so it can cite
-    them instead of re-deriving (Library-as-input).
-
-    v18: rendered from the DB (`db.bridged_library_index` — bridged
-    problems' placed decls; was: parsing INDEX.md sections). Same COMPACT
-    menu, domain-filtered (a `LinearAlgebra.*` problem sees the
-    `LinearAlgebra.*` Library). The agent has read access to `Library/` —
-    it greps there for exact signatures (its real discovery interface,
-    unchanged; agents grep the whole tree, wider than this menu); the menu
-    just tells it what exists and how to cite. Returns [] when the Library
-    has nothing relevant (keeps unrelated problems' Context clean)."""
-    if conn is None:
-        return []          # conn-less render (brief in bare tests)
-    sections = [
-        (prob, [str(r["target_name"] or r["slug"]) for r in rows])
-        for prob, rows in db.bridged_library_index(conn).items()]
-    if not sections:
-        return []
-
-    problem = intent.problem or ""
-    domain = problem.split(".")[0] if "." in problem else problem
-    relevant = [(p, d) for p, d in sections
-                if d and (p.split(".")[0] == domain)]
-    if not relevant:
-        return []
-
-    out = [
-        "## Library available (reusable — proved in prior Problems)",
-        "",
-        "Theorems Asterism already proved and harvested into `Library/`. "
-        "**Prefer citing these over re-deriving.** To use one: "
-        "`import <module>` (the dotted prefix before the decl's last "
-        "component) and reference it by its full name. You have read "
-        "access to `Library/` — grep there for exact signatures. The R1 "
-        "search-before-reconstruct rule covers Library too.",
-        "",
-    ]
-    if relevant:
-        out.append(f"Library modules in the `{domain}` domain "
-                   "(grep `Library/` for signatures):")
-        for p, d in relevant:
-            keystone = next((x for x in d if x.endswith(".main")), None)
-            tag = f" — keystone `{keystone}`" if keystone else ""
-            out.append(f"- **{p}** ({len(d)} decls){tag}")
-        out.append("")
-    return out
 
 
 def _note_title(note: str) -> str:
@@ -2334,7 +2284,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     section_names = [
         "brief", "kb_lessons", "paper_index", "programme", "directive",
         "inject_brief", "named_lemmas",
-        "goal", "intake_finding", "library_available", "strategy_naming",
+        "goal", "intake_finding", "strategy_naming",
         "parent_strategy",
         "mathlib_lemmas", "presearch", "proved_goals", "catalog",
         "prior_partial", "prior_patch", "goal_history",
@@ -2363,7 +2313,6 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                               int(goal["id"]), str(goal["slug"])),
         _section_header(goal, workspace),
         _section_intake_counterexample(intake_counterexample),
-        _section_library_available(conn, intent),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal, workspace),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),

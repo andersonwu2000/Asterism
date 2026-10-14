@@ -1,5 +1,6 @@
 """`python -m Tooling.papers.fetch <url|arxiv_id> --problem <p>` — the
-Scholar agent's download command (paper v2, D12/D15).
+paper download command (paper v2, D12/D15); seats reach it through the
+`paper_fetch` tool.
 
 The ONLY network surface that writes to disk. Whitelisted hosts only
 (arXiv-class; publisher sites serve cookie/JS interstitials even for
@@ -8,7 +9,7 @@ the human-request path, not an arms race to fight). On success the
 file is shelved (`shelf.add_paper` — content-hash dedupe), indexed
 when large enough, and bound to `--problem` with the calling seat as origin.
 
-Caps (D15): per-problem scholar fetches, single-file size.
+Cap (D15): single-file size.
 """
 from __future__ import annotations
 
@@ -36,18 +37,10 @@ FETCH_HOST_WHITELIST = frozenset({
 
 # doi.org is a REDIRECTOR, not a host — refusing it with the generic
 # whitelist message taught nothing reachable (Erdos.p1, 2026-08-22: the
-# scholar held a DOI whose open copy sat on whitelisted ams.org, one
+# fetching agent held a DOI whose open copy sat on whitelisted ams.org, one
 # paper_search(doi=…) away). The gate must name that move.
 _DOI_REDIRECTOR_HOSTS = frozenset({"doi.org", "www.doi.org", "dx.doi.org"})
 MAX_FETCH_BYTES = 50 * 1024 * 1024
-# 5 → 20 (2026-08-05, user call): a research-grade survey legitimately
-# needs 7+ papers (SLC restart hit 6 in its first two batches and the
-# cap would have killed the LAST in-flight bind — possibly Louder, the
-# highest-value fetch). Papers on the shelf are lazy-loaded assets —
-# readers pay only for what they open — and every fetch now rides the
-# judged math turn, so the mechanical cap is a runaway backstop, not
-# the budget.
-MAX_SCHOLAR_FETCHES_PER_PROBLEM = 20
 
 # New-style (2007+) `2605.23679` and old-style `math/0601146` /
 # `math.GT/0601146` arXiv ids both resolve to arxiv.org/pdf/<id>.
@@ -97,12 +90,6 @@ def fetch_and_shelve(workspace: Path, target: str, *,
     try:
         project = None
         if conn is not None:
-            n = db.scholar_fetch_count(conn, problem)
-            if n >= MAX_SCHOLAR_FETCHES_PER_PROBLEM:
-                raise RuntimeError(
-                    f"per-problem paper fetch cap reached "
-                    f"({n}/{MAX_SCHOLAR_FETCHES_PER_PROBLEM}) — justify "
-                    f"further papers to the human instead")
             project = _projects.project_of(conn, problem)
         # The Project is the shelf (§3.9). With no DB — an offline
         # workspace — the problem name's first segment is the same
@@ -155,8 +142,7 @@ def fetch_and_shelve(workspace: Path, target: str, *,
         if conn is not None:
             # Provenance = the calling seat (ASTERISM_SEAT travels in the
             # MCP server env; the shim's in-process path has none and
-            # lands on 'agent'). 'scholar' used to be hardcoded here and
-            # mislabelled a strategist's direct fetch (2026-08-22).
+            # lands on 'agent').
             db.bind_paper(conn, problem=problem, paper_id=meta.id,
                           origin=os.environ.get("ASTERISM_SEAT") or "agent",
                           reason=reason or url)

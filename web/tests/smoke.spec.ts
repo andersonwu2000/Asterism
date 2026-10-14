@@ -652,8 +652,8 @@ test('run parameters live beside Run, not in settings', async ({ page, request }
 })
 
 test('the Library is not reachable from anywhere', async ({ page }) => {
-  // 1.4-3: the Library's surfaces come down until the owner tests the
-  // wind. A dead route must not render a screen either.
+  // 1.4-3: the Library retired with its pipeline. A dead route must
+  // not render a screen either.
   await page.goto('/#/library')
   await expect(page.getByRole('heading', { name: 'Library' })).toHaveCount(0)
   await page.goto('/')

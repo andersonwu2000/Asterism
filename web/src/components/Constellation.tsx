@@ -113,7 +113,7 @@ interface Props {
 }
 
 /* The star marks, the size hierarchy and the line inks live in
- * `lib/sky.ts` — shared with the Library's module map, and the only
+ * `lib/sky.ts` — shared with every other sky, and the only
  * place the sky's ink law can be tested (`sky.test.ts`).
  *
  * Root goals are just the brightest star: larger radius + a soft halo

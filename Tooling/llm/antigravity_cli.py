@@ -88,7 +88,6 @@ later session can find them instead of re-deriving:
          command(*)                          no shell — see below
          read_url(*)                         no outbound fetch — see below
          write_file(D:\Asterism\Problems)
-         write_file(D:\Asterism\Library)
          write_file(D:\Asterism\Tooling)
 
    Precedence is Deny > Ask > Allow and an unmatched action defaults to

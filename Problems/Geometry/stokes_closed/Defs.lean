@@ -1,24 +1,21 @@
 /-
   Defs.lean — vocabulary for the closed-manifold Stokes corollary `∫_M dφ = 0`.
   Pulls the same manifold / differential-form tower the statement reads:
-    * `DiffForm`            (Library.Geometry.Manifold.DiffFormBundle)
-    * `mextDeriv`           (Library.Geometry.Manifold.DDZero)
-    * `OrientedManifold`, `DiffForm.integral` (Library.Geometry.Manifold.StokesIntegralDefs)
-    * `Bdry`                (Library.Geometry.ManifoldBoundary.CompactBdry)
+    * `DiffForm`            (Problems.Geometry.stokes_form_bundle)
+    * `mextDeriv`           (Problems.Geometry.stokes_dd_zero)
+    * `OrientedManifold`, `DiffForm.integral` (Problems.Geometry.stokes_integral)
+    * `Bdry`                (Problems.Geometry.stokes_bdry_compact)
   No new definitions — this problem only states a corollary of the proved Stokes theorem.
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle
-import Library.Geometry.Manifold.DDZero
-import Library.Geometry.Manifold.StokesIntegralDefs
-import Library.Geometry.ManifoldBoundary.CompactBdry
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_dd_zero.Defs
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.DDZero
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.ManifoldBoundary.CompactBdry
 
 namespace Problems.Geometry.stokes_closed
 

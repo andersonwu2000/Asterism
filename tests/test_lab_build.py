@@ -241,7 +241,7 @@ def test_base_is_an_empty_but_valid_workspace_skeleton(base):
     for rel in ("Asterism.yaml", "lakefile.lean", "lake-manifest.json",
                 "lean-toolchain", "Problems/README.md"):
         assert (base / rel).is_file(), rel
-    for rel in ("Asterism", "Library", "Benchmarks", "Tooling/prompts"):
+    for rel in ("Asterism", "Benchmarks", "Tooling/prompts"):
         assert (base / rel).is_dir(), rel
     assert not (base / "asterism.db").exists()
     assert not (base / ".git").exists()

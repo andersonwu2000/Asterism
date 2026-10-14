@@ -1,14 +1,13 @@
 /-
   Defs.lean — owns `faceEmbed` (the boundary face embedding into the model
-  `{x₀=0}`), cites `Library…CompactBdry.Bdry`. The lemma to prove (the boundary
+  `{x₀=0}`), cites `Problems.Geometry.stokes_bdry_compact.Bdry`. The lemma to prove (the boundary
   chart's `invFun` lands in the boundary, on-target) is the Root.
 -/
 import Mathlib
-import Library.Geometry.ManifoldBoundary.CompactBdry
+import Problems.Geometry.stokes_bdry_compact.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.ManifoldBoundary.CompactBdry
 
 namespace Problems.Geometry.stokes_bdry_invfun_mem
 

@@ -750,28 +750,20 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     """Execute a Strategist `Ingest` decision's side effect (anchor+claim
     Phase 4).
 
-    The sign-off pause and the Library decision are separate axes
-    (2026-07-18 gate retirement): `signoff: false` (machine setting,
-    benchmark adapters only) × `library.require_signoff` config decide
-    pause-vs-direct; `library:` decides harvest only. A paused problem
-    sets `ingest_signoff_pending` and waits for `asterism
-    approve-ingest` (→ enqueue Librarian iff library) or `reject-ingest`
-    (→ back to proving); direct ingest harvests iff the standing
-    `library` flag. The old coupling (library:false silently skipped
-    the human gate) let any opt-out producer bypass sign-off.
+    `signoff: false` (machine setting, benchmark adapters only) ×
+    `ingest.require_signoff` config decide pause-vs-direct. A paused
+    problem sets `ingest_signoff_pending` and waits for `asterism
+    approve-ingest` or `reject-ingest` (→ back to proving).
 
     Phase 6 — Ingest is the problem's ONLY terminal: this commit stamps
     `problems.ingested_at`, which drives the T1/T4 liveness predicates,
-    the stale-row drop, the Librarian selfstart eligibility and the
-    daemon exit check. `reject-ingest` and the rollback auto-revoke
-    clear the stamp (back to the live path). The old root-proved-auto
-    Librarian trigger in `verify.root_integrity_gate` is retired —
-    harvest is strictly Ingest-driven now."""
+    the stale-row drop and the daemon exit check. `reject-ingest` and
+    the rollback auto-revoke clear the stamp (back to the live path)."""
     from ...core import config as _config
     from ...state import intent as _intent
     # v35 — a SUB-group's Ingest is a DELIVERY UPWARD, not a terminal.
     # Everything below this branch is problem-terminal semantics: the
-    # human sign-off pause, the Library harvest, the regression
+    # human sign-off pause, the regression
     # milestone, the review snapshot, `problems.ingested_at` and the
     # problem FSM edge. A group handing its charter back up must touch
     # none of them — it would pause the whole problem for a human, or
@@ -822,9 +814,8 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
                   f"being woken once `ingested_at` is stamped",
                   flush=True)
     # Decide the sign-off gate BEFORE publishing the terminal stamp.
-    # `ingested_at` + a clear flag is what the Librarian selfstart path
-    # reads as "approved, go" — so the flag must land in the same
-    # transaction as the stamp. The pre-fix order stamped first and set
+    # `ingested_at` + a clear flag reads as "approved, go" — so the flag
+    # must land in the same transaction as the stamp. The pre-fix order stamped first and set
     # the flag AFTER store_review_snapshot, whose gateway warm-up is a
     # 30s+ window on a cold/stale gateway; the dispatcher tick inside
     # that window auto-started the harvest chain past the human gate
@@ -852,29 +843,14 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
               f"problem closes as refuted", flush=True)
         return
 
-    harvest = True
-    signoff_optout = False
-    harvest_skip_msg = ""
     pintent = _intent.read(conn, problem)
-    if pintent is None:
-        # Unreadable intent: no harvest, but DO pause — failing into
-        # the human gate is the safe direction.
-        harvest = False
-        harvest_skip_msg = (f"[strategist] Ingest({problem}): intent "
-                            f"unreadable (no problems row); no harvest")
-    else:
-        signoff_optout = not pintent.signoff
-    if harvest and not pintent.library:
-        harvest = False
-        harvest_skip_msg = (f"[strategist] Ingest({problem}): "
-                            f"library:false — opted out of Library; "
-                            f"no harvest")
+    # Unreadable intent: DO pause — failing into the human gate is the
+    # safe direction.
+    signoff_optout = pintent is not None and not pintent.signoff
     require_signoff = (not signoff_optout) and _as_bool(_config.get(
-        "library.require_signoff", workspace=workspace))
+        "ingest.require_signoff", workspace=workspace))
 
-    # Terminal stamp + gate flag: one atomic publication. Even when the
-    # problem opts out of harvest the Strategist's terminal judgment
-    # stands; only the harvest side-effects vary.
+    # Terminal stamp + gate flag: one atomic publication.
     db.set_problem_ingested(conn, problem)
     from ...state import transitions as _transitions
     if require_signoff:
@@ -900,7 +876,6 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
             "axioms_whitelist": _intent.effective_axioms(
                 pintent, problem=problem),
             "forbidden_lemmas": list(pintent.forbidden_lemmas),
-            "library": bool(pintent.library),
             "signoff": bool(pintent.signoff),
         }
     _regress.record_terminal(
@@ -916,22 +891,12 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     _review.store_review_snapshot(conn, workspace, problem)
 
     if require_signoff:
-        # The Library decision is (re)made at the signature; the current
-        # flag is just the standing default, so a false flag is worth a
-        # note but never skips the pause.
-        if not harvest:
-            print(harvest_skip_msg, flush=True)
         print(f"[strategist] Ingest({problem}): paused for human sign-off — "
-              f"`asterism approve-ingest {problem}` to harvest, "
+              f"`asterism approve-ingest {problem}` to approve, "
               f"`asterism reject-ingest {problem} --reason ...` to keep "
               f"proving", flush=True)
-    elif not harvest:
-        print(harvest_skip_msg, flush=True)
     else:
-        db.enqueue(conn, kind="Librarian", target_id=problem,
-                   target_kind="Problem", priority=0, problem=problem)
-        print(f"[strategist] Ingest({problem}): direct ingest — enqueued "
-              f"Librarian", flush=True)
+        print(f"[strategist] Ingest({problem}): direct ingest", flush=True)
 
 
 def _commit_one(decision: Decision, conn: sqlite3.Connection,
@@ -1051,7 +1016,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     elif k == "Ingest":
         # Terminal judgment → pause for human sign-off (unless the
         # problem's `signoff: false` machine setting or config opts
-        # into direct ingest); harvest to Library iff `library:`.
+        # into direct ingest).
         # Falls through to the audit INSERT.
         _commit_ingest(conn, problem=problem, workspace=workspace,
                        group_id=group_id,

@@ -1,6 +1,6 @@
 """Status chip — one derivation, shared by board() (this module) and
-problem_detail() (edges.py): the same five inputs (awaiting-human,
-sign-off-pending, bridged, ingested, structural stall) collapse to one
+problem_detail() (edges.py): the same four inputs (awaiting-human,
+sign-off-pending, ingested, structural stall) collapse to one
 displayed word by one function, so the two surfaces cannot drift.
 
 Split out of `data.py` 2026-08-28 (Phase B, B3) unchanged.
@@ -18,14 +18,12 @@ from ...state import db
 # then the structural stall signal, else proving.
 # ---------------------------------------------------------------------
 
-def _status_chip(*, awaiting: bool, signoff: bool, bridged: bool,
+def _status_chip(*, awaiting: bool, signoff: bool,
                  ingested: bool, stalled: bool) -> str:
     if awaiting:
         return "awaiting_human"
     if signoff:
         return "signoff_pending"
-    if bridged:
-        return "bridged"
     if ingested:
         return "ingested"
     if stalled:
@@ -121,7 +119,7 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
         where, args = " WHERE project = ?", (project,)
     problems = conn.execute(
         "SELECT name, project, created_at, ingest_signoff_pending,"
-        " ingested_at, library_bridged_at, benched FROM problems"
+        " ingested_at, benched FROM problems"
         + where + " ORDER BY name", args).fetchall()
 
     goal_counts: dict[str, dict[str, int]] = {}
@@ -168,7 +166,6 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None,
         chip = _status_chip(
             awaiting=name in awaiting,
             signoff=bool(p["ingest_signoff_pending"]),
-            bridged=p["library_bridged_at"] is not None,
             ingested=p["ingested_at"] is not None,
             stalled=name in stalled,
         )

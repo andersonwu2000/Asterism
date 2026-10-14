@@ -157,9 +157,6 @@ def _seed_full_problem(mem, problem: str = "wilson") -> None:
         " failure_reason, ts) VALUES (?, 'Group', 'pid-g',"
         " 'agent_declined', ?)", (str(grid), now))
     mem.execute(
-        "INSERT INTO librarian_fail_counts (target_id, n, updated_at)"
-        " VALUES (? || char(31) || 'file.lean', 2, ?)", (problem, now))
-    mem.execute(
         "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
         " input_tokens, output_tokens, ts)"
         " VALUES ('pid-1', 'Forward', ?, 1, 1, ?)", (problem, now))
@@ -170,9 +167,7 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
     """The complement auditor against the REAL wipe. Two facts pinned:
 
     1. Everything `wipe_problem_rows` promises to clear really goes —
-       the only rows the auditor reports afterwards are the declared
-       survivor's (skipped): the librarian prefix rows, whose survival
-       is itself a declared ruling.
+       the auditor reports nothing afterwards.
     2. The auditor is not decorative: before the wipe it sees rows in
        every askable table."""
     _seed_full_problem(mem)
@@ -185,8 +180,6 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
     # owner's 2026-08-14 ruling, so the auditor is entitled to it and
     # the wipe must answer for it like any other problem-keyed table.
     assert before.get("spawn_usage") == 1
-    # The one remaining declared survivor is skipped while its rows exist.
-    assert "librarian_fail_counts" not in before
 
     cli.wipe_problem_rows(mem, "wilson")
     mem.commit()
@@ -197,10 +190,6 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
         f"without reset coverage. Do NOT silently widen the wipe; "
         f"report it.")
     assert mem.execute("SELECT COUNT(*) FROM spawn_usage").fetchone()[0] == 0
-    # The declared survivor DID survive — the ruling is real, not a
-    # stale entry covering for an already-clean table.
-    assert mem.execute(
-        "SELECT COUNT(*) FROM librarian_fail_counts").fetchone()[0] == 1
 
 
 def test_the_wipe_takes_the_group_targeted_rows_with_the_group(mem) -> None:

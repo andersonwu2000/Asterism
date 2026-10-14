@@ -520,7 +520,7 @@ def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
 
     WHEN. Only at this boundary, and only on a slot that is unclaimed
     and not busy. That makes the timing free without having to detect
-    it: the NL layer (Strategist, Adversary, Scholar, Librarian) never
+    it: the NL layer (Strategist, Adversary, Theorist) never
     registers a session at all — `write_tools_mcp_config`, not
     `_write_mcp_config` — so a debate round is minutes of Lean idleness,
     and this lands in it by construction rather than by asking what

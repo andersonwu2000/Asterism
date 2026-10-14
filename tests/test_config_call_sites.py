@@ -120,7 +120,6 @@ _SPAWN_KEY = "dispatch.spawn_timeout_sec"
 _KNOWN_SPAWN_READERS = {
     "Tooling/core/dispatcher/loop.py",
     "Tooling/lsp/gateway/__init__.py",
-    "Tooling/pipeline/librarian/run.py",
 }
 
 

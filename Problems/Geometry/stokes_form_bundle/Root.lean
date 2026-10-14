@@ -4,12 +4,9 @@ import Mathlib
 import Problems.Geometry.stokes_form_bundle.Defs
 import Problems.Geometry.stokes_form_bundle.proofs._strategy_s11679
 
-open Library.Geometry.Manifold.FormCoordChangeSelf
-open Library.Geometry.Manifold.FormCoordChangeCont
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.FormCoordChange
 
 namespace Problems.Geometry.stokes_form_bundle
 

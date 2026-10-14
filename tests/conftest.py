@@ -318,9 +318,9 @@ def _live_data_fence(request, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
-    """Stub the two COLD-lake seams (`_lake.lake_build_modules` olean
-    pre-flight, `lake_probe.run_lean_source` one-shot probes) the way the
-    warm-gateway seams already are. The side-effect fence's first live
+    """Stub the COLD-lake seams (`_lake.lake_build_modules` olean
+    pre-flight, the dedupe probes) the way the warm-gateway seams already
+    are. The side-effect fence's first live
     catch (2026-07-05) was exactly this class: a backward-commit test's
     dedupe pre-flight ran a REAL `lake build` every run — silently slow
     on the workstation, silently FileNotFoundError-swallowed on CI.
@@ -331,7 +331,6 @@ def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
     from Tooling.knowledge import lemma_lookup
     from Tooling.pipeline import _lake
     from Tooling.quality import dedupe as _dd
-    from Tooling.quality import lake_probe
     # Third member of the class, caught by the fence ON CI (2026-07-05):
     # compile_context #checks lemma names mined from dead attempts via
     # lookup_batch — a cold `lake env lean` whose on-disk JSON cache made
@@ -353,13 +352,8 @@ def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
     # for a later test's real `lake_build_modules` to poll a gateway that
     # is not there (first full-suite run: 900 s wait, one red test).
     monkeypatch.setattr(_lake, "_GATE", None)
-    # Clean "probe says no" verdict (rc=1, no output): dedupe defeq → not
-    # equal → no drop; conservative in every consumer's failure direction.
-    monkeypatch.setattr(
-        lake_probe, "run_lean_source",
-        lambda workspace, content, **kw: lake_probe.LeanRun(1, "", False))
-    # The apply probe shells `lake env lean` directly (not via
-    # run_lean_source): stub to all-no-hit (dedupe's fail-open shape).
+    # The apply probe shells `lake env lean` directly: stub to all-no-hit
+    # (dedupe's fail-open shape).
     monkeypatch.setattr(
         _dd, "_batch_provable_via_apply",
         lambda workspace, problem, pairs: [False] * len(pairs))

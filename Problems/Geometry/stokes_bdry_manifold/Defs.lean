@@ -8,14 +8,18 @@
   `mem_chart_source` field's cited lemma name.
 -/
 import Mathlib
-import Library.Geometry.ManifoldBoundary.Defs   -- chart data, Bdry, TopologicalSpace (Bdry n M)
-import Library.Geometry.ManifoldBdry.ChartedBdry -- P8: bdryChart + mem_bdryChart_source
+import Problems.Geometry.stokes_bdry_chart.Defs
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_inv_fun_val_eq_symm_face_embed
+import Problems.Geometry.stokes_bdry_chart_topo.proofs.L_chart_target_eq_face_embed_preimage
+import Problems.Geometry.stokes_bdry_chartedspace.Defs
+import Problems.Geometry.stokes_bdry_chartedspace.Root
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_bdry_invfun_mem.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBoundary.Defs
-open Library.Geometry.ManifoldBdry.ChartedBdry
+open Problems.Geometry.stokes_bdry_compact (Bdry)
+open Problems.Geometry.stokes_bdry_chartedspace (bdryChart)
 
 namespace Problems.Geometry.stokes_bdry_manifold
 
@@ -27,9 +31,9 @@ variable {n : ℕ} {M : Type*} [TopologicalSpace M]
     proven lemma, `chart_mem_atlas` is immediate. -/
 noncomputable instance instBdryChartedSpace :
     ChartedSpace (EuclideanSpace ℝ (Fin n)) (Bdry n M) where
-  atlas := Set.range bdryChart                 -- Library.bdryChart (from P8)
+  atlas := Set.range bdryChart                 -- Problems.Geometry.stokes_bdry_chartedspace.bdryChart (from P8)
   chartAt p := bdryChart p
-  mem_chart_source p := mem_bdryChart_source p
+  mem_chart_source p := Problems.Geometry.stokes_bdry_chartedspace.main p
   chart_mem_atlas p := ⟨p, rfl⟩
 
 end Problems.Geometry.stokes_bdry_manifold

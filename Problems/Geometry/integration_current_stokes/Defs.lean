@@ -1,11 +1,14 @@
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle              -- DiffForm
-import Library.Geometry.Manifold.DDZero                       -- mextDeriv
-import Library.Geometry.Manifold.StokesIntegralDefs           -- OrientedManifold, DiffForm.integral
-import Library.Geometry.ManifoldBdry.BdryIsManifold           -- isManifold_bdry (instance)
-import Library.Geometry.ManifoldBoundary.CompactBdry          -- Bdry
-import Library.Geometry.ManifoldBdry.PullbackFlatDNat         -- pullbackFlatForm, mextDeriv_pullbackFlatForm (brick ②)
-import Library.Geometry.Manifold.PerBumpStokes                -- pullbackBdry, integral_mextDeriv_eq_integral_pullbackBdry (Stokes)
+import Problems.Geometry.pullback_flat_dnat.Defs
+import Problems.Geometry.pullback_flat_dnat.Root
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_bdry_manifold.Defs
+import Problems.Geometry.stokes_bdry_manifold.Root
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_theorem.Defs
+import Problems.Geometry.stokes_theorem.Root
 
 /-!
 Capstone of the de Rham integration-current bridge: classical Stokes on `N` expressed as
@@ -20,12 +23,11 @@ functional on the LF test-form space — a genuine `Current` — is a separate a
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.DDZero
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBdry.PullbackFlatDNat
-open Library.Geometry.Manifold.PerBumpStokes
+open Problems.Geometry.stokes_form_bundle (DiffForm)
+open Problems.Geometry.stokes_integral (DiffForm.integral OrientedManifold)
+open Problems.Geometry.stokes_bdry_compact (Bdry)
+open Problems.Geometry.pullback_flat_dnat (pullbackFlatForm)
+open Problems.Geometry.stokes_theorem (pullbackBdry)
 
 namespace Problems.Geometry.integration_current_stokes
 

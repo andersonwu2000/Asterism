@@ -1,7 +1,7 @@
 """serve.lean_eval — the reader's Lean scratch pipeline.
 
-One staged-elaborate endpoint, two surfaces (charter: the New page's
-authoring check and the Library chapter's probe blocks). The browser
+One staged-elaborate endpoint (charter: the New page's authoring
+check, and Project documents' probe blocks). The browser
 sends ordered code parts; we stage ONE throwaway .lean under
 `.asterism/eval/`, run it through the warm gateway, and map the
 diagnostics back to per-part local line numbers. `#check` / `#print
@@ -17,11 +17,10 @@ level as the engine compiling agent code all day.
 Gateway coupling is soft: if the gateway is not ready we kick ONE
 background warm-up thread and return {"status": "warming"} immediately
 — the frontend retries. Imports of modules THIS workspace builds
-(`Library.*`, `Problems.*`) get an incremental `lake build` first (the
-gateway imports on-disk oleans as-is and does NOT rebuild stale deps;
-the librarian rewrites Library files and the engine writes Problems
-ones, so a chapter probe or a Project document can otherwise race a
-run's mid-chain state).
+(`Problems.*`) get an incremental `lake build` first (the gateway
+imports on-disk oleans as-is and does NOT rebuild stale deps; the
+engine writes Problems files, so a Project document can otherwise race
+a run's mid-chain state).
 """
 from __future__ import annotations
 
@@ -60,11 +59,10 @@ _IMPORT_CAPTURE = re.compile(
 #: The module trees THIS workspace builds. The gateway imports on-disk
 #: oleans as-is and never rebuilds a stale dependency, so an import of
 #: one of these has to be made fresh before the elaboration reads it:
-#: `Library.*` because the librarian rewrites those files under a
-#: running probe, `Problems.*` because a Project document imports the
-#: engine's own proofs while the engine is still writing them (HID
-#: §1.2-2). Mathlib and the toolchain are not ours to rebuild.
-_LOCAL_PREFIXES = ("Library.", "Problems.")
+#: a Project document imports the engine's own proofs while the engine
+#: is still writing them (HID §1.2-2). Mathlib and the toolchain are
+#: not ours to rebuild.
+_LOCAL_PREFIXES = ("Problems.",)
 
 
 def _local_imports(text: str) -> "list[str]":
@@ -216,8 +214,8 @@ def register(app: FastAPI, workspace: Path) -> None:
 
         text, n_pre, spans = _assemble(parts, imports)
 
-        # Chapter probes import Library modules and Project documents
-        # import Problems ones; rebuild them incrementally first (no-op
+        # Project documents import Problems modules; rebuild them
+        # incrementally first (no-op
         # seconds when fresh) so the elaboration sees the text on disk,
         # not a stale olean.
         local_mods = _local_imports(text)
@@ -276,7 +274,7 @@ def register(app: FastAPI, workspace: Path) -> None:
         token: "str | None" = None
         spans: "list[tuple[str, int, int]]" = []
         n_pre = 0
-        built: "set[str]" = set()  # Library modules lake-built this connection
+        built: "set[str]" = set()  # local modules lake-built this connection
         try:
             while True:
                 msg = await ws.receive_json()
@@ -298,11 +296,10 @@ def register(app: FastAPI, workspace: Path) -> None:
                         continue
                     imports = list(msg.get("imports") or [])
                     text, n_pre, spans = _assemble(parts, imports)
-                    # chapter probes import Library modules, Project
-                    # documents import Problems ones — same incremental
-                    # freshness build the one-shot path does (the gateway
-                    # imports on-disk oleans as-is), once per module per
-                    # connection
+                    # Project documents import Problems modules — same
+                    # incremental freshness build the one-shot path does
+                    # (the gateway imports on-disk oleans as-is), once per
+                    # module per connection
                     local_mods = [m for m in _local_imports(text)
                                   if m not in built]
                     if local_mods:

@@ -1,8 +1,13 @@
 import Mathlib
-import Library.Geometry.Currents.PullbackFormBounded         -- pullbackFlatForm_integral_bounded (crux)
-import Library.Geometry.Currents.BoundarySquareZero          -- Current
-import Library.Geometry.Manifold.StokesIntegralDefs          -- OrientedManifold, DiffForm.integral
-import Library.Geometry.ManifoldBdry.PullbackFlatDNat        -- pullbackFlatForm
+import Problems.Geometry.currents_boundary_zero.Defs
+import Problems.Geometry.integration_current_bounded.Root
+import Problems.Geometry.pullback_flat_dnat.Defs
+import Problems.Geometry.pullback_flat_form.Defs
+import Problems.Geometry.stokes_bdry_manifold.Defs
+import Problems.Geometry.stokes_bdry_manifold.Root
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
 
 /-!
 Final brick of the de Rham integration-current bridge: package the integration current
@@ -15,10 +20,6 @@ genuine topological-dual currents.
 -/
 
 open TopologicalSpace
-open Library.Geometry.Currents.PullbackFormBounded
-open Library.Geometry.Currents.BoundarySquareZero
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.ManifoldBdry.PullbackFlatDNat
 open scoped Manifold Bundle ContDiff Distributions
 
 namespace Problems.Geometry.integration_current_clm

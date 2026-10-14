@@ -1,5 +1,5 @@
 """Diagnostics/health-check surfaces: `asterism status`, `asterism doctor`
-[--cloud], `asterism library-verify`, `asterism review`, `asterism regress`,
+[--cloud], `asterism review`, `asterism regress`,
 `asterism knowledge-stats`, `asterism drift-check`, `asterism logs`,
 `asterism config` — read-mostly reporting commands, icon-prefixed
 OK/FAIL/WARN output. Split out of `Tooling/core/cli.py` (task A3,
@@ -439,176 +439,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
-def _library_consistency_findings(conn, workspace: Path
-                                  ) -> "list[tuple[str, str]]":
-    """DB <-> disk consistency over the *placed* decl set (v18: the DB IS
-    the index — the former INDEX.md three-way checks I3/I4 are structurally
-    impossible and retired).
-
-    "Placed" = `library_decls.lifecycle IN ('migrated','cleaned')` — exactly
-    the harvested set. 'cited'/'dropped'/'classified' decls are NOT placed
-    (no file contribution), so they never participate. Mirrors the
-    problem-side recovery orphan-sweep, but for `Library/`.
-
-    Printer-free on purpose: returns `[(status, message), ...]` with status in
-    {OK, WARN, FAIL} so the caller prints/exits and tests assert on findings.
-    Severity rationale:
-      - DB row -> missing file / orphan disk file: hard breaks (a citer is
-        misled, or a file nothing owns lingers) -> FAIL.
-      - bridged marker set but no placed decls: stale marker -> FAIL.
-      - placed decls but not yet bridged: legit mid-flight -> WARN."""
-    out: "list[tuple[str, str]]" = []
-    lib = workspace / "Library"
-
-    placed = conn.execute(
-        "SELECT problem, target_name, target_file, slug, lifecycle "
-        "FROM library_decls WHERE lifecycle IN ('migrated','cleaned')"
-    ).fetchall()
-    db_files = {r["target_file"] for r in placed if r["target_file"]}
-    db_by_problem: "dict[str, set[tuple[str, str]]]" = {}
-    for r in placed:
-        name = r["target_name"] or r["slug"]
-        db_by_problem.setdefault(r["problem"], set()).add(
-            (name, r["target_file"] or "?"))
-
-    disk_files = {p.relative_to(workspace).as_posix()
-                  for p in lib.rglob("*.lean")}
-
-    # I1 — every DB-placed file exists on disk.
-    missing = sorted(f for f in db_files if f not in disk_files)
-    for f in missing:
-        out.append(("FAIL", f"DB places a decl in a missing file: {f}"))
-    if not missing:
-        out.append(("OK", f"{len(db_files)} DB-placed file(s) present on disk"))
-
-    # I2 — every on-disk Library file is owned by a placed DB decl (orphan).
-    orphans = sorted(f for f in disk_files if f not in db_files)
-    for f in orphans:
-        out.append(("FAIL", f"orphan Library file (no placed DB decl): {f}"))
-    if not orphans:
-        out.append(("OK", f"{len(disk_files)} on-disk file(s) all DB-owned"))
-
-    # I3 — bridged marker <-> placed-set agreement (was: INDEX section vs
-    # DB; the marker is now `problems.library_bridged_at`).
-    bridged = {str(r["name"]) for r in conn.execute(
-        "SELECT name FROM problems WHERE library_bridged_at IS NOT NULL")}
-    for prob in sorted(bridged | set(db_by_problem)):
-        if prob in bridged and prob not in db_by_problem:
-            out.append(("FAIL", f"{prob}: bridge marker set but no placed "
-                                f"DB decls (stale marker)"))
-        elif prob not in bridged:
-            out.append(("WARN", f"{prob}: {len(db_by_problem[prob])} placed "
-                                f"decl(s) but not bridged yet (mid-flight?)"))
-        else:
-            out.append(("OK", f"{prob}: bridged, {len(db_by_problem[prob])} "
-                              f"placed decl(s)"))
-
-    # I5 — a CLEANED file should carry no `import Mathlib` umbrella. decide
-    # minimises imports mechanically (`#import_bumps`); a surviving umbrella is
-    # the rare degraded fallback (the linter could not produce a buildable set)
-    # — non-idiomatic and rejected by a mathlib PR. WARN, not FAIL: the file
-    # still builds, so this surfaces the defect without blocking the gate.
-    # 'migrated'-but-not-'cleaned' files legitimately still carry it (mid-flight).
-    cleaned_files = sorted({r["target_file"] for r in placed
-                            if r["target_file"] and r["lifecycle"] == "cleaned"})
-    umbrella = []
-    for f in cleaned_files:
-        try:
-            txt = (workspace / f).read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if any(ln.strip() == "import Mathlib" for ln in txt.splitlines()):
-            umbrella.append(f)
-    for f in umbrella:
-        out.append(("WARN", f"cleaned file keeps the `import Mathlib` umbrella "
-                            f"(decide import-min degraded to fallback): {f}"))
-    if cleaned_files and not umbrella:
-        out.append(("OK", f"{len(cleaned_files)} cleaned file(s) carry precise "
-                          f"imports (no `import Mathlib` umbrella)"))
-    return out
-
-
-def cmd_library_verify(args: argparse.Namespace) -> int:
-    """Whole-Library coherence gate (P1). Two mechanical checks, no agent:
-
-      (B) DB <-> disk consistency over the placed decl set — orphan
-          files, DB rows pointing at missing files, stale bridge markers.
-          Mirrors the problem-side recovery orphan-sweep.
-      (A) `lake build Library` — the whole placed Library compiles together.
-          The per-file / per-problem bridge gates only ever see ONE problem's
-          files, so a cross-problem breakage is invisible to them; this is the
-          missing whole-Library view, and the precondition for any future
-          Library rewrite (cross-problem rewire): you cannot safely edit a
-          cross-cited shared lemma without proving every downstream consumer
-          still builds.
-
-    Output is icon-prefixed `[OK/FAIL/WARN]` lines (same shape as `doctor`).
-    Exit 0 if every check is OK/WARN; 1 if any FAIL. `--no-build` runs the
-    fast consistency-only pass (skips A)."""
-    import shutil
-    import subprocess
-
-    workspace = Path.cwd()
-    fails = 0
-
-    def line(status: str, msg: str) -> None:
-        nonlocal fails
-        if status == "FAIL":
-            fails += 1
-        print(f"  [{status:>4}] {msg}")
-
-    if not (workspace / "Library").exists():
-        print("Library/ absent — nothing to verify")
-        return 0
-
-    print("\n=== Consistency (DB <-> disk) ===")
-    conn = db.connect()
-    db.init_schema(conn)
-    for status, msg in _library_consistency_findings(conn, workspace):
-        line(status, msg)
-
-    if args.no_build:
-        print("\n=== Whole-Library build: SKIPPED (--no-build) ===")
-    else:
-        print("\n=== Whole-Library build (`lake build Library`) ===")
-        if not shutil.which("lake"):
-            line("FAIL", "lake not on PATH — cannot build Library")
-        else:
-            try:
-                r = subprocess.run(
-                    ["lake", "build", "Library"],
-                    cwd=str(workspace), capture_output=True, text=True,
-                    timeout=args.build_timeout,
-                    encoding="utf-8", errors="replace",
-                )
-                if r.returncode == 0:
-                    line("OK", "lake build Library succeeded")
-                else:
-                    # Surface the REAL Lean errors, not lake's terminal
-                    # "error: build failed" summary: scan both streams for
-                    # `error:` lines (the unresolved-reference / type errors a
-                    # cross-problem breakage shows up as), and only fall back
-                    # to the tail when none are present.
-                    both = ((r.stdout or "") + "\n" + (r.stderr or "")).splitlines()
-                    errs = [ln.strip() for ln in both
-                            if "error:" in ln and "build failed" not in ln]
-                    shown = errs[:5] or [ln.strip() for ln in both
-                                         if ln.strip()][-5:]
-                    snippet = " | ".join(shown)[:800]
-                    line("FAIL", f"lake build Library failed "
-                                 f"(rc={r.returncode}): {snippet or '(no output)'}")
-            except subprocess.TimeoutExpired:
-                line("FAIL", f"lake build Library timed out "
-                             f"(>{args.build_timeout}s)")
-            except OSError as exc:
-                line("FAIL", f"lake build Library errored: {exc}")
-
-    print()
-    print(f"=== Summary: {fails} FAIL ===" if fails else
-          "=== Summary: all checks passed (some WARN OK) ===")
-    return 0 if fails == 0 else 1
-
-
 def cmd_review(args: argparse.Namespace) -> int:
     """anchor+claim review surface (docs/internal/archive/anchor_claim_design.md).
 
@@ -673,7 +503,7 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(f"    {d['paper']}")
         if not d["anchors"] and not d["claims"]:
             print("    (no pending anchors — statement rests entirely on "
-                  "Mathlib ∪ Library)")
+                  "Mathlib)")
         render(d["anchors"], "anchors (defs you must vouch for):")
         render(d["claims"], "claims (lemmas the closure rests on):")
         if d["folded"]:

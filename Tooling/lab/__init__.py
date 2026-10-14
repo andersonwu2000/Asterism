@@ -5,7 +5,7 @@ here (lab_design.md §2):
 
   SLICE      `lab snapshot` — ONE problem's state, exported the way
              `asterism carry` exports it (a DB pruned to that problem's
-             rows plus the global `library_*`/`projects`, its problem
+             rows plus the global `projects`, its problem
              directory and bound papers in a tarball, a manifest saying
              where and when it came from). Optionally rewound to a
              historical instant, DB and file plane in the same action.

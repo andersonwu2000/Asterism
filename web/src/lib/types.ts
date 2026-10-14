@@ -6,7 +6,6 @@ export type ProblemStatus =
   | 'idle'
   | 'signoff_pending'
   | 'ingested'
-  | 'bridged'
 
 export interface BoardProblem {
   name: string
@@ -144,7 +143,6 @@ export interface ProblemDetail {
   shelve_threshold: number
   created_at: string
   ingested_at: string | null
-  library_bridged_at: string | null
   strategist_directive: string | null
   /** the Ingest terminal's short paper (HID §3.4) — null until the
    * problem is ingested, and on any row written before v48. Its render
@@ -585,75 +583,6 @@ export interface RunStatus {
   recent: { kind: string; outcome: string; at: string }[]
 }
 
-export interface LibraryDecl {
-  slug: string
-  name: string | null
-  file: string | null
-  signature: string | null
-  decl_kind: string | null
-  lifecycle: string
-}
-
-export interface LibraryProblem {
-  problem: string
-  decls: LibraryDecl[]
-}
-
-/** One declaration in a Library chapter (GET /api/library/{problem}):
- * curated docstring + kernel-true signature, in source order. */
-export interface LibraryChapterDecl {
-  slug: string
-  name: string | null
-  signature: string | null
-  decl_kind: string | null
-  doc: string
-  /** the decl's real source block (attributes + header + proof body,
-   * docstring excluded) — the run state seeds a live editor with it */
-  source: string | null
-  /** the module preamble (open/open scoped/universe/variable lines)
-   * that makes `source` elaborate standalone — the librarian hoists
-   * instance hypotheses into `variable`, so a probe without this
-   * loses them and the goal collapses into sorries */
-  context: string | null
-  is_deliverable: boolean
-  /** how many OTHER modules of this problem reach for it — the
-   * keystone weight (ingest weakens the claim flags; demonstrated
-   * reuse is the honest importance signal) */
-  used_by: number
-}
-
-export interface LibraryChapterFile {
-  path: string
-  module_doc: string
-  decls: LibraryChapterDecl[]
-  /** within-problem import edges (paths) — the file-level sky */
-  imports_within: string[]
-}
-
-/** The sign-off signature (v27): the operator's claim (name), the
- * machine's observations (evidence, captured never typed), and the
- * content seal. seal_ok=false ⇒ the reviewed snapshot changed AFTER
- * signing — surfaces must say so, not display a stale vouch. */
-export interface SignoffRecord {
-  name: string | null
-  at: string
-  snapshot_sha: string | null
-  evidence: { claude_email: string | null; os_user: string; host: string }
-  seal_ok: boolean
-}
-
-export interface LibraryChapter {
-  problem: string
-  bridged_at: string | null
-  /** the problem's root statement — what the bridge gate re-proves
-   * from these modules alone; the chapter opens with it */
-  root?: { slug: string; statement: string } | null
-  files: LibraryChapterFile[]
-  signoff?: SignoffRecord | null
-  /** the gates' recorded guarantees — sorry-free, axioms whitelist */
-  colophon?: { decls: number; axioms: string[] } | null
-}
-
 /** A problem citing a shelf paper, as reported by
  * GET /api/projects/{p}/papers. */
 export interface PaperBoundRef {
@@ -763,7 +692,6 @@ export interface IntentData {
   settings: {
     axioms_whitelist: string[]
     forbidden_lemmas: string[]
-    library: boolean
   }
   pending_amend: boolean
 }

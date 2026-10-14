@@ -16,126 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # {relative path: max line count}
 _WATERMARKS = {
-    # 1900→1950: run_staged_cleanup_file holds ONE file-level gateway session
-    # across the mechanical whole-file gates (strip-comments + decide), so they
-    # verify on a warm claimed slot instead of cold `lake env lean` (#35 stage
-    # 1b) — 2026-06-19 — conscious bump.
-    # 1950→1960: (c2) normalize-whitespace mechanical stage wired into
-    # run_staged_cleanup_file before decide/audit — 2026-06-20 — conscious bump.
-    # 1960→2020: cross-file bridge import-cycle guard (`_imports_reaches` /
-    # `_lib_imports_on_disk`) — reject a bridge whose cited module already
-    # transitively imports the bridging file's module (#41) — 2026-06-20.
-    "Tooling/quality/librarian/dedup.py": 2020,
-    # 2850→2900 classify size gate; →3000 Defs section-context + ownership
-    # guard; →3050 same-path race lock; →3100 docstring-aware slicing;
-    # →3200 cross-problem shared-def redirect + variable-block dedupe +
-    # classify Library-tree context (stokes, 2026-06-11) — conscious bumps.
-    # This file is OVERDUE a split (librarian work-kinds → submodules).
-    # 3400→3450: _toposort_intra_file Defs-first tie-break — hoist
-    # implicitly-used instances (typeclass, never named → no usage edge)
-    # above their proof users (stokes PerBumpStokes instBdryOriented migrate
-    # build failure) — 2026-06-16 — conscious bump.
-    # 3450→3500: per-file cleanup hard Mathlib-PR gate (build must be
-    # warning-free → fail unit) + redundant variable-block collapse in
-    # _run_cleanup — 2026-06-17 — conscious bump.
-    # 3500→3550: _reorder_decls_by_intrafile_refs — post-cleanup re-derive
-    # intra-file decl order from the FINAL file's references (dedup/simplify
-    # can rewrite a proof to cite a sibling, introducing a forward ref
-    # file_order, frozen at classify, never reflects — eckart_young whole-
-    # Library build failure) — 2026-06-17 — conscious bump.
-    # 3550→3600: migrate hardening for residue_thm shapes — pull `open X in`
-    # into the decl's slice (don't hoist a scoped-open above `namespace`) +
-    # self_namespaces strip (decls declared under a Mathlib-extending
-    # namespace like `Complex.windingNumber`) — 2026-06-17 — conscious bump.
-    # 3600→3700: classify size gate accounts for the SCC file merge —
-    # `_plan_usage_and_canon` (extracted from commit_classify, shared) +
-    # `verify_merged_file_sizes` (reject a usage-cycle group that merges over
-    # budget → re-classify, instead of a longFile STALL) — 2026-06-18.
-    # 3700→3600: removed 7 dead v0.2/v0.3-vestigial functions (the
-    # bridge/cleanup "re-gate the cone" cluster — _regate_touched +
-    # _default_regate_build + _snapshot_problem_library + _restore_snapshot +
-    # _problem_library_files, superseded by the mechanical bridge Gate B — plus
-    # _importers_of + _normalize_stmt) — 2026-06-18 — tighten.
-    # 3600→3650→3620: classify carries its rejection across re-dispatch
-    # (_classify_feedback_path + compile_librarian_context prev_error, Phase F)
-    # — the 3650 also covered Phase G (classify → run_with_session_retries),
-    # since reverted (built on a wrong premise + a builder-retry-framing
-    # regression), so the ceiling tightened back to the Phase-F level
-    # — 2026-06-18.
-    # 3620→3680: classify retry is now INCREMENTAL — `_classify_prior_plan_path`
-    # carries the prior plan.json and compile_librarian_context hands it back
-    # asking for the SMALLEST edit, so a re-emit stops re-dropping a different
-    # decl each time (whack-a-mole) — 2026-06-18 — conscious bump.
-    # 3680→3760: classify SCC-cycle STALL fix — the layout context now feeds the
-    # agent the proof-term USAGE graph in topological order + a file-DAG rule
-    # (`_decl_usage`, shared with the gate), the size/cycle retry asks for a
-    # RE-PARTITION (not the incremental "smallest edit", which obstructs an
-    # SCC break), and `verify_merged_file_sizes` NAMES the cross-file back-edges
-    # (`_scc_cross_file_edges`) — 2026-06-18 — conscious bump.
-    # 3760→3800: classify watchdog trap_check now scales with the kept-decl
-    # count (`_classify_trap_budget` + a per-spawn trap_check_sec override
-    # threaded spawn_llm → _watchdog) so a large layout's single long think is
-    # not mistaken for a thinking-trap at the flat 660s (residue 271) —
-    # 2026-06-18 — conscious bump.
-    # 3800→3810: _import_sort_key / _sorted_import_lines — order migrated imports
-    # Mathlib-first (before Library.*), because Lean instance resolution is
-    # import-order-sensitive (ContinuousSMul ℝ ℂ / IsScalarTower ℝ ℝ ℂ fail to
-    # synthesize when `import Mathlib` follows a Library sibling) (#42) — 2026-06-21.
-    # 3810→3895: preserve operator-chosen Defs namespaces (`_defs_decl_namespace`
-    # / `_ns_is_operator_specified` + `chunk_ns` per-namespace reassembly) so a
-    # Defs decl authored under `namespace Complex` keeps `Complex.windingNumber`
-    # instead of being relabelled into the Library namespace — Gate B could no
-    # longer re-derive the root statement otherwise (#43) — 2026-06-21.
-    # SPLIT 2026-06-21: the 3.9k-line `pipeline/librarian.py` monolith was split
-    # into a `pipeline/librarian/` package (concern submodules) — watermarks are
-    # per-submodule now. `execute.py` is the largest (the migrate executor); a
-    # later quality pass may trim it.
-    "Tooling/pipeline/librarian/__init__.py": 145,
-    "Tooling/pipeline/librarian/_base.py": 150,
-    # 400→430 (2026-07-04): declInfo-oracle seams (`oracle=` params +
-    # fallback plumbing) in `_defs_decl_source`/`_defs_decl_namespace`;
-    # expected to drop back under 400 when the regex paths retire to
-    # cold-fallback-only (task: declInfo syntactic oracle).
-    # 430→455 (2026-07-05): `alias` command extraction (opt-in
-    # include_aliases) — dedupe-bridge one-liners are kernel constants the
-    # axiom probe must cover up front (sphere_homology coverage-gap
-    # re-probes on `band_aug_coord_sum`).
-    "Tooling/pipeline/librarian/astslice.py": 455,
-    "Tooling/pipeline/librarian/classify.py": 545,
-    "Tooling/pipeline/librarian/schedule.py": 235,
-    # 345→360: Gate D namespace-preserved-Defs branch — a #43-preserved Defs
-    # decl (`Complex.windingNumber`, same FQN in problem Defs + Library copy)
-    # verifies by source equality, NOT the cross-module defeq probe that would
-    # import both and die on "environment already contains" (residue migrate
-    # STALL) — 2026-06-21.
-    # gate 360→385 + bridge 345→390 + run 515→560: post-rewrite axiom gate
-    # (2026-07-03) — cleanup's LLM stages (simplify / near-dup bridge / audit
-    # whole-file rewrite) run AFTER migrate's per-decl axiom check; re-gate
-    # the FINAL text at cleanup exit + the deliverable bridge end (which was
-    # builds-only), and hard-fail any `axiom` declaration — conscious bumps.
-    # 385→415 (2026-07-04): axiom-probe COVERAGE cross-check + one-shot
-    # self-heal — the probe elaboration's decl_info (kernel-true decl list)
-    # must all carry `#print axioms` lines; a text-extraction miss used to
-    # silently narrow the axiom gate (task: declInfo syntactic oracle).
-    # 415→425 (2026-07-05): include_aliases at the probe's extract_decls
-    # call (same alias-coverage fix).
-    # 425→440 (2026-07-06): inductive-companion exemption in the coverage
-    # cross-check (casesOn re-probe class) — conscious bump.
-    # 440→450 / 1170→1190 (2026-07-30): the metaprogramming gate reaches
-    # the Library arm — agent Lean assembled into a Library file and built
-    # by lake was the one un-scanned elaboration path. Conscious bump.
-    "Tooling/pipeline/librarian/gate.py": 450,
-    "Tooling/pipeline/librarian/context.py": 430,
-    "Tooling/pipeline/librarian/execute.py": 1190,  # +universe hoist/dedup (#72)
-    "Tooling/pipeline/librarian/bridge.py": 390,
-    # 560→570 (2026-08-13): harvest seeds scope to the top group —
-    # the Library is curated for people, so what enters it is what the
-    # top group promoted (user ruling). Conscious bump.
-    # 570→580 (2026-09-06): the serial spawn names its rc through the
-    # shared `_spawn_failure` instead of answering `agent_error` for
-    # every one — an infra death must be readable as infra by the
-    # chain cap and the dispatcher cooldown. Conscious bump.
-    "Tooling/pipeline/librarian/run.py": 580,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
@@ -522,7 +402,6 @@ _WATERMARKS = {
     "Tooling/state/db/pipelines.py": 200,  # +35 2026-09-07 `has_running_pipeline_for_goal`: the authoritative cross-process in-flight signal the cascade sweep reads before shelving a goal — conscious bump  # born 2026-08-29 from the db.py split  # +routine audit 2026-08-30
     "Tooling/state/db/queue.py": 250,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/deaths.py": 100,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/library.py": 300,  # born 2026-08-29 from the db.py split
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -567,70 +446,7 @@ _WATERMARKS = {
     # for the `Signal` kind, + the ladder-level FK re-arm its constraint
     # test exposed (every rebuild's own `finally` re-arm is a no-op
     # inside the rebuild's transaction) — conscious bump.
-    "Tooling/state/db_migrations.py": 3460,  # +48 2026-09-07 only verify writes strategy 'succeeded': the async promotion gate gave "proposed, every sub-goal proved" a second meaning and the backstop settled the batch under an unproved goal — conscious bump  # +17 2026-09-07 v54 named bricks (v54): `strategist_decisions.brick_name` — conscious bump  # +15 2026-09-06 v53 `strategist_decisions.infra_deaths` — conscious bump  # +125 2026-09-04 the Theorist layer (v52): five CHECK widenings on one live-DDL regex channel  # +93 2026-09-04 goal status `dead` retired (v51): `_migrate_to_v51` — the dead→shelved rewrite plus the CHECK-narrowing rebuild  # +13 2026-09-03 v50 report_carried_at (an additive column, but since v15 those ship as a version step)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
-    "Tooling/quality/librarian/cleanup/__init__.py": 50,
-    # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
-    # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
-    # variable-block tidy) + _build_for_warnings (force the mathlib standard
-    # linter set on, which `lake env lean` drops) — 2026-06-17 — conscious bump.
-    # 640→700: warm-or-cold verify primitive (#35 Stage 1) — _verify_source +
-    # _leanrun_from_verify route whole-file gates onto a held cleanup session's
-    # claimed gateway slot (~4-5s) with cold `lake env lean` fallback; wired
-    # through _lake_check / _build_file_copy_isolated — 2026-06-19 — conscious bump.
-    # 700→760: #35 stage 2/3 — _build_with_output warm routing + warm
-    # _typecheck_capturing_types (#check types from info diagnostics, shared
-    # _extract_check_types core) — 2026-06-19 — conscious bump.
-    # 760→790: diff_magnitude (cleanup-throughput observability, 09736b8)
-    # — 2026-07-06 — conscious bump.
-    "Tooling/quality/librarian/cleanup/_common.py": 790,
-    # 300→350: audit rewritten onto the shared LSP edit-mode retry loop
-    # (`run_with_session_retries`, like builder / migrate-hole-fill) — cold-seed
-    # `audited.lean` + warm incremental + --resume, `_write_mcp_config` LSP, and
-    # the fence/type-invariance/zero-warning gate split out as the pure
-    # `_audit_gate`. (Replaces the reverted dc30d3e `_type_generalizes`
-    # drop-unused-hypothesis relaxation — an unused binder is now `_`-prefixed,
-    # not deleted, so the type gate stays strictly invariant.) — 2026-06-18.
-    # 350→400: parse_fn reads the agent's session token and threads it to the
-    # whole-file warnings gate so it verifies on the agent's warm claimed slot
-    # (#35 stage 3; the #check type gate stays cold) — 2026-06-19 — conscious bump.
-    # 400→440: C4-B — audit context surfaces cross-library leaf-name clashes
-    # (Library/INDEX.md → _library_name_index) so the agent enforces the
-    # no-collision rule inline — 2026-06-22 — conscious bump.
-    "Tooling/quality/librarian/cleanup/audit.py": 440,
-    # 250→325: precise imports computed MECHANICALLY (`_compute_min_imports` /
-    # `_parse_missing_imports` / `_inject_import_bumps`, driving mathlib's
-    # `#import_bumps`) instead of the LLM guessing + retrying — eliminates the
-    # `import Mathlib` umbrella deterministically. Includes the umbrella-unneeded
-    # path (`_remove_umbrella_import`): a file whose Mathlib deps are covered
-    # transitively by its Library siblings drops the umbrella outright (#44;
-    # BanachTarski caught sibling-importing files keeping it) — 2026-06-21.
-    # 325→420: import-min degrade fix — `#import_bumps` runs with its own generous
-    # budget (`_IMPORT_BUMPS_TIMEOUT_SEC`: cold + async-off, 240s silently timed
-    # out → umbrella, the dominant cause of the residue 7-file debt), and a
-    # candidate LADDER (`_import_candidates` / `_dir_precise_imports`: precise →
-    # REMOVE → minImports∪dir-pool) broadens before degrading to the umbrella —
-    # 2026-06-22 — conscious bump.
-    "Tooling/quality/librarian/cleanup/decide.py": 420,
-    # 250→340: file_cleanup_underscore_unused_hyps — mechanical `_`-prefix of
-    # `unusedVariables`-flagged hypothesis binders (#37), so the audit agent
-    # doesn't burn its 960s budget `_`-prefixing 12+ binders one LSP round-trip at
-    # a time on big files — 2026-06-19 — conscious bump.
-    # 340→380: _decl_line_spans — Defs-origin freeze skips frozen decls in the
-    # location-based `_`-prefix pass (Defs decls must never be modified by
-    # cleanup) — 2026-06-20 — conscious bump.
-    # 380→540: file_cleanup_normalize_whitespace — mechanical clear of the
-    # text-based mathlib style linters (linter.style.whitespace / .emptyLine)
-    # that only fire on a real module build, so the audit agent otherwise burns
-    # its 960s budget hand-fixing 100+ `(0:ℝ)`→`(0 : ℝ)` spacings (residue
-    # HomotopyIntegral 141+4 → 3 audit timeouts) — 2026-06-20 — conscious bump.
-    # 540→560: olean-safe restore (try/finally) so a failed detection build never
-    # leaves the module's olean missing (regression that failed downstream
-    # decide/audit) — 2026-06-20 — conscious bump.
-    "Tooling/quality/librarian/cleanup/mechanical.py": 560,
-    # 200→220: per-decl gate + agent seed reproduce the file's `open …` lines
-    # (`_opens_in`) so a proof referencing an opened symbol (`residue`) resolves
-    # in the isolation probe instead of failing as an autoImplicit — 2026-06-20.
-    "Tooling/quality/librarian/cleanup/simplify.py": 220,
+    "Tooling/state/db_migrations.py": 3575,  # +115 2026-10-14 v56 the Library retirement: `_migrate_to_v56` drops the library tables + `problems.library_bridged_at` and narrows the queue.kind CHECK (one block per schema version, by design) — conscious bump  # +48 2026-09-07 only verify writes strategy 'succeeded': the async promotion gate gave "proposed, every sub-goal proved" a second meaning and the backstop settled the batch under an unproved goal — conscious bump  # +17 2026-09-07 v54 named bricks (v54): `strategist_decisions.brick_name` — conscious bump  # +15 2026-09-06 v53 `strategist_decisions.infra_deaths` — conscious bump  # +125 2026-09-04 the Theorist layer (v52): five CHECK widenings on one live-DDL regex channel  # +93 2026-09-04 goal status `dead` retired (v51): `_migrate_to_v51` — the dead→shelved rewrite plus the CHECK-narrowing rebuild  # +13 2026-09-03 v50 report_carried_at (an additive column, but since v15 those ship as a version step)  # +30 2026-09-02 `_disarm_foreign_keys`: v48's FK disarm was a silent no-op inside the backfill's transaction, so no populated disk could migrate  # 2026-08-31 v47 benched  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     # The LSP gateway. `gateway.py` (5,890 lines, never watched here) became
     # `Tooling/lsp/gateway/` on 2026-08-29 — move-only, first batch of four
     # axes out of the monolith (state / elab / backend / weigh); the facade
@@ -777,7 +593,9 @@ _WATERMARKS = {
     # `_decision_events` — a straight line-range split would have made
     # `edges.py` and `timeline.py` import each other; `library.py` is the
     # Library chapter (bridged-module parsing) plus the trailing
-    # telemetry/papers/file-read leaves that share no call edge with it.
+    # telemetry/papers/file-read leaves that share no call edge with it
+    # (retired 2026-10-14 with the Library; the leaves moved unchanged
+    # to `leaves.py`, which sits under the default cap).
     # Facade `__init__.py` re-exports every public (and tested private)
     # symbol; `_link_kind_expr` stays in the facade itself as the one
     # helper both `edges.py` and `timeline.py` call.
@@ -785,7 +603,6 @@ _WATERMARKS = {
     "Tooling/serve/data/status.py": 220,  # +9 2026-09-03 the board asks the stall predicate about ITS shelf only (one graph walk per problem, 373 of them to label a shelf of two)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/edges.py": 586,  # +16 2026-09-07 named bricks (v54): the decision prose resolves through `programme.argument_for_decision`, one converter for every surface  # +8 2026-09-03 the dead-attempt tally is scoped to the problem being read (it built the whole workspace's map to use 12% of it, every poll)  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/timeline.py": 1430,  # +10 2026-09-07 named bricks (v54): an `asked` row is labelled by the brick's name outright instead of by the three prose readers  # +10 2026-09-06 every landing row opens what it landed (`7c3733ac`) — the growth shipped without the bump, so the ratchet was red at HEAD until this line  # +10 2026-09-06 a refused theory document lands too (owner ruling): `theory_refused` carries the landed path so the row opens it  # +150 2026-09-04 the theory layer reaches the Timeline: the `Theorize` verb, the wake's two instants and the document's two verdicts (`_theory_events`, kept beside `_ev`/`_LIFE_RANK` — a split would have put one feature's row shape and its ordering rank in two files)  # born 2026-08-28 from the data.py split (B3)
-    "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/verdict.py": 100,  # born 2026-08-29 — one revision's judge verdict
     "Tooling/serve/data/projects.py": 150,  # born 2026-09-02 — the Project cards (HID §1.4)
     "Tooling/serve/data/human_inbox.py": 150,  # born 2026-09-02 — inbox/inbox_count moved out of timeline.py
@@ -896,16 +713,6 @@ def test_files_stay_under_watermark() -> None:
         "file(s) grew past their size watermark — split the file or "
         "consciously bump the limit in this test:\n" + "\n".join(over))
 
-
-def test_every_cleanup_module_has_a_watermark() -> None:
-    # A new cleanup/*.py must be registered here (with its own watermark),
-    # so stage modules can't grow unwatched.
-    cleanup_dir = ROOT / "Tooling" / "quality" / "librarian" / "cleanup"
-    unlisted = sorted(
-        f"Tooling/quality/librarian/cleanup/{p.name}"
-        for p in cleanup_dir.glob("*.py")
-        if f"Tooling/quality/librarian/cleanup/{p.name}" not in _WATERMARKS)
-    assert not unlisted, f"add a watermark for: {unlisted}"
 
 # Any module NOT in the watermark list must stay under this. The list
 # above is the conscious-exception mechanism: a file that legitimately

@@ -93,9 +93,8 @@ Problems/*_2[0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 # DB rows (resets/relabels churn it — was 571 modified + 17 deleted
 # noise), TREE/BRIEF are regenerated views, LESSONS' knowledge lives in
 # kb_entries, .drafts/.presearch are cross-spawn scratch. Proved
-# EVIDENCE lives in Library/ (curated harvest) + Benchmarks/
-# proved_manifest.jsonl; externally-valuable raw solutions should be
-# harvested (library:true), not incidentally versioned.
+# EVIDENCE lives in Benchmarks/proved_manifest.jsonl; raw solutions are
+# not incidentally versioned.
 # Enforced by tests/test_problems_tracking_hygiene.py.
 Problems/**/proofs/
 Problems/**/TREE.md

@@ -43,7 +43,7 @@ export function Button({
 }
 
 /* ------------------------------------------------------------------ */
-/* TabNav — THE tab bar (Problem, Library chapter, Engine): one form,
+/* TabNav — THE tab bar (Problem, Engine): one form,
  * the star underline as the active mark. Items with href render as
  * links (routed tabs); items without use onSelect (state tabs).       */
 /* ------------------------------------------------------------------ */
@@ -124,7 +124,7 @@ export function Select({
  *
  * The rule used to be written down ("pills reserved for states that
  * ask something") and contradicted in the same file: paused, proving,
- * complete and in-Library all wore chips too, and the Board answered
+ * and complete all wore chips too, and the Board answered
  * by inventing a SECOND vocabulary of bare text for the settled three.
  * Three treatments in one column is what the reader actually saw
  * (owner, 2026-08-26). One rule, applied here, is the fix — the Board
@@ -138,7 +138,6 @@ const STATUS_MARK: Record<ProblemStatus, { label: string; ink: string; dot: stri
   awaiting_human: { label: 'needs input', ink: '', dot: '' },
   signoff_pending: { label: 'needs sign-off', ink: '', dot: '' },
   ingested: { label: 'complete', ink: 'text-ink-faint', dot: 'bg-ink-faint/60' },
-  bridged: { label: 'in Library', ink: 'text-ink-dim', dot: 'bg-starlight' },
   idle: { label: 'not started', ink: 'text-ink-faint', dot: 'bg-ink-faint/40' },
 }
 
@@ -156,7 +155,6 @@ const STATUS_HINT: Record<ProblemStatus, string> = {
   idle: 'not started yet',
   signoff_pending: 'finished — waiting for your sign-off in the inbox',
   ingested: 'proof complete and accepted (engine term: ingested)',
-  bridged: 'merged into the Library (engine term: bridged)',
 }
 
 export function StatusBadge({

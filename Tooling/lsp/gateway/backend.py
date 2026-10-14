@@ -42,7 +42,7 @@ def _start_workers(workspace: Path, w_count: int,
         # Slot files are framework runtime artifacts (per-worker warmup
         # surface for didOpen). Kept under `.asterism/runtime_slots/` so
         # they don't pollute the workspace root and don't get glob'd by
-        # lake's `lean_lib` Asterism/Problems/Library blocks. The
+        # lake's `lean_lib` Asterism/Problems blocks. The
         # workspace root remains the cwd for lake serve, so import
         # resolution is unaffected — file location only matters for the
         # URI, not for Lean's LEAN_PATH.

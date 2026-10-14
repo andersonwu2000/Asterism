@@ -383,7 +383,7 @@ def test_ingest_verify_requires_deliverable(conn):
         conn, problem="P.a") == ""
 
 
-def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
+def test_ingest_commit_signoff_gate(conn, tmp_path):
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.core import config
     from Tooling.state import settings as _settings
@@ -392,17 +392,6 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.a")
     pdir.mkdir(parents=True)
-
-    def set_settings(lib: bool, signoff: bool = True):
-        # v40: library/signoff are problem_settings rows, not frontmatter.
-        # signoff is written explicitly to mirror the old whole-file
-        # rewrite semantics (an omitted key meant the default True).
-        _settings.write(conn, "P.a", "library", lib)
-        _settings.write(conn, "P.a", "signoff", signoff)
-
-    def n_librarian():
-        return conn.execute(
-            "SELECT count(*) FROM queue WHERE kind='Librarian'").fetchone()[0]
 
     def reset_rig():
         # re-committing Ingest on one problem is a test rig — reset the
@@ -412,57 +401,37 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
         conn.commit()
 
     try:
-        # library:false alone → still PAUSES (2026-07-18 gate
-        # retirement: the Library opt-out must not skip the human gate;
-        # the decision is re-made at the signature), no enqueue
-        set_settings(False)
+        # default (no signoff row, default require_signoff True) → PAUSE
         config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert _db.problem_ingest_signoff_pending(conn, "P.a")
-        assert n_librarian() == 0
 
-        # benchmark shape: signoff:false + library:false → direct, no
-        # pause, no enqueue
-        set_settings(False, signoff=False)
+        # benchmark shape: signoff:false → direct, no pause
+        _settings.write(conn, "P.a", "signoff", False)
         reset_rig()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert not _db.problem_ingest_signoff_pending(conn, "P.a")
-        assert n_librarian() == 0
 
-        # unattended harvest shape: signoff:false + library:true →
-        # direct, enqueue
-        set_settings(True, signoff=False)
+        # signoff:true → PAUSE again
+        _settings.write(conn, "P.a", "signoff", True)
         reset_rig()
-        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
-        assert not _db.problem_ingest_signoff_pending(conn, "P.a")
-        assert n_librarian() == 1
-        conn.execute("DELETE FROM queue WHERE kind='Librarian'")
-        conn.commit()
-
-        # library:true + default require_signoff (True) → PAUSE, no enqueue
-        set_settings(True)
-        reset_rig()
-        config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert _db.problem_ingest_signoff_pending(conn, "P.a")
-        assert n_librarian() == 0
 
-        # direct mode (yaml require_signoff:false) → enqueue, no pause
+        # direct mode (yaml ingest.require_signoff:false) → no pause
         reset_rig()
         (tmp_path / "Asterism.yaml").write_text(
-            "library:\n  require_signoff: false\n", encoding="utf-8")
+            "ingest:\n  require_signoff: false\n", encoding="utf-8")
         config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert not _db.problem_ingest_signoff_pending(conn, "P.a")
-        assert n_librarian() == 1
     finally:
         config._reset_cache()
 
 
 def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
-    """TOCTOU pin (2026-07-06, Logic.toy_list_reverse): the Librarian
-    selfstart path reads `ingested_at set + signoff flag clear` as
-    "approved, go". store_review_snapshot can block 30s+ warming a
+    """TOCTOU pin (2026-07-06, Logic.toy_list_reverse): a reader of
+    `ingested_at set + signoff flag clear` takes it as "approved, go". store_review_snapshot can block 30s+ warming a
     cold/stale gateway, so the flag must be COMMITTED atomically with
     the terminal stamp BEFORE the snapshot runs — the pre-fix order
     (stamp → snapshot → flag) let a dispatcher tick inside the warm-up
@@ -470,13 +439,11 @@ def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.core import config
     from Tooling.quality import review as _review
-    from Tooling.state import settings as _settings
     conn.execute("INSERT INTO problems(name,created_at)"
                  " VALUES ('P.a',?)", (_db.now(),))
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.a")
     pdir.mkdir(parents=True)
-    _settings.write(conn, "P.a", "library", True)
 
     seen: dict = {}
 
@@ -737,7 +704,6 @@ def test_top_ingest_names_the_sub_groups_it_orphans(conn, tmp_path, capsys):
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.orph")
     pdir.mkdir(parents=True)
-    _settings.write(conn, "P.orph", "library", False)
     _settings.write(conn, "P.orph", "signoff", False)
     top = _groups.ensure_top_group(conn, "P.orph")
     kid = _groups.open_group(conn, problem="P.orph", parent_group_id=top,

@@ -17,21 +17,22 @@
   `inducedOrientFun` is a `C^∞` section (so the induced orientation is a genuine form).
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle        -- DiffForm, formBundleCore, instForm*
-import Library.Geometry.Manifold.MExtDerivCoord         -- formInCoord, instFormBundleContMDiff
-import Library.Geometry.Manifold.StokesIntegralDefs      -- OrientedManifold (+ refForm)
-import Library.Geometry.ManifoldBdry.PullbackBdryDefs    -- faceEmbedL
-import Library.Geometry.ManifoldBoundary.CompactBdry     -- Bdry
-import Library.Geometry.ManifoldBdry.BdryIsManifold      -- isManifold_bdry (instance), instBdryChartedSpace
+import Problems.Geometry.stokes_bdry_compact.Defs
+import Problems.Geometry.stokes_bdry_manifold.Defs
+import Problems.Geometry.stokes_bdry_manifold.Root
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_integral.Defs
+import Problems.Geometry.stokes_mextderiv.Defs
+import Problems.Geometry.stokes_mextderiv.proofs.L_form_in_coord_smooth
+import Problems.Geometry.stokes_pullback.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
-open Library.Geometry.Manifold.StokesIntegralDefs
-open Library.Geometry.ManifoldBdry.PullbackBdryDefs
-open Library.Geometry.ManifoldBoundary.CompactBdry
-open Library.Geometry.ManifoldBdry.BdryIsManifold
+open Problems.Geometry.stokes_form_bundle (formBundleCore)
+open Problems.Geometry.stokes_mextderiv (formInCoord)
+open Problems.Geometry.stokes_integral (OrientedManifold)
+open Problems.Geometry.stokes_pullback (faceEmbedL)
+open Problems.Geometry.stokes_bdry_compact (Bdry)
 
 namespace Problems.Geometry.stokes_induced_orient
 

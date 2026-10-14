@@ -446,7 +446,7 @@ export function strategyStatusLabel(status: string): string {
 
 /** Definition-bearing kinds — what draws as a DIAMOND (the anchor
  * surface a human vouches for). ONE set for both dialects: goals
- * speak Lean's ('inductive'), the librarian's decl_kind speaks its
+ * speak Lean's ('inductive'), the gateway's decl kind speaks its
  * shorthand ('induct'). Three per-screen copies had drifted three
  * ways (2026-07-10) — the atlas missed 'inductive', the sky missed
  * 'induct'. */

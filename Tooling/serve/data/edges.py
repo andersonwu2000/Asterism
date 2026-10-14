@@ -259,7 +259,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
              else "")
     prow = conn.execute(
         "SELECT name, created_at, ingest_signoff_pending, ingested_at,"
-        " library_bridged_at, strategist_directive, last_strategist_at"
+        " strategist_directive, last_strategist_at"
         + _rsel + " FROM problems WHERE name = ?", (problem,)).fetchone()
     if prow is None:
         return None
@@ -506,7 +506,6 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     chip = _status_chip(
         awaiting=awaiting,
         signoff=bool(prow["ingest_signoff_pending"]),
-        bridged=prow["library_bridged_at"] is not None,
         ingested=prow["ingested_at"] is not None,
         stalled=stalled,
     )
@@ -543,7 +542,6 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "shelve_threshold": shelve_threshold,
         "created_at": str(prow["created_at"]),
         "ingested_at": prow["ingested_at"],
-        "library_bridged_at": prow["library_bridged_at"],
         "strategist_directive": prow["strategist_directive"],
         # the terminal's human-readable summary (§3.4), or null
         "ingest_report": (prow["ingest_report"] if _rsel else None),

@@ -39,11 +39,8 @@ GATEWAY_VERIFY = ROOT / "Tooling" / "lsp" / "gateway" / "verify.py"
 CLIENT = ROOT / "Tooling" / "lsp" / "client.py"
 BACKWARD = ROOT / "Tooling" / "pipeline" / "backward.py"
 FORWARD = ROOT / "Tooling" / "pipeline" / "forward.py"
-LAKE_PROBE = ROOT / "Tooling" / "quality" / "lake_probe.py"
 DEDUPE = ROOT / "Tooling" / "quality" / "dedupe.py"
 DEDUPE_PROBE = ROOT / "Tooling" / "quality" / "dedupe_probe.py"
-LIB_EXECUTE = ROOT / "Tooling" / "pipeline" / "librarian" / "execute.py"
-LIB_GATE = ROOT / "Tooling" / "pipeline" / "librarian" / "gate.py"
 
 
 def _fn_source(path: Path, name: str) -> str:
@@ -123,27 +120,11 @@ def test_commit_gate_scans_agent_output(path) -> None:
     assert '"forbidden_metaprogramming"' in text
 
 
-#: The Library arm (07-30 audit): a migrate spawn's `patch.lean` is
-#: assembled into a Library file and built by `lake`, and Library decls
-#: are cited across problems — the widest blast radius of all, and it was
-#: missing from the original enumeration.
-@pytest.mark.parametrize("path,fn", [
-    (LIB_EXECUTE, "_default_fill_decl"),   # per-decl fill: agent patch.lean
-    (LIB_GATE, "migrate_commit_gate"),     # assembled file, pre-commit
-])
-def test_librarian_scans_agent_lean(path, fn) -> None:
-    src = _fn_source(path, fn)
-    assert "metaprog.scan_metaprogramming(" in src, (
-        f"{path.name}::{fn} accepts agent-written Lean that reaches a "
-        "Library file and a `lake` build — it must scan first")
-
-
 #: The elaboration paths that do NOT go through the gateway: they write a
 #: throwaway `.lean` and shell out to `lake env lean`, which runs elab-time
 #: code exactly as a gateway worker would. Missing these was the whole
 #: point of enumerating entries rather than patching the obvious one.
 @pytest.mark.parametrize("path,fn", [
-    (LAKE_PROBE, "run_lean_source"),          # Library cleanup / dedup probes
     # both dedupe probes (apply / defeq) compose their files and run
     # `lake env lean` through this one body since 2026-08-29
     (DEDUPE_PROBE, "_run_partitioned"),
@@ -304,7 +285,7 @@ def test_existing_lean_corpus_is_clean() -> None:
     is never agent text, and it reaches Lean through lake's module graph
     rather than through any scanned path.
     """
-    roots = [ROOT / "Library", ROOT / "Problems"]
+    roots = [ROOT / "Problems"]
     files = [f for r in roots if r.is_dir() for f in r.rglob("*.lean")]
     if not files:
         pytest.skip("no Lean corpus in this checkout")

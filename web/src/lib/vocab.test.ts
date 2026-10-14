@@ -105,7 +105,7 @@ describe('the theory layer', () => {
   it('wears it on nothing else', () => {
     // `Theorize` included: the DECISION kind never reaches a row now,
     // and the mark is worn by rows and workers, not by decisions
-    for (const kind of ['Theorize', 'Strategist', 'Formalizer', 'Librarian', 'Inject', ''])
+    for (const kind of ['Theorize', 'Strategist', 'Formalizer', 'Inject', ''])
       expect(isTheory(kind)).toBe(false)
   })
 })

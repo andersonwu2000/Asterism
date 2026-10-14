@@ -168,7 +168,7 @@ def printAxiomsImpl (p : PrintAxiomsParams) : RequestM (RequestTask PrintAxiomsR
 
 Given a fully-qualified name, walk its **definitional dependency
 closure** and return the constants that are NOT in the trust base
-(Mathlib ∪ Library ∪ core). These are the "pending anchors" — defs the
+(Mathlib ∪ core). These are the "pending anchors" — defs the
 framework itself generated that the top statement's meaning rests on,
 which a human must vouch for.
 
@@ -216,10 +216,9 @@ structure AnchorClosureResp where
 
 instance : RpcEncodable AnchorClosureResp := inferInstance
 
-/-- Module roots we trust by assumption (the TCB boundary). `Library`
-= the framework's harvested shared library; the rest are Lean/Mathlib
+/-- Module roots we trust by assumption (the TCB boundary): Lean/Mathlib
 core. Anything else is a pending anchor. -/
-private def trustedRoots : List Name := [`Mathlib, `Library, `Init, `Std, `Lean]
+private def trustedRoots : List Name := [`Mathlib, `Init, `Std, `Lean]
 
 /-- Module a constant was declared in, or `none` if it is local to the
 current (probed) file. `getModuleIdxFor?` returns `none` precisely for
@@ -353,8 +352,7 @@ Structured per-declaration facts for the whole open file, straight
 from the parsed syntax tree + the elaborated environment. This is the
 framework's *syntactic oracle*: every consumer that previously
 re-derived declaration structure from source text with regexes
-(librarian astslice / inventory / relabel, pipeline signature
-extraction) becomes a client of this RPC instead. The recorded bug
+(pipeline signature extraction) becomes a client of this RPC instead. The recorded bug
 family it retires: modifier loss (`noncomputable` under
 `noncomputable section` — env truth, not surface text), decl-keyword
 prose in comments parsed as declarations (ranges come from the

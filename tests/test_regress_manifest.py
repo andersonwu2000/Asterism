@@ -14,6 +14,11 @@ from Tooling.state import db, regress
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: Terminals the tracked manifest still carries from before a retirement
+#: but that are no longer written: `bridged` (the retired Librarian's
+#: harvest milestone, 2026-10-14) — history is never rewritten.
+_LEGACY_TERMINALS = ("bridged",)
+
 
 # ---------------------------------------------------------------------
 # Tracked-file schema guard
@@ -28,7 +33,8 @@ def test_tracked_manifest_schema():
             continue
         e = json.loads(ln)          # every line parses
         assert e.get("problem"), f"line {i}: empty problem"
-        assert e.get("terminal") in regress.TERMINALS, f"line {i}"
+        assert e.get("terminal") in (
+            *regress.TERMINALS, *_LEGACY_TERMINALS), f"line {i}"
         # commit: short hex, or the sanctioned sentinels
         c = str(e.get("commit", ""))
         assert c in ("backfill", "unknown") or (
@@ -54,12 +60,13 @@ def test_record_terminal_appends_and_never_raises(tmp_path):
     (tmp_path / "lean-toolchain").write_text("x", encoding="utf-8")
     regress.record_terminal(tmp_path, problem="p", terminal="ingested",
                             deliverables=3)
-    regress.record_terminal(tmp_path, problem="p", terminal="bridged",
-                            harvest_files=6)
+    regress.record_terminal(tmp_path, problem="p", terminal="refuted",
+                            deliverables=6)
     entries = regress.load(tmp_path)
-    assert [e["terminal"] for e in entries] == ["ingested", "bridged"]
+    assert [e["terminal"] for e in entries] == ["ingested", "refuted"]
     assert entries[0]["deliverables"] == 3
-    assert entries[1]["harvest_files"] == 6
+    assert entries[1]["deliverables"] == 6
+    assert "harvest_files" not in entries[1]   # retired with the Librarian
     assert all(len(e["commit"]) == 12 for e in entries)   # real git head
 
     # best-effort: an unwritable manifest must not raise
@@ -68,6 +75,16 @@ def test_record_terminal_appends_and_never_raises(tmp_path):
     bad.unlink()
     bad.mkdir()                     # a DIRECTORY at the file path
     regress.record_terminal(tmp_path, problem="p", terminal="ingested")
+
+
+def test_a_retired_terminal_is_not_recorded(tmp_path):
+    """`bridged` (the retired Librarian's milestone) is history only: a
+    writer asking for it appends nothing (and, best-effort, raises
+    nothing)."""
+    _git_init(tmp_path)
+    (tmp_path / "lean-toolchain").write_text("x", encoding="utf-8")
+    regress.record_terminal(tmp_path, problem="p", terminal="bridged")
+    assert regress.load(tmp_path) == []
 
 
 def test_a_refuted_root_gets_its_milestone_line(tmp_path):
@@ -105,14 +122,12 @@ def _mem() -> sqlite3.Connection:
     return conn
 
 
-def _seed(conn, name, *, ingested=False, bridged=False):
+def _seed(conn, name, *, ingested=False):
     conn.execute(
         "INSERT INTO problems (name, created_at,"
         " bootstrap_done) VALUES (?, ?, 1)", (name, db.now()))
     if ingested:
         db.set_problem_ingested(conn, name)
-    if bridged:
-        db.mark_library_bridged(conn, name)
     conn.commit()
 
 
@@ -126,7 +141,7 @@ def test_report_statuses(tmp_path, monkeypatch):
          "toolchain": cur_fp, "at": "t"},
         {"problem": "reset_p", "terminal": "bridged",
          "commit": "abc123abc123", "toolchain": cur_fp, "at": "t"},
-        {"problem": "partial_p", "terminal": "bridged",
+        {"problem": "legacy_p", "terminal": "bridged",
          "commit": "abc123abc123", "toolchain": cur_fp, "at": "t"},
         {"problem": "drift_p", "terminal": "ingested",
          "commit": "abc123abc123", "toolchain": "0" * 16, "at": "t"},
@@ -138,13 +153,17 @@ def test_report_statuses(tmp_path, monkeypatch):
     conn = _mem()
     _seed(conn, "ok_p", ingested=True)
     # reset_p: not in DB at all
-    _seed(conn, "partial_p", ingested=True)          # bridged undone
+    # legacy `bridged` line reads as an ingested terminal
+    _seed(conn, "legacy_p", ingested=True)
     _seed(conn, "drift_p", ingested=True)
-    by_status = {s: m for s, m in regress.report(conn, tmp_path)}
+    by_status: dict = {}
+    for st, msg in regress.report(conn, tmp_path):
+        by_status.setdefault(st, []).append(msg)
+    assert set(by_status) == {"OK", "RESET", "DRIFT"}
     assert "ok_p: ingested (still holds)" in by_status["OK"]
-    assert "reset_p" in by_status["RESET"]
-    assert "partial_p" in by_status["PARTIAL"]
-    assert "drift_p" in by_status["DRIFT"]
+    assert any(m.startswith("legacy_p:") for m in by_status["OK"])
+    assert any("reset_p" in m for m in by_status["RESET"])
+    assert any("drift_p" in m for m in by_status["DRIFT"])
 
 
 def test_report_latest_line_wins(tmp_path, monkeypatch):

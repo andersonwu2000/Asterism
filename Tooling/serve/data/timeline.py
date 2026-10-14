@@ -5,8 +5,8 @@ own "Timeline" section marker: Programme reads (`programme`,
 position between `problem_detail` and this section, see the package
 docstring), the discussion-group tree (`groups_of` and kin),
 goal/strategy drill-down (`goal_detail`, `strategy_detail`), and the
-review/bridged-library-index leaves that happened to sit in the same
-span (`review`, `signoff_with_seal`, `library`). `inbox`/`inbox_count`
+review leaves that happened to sit in the same span (`review`,
+`signoff_with_seal`). `inbox`/`inbox_count`
 sat here too until 2026-09-02, when they moved (unchanged) to
 `human_inbox.py`.
 
@@ -1404,21 +1404,3 @@ def signoff_with_seal(conn: sqlite3.Connection,
                    if snap else None)
     return {**rec, "seal_ok": (rec.get("snapshot_sha") is not None
                                and rec.get("snapshot_sha") == current_sha)}
-
-
-def library(conn: sqlite3.Connection) -> dict:
-    """Bridged Library decls, grouped per source problem."""
-    out = []
-    for problem, rows in db.bridged_library_index(conn).items():
-        out.append({
-            "problem": problem,
-            "decls": [{
-                "slug": str(r["slug"]),
-                "name": r["target_name"],
-                "file": r["target_file"],
-                "signature": r["signature"],
-                "decl_kind": r["decl_kind"],
-                "lifecycle": str(r["lifecycle"]),
-            } for r in rows],
-        })
-    return {"problems": out}

@@ -21,12 +21,12 @@ durable state
     ├─ cascade completed outcome on the main thread
     ├─ promote ready strategies / revive aliases
     ├─ verify newly proved roots
-    ├─ derive Librarian and Strategist work
-    └─ repeat until Ingest + Library endgame or an operator/limit stops the run
+    ├─ derive Strategist work
+    └─ repeat until Ingest or an operator/limit stops the run
 ```
 
-The queue is a delivery mechanism, not the authority for whether work exists. BFS work,
-Strategist wakes, and Librarian units are re-derived from database state. A queue row is
+The queue is a delivery mechanism, not the authority for whether work exists. BFS work and
+Strategist wakes are re-derived from database state. A queue row is
 leased while a pipeline is in flight and deleted only when that pipeline completes.
 
 ## 2. Daemon startup and dispatcher tick
@@ -53,11 +53,10 @@ The stable tick order is:
 
 | Phase | Action |
 |---|---|
-| collect | Read completed futures, finalize their queue leases, and call `cascade_one` for ordinary pipelines. Librarian results instead advance their derived chain unit. |
+| collect | Read completed futures, finalize their queue leases, and call `cascade_one`. |
 | verify | `verify_housekeeping` repeatedly promotes ready strategies and processes shelved alias revivals. |
 | root gate | Reconcile proved-goal files, run integrity for roots whose marker is clear, then redraw their tree. |
-| Library refill | Derive every dispatchable serial/per-file Librarian unit; the durable Library lifecycle holds the exit gate open. |
-| exit checks | Exit only when scoped problems are ingested and no Library work or harvest state remains. `--once`, wall budget, idle, stop, and fatal gateway conditions have their own exits. |
+| exit checks | Exit only when scoped problems are ingested. `--once`, wall budget, idle, stop, and fatal gateway conditions have their own exits. |
 | global holds | Update quota wait, network wait, provider/model quota blocks, and adaptive RAM pressure. |
 | BFS refill | Enqueue eligible open goals as Formalizer work. Goals at the attempt threshold go to Strategist review instead. |
 | Strategist triggers | Enqueue per-group routine and structural-stall seats. Pending review and completed-batch relays also have event-driven paths. |
@@ -69,10 +68,6 @@ Before a worker starts, the dispatcher resolves its problem, performs the proble
 Defs/Root preflight, creates a pipeline id, inserts `pipelines.status='running'`, and submits
 the worker. The worker finalizes that same row to `succeeded` or `failed`; a process crash leaves
 an explicit `running` row for startup recovery.
-
-Librarian file units are persisted as `target_id=problem` plus `queue.payload.file`. At pop time
-the dispatcher forms an in-process `problem\x1ffile` identity for duplicate tracking and worker
-routing; that separator is not the durable queue contract.
 
 ## 3. Common pipeline boundary
 
@@ -91,7 +86,7 @@ Every queue worker runs with its own SQLite connection and `WorkArea`:
 | Outcome | Meaning at the worker boundary |
 |---|---|
 | `proved` | A Formalizer mint landed an immediately proved goal. |
-| `success` | The requested product committed: a proof/decomposition strategy, a sorry-bearing minted goal, a Strategist batch, or a Librarian unit. |
+| `success` | The requested product committed: a proof/decomposition strategy, a sorry-bearing minted goal, or a Strategist batch. |
 | `failed` | Terminal non-success, including structured declines, infra, races, and rejected work. |
 | `exhausted` | The in-session retry budget ended after recorded agent-side failures. |
 | `moot` | The target settled before this iteration could do useful work. |
@@ -196,29 +191,7 @@ Decision side effects and structural restrictions are summarized in
 [`architecture.md`](architecture.md#6-programme-and-decision-model). The exact verifier and
 commit code is under `Tooling/pipeline/strategist/`.
 
-## 7. Librarian flow
-
-The Librarian starts only for a problem that is ingested, opted into Library promotion, and not
-waiting for sign-off. The scheduler derives work from `library_decls` and
-`librarian_fail_counts` rather than trusting a queued stage name:
-
-```text
-dedup → classify → migrate (per file) → cleanup (per file) → bridge
-```
-
-| Stage | Work and gate |
-|---|---|
-| `dedup` | Compute the live usage closure and classify keep/cite/drop candidates. |
-| `classify` | Ask for file placement; mechanically merge SCCs and topologically order declarations/files. |
-| `migrate` | Move a whole file's declarations, fill mechanical holes where possible, and run the commit gate. |
-| `cleanup` | Refine, simplify, audit, rename, minimize imports, require a zero-warning final file, and rerun per-declaration axioms after rewrites. |
-| `bridge` | Classic root: rederive the original statement from Library. Deliverable form: rebuild and axiom-check every harvested file. Stamp `library_bridged_at` on success. |
-
-Failure counts are persistent per unit. A busy file does not count; repeated real failure past
-the chain cap leaves that unit stalled for operator inspection without changing proof-goal
-attempts.
-
-## 8. Verify and root integrity
+## 7. Verify and root integrity
 
 `Tooling/quality/verify.py::verify_housekeeping` runs synchronously after cascade and iterates to
 a bounded fixed point:
@@ -235,9 +208,9 @@ executor.
 When a root first becomes proved with `integrity_verified=0`, the post-proved gate reconciles
 its files and probes the complete root closure. Success sets the marker and clears cascade
 backups. Escaped `sorryAx` triggers source bisection and `rollback_cascade_chain`; an already
-ingested problem is revoked and unharvested rather than leaving a false Library result.
+ingested problem is revoked rather than left standing on a false result.
 
-## 9. Context and sandbox boundary
+## 8. Context and sandbox boundary
 
 ### Context compilation
 
@@ -247,7 +220,7 @@ history files. Empty sections are omitted.
 
 | Seat | Ordered content groups |
 |---|---|
-| Formalizer goal | brief and lessons; papers; Programme/standing guidance and Inject argument; goal and reusable Library; strategy/parent frame; pre-search or proved siblings; catalog pointer; prior progress/patch; unified goal history |
+| Formalizer goal | brief and lessons; papers; Programme/standing guidance and Inject argument; goal; strategy/parent frame; pre-search or proved siblings; catalog pointer; prior progress/patch; unified goal history |
 | Formalizer mint | Inject argument; group conventions and Programme proof; in-problem Library; pre-search; prior mint proposals and active goals; charter/user word; forbidden lemmas; papers |
 | Strategist | trigger and user word; non-routine review dossiers; stall/Ingest/disproof gates; own group and children; Programme/directive/plan note; batch outcomes and reopen promises; active goals and failure replay; tree/catalog/adjudications; charter and papers; routine-only KB curation |
 
@@ -260,7 +233,7 @@ The exact order is code, not prose: `agent/context.py::compile_context`,
 Provider adapters implement one envelope:
 
 - the working scope is the problem plus the pipeline's scratch and explicitly granted
-  Library/Papers/mathlib surfaces;
+  Papers/mathlib surfaces;
 - other problems, operator state, foreign attempts, and framework/user-owned inputs are fenced;
 - writes are limited to the attempts sandbox or the role's sanctioned edit surface;
 - `problem.json`, `Defs.lean`, `Root.lean`, and `PROGRAMME.md` are denied to worker edits;
@@ -273,7 +246,7 @@ Provider adapters implement one envelope:
 `spawn_guard.py`, `llm/envelope.py`, and the provider adapters jointly enforce this boundary.
 Commit gates remain the final defense if a provider-side permission layer fails open.
 
-## 10. Gateway and resource flow
+## 9. Gateway and resource flow
 
 The gateway is warmed in the background. Lean queue kinds remain unleased until warmup and the
 interface contract pass; Strategist work can proceed because it does not claim a Lean slot.
@@ -306,7 +279,7 @@ budget, Lean and NL admissions split:
 Exact knobs and defaults remain in `core/config.py::CONFIG_SPEC`, `core/ram_ledger.py`, and
 `lsp/gateway/wall.py` rather than being copied here.
 
-## 11. Failure, interruption, and recovery
+## 10. Failure, interruption, and recovery
 
 The Formalizer retry helper eagerly records each retryable agent failure, then continues the
 same session with a compact retry context. Timeout and thinking-trap paths may salvage a valid
@@ -323,7 +296,7 @@ Recovery is layered by durable fact:
 | ready strategy or alias revival not yet promoted | next tick's derived Verify queries |
 | pending-review goal or settled Inject/Delegate with a missing relay | per-tick `reconcile_stuck_states` and DB batch reconciliation |
 | DB/file ownership or lifecycle drift | `proof_store.inventory`, `state/consistency.py`, `asterism drift-check` |
-| false proved root or post-Ingest soundness failure | root integrity rollback, problem revocation, and Librarian unharvest |
+| false proved root or post-Ingest soundness failure | root integrity rollback and problem revocation |
 | generated view stale after a commit | redraw from DB (`TREE.md`, `PROGRAMME.md`, `BRIEF.md`) |
 
 Recovery converges from durable state; it does not make queue rows or generated Markdown into

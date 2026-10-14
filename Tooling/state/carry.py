@@ -53,25 +53,18 @@ REFUSED = "refused"
 
 #: The polymorphic tables' buckets. `satellites.POLYMORPHIC_TABLES`
 #: already declares HOW to ask each one; this says which bucket the
-#: answer lands in. `librarian_fail_counts` decodes a problem name out
-#: of its key, so it is problem-keyed even with no such column;
-#: `pipelines`/`dead_attempts` reach the problem only through ids.
+#: answer lands in: `pipelines`/`dead_attempts` reach the problem only
+#: through ids.
 _POLYMORPHIC_BUCKET: "dict[str, str]" = {
     "pipelines": GOAL_KEYED,
     "dead_attempts": GOAL_KEYED,
-    "librarian_fail_counts": PROBLEM_KEYED,
 }
 
-#: Tables the export snapshot does NOT prune. They are global assets:
-#: `projects` sits above the problem, and the Library is a workspace's
-#: shared product, not one problem's. Orthogonal to the bucket above —
-#: `library_decls` travels whole yet is still problem-keyed on import,
-#: where only P's rows are replaced. The consequence is deliberate and
-#: has one consumer: a `library_decls` row of ANOTHER problem left in
-#: carry.db dangles against the pruned `problems` table, which is the
-#: one `foreign_key_check` finding an export is allowed to have.
+#: Tables the export snapshot does NOT prune: `projects` sits above the
+#: problem, a global asset rather than one problem's. Orthogonal to the
+#: bucket above.
 def exports_whole(table: str) -> bool:
-    return table == "projects" or table.startswith("library_")
+    return table == "projects"
 
 
 def classify(conn: sqlite3.Connection) -> "dict[str, str]":
@@ -162,9 +155,6 @@ def belongs_to(table: str, scope: Scope) -> "tuple[str, list]":
         return _in("goal_id", scope.goals)
     if table == "strategy_subgoals":
         return _in("strategy_id", scope.strategies)
-    if table == "librarian_fail_counts":
-        pred = satellites.POLYMORPHIC_TABLES[table][0] or "0"
-        return (pred.replace(":p", "?"), [scope.problem, scope.problem])
     if table in ("pipelines", "queue", "dead_attempts"):
         arms, args = [], []
         deaths = table == "dead_attempts"
@@ -214,7 +204,7 @@ def pk_column(conn: sqlite3.Connection, table: str) -> "str | None":
 
 
 #: Single-column TEXT PKs are natural keys — a problem's name, a
-#: project's name, the librarian's composed unit key — EXCEPT this one,
+#: project's name — EXCEPT this one,
 #: which is a machine-minted opaque id and so the only text id a remap
 #: may re-mint. Renaming a problem is a different tool.
 TEXT_ID_SPACES: "frozenset[str]" = frozenset({"pipelines"})
@@ -377,11 +367,8 @@ def orphans(conn: sqlite3.Connection) -> "dict[str, int]":
 
 
 def foreign_key_findings(conn: sqlite3.Connection) -> "list[tuple]":
-    """`PRAGMA foreign_key_check`, minus the one declared exception:
-    `library_decls` rows of OTHER problems, which an export deliberately
-    carries whole against a pruned `problems` table."""
-    return [tuple(r) for r in conn.execute("PRAGMA foreign_key_check")
-            if r[0] != "library_decls"]
+    """`PRAGMA foreign_key_check`."""
+    return [tuple(r) for r in conn.execute("PRAGMA foreign_key_check")]
 
 
 # ──────────────────────────────── remapping ─────────────────────────────

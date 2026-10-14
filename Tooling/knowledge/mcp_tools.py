@@ -1259,9 +1259,9 @@ def daemon_status() -> str:
 
 
 def _workspace_root():
-    """The workspace, resolved the same way `inspect` resolves it — the
-    Scholar's cwd is its own problem directory, and `fetch` needs the
-    root to shelve into. One resolver, not two."""
+    """The workspace, resolved the same way `inspect` resolves it — a
+    seat's cwd is its own problem directory, and `fetch` needs the root
+    to shelve into. One resolver, not two."""
     from pathlib import Path as _Path
 
     from . import workspace_query

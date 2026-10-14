@@ -12,11 +12,13 @@
   instances in scope — the reason this is a standalone Root, see §A.5 note).
 -/
 import Mathlib
-import Library.Geometry.Manifold.DiffFormBundle   -- DiffForm, formBundleCore, instForm*
+import Problems.Geometry.stokes_form_bundle.Defs
+import Problems.Geometry.stokes_form_bundle.Root
+import Problems.Geometry.stokes_form_coord_comp.Defs
 
 open scoped Manifold Bundle ContDiff
 open Bundle
-open Library.Geometry.Manifold.DiffFormBundle
+open Problems.Geometry.stokes_form_bundle (DiffForm formBundleCore)
 
 namespace Problems.Geometry.stokes_mextderiv
 
@@ -43,12 +45,12 @@ noncomputable def mextDerivFun {k : ℕ} (φ : DiffForm I M k) (x : M) :
     (trivializationAt (E [⋀^Fin (k + 1)]→L[ℝ] ℝ) (formBundleCore (M := M) I (k + 1)).Fiber x) x
     (extDerivWithin (formInCoord I φ x) (Set.range I) (extChartAt I x x))
 
-/-- Smooth-vector-bundle instance for `⋀ᵏ T*M`, from the cited `formBundleCore_isContMDiff`
+/-- Smooth-vector-bundle instance for `⋀ᵏ T*M`, from the cited `Problems.Geometry.stokes_form_bundle.main`
     (P4). Needed so the section-smoothness statement (the Root's `CMDiff`/`T%`) has the
     smooth bundle structure + fibre-bundle instance in scope. -/
 noncomputable instance instFormBundleContMDiff (k : ℕ) :
     ContMDiffVectorBundle ∞ (E [⋀^Fin k]→L[ℝ] ℝ) (formBundleCore (M := M) I k).Fiber I := by
-  haveI := formBundleCore_isContMDiff (M := M) I k
+  haveI := Problems.Geometry.stokes_form_bundle.main (M := M) I k
   exact (formBundleCore (M := M) I k).instContMDiffVectorBundle
 
 end Problems.Geometry.stokes_mextderiv

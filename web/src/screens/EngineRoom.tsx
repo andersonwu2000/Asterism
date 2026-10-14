@@ -450,11 +450,11 @@ function Lane({
             </div>
           ) : (
             <>
-              {/* The probe TAKES the frame, exactly as it does in the
-                  Library (owner, 2026-08-27): opening one BELOW left
-                  the agent's text standing above it and ran the card
-                  off the page. One frame, two states — and the button
-                  rides inside it on hover, as the Library's does. */}
+              {/* The probe TAKES the frame (owner, 2026-08-27):
+                  opening one BELOW left the agent's text standing
+                  above it and ran the card off the page. One frame,
+                  two states — and the button rides inside it on
+                  hover. */}
               {!probe && (
                 <div className="group/snap relative mt-1.5">
                   <pre className={frameClass({ cap: 'lg' })}>
@@ -476,8 +476,7 @@ function Lane({
                   )}
                 </div>
               )}
-              {/* the snapshot probe (the Library's own block):
-                  interactive, cursor-goal, editable — the copy is the
+              {/* the snapshot probe: interactive, cursor-goal, editable — the copy is the
                   reader's; the agent's file streams on, untouched.
 
                   `Mathlib`, not the `Problems.<p>.Defs` this used to
@@ -519,11 +518,9 @@ function Lane({
               ? 'reading the goal against the programme — it will prove it, split it, or decline'
               : w.kind === 'Forward'
                 ? 'building new vocabulary and claims — each landed brick appears as a new star'
-                : w.kind === 'Librarian'
-                  ? 'curating finished work into the Library'
-                  : w.kind === 'Theorist'
-                    ? 'reading the record against the question it was handed — it answers with a document, reviewed before it lands under documents'
-                    : 'nothing on disk yet — composing its prompt'}
+                : w.kind === 'Theorist'
+                  ? 'reading the record against the question it was handed — it answers with a document, reviewed before it lands under documents'
+                  : 'nothing on disk yet — composing its prompt'}
         </div>
       )}
     </div>
@@ -692,9 +689,7 @@ export default function EngineRoom({
             ? 'theorizing'
             : workers.every((w) => w.kind === 'Strategist' || w.kind === 'Theorist')
               ? 'planning'
-              : workers.every((w) => w.kind === 'Librarian')
-                ? 'harvesting'
-                : 'proving'
+              : 'proving'
   const crashed =
     !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
   const st = d.slots
