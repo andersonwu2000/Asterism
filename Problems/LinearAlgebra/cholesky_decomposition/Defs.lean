@@ -1,3 +1,0 @@
-namespace Problems.LinearAlgebra.cholesky_decomposition
-
-end Problems.LinearAlgebra.cholesky_decomposition

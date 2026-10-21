@@ -1,3 +1,0 @@
-namespace Problems.LinearAlgebra.primary_decomposition
-
-end Problems.LinearAlgebra.primary_decomposition

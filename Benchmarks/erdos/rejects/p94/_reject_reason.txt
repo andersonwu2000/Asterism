@@ -1,1 +1,0 @@
-D:\Asterism\_spike\erdos_screen\p94.lean:9:48: error: unexpected token '²'; expected ':=', 'where' or '|'

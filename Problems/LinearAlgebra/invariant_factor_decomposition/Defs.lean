@@ -1,3 +1,0 @@
-namespace Problems.LinearAlgebra.invariant_factor_decomposition
-
-end Problems.LinearAlgebra.invariant_factor_decomposition

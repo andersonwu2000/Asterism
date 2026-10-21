@@ -1,3 +1,0 @@
-namespace Problems.LinearAlgebra.normal_diagonalization
-
-end Problems.LinearAlgebra.normal_diagonalization

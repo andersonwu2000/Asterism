@@ -1,3 +1,0 @@
-namespace Problems.LinearAlgebra.polar_decomposition
-
-end Problems.LinearAlgebra.polar_decomposition

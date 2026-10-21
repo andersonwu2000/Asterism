@@ -1,1 +1,0 @@
-D:\Asterism\_spike\erdos_screen\p364.lean:9:28: error: Function expected at
