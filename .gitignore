@@ -1,2 +1,6 @@
 # Local operator loader (points into the private repo)
 /CLAUDE.md
+
+# Python and test caches
+__pycache__/
+.pytest_cache/
