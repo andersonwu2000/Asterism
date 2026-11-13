@@ -1,0 +1,7 @@
+Third-party libraries used by the messages page, served from this server (nothing is loaded from a CDN).
+Each was taken unmodified from its npm package; the tarball's integrity was checked against the registry.
+
+marked     12.0.2   Markdown to HTML        marked/marked.min.js                  MIT (marked/LICENSE.md)
+DOMPurify  3.4.17   HTML sanitiser          dompurify/purify.min.js               Apache-2.0 or MPL-2.0 (dompurify/LICENSE, LICENSE-MPL)
+KaTeX      0.16.47  TeX mathematics         katex/katex.min.js, katex.min.css,    MIT (katex/LICENSE)
+                                            katex/fonts/

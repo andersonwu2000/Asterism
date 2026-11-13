@@ -1,0 +1,31 @@
+/* The messages page: places on the left, the chosen place on the right. */
+#chat{display:grid;grid-template-columns:minmax(12rem,16rem) 1fr;gap:1rem;align-items:start}
+@media (max-width:40rem){#chat{grid-template-columns:1fr}}
+.places ul{list-style:none;padding:0;margin:0 0 .5rem}
+.places li{padding:.15rem 0}
+.places a{text-decoration:none}
+.places a.current{font-weight:bold}
+.count{display:inline-block;min-width:1.2rem;padding:0 .3rem;border-radius:.6rem;background:#ddd;font-size:.8rem;text-align:center}
+.count.important{background:#c33;color:#fff}
+.side-form{margin:.25rem 0 1rem}
+.side-form input,.side-form select{max-width:100%}
+.room-head{display:flex;gap:1rem;align-items:baseline}
+#settings{border:1px solid #ccc;padding:.5rem;margin-bottom:.5rem}
+#messages{list-style:none;padding:0;margin:0;max-height:65vh;overflow-y:auto}
+#messages li{padding:.4rem .5rem;border-bottom:1px solid #eee}
+#messages li.important{border-left:3px solid #c33}
+#messages li.system{background:#f4f4f4;color:#555;font-size:.9rem}
+#messages li.flash{background:#fff7cc}
+.meta{font-size:.85rem;color:#666}
+.meta .from{font-weight:bold;color:#222}
+.meta button{font-size:.8rem}
+.tag{font-size:.75rem;border:1px solid #aaa;border-radius:.3rem;padding:0 .25rem;margin-left:.25rem}
+.text{overflow-wrap:anywhere}
+.text p{margin:.2rem 0}
+.text pre{background:#f6f6f6;padding:.4rem;overflow-x:auto}
+.text table{border-collapse:collapse}
+.text blockquote{border-left:3px solid #ccc;margin:.2rem 0;padding-left:.6rem;color:#444}
+.katex-display{overflow-x:auto;overflow-y:hidden}
+#composer{margin-top:.5rem}
+#composer textarea{width:100%;box-sizing:border-box;font:inherit}
+#reply-target{font-size:.9rem;color:#444}
