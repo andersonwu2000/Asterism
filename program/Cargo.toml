@@ -1,0 +1,30 @@
+[package]
+name = "asterism"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "The resident program of Asterism: joins this computer to a project, serves the agent tools over MCP and wakes local agent sessions."
+publish = false
+
+[[bin]]
+name = "asterism"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+getrandom = "0.2"
+
+# HTTPS: the operating system's TLS where there is one that needs no C compiler to build against
+# (Windows: SChannel; macOS: Security.framework), rustls with ring and the bundled Mozilla roots elsewhere
+# (Linux), so that the Linux binary does not depend on the system's OpenSSL version.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+ureq = { version = "3.5", default-features = false, features = ["native-tls-no-default"] }
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true

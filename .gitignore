@@ -4,3 +4,6 @@
 # Python and test caches
 __pycache__/
 .pytest_cache/
+
+# Rust build output
+/program/target/
