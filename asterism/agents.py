@@ -131,8 +131,14 @@ def device_token(store: Store, slug: str, device_code: Any) -> dict[str, Any]:
         raise _device_error("access_denied", "The approving person is no longer a member.")
     with db:
         db.execute("UPDATE device_requests SET status = 'issued' WHERE id = ?", (r["id"],))
-    _, secret = projects.issue_credential(pj, r["person_id"], "computer", r["computer"])
+    _, secret = issue_computer_credential(pj, r["person_id"], r["computer"], "device")
     return {"credential": secret, "person": holder["name"]}
+
+
+def issue_computer_credential(pj: Project, person_id: int, computer: str, via: str) -> tuple[int, str]:
+    """A computer authorised to act for the person: by an approved device request or a redeemed agent
+    invitation link. Returns (id, the secret)."""
+    return projects.issue_credential(pj, person_id, "computer", computer, via)
 
 
 # --------------------------------------------------------------------------- who is calling
@@ -266,6 +272,8 @@ def _create(c: Caller, name: str) -> dict[str, Any]:
         pj.db.execute("DELETE FROM superseded WHERE person_id = ? AND session = ?", (c.person_id, c.session))
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (aid,)).fetchone()
     util.log("registered", project=pj.slug, agent=name, how="new", generation=1)
+    presence.binding_changed(pj.slug, aid)      # an open computer poll may serve the new agent
+    notices.sync(pj, aid)                       # online at once when its computer already reported the session
     return _registered(pj, a, "new")
 
 
@@ -281,6 +289,7 @@ def _bind(c: Caller, a: sqlite3.Row, how: str) -> dict[str, Any]:
     other_face = (kind == "chatgpt") != (a["kind"] == "chatgpt")
     dropped = [r["id"] for r in pj.db.execute("SELECT id FROM subscriptions WHERE agent_id = ?", (a["id"],))] \
         if other_face and kind != "chatgpt" else []
+    before = notices.online_now(pj, [a["id"]])
     with pj.db:
         if how == "taken_over" and a["session"]:
             pj.db.execute("INSERT OR REPLACE INTO superseded (person_id, session, agent_id, at) VALUES (?, ?, ?, ?)",
@@ -301,7 +310,7 @@ def _bind(c: Caller, a: sqlite3.Row, how: str) -> dict[str, Any]:
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (a["id"],)).fetchone()
     util.log("registered", project=pj.slug, agent=a["name"], how=how, generation=gen,
              **({"kind": kind} if other_face else {}))
-    notices.sync(pj, a["id"])
+    notices.settle(pj, before)          # a session its computer already reported is online at once
     return _registered(pj, a, how)
 
 
@@ -353,8 +362,10 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                 if now is None or now["session"] != sid:
                     return {}
                 # An open wait takes the messages (its end wakes us); an agent held offline gets nothing
-                # until its session calls a tool (that wakes us too).
-                if not messaging.waiting(pj.slug, aid) and not presence.held(now):
+                # until its session calls a tool (that wakes us too); an agent its computer's connection
+                # serves gets its deliveries there (that connection going away wakes us).
+                if not messaging.waiting(pj.slug, aid) and not presence.held(now) \
+                        and not presence.via_computer(pj.slug, now, pj.db):
                     ds = messaging.hand_out(pj, me)
                     if ds:
                         return {"deliveries": ds}

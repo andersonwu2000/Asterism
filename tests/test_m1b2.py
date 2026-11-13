@@ -298,8 +298,8 @@ def test_the_connector_is_woken_by_signed_events(v):
 def test_the_project_address_is_the_messages_page(v):
     r = v.alice.c.get(f"/{SLUG}")
     assert r.status_code == 200 and "text/html" in r.headers["content-type"] and "general" in r.text
-    r = httpx.get(f"{v.srv.url}/{SLUG}", follow_redirects=False)
-    assert r.status_code in (301, 302, 303, 307) and "/login" in r.headers["location"]
+    r = httpx.get(f"{v.srv.url}/{SLUG}", follow_redirects=False)       # since the joining flow: a small page, not a redirect
+    assert r.status_code == 200 and "/login" in r.text and "general" not in r.text
     assert v.carol.c.get(f"/{SLUG}").status_code == 200
 
 
@@ -321,7 +321,7 @@ def test_an_agent_is_what_its_present_session_is(v):
     r = local.c.post(f"/{SLUG}/api/agent/register", json={"name": "kite", "takeover": True})
     assert r.status_code == 200 and r.json()["how"] == "taken_over", r.text
     local.name = "kite"
-    assert (row()["kind"], row()["online"], row()["offline_because"]) == ("codex", False, "no_helper")
+    assert (row()["kind"], row()["online"], row()["offline_because"]) == ("codex", False, "no_computer")
     local.online()
     assert until(lambda: row()["online"], 6), "a local session with an open poll is online, whatever the agent was before"
     assert row()["offline_because"] is None

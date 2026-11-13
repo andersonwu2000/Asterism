@@ -5,7 +5,8 @@
 - `unanswered` for an agent whose helper did not acknowledge a delivery handed out twice;
 - events to the connector agents (sent in tasks of their own) and their second attempts;
 - expired event subscriptions;
-- the presence notices, including the change the 1a window makes (no poll for ASTERISM_OFFLINE_AFTER_S).
+- the presence notices, including the change the 1a window makes (no poll for ASTERISM_OFFLINE_AFTER_S);
+- the log lines of a computer's connection going away (no computer poll for ASTERISM_OFFLINE_AFTER_S).
 
 It runs one sweep over all projects, then sleeps until the earliest time something falls due or until it is
 kicked (presence.kick: a message was sent, a poll ended, a binding changed, an event attempt finished). A
@@ -71,6 +72,11 @@ def _due_times(pj: Project) -> list[float]:
                            "AND offline_reason IS NULL AND last_poll IS NOT NULL"):
         if not presence.polling(pj.slug, a):
             out.append(a["last_poll"] + s.offline_after_s)
+    # A computer whose connection closed is disconnected (and its agents offline) a grace period later.
+    for r in pj.db.execute("SELECT id, last_poll FROM credentials WHERE connected = 1 AND revoked IS NULL "
+                           "AND last_poll IS NOT NULL"):
+        if not presence.computer_open(pj.slug, r["id"]):
+            out.append(r["last_poll"] + s.offline_after_s)
     out += [r[0] + s.redeliver_after_s for r in pj.db.execute(
         "SELECT d.handed_out FROM deliveries d JOIN agents a ON a.id = d.agent_id WHERE a.kind != 'chatgpt' "
         "AND a.offline_reason IS NULL AND d.state = 'out' AND d.attempts >= 2")]
@@ -91,6 +97,8 @@ def sweep(store: Store) -> float | None:
         _guard(pj, "unanswered", lambda: _unanswered(pj, t))
         for f in pj.db.execute("SELECT * FROM followups WHERE answered IS NULL AND due <= ? ORDER BY due", (t,)).fetchall():
             _guard(pj, "remind", lambda f=f: _remind(pj, f, t))
+        for r in pj.db.execute("SELECT id FROM credentials WHERE connected = 1").fetchall():
+            _guard(pj, "computer", lambda cid=r["id"]: notices.sync_computer(pj, cid))
         for r in pj.db.execute("SELECT id FROM agents").fetchall():
             _guard(pj, "presence", lambda aid=r["id"]: notices.sync(pj, aid))
         _guard(pj, "events", lambda: events.launch_due(pj, t))

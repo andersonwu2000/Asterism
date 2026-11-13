@@ -101,6 +101,20 @@ def home(tr: Translator, person: dict[str, Any] | None, projects: list[dict[str,
     return layout(tr, tr("home.title"), body, person)
 
 
+# Agent-facing wording, word for word from the specification; English whatever the page's language.
+AGENT_LINE = ('If you are an agent: ask your user for an agent invitation link (from the "my agents" page of this '
+              "project) and open it.")
+
+
+def landing(tr: Translator, slug: str) -> tuple[str, int]:
+    """The project's address without a session: a sign-in link for people, one sentence for agents, and
+    nothing of the project beyond its slug."""
+    login = "/login?" + urllib.parse.urlencode({"next": f"/{slug}"})
+    body = (f'<p>{e(tr("landing.people"))}</p><p><a href="{e(login)}">{e(tr("login.github"))}</a></p>'
+            f'<p lang="en">{e(AGENT_LINE)}</p>')
+    return layout(tr, tr("landing.title", slug=slug), body)
+
+
 def test_login(tr: Translator, next_path: str) -> tuple[str, int]:
     body = (f'<h2>{e(tr("login.test_heading"))}</h2><p>{e(tr("login.test_hint"))}</p>'
             f'<form data-api="/test/login" data-next="{e(next_path)}">'

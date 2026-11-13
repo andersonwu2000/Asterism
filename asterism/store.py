@@ -143,7 +143,26 @@ CREATE TABLE IF NOT EXISTS credentials (
     label TEXT NOT NULL,
     created REAL NOT NULL,
     last_used REAL,
-    revoked REAL
+    revoked REAL,
+    via TEXT,                      -- how it was issued: invite, device, connector
+    last_poll REAL,                -- start or end of the latest computer poll with this credential
+    connected INTEGER              -- the computer connection last written to the log (1 connected, 0 or NULL not)
+);
+CREATE TABLE IF NOT EXISTS agent_invites (
+    digest TEXT PRIMARY KEY,       -- digest of the code in the link; the code itself is never kept
+    person_id INTEGER NOT NULL,    -- the inviting member; the computer is authorised in their name
+    created REAL NOT NULL,
+    expires REAL NOT NULL,
+    used REAL,
+    credential_id INTEGER,         -- the credential the link was redeemed with (new or existing)
+    computer TEXT,
+    product TEXT
+);
+CREATE TABLE IF NOT EXISTS computer_sessions (
+    credential_id INTEGER NOT NULL, -- the local sessions a computer's program reported it can wake right now
+    session TEXT NOT NULL,          -- namespaced like agents.session: 'local:<id>'
+    product TEXT NOT NULL,          -- claude-code, codex
+    PRIMARY KEY (credential_id, session)
 );
 CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY,
@@ -235,7 +254,12 @@ CREATE TABLE IF NOT EXISTS chain_reminders (
 
 
 # Columns added after a table first shipped: a database made by an earlier version gets them when opened.
-ADDED_COLUMNS = {"agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL")]}
+# The optional third item fills the new column of the rows that existed before (an SQL expression).
+ADDED_COLUMNS = {
+    "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL")],
+    "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
+                    ("last_poll", "REAL"), ("connected", "INTEGER")],
+}
 
 
 def _upgrade(conn: sqlite3.Connection) -> None:
@@ -243,9 +267,11 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         if not have:
             continue
-        for name, kind in cols:
+        for name, kind, *fill in cols:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+                if fill:
+                    conn.execute(f"UPDATE {table} SET {name} = {fill[0]}")
     conn.commit()
 
 

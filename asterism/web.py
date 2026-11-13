@@ -1,7 +1,8 @@
 """HTTP entrances. Each handler only reads the request, calls one domain function and shapes the answer.
 
-Three faces share the domain: the web (session cookie; JSON API and pages), the helper's agent API
-(bearer credential + session header), and the remote MCP endpoint for ChatGPT (OAuth access token).
+Three faces share the domain: the web (session cookie; JSON API and pages), the local agent API (bearer
+credential + session header; the computer's connection uses the credential alone), and the remote MCP
+endpoint for ChatGPT (OAuth access token). Invitation links, downloads and install scripts need nothing.
 """
 from __future__ import annotations
 
@@ -18,11 +19,11 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import accounts, agents, config, messaging, oauth, pages, projects, tools, upkeep, util
+from . import accounts, agents, computers, config, downloads, messaging, oauth, pages, projects, tools, upkeep, util
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import Translator, pick_locale
 from .projects import Actor, Project
@@ -222,6 +223,79 @@ async def static_file(request: Request) -> Response:
     return Response(path.read_bytes(), media_type=ctype, headers={"Cache-Control": "no-cache"})
 
 
+# --------------------------------------------------------------------------- downloads (no authentication)
+
+async def dl_manifest(request: Request) -> Response:
+    return JSONResponse(downloads.public_manifest(config.get().data, config.get().public_url),
+                        headers={"Cache-Control": "no-cache"})
+
+
+async def dl_file(request: Request) -> Response:
+    path = downloads.build(config.get().data, request.path_params["name"])
+    if path is None:
+        return Response("not found", status_code=404, media_type="text/plain")
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
+
+
+async def install_script(request: Request) -> Response:
+    which = request.url.path.lstrip("/")             # the route fixes it: install.sh or install.ps1
+    return PlainTextResponse(downloads.install_script(which, config.get().public_url),
+                             headers={"Cache-Control": "no-cache"})
+
+
+# --------------------------------------------------------------------------- agent invitation links
+
+async def api_agent_invites(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return computers.create_invite(pj, actor)
+
+
+async def agent_invite_page(request: Request) -> Response:
+    """What an agent reads at its invitation link: plain text, no session needed."""
+    try:
+        text = computers.invite_text(store(), request.path_params["slug"], request.path_params["code"])
+    except ApiError as e:
+        return PlainTextResponse(e.message, status_code=e.status, headers={"Cache-Control": "no-store"})
+    return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
+
+
+def bearer(request: Request) -> str | None:
+    """The credential of an `Authorization: Bearer` header, or None."""
+    scheme, _, cred = request.headers.get("authorization", "").partition(" ")
+    return (cred.strip() or None) if scheme.lower() == "bearer" else None
+
+
+async def agent_invite_redeem(request: Request) -> Any:
+    b = await body_json(request)
+    return computers.redeem(store(), request.path_params["slug"], request.path_params["code"], bearer(request),
+                            b.get("computer"), b.get("product"))
+
+
+# --------------------------------------------------------------------------- the computer's connection (resident program)
+
+def computer_caller(request: Request) -> agents.Caller:
+    return agents.credential_caller(store(), request.path_params["slug"], bearer(request), None, None)
+
+
+async def computer_sessions(request: Request) -> Any:
+    c = computer_caller(request)
+    return computers.report_sessions(c, (await body_json(request)).get("sessions"))
+
+
+async def computer_poll(request: Request) -> Any:
+    c = computer_caller(request)
+    try:
+        timeout = float(request.query_params.get("timeout", "25"))
+    except ValueError:
+        raise bad_request("invalid_timeout", "timeout must be a number of seconds.") from None
+    return await computers.poll(c, timeout, disconnect_watch(request))
+
+
+async def computer_ack(request: Request) -> Any:
+    c = computer_caller(request)
+    return computers.ack(c, (await body_json(request)).get("deliveries"))
+
+
 # --------------------------------------------------------------------------- joining
 
 async def join(request: Request) -> Response:
@@ -309,8 +383,7 @@ async def device_token(request: Request) -> Any:
 # --------------------------------------------------------------------------- agent API (helper to server)
 
 def agent_caller(request: Request) -> agents.Caller:
-    scheme, _, cred = request.headers.get("authorization", "").partition(" ")
-    return agents.credential_caller(store(), request.path_params["slug"], cred.strip() if scheme.lower() == "bearer" else None,
+    return agents.credential_caller(store(), request.path_params["slug"], bearer(request),
                                     request.headers.get("x-asterism-session"), request.headers.get("x-asterism-client"))
 
 
@@ -622,6 +695,8 @@ async def messages_page(request: Request) -> Response:
     slug = request.path_params["slug"]
     if store().project(slug) is None:
         return page_error(request, ApiError(404, "not_found", ""), signed_in(request))
+    if signed_in(request) is None:      # people are asked to sign in, agents for an invitation link
+        return html(pages.landing(tr_for(request), slug))
     ctx = _page_context(request, slug)
     if isinstance(ctx, Response):
         return ctx
@@ -688,8 +763,9 @@ async def device_page(request: Request) -> Response:
 
 # Paths that never act on the session cookie, so a cross-site check would only get in the way of
 # clients that are not browsers.
-COOKIELESS_SUFFIXES = ("/mcp", "/device/start", "/device/token")
+COOKIELESS_SUFFIXES = ("/mcp", "/device/start", "/device/token", "/redeem")
 COOKIELESS_PREFIXES = ("/oauth/token", "/oauth/register")
+COOKIELESS_PARTS = ("/api/agent/", "/api/computer/")
 CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 
@@ -728,7 +804,8 @@ class Guard:
         if scope["method"] in ("GET", "HEAD", "OPTIONS"):
             return False
         path = scope["path"]
-        if path.endswith(COOKIELESS_SUFFIXES) or path.startswith(COOKIELESS_PREFIXES) or "/api/agent/" in path:
+        if path.endswith(COOKIELESS_SUFFIXES) or path.startswith(COOKIELESS_PREFIXES) \
+                or any(p in path for p in COOKIELESS_PARTS):
             return False
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         if SESSION_COOKIE + "=" not in headers.get("cookie", ""):
@@ -762,7 +839,13 @@ def build_app(s: Store) -> ASGIApp:
         Route("/oauth/register", oauth_register, methods=["POST"]),
         Route("/oauth/authorize", oauth_authorize, methods=["GET", "POST"]),
         Route("/oauth/token", oauth_token, methods=["POST"]),
+        Route("/dl/manifest.json", dl_manifest),
+        Route("/dl/{name}", dl_file),
+        Route("/install.sh", install_script),
+        Route("/install.ps1", install_script),
         Route("/{slug}", messages_page),
+        Route("/{slug}/a/{code}", agent_invite_page),
+        Route("/{slug}/a/{code}/redeem", api(agent_invite_redeem), methods=["POST"]),
         Route("/{slug}/members", members_page),
         Route("/{slug}/my", my_page),
         Route("/{slug}/admin", admin_page),
@@ -777,6 +860,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/members/{name}/remove", api(api_member_remove), methods=["POST"]),
         Route("/{slug}/api/my", api(api_my)),
         Route("/{slug}/api/my/switches", api(api_switches), methods=["POST"]),
+        Route("/{slug}/api/my/agent-invites", api(api_agent_invites, 201), methods=["POST"]),
         Route("/{slug}/api/my/credentials/{cred:int}/revoke", api(api_revoke), methods=["POST"]),
         Route("/{slug}/api/device/{code}", api(api_device), methods=["GET", "POST"]),
         Route("/{slug}/api/channels", api(api_channels), methods=["GET"]),
@@ -793,6 +877,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/agent/messages", agent_api(agent_messages)),
         Route("/{slug}/api/agent/wait", agent_api(agent_wait)),
         Route("/{slug}/api/agent/ack", agent_api(agent_ack, None), methods=["POST"]),
+        Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
+        Route("/{slug}/api/computer/poll", api(computer_poll)),
+        Route("/{slug}/api/computer/ack", api(computer_ack), methods=["POST"]),
     ]
     if config.get().test_mode:
         routes.insert(0, Route("/test/login", test_login, methods=["POST"]))

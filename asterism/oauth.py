@@ -209,7 +209,7 @@ def token(store: Store, f: dict[str, str]) -> dict[str, Any]:
             raise OAuthError(400, "invalid_grant", "the project no longer exists") from None
         if not pj.db.execute("SELECT 1 FROM people WHERE person_id = ?", (row["person_id"],)).fetchone():
             raise OAuthError(400, "invalid_grant", "the approving person is no longer a member")
-        cred_id, _ = projects.issue_credential(pj, row["person_id"], "connector", c["name"])
+        cred_id, _ = projects.issue_credential(pj, row["person_id"], "connector", c["name"], "connector")
         util.log("oauth_token_issued", client=c["client_id"], person=row["person_id"], grant=grant)
         return _issue(db, c["client_id"], row["person_id"], row["slug"], cred_id)
     if grant == "refresh_token":

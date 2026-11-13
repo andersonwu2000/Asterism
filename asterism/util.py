@@ -17,7 +17,7 @@ SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 GITHUB_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 # Top-level paths of the server; a project slug may not shadow them.
 RESERVED_SLUGS = {"api", "login", "logout", "oauth", "test", "join", "static", "helper", "well-known", "mcp",
-                  "device", "admin", "projects"}
+                  "device", "admin", "projects", "dl"}
 
 
 def new_secret(nbytes: int = 32) -> str:

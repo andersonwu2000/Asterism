@@ -40,6 +40,47 @@ def sync(pj: Project, agent_id: int) -> None:
     messaging.post_notice(pj, a, online)
 
 
+def online_now(pj: Project, agent_ids: list[int]) -> dict[int, bool]:
+    """agent id -> online, taken before a change that settle() then looks at."""
+    out = {}
+    for aid in agent_ids:
+        a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (aid,)).fetchone()
+        if a is not None:
+            out[aid] = presence.is_online(pj.slug, a, pj.db)
+    return out
+
+
+def settle(pj: Project, before: dict[int, bool]) -> None:
+    """After a change that may have brought agents online without a poll of their own opening (a computer
+    connected, a session reported again, a session bound): an agent that was offline and is online now gets
+    what a returning agent gets when its own poll opens (its waiting normal-level deliveries are dropped),
+    and each change is announced."""
+    for aid, was in before.items():
+        a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (aid,)).fetchone()
+        if a is None:
+            continue
+        if not was and presence.is_online(pj.slug, a, pj.db):
+            messaging.drop_unheard(pj, messaging.agent_member(a))
+        sync(pj, aid)
+
+
+def sync_computer(pj: Project, cred_id: int) -> None:
+    """Write the change of a computer's connection to the log, once per change. When it goes away, the
+    per-session polls of its agents (if any) are woken: deliveries go out through them from now on."""
+    r = pj.db.execute("SELECT connected FROM credentials WHERE id = ?", (cred_id,)).fetchone()
+    if r is None:
+        return
+    now = presence.computer_connected(pj.slug, cred_id, pj.db)
+    if bool(r["connected"]) == now:
+        return
+    with pj.db:
+        pj.db.execute("UPDATE credentials SET connected = ? WHERE id = ?", (int(now), cred_id))
+    util.log("computer_connected" if now else "computer_disconnected", project=pj.slug, credential=cred_id)
+    if not now:
+        for a in pj.db.execute("SELECT id FROM agents WHERE credential_id = ?", (cred_id,)).fetchall():
+            messaging.notify(pj.slug, a["id"])
+
+
 def hold(pj: Project, agent_id: int, reason: str) -> None:
     """Make the agent offline until its session calls a tool, whatever its poll or subscription does."""
     with pj.db:

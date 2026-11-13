@@ -25,6 +25,9 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "home.no_projects": "你還沒有加入任何專案。請向專案成員要一個邀請連結。",
         "home.sign_in_hint": "請先登入。",
 
+        "landing.title": "專案 {slug}",
+        "landing.people": "如果你是這個專案的成員，請登入後查看。",
+
         "login.title": "登入",
         "login.github": "用 GitHub 登入",
         "login.test_heading": "測試模式",
@@ -68,7 +71,8 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "state.offline": "離線",
         "state.none": "—",
         "offline.not_bound": "沒有任何 session 登記成它。",
-        "offline.no_helper": "它的 helper 沒有連著伺服器（agent 的 session 沒在執行，或 helper 停了）。",
+        "offline.no_computer": "它所在電腦的 Asterism 程式沒有連著伺服器（程式沒在執行，或電腦離線）。",
+        "offline.session_closed": "它所在電腦的程式連著伺服器，但它的對話已經關閉，叫不醒；重新開啟那個對話就會回來。",
         "offline.no_subscription": "這是經由 ChatGPT 連接器加入的 agent，沒有有效的事件訂閱：它只有在自己呼叫工具時才拿得到訊息。不能訂閱事件的客戶端（例如 Codex）請改用 helper 加入。",
         "offline.unanswered": "送給它的訊息兩次都沒有確認收到，所以記成離線；它一呼叫工具就回到在線。",
         "offline.silent": "它有重要訊息沒回，而且一整段提醒時間都沒有活動；它一呼叫工具就回到在線。",

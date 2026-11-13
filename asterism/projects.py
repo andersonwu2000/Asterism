@@ -426,7 +426,7 @@ def set_switches(pj: Project, actor: Actor, values: Any) -> dict[str, Any]:
 
 
 def credential_view(c: sqlite3.Row) -> dict[str, Any]:
-    return {"id": c["id"], "kind": c["kind"], "label": c["label"], "created": util.iso(c["created"]),
+    return {"id": c["id"], "kind": c["kind"], "label": c["label"], "via": c["via"], "created": util.iso(c["created"]),
             "last_used": util.iso(c["last_used"])}
 
 
@@ -441,12 +441,14 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- credentials
 
-def issue_credential(pj: Project, person_id: int, kind: str, label: str) -> tuple[int, str]:
-    """A new credential for a computer or a connector. Returns (id, the secret); only its digest is kept."""
+def issue_credential(pj: Project, person_id: int, kind: str, label: str, via: str) -> tuple[int, str]:
+    """A new credential for a computer or a connector; `via` says how it came (invite, device, connector).
+    Returns (id, the secret); only its digest is kept."""
     secret = "ast_" + util.new_secret()
     with pj.db:
-        cid = pj.db.execute("INSERT INTO credentials (digest, person_id, kind, label, created) VALUES (?, ?, ?, ?, ?)",
-                            (util.digest(secret), person_id, kind, label, util.now())).lastrowid
+        cid = pj.db.execute("INSERT INTO credentials (digest, person_id, kind, label, created, via) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (util.digest(secret), person_id, kind, label, util.now(), via)).lastrowid
     util.log("credential_issued", project=pj.slug, person=person_id, credential=cid, kind=kind)
     return cid, secret
 
@@ -477,6 +479,8 @@ def _revoke(pj: Project, where: str, args: tuple[Any, ...]) -> None:
         pj.accounts.execute(f"DELETE FROM oauth_tokens WHERE slug = ? AND credential_id IN ({marks})", (pj.slug, *ids))
     for aid in bound:
         presence.binding_changed(pj.slug, aid)
+    for cid in ids:                     # an open computer poll with a revoked credential ends with 401
+        presence.computer_changed(pj.slug, cid)
 
 
 # --------------------------------------------------------------------------- removing members

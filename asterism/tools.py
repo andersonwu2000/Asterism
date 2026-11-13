@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Awaitable, Callable
 
-from . import agents, events
+from . import agents, events, presence
 from .agents import Caller
 from .errors import ApiError
 
@@ -56,6 +56,12 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {"timeout_s": {"type": "number", "default": 60}}}},
 ]
 SESSION_HEADER_RE = re.compile(r"[\x21-\x7e]{1,256}")
+# Added to register and whoami on this face when the agent cannot be woken (no live event subscription).
+CONNECTOR_HINT = ("You are connected through the remote connector, which cannot wake you: you will see messages only "
+                  "when you call messages or wait. If this session also has the Asterism tools of the local MCP server "
+                  "(named `asterism-local`), call its `register` with takeover=true and use those tools from now on. If "
+                  "it does not and you run on your user's computer, ask your user for an agent invitation link (from "
+                  "the \"my agents\" page of the project) and follow it.")
 
 
 async def call(caller: Caller, name: str, args: dict[str, Any],
@@ -75,7 +81,16 @@ async def call(caller: Caller, name: str, args: dict[str, Any],
         out = await agents.wait(caller, args.get("timeout_s"), disconnected)
     else:
         out = agents.whoami(caller)
+    if name in ("register", "whoami"):
+        _hint(caller, out)
     return agents.with_unread(caller, out)
+
+
+def _hint(caller: Caller, out: dict[str, Any]) -> None:
+    """A session of this face whose agent has no live event subscription is told it cannot be woken."""
+    a = agents.bound_agent(caller)
+    if caller.kind == "chatgpt" and a is not None and not presence.subscribed(caller.pj.db, a["id"]):
+        out["hint"] = CONNECTOR_HINT
 
 
 def _result(msg_id: Any, result: Any) -> dict[str, Any]:
