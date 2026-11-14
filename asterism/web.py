@@ -838,6 +838,7 @@ def build_app(s: Store) -> ASGIApp:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        upkeep.server_started(s)        # before any request and before the background task's first look
         task = asyncio.get_running_loop().create_task(upkeep.run(s))
         try:
             yield

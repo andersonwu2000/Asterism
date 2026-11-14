@@ -7,7 +7,6 @@
 use crate::allow;
 use crate::local;
 use crate::push;
-use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,13 +29,18 @@ pub fn run(home: &Path, args: &[String]) -> i32 {
     let mut code = 0;
     let mut did = false;
 
+    // Any version: one from before 0.1.2 does not know the request to stop, and is ended all the same.
     if let Some(info) = local::running(home) {
-        let _ = local::request(&info, json!({"op": "stop"}));
-        let end = Instant::now() + Duration::from_secs(10);
-        while local::running(home).is_some() && Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(100));
+        match local::stop_resident(&info) {
+            Ok(()) => println!("Stopped the resident program (process {}).", info.pid),
+            Err(e) => {
+                eprintln!(
+                    "The resident program (process {pid}) {e}. End process {pid} yourself (in the Task Manager on Windows, with `kill {pid}` elsewhere) and run `asterism uninstall` again.",
+                    pid = info.pid
+                );
+                code = 1;
+            }
         }
-        println!("Stopped the resident program (process {}).", info.pid);
         did = true;
     }
 

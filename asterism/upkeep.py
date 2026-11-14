@@ -86,6 +86,29 @@ def _due_times(pj: Project) -> list[float]:
     return out + events.next_due(pj)
 
 
+def server_started(store: Store) -> None:
+    """Nothing can reach a server that is down, so the time it was away is nobody's absence: when it starts,
+    the clocks that wait for a program to speak start again, once per project, before anything looks at them.
+
+    - The grace of a session that left its computer's list (agents.quiet_since) starts again.
+    - A computer that counted as connected (credentials.connected) and a session that counted as online by
+      its own poll (announced online, not held, not in a grace) have the usual ASTERISM_OFFLINE_AFTER_S from
+      now to come back (credentials.last_poll, agents.last_poll).
+
+    One that really does not come back is announced after the usual time, counted from the start."""
+    t = util.now()
+    for slug in store.slugs():
+        db = store.project(slug)
+        if db is None:
+            continue
+        with db:
+            db.execute("UPDATE agents SET quiet_since = ? WHERE quiet_since IS NOT NULL", (t,))
+            db.execute("UPDATE agents SET last_poll = ? WHERE last_poll IS NOT NULL AND announced = 1 "
+                       "AND session IS NOT NULL AND offline_reason IS NULL AND quiet_since IS NULL", (t,))
+            db.execute("UPDATE credentials SET last_poll = ? WHERE last_poll IS NOT NULL AND connected = 1 "
+                       "AND revoked IS NULL", (t,))
+
+
 def sweep(store: Store) -> float | None:
     """Do what is due now; return when something falls due next (None: nothing is waiting)."""
     t = util.now()

@@ -191,6 +191,101 @@ mod win {
     }
 }
 
+#[cfg(windows)]
+mod proc_win {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
+        pub fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
+        pub fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        pub fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    pub const PROCESS_TERMINATE: u32 = 0x0001;
+    pub const SYNCHRONIZE: u32 = 0x0010_0000;
+    pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    /// What OpenProcess says for a process id that names no process.
+    pub const ERROR_INVALID_PARAMETER: i32 = 87;
+}
+
+/// Another process of this user, held so that it can be watched and ended. On Windows the handle keeps its
+/// process id from being given to a new process while we hold it.
+pub struct Process {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    handle: *mut std::ffi::c_void,
+}
+
+impl Process {
+    /// Ok(None): no process has this id (any more).
+    pub fn open(pid: u32) -> std::io::Result<Option<Process>> {
+        if pid == 0 || pid == std::process::id() {
+            return Err(std::io::Error::other("not another process"));
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: a plain call; a null handle is checked below.
+            let handle = unsafe { proc_win::OpenProcess(proc_win::SYNCHRONIZE | proc_win::PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                let e = std::io::Error::last_os_error();
+                return if e.raw_os_error() == Some(proc_win::ERROR_INVALID_PARAMETER) { Ok(None) } else { Err(e) };
+            }
+            Ok(Some(Process { handle }))
+        }
+        #[cfg(unix)]
+        {
+            let p = Process { pid };
+            Ok(p.alive().then_some(p))
+        }
+    }
+
+    pub fn alive(&self) -> bool {
+        #[cfg(windows)]
+        {
+            // SAFETY: a handle of ours with SYNCHRONIZE access; a zero timeout only asks.
+            unsafe { proc_win::WaitForSingleObject(self.handle, 0) == proc_win::WAIT_TIMEOUT }
+        }
+        #[cfg(unix)]
+        {
+            let Ok(pid) = libc::pid_t::try_from(self.pid) else { return false };
+            // SAFETY: signal 0 sends nothing; it only says whether the process exists.
+            unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+        }
+    }
+
+    /// End the process: on Unix politely (SIGTERM) or not (`hard`: SIGKILL); on Windows there is only the
+    /// one way.
+    pub fn end(&self, hard: bool) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            let _ = hard;
+            // SAFETY: a handle of ours with PROCESS_TERMINATE access.
+            if unsafe { proc_win::TerminateProcess(self.handle, 1) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(unix)]
+        {
+            let pid = libc::pid_t::try_from(self.pid).map_err(|_| std::io::Error::other("a process id out of range"))?;
+            // SAFETY: a plain call on a process id that is not ours (checked in `open`).
+            if unsafe { libc::kill(pid, if hard { libc::SIGKILL } else { libc::SIGTERM }) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Process {
+    fn drop(&mut self) {
+        // SAFETY: the handle OpenProcess gave us, closed once.
+        unsafe { proc_win::CloseHandle(self.handle) };
+    }
+}
+
 /// Keep a socket of ours out of the programs we start. On Windows a socket accepted from a listener can be
 /// inherited; a resident program that starts its successor would otherwise hand it the sessions'
 /// connections, and the sessions would not see them end when it exits.

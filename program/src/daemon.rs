@@ -40,7 +40,17 @@ static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// A line in `daemon.log`. Never a secret, never a message text.
 fn log(line: &str) {
-    let Some(path) = LOG_PATH.get() else { return };
+    if let Some(path) = LOG_PATH.get() {
+        append_log(path, line);
+    }
+}
+
+/// A line in the `daemon.log` of `home`, from a program that is not the resident program (`join`, `mcp`).
+pub fn log_in(home: &Path, line: &str) {
+    append_log(&home.join("daemon.log"), line);
+}
+
+fn append_log(path: &Path, line: &str) {
     if fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX) {
         let _ = fs::rename(path, path.with_extension("log.1"));
     }
