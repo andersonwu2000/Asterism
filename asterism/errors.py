@@ -19,8 +19,8 @@ def not_signed_in() -> ApiError:
 
 def invalid_credential() -> ApiError:
     return ApiError(401, "invalid_credential",
-                    "This credential is revoked or unknown. Ask your person to authorise this computer "
-                    "again by running the helper with --join.")
+                    "This computer's credential was revoked or is unknown. Ask your user for a new agent invitation "
+                    "link (from the \"my agents\" page of the project) and follow it.")
 
 
 def forbidden(message: str) -> ApiError:

@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from . import accounts, config, presence, util
+from . import accounts, config, downloads, presence, util
 from .errors import bad_request, conflict, forbidden, gone, not_found
 from .store import Store
 
@@ -434,9 +434,15 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
     owners = _owners(pj)
     agents = [agent_view(pj, a, owners) for a in
               pj.db.execute("SELECT * FROM agents WHERE person_id = ? ORDER BY id", (actor.person_id,))]
-    creds = [credential_view(c) for c in pj.db.execute(
-        "SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id", (actor.person_id,))]
-    return {"agents": agents, "credentials": creds, "switches": switches(pj, actor.person_id)}
+    creds = []
+    for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",
+                           (actor.person_id,)):
+        view = credential_view(c)
+        if c["kind"] == "computer":     # whether that computer's program holds its connection now
+            view["connected"] = presence.computer_connected(pj.slug, c["id"], pj.db)
+        creds.append(view)
+    return {"agents": agents, "credentials": creds, "switches": switches(pj, actor.person_id),
+            "program": downloads.program(config.get().data)}
 
 
 # --------------------------------------------------------------------------- credentials

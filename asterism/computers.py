@@ -12,7 +12,7 @@ import asyncio
 import sqlite3
 from typing import Any, Awaitable, Callable
 
-from . import agents, config, messaging, notices, presence, projects, util
+from . import agents, config, downloads, messaging, notices, presence, projects, util
 from .agents import Caller
 from .errors import ApiError, bad_request, forbidden, gone, invalid_credential
 from .projects import Actor, Project
@@ -25,16 +25,33 @@ LOCAL = "local:"
 # Agent-facing wording, word for word from the specification.
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
                "Run one command, the one for this computer:\n"
-               "macOS or Linux: `curl -fsSL {url}/install.sh | sh -s -- {link}`\n"
-               "Windows (PowerShell): `& ([scriptblock]::Create((irm {url}/install.ps1))) {link}`\n"
+               "macOS or Linux: `{sh}`\n"
+               "Windows (PowerShell): `{ps}`\n"
                "If your user gave you a name, add `--name <name>` at the end. The command tells you what to do next.")
 EXPIRED = "This invitation link has expired or was already used. Ask your user for a new one."
+SAY = 'Please join the Asterism project "{project}": open {link} and follow what it says.'
+# The product of a command a person runs, and the `--client` the program takes for it.
+CLIENTS = {"claude-code": "claude", "codex": "codex"}
 
 
 # --------------------------------------------------------------------------- agent invitation links
 
 def _link(slug: str, code: str) -> str:
     return f"{config.get().public_url}/{slug}/a/{code}"
+
+
+def install_commands(link: str) -> dict[str, str]:
+    """The one command per system that installs the program and joins with `link`: the only place these
+    strings are built (the invitation text and the "my agents" page both use them)."""
+    url = config.get().public_url
+    return {"macos-linux": f"curl -fsSL {url}/install.sh | sh -s -- {link}",
+            "windows": f"& ([scriptblock]::Create((irm {url}/install.ps1))) {link}"}
+
+
+def setup_commands(link: str) -> dict[str, dict[str, str]]:
+    """What a person runs to set a computer up themselves: per system, per product."""
+    return {system: {product: f"{cmd} --client {client}" for product, client in CLIENTS.items()}
+            for system, cmd in install_commands(link).items()}
 
 
 def create_invite(pj: Project, actor: Actor) -> dict[str, Any]:
@@ -50,7 +67,9 @@ def create_invite(pj: Project, actor: Actor) -> dict[str, Any]:
         pj.db.execute("INSERT INTO agent_invites (digest, person_id, created, expires) VALUES (?, ?, ?, ?)",
                       (util.digest(code), actor.person_id, t, t + ttl))
     util.log("agent_invite_created", project=pj.slug, person=actor.person_id)
-    return {"url": _link(pj.slug, code), "expires_in": int(ttl)}
+    link = _link(pj.slug, code)
+    return {"url": link, "expires_in": int(ttl), "say": SAY.format(project=projects.info(pj)["name"], link=link),
+            "commands": setup_commands(link), "program": downloads.program(config.get().data)}
 
 
 def _usable(store: Store, slug: str, code: str) -> tuple[Project, sqlite3.Row, str]:
@@ -67,8 +86,9 @@ def _usable(store: Store, slug: str, code: str) -> tuple[Project, sqlite3.Row, s
 def invite_text(store: Store, slug: str, code: str) -> str:
     """What the agent reads at the link. Reading does not use the link up."""
     pj, _, person = _usable(store, slug, code)
-    return INVITE_TEXT.format(project=projects.info(pj)["name"], person=person, url=config.get().public_url,
-                              link=_link(slug, code))
+    cmds = install_commands(_link(slug, code))
+    return INVITE_TEXT.format(project=projects.info(pj)["name"], person=person, sh=cmds["macos-linux"],
+                              ps=cmds["windows"])
 
 
 def redeem(store: Store, slug: str, code: str, credential: str | None, computer: Any, product: Any) -> dict[str, Any]:

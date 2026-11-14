@@ -66,6 +66,8 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "col.last_used": "最後使用",
         "col.actions": "動作",
         "col.generation": "綁定世代",
+        "col.via": "怎麼授權的",
+        "col.connection": "連線",
 
         "state.online": "在線",
         "state.offline": "離線",
@@ -73,7 +75,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "offline.not_bound": "沒有任何 session 登記成它。",
         "offline.no_computer": "它所在電腦的 Asterism 程式沒有連著伺服器（程式沒在執行，或電腦離線）。",
         "offline.session_closed": "它所在電腦的程式連著伺服器，但它的對話已經關閉，叫不醒；重新開啟那個對話就會回來。",
-        "offline.no_subscription": "這是經由 ChatGPT 連接器加入的 agent，沒有有效的事件訂閱：它只有在自己呼叫工具時才拿得到訊息。不能訂閱事件的客戶端（例如 Codex）請改用 helper 加入。",
+        "offline.no_subscription": "這是經由 ChatGPT 連接器加入的 agent，沒有有效的事件訂閱：它只有在自己呼叫工具時才拿得到訊息。要讓它叫得醒，請到「我的 agent」頁產生邀請連結傳給它。",
         "offline.unanswered": "送給它的訊息兩次都沒有確認收到，所以記成離線；它一呼叫工具就回到在線。",
         "offline.silent": "它有重要訊息沒回，而且一整段提醒時間都沒有活動；它一呼叫工具就回到在線。",
 
@@ -110,12 +112,25 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "my.add_group": "加入身份組",
         "my.add": "加入",
         "my.remove_group": "移出 {group}",
-        "my.add_local": "加入一個本機的 agent（Claude Code 或 Codex）",
-        "my.add_local.download": "在 agent 所在的電腦上下載 helper：",
-        "my.add_local.join": "在同一個資料夾執行（Claude Code 用第一行，Codex 用第二行），然後在瀏覽器裡同意：",
-        "my.add_local.or": " 或 ",
-        "my.add_local.approve": "每台電腦只要做一次。",
-        "my.add_local.register": "開一個新的 session，請 agent 用一個名字登記（register）。",
+        "my.via.invite": "邀請連結",
+        "my.via.device": "瀏覽器裡同意",
+        "my.via.connector": "連接器授權",
+        "my.connected.yes": "程式連著",
+        "my.connected.no": "程式沒有連著",
+
+        "invite.title": "邀請 agent",
+        "invite.skip": "邀請 agent 是讓你電腦上的 Claude Code 或 Codex 加入這個專案。如果你不帶 agent，只看 repo、參與討論，可以跳過這一步。",
+        "invite.button": "產生邀請連結",
+        "invite.say": "把這句話貼給你的 agent：",
+        "invite.expires": "這個連結只能用一次，{time} 前有效。",
+        "invite.self": "或者自己先設定這台電腦（在終端機執行，選你用的產品）：",
+        "invite.system.macos-linux": "macOS 或 Linux",
+        "invite.system.windows": "Windows（PowerShell）",
+        "invite.product.claude-code": "Claude Code",
+        "invite.product.codex": "Codex",
+        "invite.copy": "複製",
+        "invite.copied": "已複製",
+        "invite.unavailable": "Asterism 的程式還不能從這台伺服器下載，所以暫時不能自己設定電腦。",
         "my.switches": "我的 agent 的開關",
         "my.switches_hint": "這些開關決定別人能對你的 agent 做什麼，預設全部關閉。",
 
@@ -234,7 +249,7 @@ class Translator:
 
     def js_messages(self) -> dict[str, str]:
         """The texts the page script needs, sent along with each page."""
-        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg."))]
+        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg.", "invite."))]
         return {k: self(k) for k in keys}
 
 

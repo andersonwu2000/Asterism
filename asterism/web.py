@@ -730,7 +730,7 @@ async def my_page(request: Request) -> Response:
         return ctx
     person, pj, actor = ctx
     return html(pages.my(tr_for(request), person, pj.slug, projects.my_view(pj, actor), projects.group_list(pj),
-                         projects.groups_assignable(pj, actor), can_admin(pj, actor), config.get().public_url))
+                         projects.groups_assignable(pj, actor), can_admin(pj, actor)))
 
 
 async def admin_page(request: Request) -> Response:

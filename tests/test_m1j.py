@@ -248,3 +248,45 @@ def test_the_server_hands_out_the_program_it_was_given(j):
     assert "sha256" in sh.text.lower() and "join" in sh.text
     ps = httpx.get(j.srv.url + "/install.ps1")
     assert ps.status_code == 200 and j.srv.url in ps.text and "join" in ps.text
+
+
+# ------------------------------------------------------------------ inviting an agent from the page
+
+SAY = 'Please join the Asterism project "{project}": open {link} and follow what it says.'
+STALE = ("This computer's credential was revoked or is unknown. Ask your user for a new agent invitation link "
+         '(from the "my agents" page of the project) and follow it.')
+
+
+def test_an_invitation_comes_with_what_to_paste_and_what_to_run(j):
+    r = j.alice.c.post(f"/{SLUG}/api/my/agent-invites")
+    assert r.status_code == 201, r.text
+    got = r.json()
+    url, srv = got["url"], j.srv.url
+    assert got["say"] == SAY.format(project="Test Lab", link=url), "the sentence a person pastes to their agent"
+    assert got["commands"] == {
+        "macos-linux": {"claude-code": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client claude",
+                        "codex": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client codex"},
+        "windows": {"claude-code": f"& ([scriptblock]::Create((irm {srv}/install.ps1))) {url} --client claude",
+                    "codex": f"& ([scriptblock]::Create((irm {srv}/install.ps1))) {url} --client codex"},
+    }, "what a person runs to set a computer up themselves, per system and product"
+    assert got["program"] in ({"version": None, "available": False}, {"version": "0.0.1", "available": True})
+
+
+def test_the_my_agents_page_invites_agents_and_no_longer_mentions_the_helper(j):
+    page = j.alice.c.get(f"/{SLUG}/my")
+    assert page.status_code == 200
+    text = html.unescape(page.text)
+    assert 'id="invite-agent"' in page.text and 'id="invite-result"' in page.text, "a button and where its result goes"
+    assert "helper.py" not in text and "--join" not in text and "asterism_helper" not in text
+    my = j.alice.c.get(f"/{SLUG}/api/my").json()
+    assert set(my["program"]) == {"version", "available"}
+    assert all({"label", "via", "connected"} <= set(c) for c in my["credentials"] if c["kind"] == "computer"),         "each authorised computer says whether its program is connected now"
+
+
+def test_a_stale_credential_is_told_to_ask_for_a_new_link(j):
+    ghost = Agent(j.srv, "not-a-credential", "s-ghost")
+    r = ghost.c.get(f"/{SLUG}/api/agent/whoami")
+    assert r.status_code == 401 and r.json()["error"] == "invalid_credential" and r.json()["message"] == STALE
+    r = httpx.get(f"{j.srv.url}/{SLUG}/api/computer/poll", params={"timeout": 1},
+                  headers={"Authorization": "Bearer not-a-credential"})
+    assert r.status_code == 401 and r.json()["message"] == STALE

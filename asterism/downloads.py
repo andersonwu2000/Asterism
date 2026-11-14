@@ -36,6 +36,12 @@ def manifest(data: Path) -> dict[str, Any]:
     return {"version": version if isinstance(version, str) else None, "files": files}
 
 
+def program(data: Path) -> dict[str, Any]:
+    """{version, available}: whether the server has any build of the program to hand out."""
+    m = manifest(data)
+    return {"version": m["version"], "available": bool(m["files"])}
+
+
 def public_manifest(data: Path, public_url: str) -> dict[str, Any]:
     m = manifest(data)
     return {"version": m["version"],

@@ -338,10 +338,3 @@ def test_an_agent_is_what_its_present_session_is(v):
     assert not bad, got
     assert (row()["kind"], row()["offline_because"]) == ("chatgpt", "no_subscription"), "and back again"
     remote_tool(v.srv, "leave", token, "conv-k")
-
-
-def test_the_my_agents_page_says_how_to_add_a_local_agent(v):
-    page = v.alice.c.get(f"/{SLUG}/my")
-    assert page.status_code == 200
-    assert f"{v.srv.url}/helper.py" in page.text, "where to get the helper"
-    assert f"--join {v.srv.url}/{SLUG}" in page.text and "--client codex" in page.text and "--client claude" in page.text

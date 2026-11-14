@@ -60,4 +60,99 @@
     if (!res.ok) box.checked = !box.checked;
     if (out) out.textContent = res.ok ? (MSG["done.saved"] || "") : errorText(res.data.error);
   });
+
+  // "my agents": the button that makes an agent invitation link, and what it answers. Each click makes a
+  // new link and replaces what the previous one showed.
+  function el(tag, text, cls) {
+    var x = document.createElement(tag);
+    if (text != null) x.textContent = text;
+    if (cls) x.className = cls;
+    return x;
+  }
+
+  async function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (err) { /* fall back below */ }
+    }
+    var area = el("textarea", text);
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed"; area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+    area.remove();
+    return ok;
+  }
+
+  // A line with the text to copy and its copy button.
+  function copyLine(text) {
+    var line = el("div", null, "copy-line");
+    var code = el("code", text);
+    var button = el("button", MSG["invite.copy"] || "");
+    button.type = "button";
+    button.addEventListener("click", async function () {
+      button.textContent = (await copy(text)) ? (MSG["invite.copied"] || "") : (MSG["invite.copy"] || "");
+      setTimeout(function () { button.textContent = MSG["invite.copy"] || ""; }, 2000);
+    });
+    line.append(code, " ", button);
+    return line;
+  }
+
+  var SYSTEMS = ["macos-linux", "windows"], PRODUCTS = ["claude-code", "codex"];
+  var made = 0;
+
+  function showInvite(box, data) {
+    made += 1;
+    box.replaceChildren();
+    box.append(el("p", MSG["invite.say"] || ""), copyLine(data.say));
+    var until = new Date(Date.now() + data.expires_in * 1000);
+    var time = until.toLocaleTimeString(document.documentElement.lang || undefined, {hour: "2-digit", minute: "2-digit"});
+    box.append(el("p", (MSG["invite.expires"] || "{time}").replace("{time}", time), "muted"));
+    if (!data.program || !data.program.available) {
+      box.append(el("p", MSG["invite.unavailable"] || "", "muted"));
+      return;
+    }
+    box.append(el("p", MSG["invite.self"] || ""));
+    SYSTEMS.forEach(function (system) {
+      var group = el("fieldset");
+      group.append(el("legend", MSG["invite.system." + system] || system));
+      var lines = {};
+      PRODUCTS.forEach(function (product, i) {
+        var label = el("label");
+        var radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "invite-product-" + system + "-" + made;
+        radio.value = product;
+        radio.checked = i === 0;
+        radio.addEventListener("change", function () {
+          PRODUCTS.forEach(function (p) { lines[p].hidden = p !== product; });
+        });
+        label.append(radio, " " + (MSG["invite.product." + product] || product) + " ");
+        group.append(label);
+      });
+      PRODUCTS.forEach(function (product, i) {
+        lines[product] = copyLine(data.commands[system][product]);
+        lines[product].hidden = i !== 0;
+        group.append(lines[product]);
+      });
+      box.append(group);
+    });
+  }
+
+  var inviteButton = document.getElementById("invite-agent");
+  if (inviteButton) {
+    inviteButton.addEventListener("click", async function () {
+      var out = inviteButton.parentElement.querySelector("[data-out]");
+      var box = document.getElementById("invite-result");
+      inviteButton.disabled = true;
+      try {
+        var res = await post(inviteButton.dataset.api, {});
+        if (out) out.textContent = res.ok ? "" : errorText(res.data.error);
+        if (res.ok) { showInvite(box, res.data); box.hidden = false; }
+      } finally {
+        inviteButton.disabled = false;
+      }
+    });
+  }
 })();

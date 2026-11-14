@@ -179,19 +179,22 @@ def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], g
     return " ".join(out)
 
 
-def _add_local(tr: Translator, public_url: str, slug: str) -> str:
-    """How to add a local agent (Claude Code, Codex) through the helper: the commands for this server."""
-    helper = f"{public_url}/helper.py"
-    join = f"python asterism_helper.py --join {public_url}/{slug} --client"
-    return (f'<h2>{e(tr("my.add_local"))}</h2><ol>'
-            f'<li>{e(tr("my.add_local.download"))} <code>{e(helper)}</code></li>'
-            f'<li>{e(tr("my.add_local.join"))}<br><code>{e(join)} claude</code>{e(tr("my.add_local.or"))}'
-            f'<code>{e(join)} codex</code><br><span class="muted">{e(tr("my.add_local.approve"))}</span></li>'
-            f'<li>{e(tr("my.add_local.register"))}</li></ol>')
+def _invite(tr: Translator, slug: str) -> str:
+    """The button that makes an agent invitation link; app.js shows what the API answers in #invite-result."""
+    return (f'<h2>{e(tr("invite.title"))}</h2><p class="muted">{e(tr("invite.skip"))}</p>'
+            f'<p><button type="button" id="invite-agent" data-api="/{q(slug)}/api/my/agent-invites">'
+            f'{e(tr("invite.button"))}</button> <span class="out" data-out></span></p>'
+            f'<div id="invite-result" hidden></div>')
+
+
+def _connection(tr: Translator, c: dict[str, Any]) -> str:
+    if "connected" not in c:            # a connector has no program of its own
+        return e(tr("state.none"))
+    return e(tr("my.connected.yes" if c["connected"] else "my.connected.no"))
 
 
 def my(tr: Translator, person: dict[str, Any], slug: str, mine: dict[str, Any], groups: list[dict[str, Any]],
-       assignable: list[str], can_admin: bool, public_url: str) -> tuple[str, int]:
+       assignable: list[str], can_admin: bool) -> tuple[str, int]:
     gmap = {g["name"]: g for g in groups}
     parts = [f'<h2>{e(tr("my.agents"))}</h2>']
     if mine["agents"]:
@@ -208,12 +211,15 @@ def my(tr: Translator, person: dict[str, Any], slug: str, mine: dict[str, Any], 
                              e(tr("col.generation")), e(tr("col.groups")), e(tr("col.actions"))], rows))
     else:
         parts.append(f'<p class="muted">{e(tr("my.no_agents"))}</p>')
-    parts.append(_add_local(tr, public_url, slug))
+    parts.append(_invite(tr, slug))
     parts.append(f'<h2>{e(tr("my.credentials"))}</h2>')
     if mine["credentials"]:
         parts.append(_table(
-            [e(tr("col.label")), e(tr("col.kind")), e(tr("col.created")), e(tr("col.last_used")), e(tr("col.actions"))],
-            [[e(c["label"]), e(tr(f"cred.{c['kind']}")), _when(tr, c["created"]), _when(tr, c["last_used"]),
+            [e(tr("col.label")), e(tr("col.kind")), e(tr("col.via")), e(tr("col.connection")), e(tr("col.last_used")),
+             e(tr("col.actions"))],
+            [[e(c["label"]), e(tr(f"cred.{c['kind']}")),
+              e(tr(f"my.via.{c['via']}") if tr.has(f"my.via.{c['via']}") else c["via"]), _connection(tr, c),
+              _when(tr, c["last_used"]),
               f'<form class="inline" data-api="/{q(slug)}/api/my/credentials/{e(c["id"])}/revoke" '
               f'data-confirm="{e(tr("confirm.revoke"))}"><button>{e(tr("my.revoke"))}</button>'
               f'<span class="out" data-out></span></form>'] for c in mine["credentials"]]))
