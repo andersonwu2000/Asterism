@@ -274,6 +274,15 @@ fn add_to_product(product: &str, exe: &str) -> bool {
     match run(&add) {
         Ok((st, _, _)) if st.success() => {
             println!("Added the MCP server {SERVER_NAME} to {product}.");
+            // Not a reason to fail the join: the tools work, only with a prompt the person can answer.
+            let name = if product == "codex" { "Codex" } else { "Claude Code" };
+            match crate::allow::allow(product) {
+                Ok(()) => println!("Asterism's tools were allowed to run without asking in {name}."),
+                Err(e) => println!(
+                    "Asterism's tools could not be allowed to run without asking in {name}: {e}. To allow them, {}.",
+                    crate::allow::by_hand(product)
+                ),
+            }
             true
         }
         Ok((st, out, err)) => {

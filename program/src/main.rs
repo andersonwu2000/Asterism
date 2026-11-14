@@ -10,6 +10,7 @@
 //!
 //! Everything lives in the state folder (`ASTERISM_HOME`, default `~/.asterism`); see `state.rs`.
 
+mod allow;
 mod daemon;
 mod http;
 mod join;
