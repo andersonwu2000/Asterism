@@ -191,9 +191,124 @@
     }
   }
 
+  // ------------------------------------------------------------------ folding
+  //
+  // One mechanism for two cases: a block that is folded or open, with a button (aria-expanded) that toggles
+  // it. The state lives in `folds` for as long as the page is open, so the periodic refresh and loading older
+  // messages keep it. Keys: "long:<message id>" for a long message; "run:<message id>" for every member of a
+  // run of system notices (a run is open when any of its members is), so a run that grows at either end
+  // keeps its state.
+
+  var folds = new Map();
+  var RUN_MIN = 3, CLAMP_EM = 18, CLAMP_SLACK = 1.15;     // 12 lines of 1.5em; a little over is not folded
+
+  // Toggle a block without making the list jump: the block's top stays where it was.
+  function toggleBlock(anchor, change) {
+    var before = anchor.getBoundingClientRect().top;
+    change();
+    el.list.scrollTop += anchor.getBoundingClientRect().top - before;
+  }
+
+  function foldButton(onClick) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "fold-toggle";
+    b.setAttribute("aria-expanded", "false");
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  // A long message: clamped by CSS (the whole text is rendered underneath), decided by its rendered height.
+  // Once the person chose, nothing folds or opens it again by itself.
+  function clampable(li, box, id) {
+    var key = "long:" + id;
+    box.id = "t-" + id;
+    var button = foldButton(function () {
+      toggleBlock(li, function () { folds.set(key, box.classList.contains("clamped")); fit(); });
+    });
+    button.setAttribute("aria-controls", box.id);
+    button.hidden = true;
+    function fit() {
+      var choice = folds.get(key);
+      var tall = box.scrollHeight > parseFloat(getComputedStyle(box).fontSize) * CLAMP_EM * CLAMP_SLACK;
+      var clamped = choice === undefined ? tall : !choice;
+      box.classList.toggle("clamped", clamped);
+      button.hidden = choice === undefined && !tall;
+      button.setAttribute("aria-expanded", String(!clamped));
+      button.textContent = t(clamped ? "msg.show_all" : "msg.collapse");
+    }
+    li._fit = fit;
+    if (window.ResizeObserver) {          // a late font or formula: look again, unless the person chose
+      new ResizeObserver(function () {
+        if (!folds.has(key)) window.requestAnimationFrame(fit);
+      }).observe(box);
+    }
+    return button;
+  }
+
+  function isMessage(li) { return li.id && li.id.indexOf("m-") === 0; }
+  function idOf(li) { return Number(li.id.slice(2)); }
+
+  // Runs of three or more system notices fold into one row. A notice that is important for the viewer is
+  // never folded: it ends the run. Called after every change of the list.
+  function regroup() {
+    var items = Array.prototype.filter.call(el.list.children, isMessage), runs = [], cur = [];
+    items.forEach(function (li) {
+      if (li.classList.contains("system") && !li.classList.contains("important")) { cur.push(li); return; }
+      runs.push(cur);
+      cur = [];
+    });
+    runs.push(cur);
+    var rows = new Map();
+    Array.prototype.forEach.call(el.list.querySelectorAll("li.fold"), function (r) { rows.set(r.dataset.first, r); });
+    items.forEach(function (li) { if (li.dataset.run) { li.hidden = false; delete li.dataset.run; } });
+    var used = new Set();
+    runs.filter(function (run) { return run.length >= RUN_MIN; }).forEach(function (run) {
+      var first = String(idOf(run[0])), ids = run.map(idOf);
+      var row = rows.get(first) || runRow();
+      used.add(first);
+      row.dataset.first = first;
+      row._ids = ids;
+      if (run[0].previousSibling !== row) el.list.insertBefore(row, run[0]);
+      var open = ids.some(function (id) { return folds.get("run:" + id); });
+      run.forEach(function (li) { li.hidden = !open; li.dataset.run = first; });
+      var last = known.get(ids[ids.length - 1]) || {};
+      var time = last.sent_at ? new Date(last.sent_at).toLocaleTimeString(document.documentElement.lang,
+                                                                         {hour: "numeric", minute: "2-digit"}) : "";
+      var button = row.firstChild;
+      button.setAttribute("aria-expanded", String(open));
+      button.textContent = open ? t("msg.fold_run", {n: ids.length})
+                                : t("msg.folded_run", {n: ids.length, text: last.text || "", time: time});
+    });
+    rows.forEach(function (r, first) { if (!used.has(first)) r.remove(); });
+  }
+
+  function runRow() {
+    var row = document.createElement("li");
+    row.className = "fold system";
+    row.appendChild(foldButton(function () {
+      toggleBlock(row, function () { setRun(row._ids, row.firstChild.getAttribute("aria-expanded") !== "true"); });
+    }));
+    return row;
+  }
+
+  function setRun(ids, open) {
+    ids.forEach(function (id) { if (open) folds.set("run:" + id, true); else folds.delete("run:" + id); });
+    regroup();
+  }
+
+  // The messages added to the list are fitted (long ones clamped) once they are in the page.
+  function settle(added) {
+    regroup();
+    added.forEach(function (li) { if (li._fit) li._fit(); });
+  }
+
   // ------------------------------------------------------------------ messages
 
+  var known = new Map();                  // message id -> the message object, for the folded rows
+
   function messageItem(m) {
+    known.set(m.id, m);
     var li = document.createElement("li");
     li.id = "m-" + m.id;
     li.className = (m.from_kind === "system" ? "system " : "") + (m.level === "important" ? "important" : "");
@@ -235,7 +350,9 @@
       meta.appendChild(btn);
     }
     li.appendChild(meta);
-    li.appendChild(renderText(m.text));
+    var box = renderText(m.text);
+    li.appendChild(box);
+    li.appendChild(clampable(li, box, m.id));
     return li;
   }
 
@@ -255,24 +372,27 @@
   function append(msgs) {
     if (!msgs.length) return;
     dropEmpty();
+    var added = [];
     msgs.forEach(function (m) {
       if (document.getElementById("m-" + m.id)) return;
-      el.list.appendChild(messageItem(m));
+      added.push(el.list.appendChild(messageItem(m)));
       state.last = Math.max(state.last, m.id);
       if (!state.first || m.id < state.first) state.first = m.id;
     });
+    settle(added);
   }
 
   function prepend(msgs) {
     if (!msgs.length) return;
     dropEmpty();
-    var before = el.list.scrollHeight, top = el.list.firstChild;
+    var before = el.list.scrollHeight, top = el.list.firstChild, added = [];
     msgs.forEach(function (m) {
       if (document.getElementById("m-" + m.id)) return;
-      el.list.insertBefore(messageItem(m), top);
+      added.push(el.list.insertBefore(messageItem(m), top));
       if (!state.first || m.id < state.first) state.first = m.id;
       state.last = Math.max(state.last, m.id);
     });
+    settle(added);
     el.list.scrollTop += el.list.scrollHeight - before;
   }
 
@@ -301,6 +421,10 @@
       target = document.getElementById("m-" + id);
     }
     if (!target) { el.out.textContent = t("msg.not_here", {id: id}); return; }
+    if (target.hidden && target.dataset.run) {          // inside a folded run: open it first
+      var row = el.list.querySelector('li.fold[data-first="' + target.dataset.run + '"]');
+      if (row) setRun(row._ids, true);
+    }
     target.scrollIntoView({block: "center"});
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1500);

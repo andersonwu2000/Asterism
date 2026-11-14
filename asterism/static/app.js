@@ -92,8 +92,11 @@
     var button = el("button", MSG["invite.copy"] || "");
     button.type = "button";
     button.addEventListener("click", async function () {
-      button.textContent = (await copy(text)) ? (MSG["invite.copied"] || "") : (MSG["invite.copy"] || "");
-      setTimeout(function () { button.textContent = MSG["invite.copy"] || ""; }, 2000);
+      // A blocker may refuse the write: then say so; the text beside stays selectable to copy by hand.
+      var ok = false;
+      try { ok = await copy(text); } catch (err) { ok = false; }
+      button.textContent = ok ? (MSG["invite.copied"] || "") : (MSG["invite.copy_failed"] || "");
+      setTimeout(function () { button.textContent = MSG["invite.copy"] || ""; }, ok ? 2000 : 5000);
     });
     line.append(code, " ", button);
     return line;

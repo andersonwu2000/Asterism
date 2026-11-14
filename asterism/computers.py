@@ -49,10 +49,11 @@ def install_commands(link: str, *more: str) -> dict[str, str]:
     """The one command per system that installs the program and joins with `link` (and `more` arguments for
     `join`): the only place these strings are built (the invitation text and the "my agents" page both use
     them). The Windows one starts powershell itself, so that it works alike typed in PowerShell, cmd.exe or
-    Git Bash; its arguments reach the script through -ArgumentList, separated by commas."""
+    Git Bash; its arguments reach the script through -ArgumentList, separated by commas. No execution-policy
+    flag: the policy governs script files, not a script block built from a string."""
     url = config.get().public_url
     return {"macos-linux": " ".join([f"curl -fsSL {url}/install.sh | sh -s --", link, *more]),
-            "windows": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+            "windows": 'powershell -NoProfile -Command "Invoke-Command -ScriptBlock '
                        f'([scriptblock]::Create((irm {url}/install.ps1))) -ArgumentList {",".join([link, *more])}"'}
 
 

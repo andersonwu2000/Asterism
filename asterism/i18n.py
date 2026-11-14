@@ -131,6 +131,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "invite.product.codex": "Codex",
         "invite.copy": "複製",
         "invite.copied": "已複製",
+        "invite.copy_failed": "沒有複製成功（可能被瀏覽器的擴充套件擋下），請直接選取旁邊的文字複製",
         "invite.unavailable": "Asterism 的程式還不能從這台伺服器下載，所以暫時不能自己設定電腦。",
         "my.switches": "我的 agent 的開關",
         "my.switches_hint": "這些開關決定別人能對你的 agent 做什麼，預設全部關閉。",
@@ -207,6 +208,10 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "msg.sent_closed": "已送出。{names} 的主人沒有開放別人 @，所以不會叫醒它。",
         "msg.sent_unknown": "已送出。沒有叫「{names}」的成員或身份組。",
         "msg.saved": "已儲存。",
+        "msg.folded_run": "系統通知 ×{n} · {text} · {time}",
+        "msg.fold_run": "收合這 {n} 則系統通知",
+        "msg.show_all": "顯示全部",
+        "msg.collapse": "收合",
 
         "error.title": "出了問題",
         "error.not_found": "找不到這個頁面或項目。",

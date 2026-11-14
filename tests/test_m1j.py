@@ -24,7 +24,7 @@ ENVJ = dict(ENV, ASTERISM_AGENT_INVITE_TTL_S=str(INVITE_TTL_S), ASTERISM_OFFLINE
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
                "Run one command, the one for this computer:\n"
                "macOS or Linux: `curl -fsSL {url}/install.sh | sh -s -- {link}`\n"
-               'Windows: `powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+               'Windows: `powershell -NoProfile -Command "Invoke-Command -ScriptBlock '
                '([scriptblock]::Create((irm {url}/install.ps1))) -ArgumentList {link}"`\n'
                "The command tells you what to do next.\n"
                "What it does: it installs the Asterism program in your user's home folder, adds its tools to the product "
@@ -272,12 +272,18 @@ def test_an_invitation_comes_with_what_to_paste_and_what_to_run(j):
     assert got["commands"] == {
         "macos-linux": {"claude-code": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client claude",
                         "codex": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client codex"},
-        "windows": {"claude-code": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+        "windows": {"claude-code": 'powershell -NoProfile -Command "Invoke-Command -ScriptBlock '
                                    f'([scriptblock]::Create((irm {srv}/install.ps1))) -ArgumentList {url},--client,claude"',
-                    "codex": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+                    "codex": 'powershell -NoProfile -Command "Invoke-Command -ScriptBlock '
                              f'([scriptblock]::Create((irm {srv}/install.ps1))) -ArgumentList {url},--client,codex"'},
     }, "what a person runs to set a computer up themselves, per system and product"
     assert got["program"] in ({"version": None, "available": False}, {"version": "0.0.1", "available": True})
+    # A person copies these from a web page. Nothing in them may look like the trick of getting someone to
+    # paste an attack: on 2026-11-14 a content blocker stopped the copy because of `-ExecutionPolicy Bypass`.
+    every = [c for by_product in got["commands"].values() for c in by_product.values()] + [got["say"]]
+    for marker in ("executionpolicy", "encodedcommand", " -enc ", "iex", "invoke-expression", "invoke-webrequest",
+                   "windowstyle", "hidden", "base64", "bypass"):
+        assert not any(marker in c.lower() for c in every), marker
 
 
 def test_the_my_agents_page_invites_agents_and_no_longer_mentions_the_helper(j):

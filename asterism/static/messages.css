@@ -26,6 +26,13 @@
 .text table{border-collapse:collapse}
 .text blockquote{border-left:3px solid #ccc;margin:.2rem 0;padding-left:.6rem;color:#444}
 .katex-display{overflow-x:auto;overflow-y:hidden}
+/* Folding: a long message shows its beginning (12 lines; the whole text is rendered underneath) and fades out;
+   a run of system notices is one row. */
+.text{line-height:1.5}
+.text.clamped{max-height:18em;overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 75%,transparent);mask-image:linear-gradient(to bottom,#000 75%,transparent)}
+.fold-toggle{font-size:.8rem;margin-top:.2rem}
+#messages li.fold .fold-toggle{font-size:.9rem;background:none;border:none;padding:0;color:#555;cursor:pointer;text-align:left}
+#messages li.fold .fold-toggle:hover,#messages li.fold .fold-toggle:focus-visible{text-decoration:underline}
 #composer{margin-top:.5rem}
 #composer textarea{width:100%;box-sizing:border-box;font:inherit}
 #reply-target{font-size:.9rem;color:#444}
