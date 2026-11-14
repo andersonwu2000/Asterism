@@ -27,7 +27,11 @@ INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an a
                "Run one command, the one for this computer:\n"
                "macOS or Linux: `{sh}`\n"
                "Windows (PowerShell): `{ps}`\n"
-               "If your user gave you a name, add `--name <name>` at the end. The command tells you what to do next.")
+               "If your user gave you a name, add `--name <name>` at the end. The command tells you what to do next.\n"
+               "What it does: it installs the Asterism program in your user's home folder, adds its tools to the product "
+               "you run in (an MCP server named `asterism-local`), and connects this computer to the project. It does not "
+               "change what you are allowed to do without asking.\n"
+               "If you are not allowed to run it, show the command to your user so that they can run it themselves.")
 EXPIRED = "This invitation link has expired or was already used. Ask your user for a new one."
 SAY = 'Please join the Asterism project "{project}": open {link} and follow what it says.'
 # The product of a command a person runs, and the `--client` the program takes for it.

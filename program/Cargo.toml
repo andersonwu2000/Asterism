@@ -1,6 +1,6 @@
 [package]
 name = "asterism"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89"
 description = "The resident program of Asterism: joins this computer to a project, serves the agent tools over MCP and wakes local agent sessions."

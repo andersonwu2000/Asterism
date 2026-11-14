@@ -7,6 +7,7 @@
 //!   joined project and puts each delivery in front of the right local session.
 //! - `mcp`: started by the product in every session; the agent tools on stdio (MCP).
 //! - `status`: what is running and connected, for a person.
+//! - `allow`: a person's choice to let Claude Code or Codex run Asterism's tools without asking.
 //!
 //! Everything lives in the state folder (`ASTERISM_HOME`, default `~/.asterism`); see `state.rs`.
 
@@ -28,6 +29,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "Usage:
   asterism join <invitation link> [--name NAME] [--client claude|codex|none]
   asterism status
+  asterism allow [--client claude|codex]   (let the product run Asterism's tools without asking)
   asterism mcp      (started by Claude Code or Codex)
   asterism daemon   (started by the commands above when it is not running)";
 
@@ -58,6 +60,7 @@ fn run() -> i32 {
         Some("daemon") => daemon::run(home),
         Some("mcp") => mcp::run(home),
         Some("status") => status::run(&home),
+        Some("allow") => allow::run(&args[1..]),
         Some("--version") | Some("version") => {
             println!("asterism {VERSION}");
             0

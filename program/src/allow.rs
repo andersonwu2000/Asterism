@@ -1,6 +1,10 @@
 //! Let the product run the tools of `asterism-local` without asking. An agent is woken while its user may
 //! be away; an approval prompt would leave it stuck (and `codex exec` with approval policy "never" refuses
 //! the call outright). Each function changes only its own entry and keeps the rest of the file as it was.
+//!
+//! This is a person's choice: `join` does it only when a person ran it (no conversation in the environment),
+//! and `asterism allow` does it on request. An agent that installs Asterism itself must not end up needing
+//! less approval than before.
 
 use serde_json::Value;
 use std::fs;
@@ -14,8 +18,12 @@ fn user_dir(var: &str, default: &str) -> PathBuf {
     if let Some(d) = std::env::var_os(var).filter(|v| !v.is_empty()) {
         return PathBuf::from(d);
     }
+    profile().join(default)
+}
+
+fn profile() -> PathBuf {
     let base = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
-    base.map(PathBuf::from).unwrap_or_default().join(default)
+    base.map(PathBuf::from).unwrap_or_default()
 }
 
 /// What a person sets by hand when this fails.
@@ -32,27 +40,125 @@ pub fn by_hand(product: &str) -> String {
     }
 }
 
-pub fn allow(product: &str) -> Result<(), String> {
-    match product {
-        "codex" => codex(&user_dir("CODEX_HOME", ".codex").join("config.toml")),
-        _ => claude(&user_dir("CLAUDE_CONFIG_DIR", ".claude").join("settings.json")),
+pub const ALLOWED: &str = "Asterism's tools were allowed to run without asking in {product}.";
+
+/// `asterism allow [--client claude|codex]`: the person's explicit choice, for the named product or for every
+/// product that has `asterism-local`.
+pub fn run(args: &[String]) -> i32 {
+    let client = match args {
+        [] => None,
+        [flag, v] if flag == "--client" => Some(v.as_str()),
+        [one] => one.strip_prefix("--client="),
+        _ => Some(""),
+    };
+    let products: Vec<&str> = match client {
+        None => ["claude", "codex"].into_iter().filter(|p| added(p)).collect(),
+        Some("claude") => vec!["claude"],
+        Some("codex") => vec!["codex"],
+        Some(_) => {
+            eprintln!("Usage: asterism allow [--client claude|codex]");
+            return 2;
+        }
+    };
+    if products.is_empty() {
+        println!("Asterism's tools are not added to Claude Code or Codex, so nothing was changed; run `asterism join` first.");
+        return 1;
+    }
+    let mut code = 0;
+    for p in products {
+        if !added(p) {
+            println!("Asterism's tools are not added to {}, so nothing was changed; run `asterism join` first.", display(p));
+            code = 1;
+            continue;
+        }
+        match allow(p) {
+            Ok(()) => println!("{}", ALLOWED.replace("{product}", display(p))),
+            Err(e) => {
+                println!("Asterism's tools could not be allowed to run without asking in {}: {e}. To allow them, {}.", display(p), by_hand(p));
+                code = 1;
+            }
+        }
+    }
+    code
+}
+
+pub fn display(product: &str) -> &'static str {
+    if product == "codex" {
+        "Codex"
+    } else {
+        "Claude Code"
     }
 }
 
-/// `codex mcp add` has no option for this and does not keep a `-c` override, so the key is added to the
-/// section that command just wrote: one line inserted after the section's last line, nothing else touched.
-fn codex(path: &Path) -> Result<(), String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("cannot read {} ({e})", path.display()))?;
+pub fn allow(product: &str) -> Result<(), String> {
+    match product {
+        "codex" => codex(&codex_config()),
+        _ => claude(&claude_settings()),
+    }
+}
+
+fn codex_config() -> PathBuf {
+    user_dir("CODEX_HOME", ".codex").join("config.toml")
+}
+
+fn claude_settings() -> PathBuf {
+    user_dir("CLAUDE_CONFIG_DIR", ".claude").join("settings.json")
+}
+
+/// Whether `asterism-local` is among the product's MCP servers (user scope), read from the product's files.
+pub fn added(product: &str) -> bool {
+    match product {
+        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t).is_some()),
+        _ => {
+            // Claude Code keeps its user-scope servers in .claude.json: inside CLAUDE_CONFIG_DIR when that is
+            // set, else in the home folder itself.
+            let file = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+                Some(d) => PathBuf::from(d).join(".claude.json"),
+                None => profile().join(".claude.json"),
+            };
+            fs::read(file)
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                .is_some_and(|v| v["mcpServers"].get("asterism-local").is_some())
+        }
+    }
+}
+
+/// Whether the product runs Asterism's tools without asking (read only).
+pub fn allowed(product: &str) -> bool {
+    match product {
+        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t).is_some_and(|s| s.2)),
+        _ => fs::read(claude_settings())
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .and_then(|v| v["permissions"]["allow"].as_array().cloned())
+            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(CLAUDE_RULE))),
+    }
+}
+
+/// The section `[mcp_servers.asterism-local]` of a Codex config: (its header line, the line after its end,
+/// whether it holds the approval key), in lines as `split_inclusive('\n')` gives them.
+fn codex_section(text: &str) -> Option<(usize, usize, bool)> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let is_header = |l: &str| {
         let compact: String = l.trim().chars().filter(|c| !c.is_whitespace()).collect();
         compact == "[mcp_servers.asterism-local]" || compact == "[mcp_servers.\"asterism-local\"]"
     };
-    let start = lines.iter().position(|l| is_header(l)).ok_or("codex did not write the section [mcp_servers.asterism-local]")?;
+    let start = lines.iter().position(|l| is_header(l))?;
     let end = lines[start + 1..].iter().position(|l| l.trim_start().starts_with('[')).map_or(lines.len(), |i| start + 1 + i);
     let has_key = lines[start + 1..end].iter().any(|l| {
         l.split_once('=').is_some_and(|(k, _)| k.trim().trim_matches(|c| c == '"' || c == '\'') == CODEX_KEY)
     });
+    Some((start, end, has_key))
+}
+
+/// `codex mcp add` has no option for this and does not keep a `-c` override, so the key is added to the
+/// section that command wrote: one line inserted after the section's last line, nothing else touched.
+fn codex(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("cannot read {} ({e})", path.display()))?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let (start, end, has_key) =
+        codex_section(&text).ok_or("there is no section [mcp_servers.asterism-local] in it")?;
     if has_key {
         return Ok(());
     }

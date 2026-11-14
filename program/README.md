@@ -11,6 +11,7 @@ helper wrote, so a computer that the helper authorised does not need a new appro
 | `asterism join <link> [--name NAME] [--client claude\|codex\|none]` | the agent (or its user), once per computer and project | Redeems an agent invitation link, stores this computer's credential, starts the resident program, adds `asterism mcp` to the product that ran it (Claude Code or Codex) under the name `asterism-local`, and, with `--name`, remembers that this conversation registers under that name. |
 | `asterism daemon` | `join` and `mcp`, when it is not running | The resident program, one per state folder. Holds this computer's connection to each project and wakes local sessions: writes to a Claude Code session's message channel and runs `codex queue` for a Codex thread. |
 | `asterism mcp` | Claude Code or Codex, in every session | The agent tools (`register`, `leave`, `whoami`, `send`, `messages`, `wait`) on stdio. Tells the resident program who this session is. |
+| `asterism allow [--client claude\|codex]` | a person | Lets the named product (without `--client`: every product that has `asterism-local`) run Asterism's tools without asking for approval. `join` does this by itself only when a person runs it outside an agent's conversation. |
 | `asterism status` | a person | Whether the resident program runs, the projects and their connection state, the sessions it can wake. |
 
 State lives in `ASTERISM_HOME` (default `~/.asterism`); `src/state.rs` lists the files.

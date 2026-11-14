@@ -6,6 +6,22 @@ use serde_json::json;
 use std::path::Path;
 
 pub fn run(home: &Path) -> i32 {
+    let code = connection(home);
+    // Read only: whether each product has the tools, and whether it runs them without asking.
+    for p in ["claude", "codex"] {
+        let name = crate::allow::display(p);
+        if !crate::allow::added(p) {
+            println!("{name}: Asterism's tools are not added.");
+        } else if crate::allow::allowed(p) {
+            println!("{name}: Asterism's tools are added and run without asking.");
+        } else {
+            println!("{name}: Asterism's tools are added and ask for approval (turn that off with `asterism allow`).");
+        }
+    }
+    code
+}
+
+fn connection(home: &Path) -> i32 {
     let projects = state::load_projects(home);
     let got = local::running(home).and_then(|info| local::request(&info, json!({"op": "status"})).ok());
     let Some(st) = got else {

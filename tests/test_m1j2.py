@@ -337,39 +337,76 @@ def test_the_resident_program_comes_back_when_a_session_needs_it(exe, v, home, t
         m.kill()
 
 
-# ------------------------------------------------------------------ no approval prompt for the Asterism tools
+# ------------------------------------------------------------------ approval prompts: a person's choice
+
+ALLOW_NOTE = ("Asterism's tools will ask for approval in {product} when they are called. This can be turned off with "
+              "`asterism allow`.")
+ALLOWED = "Asterism's tools were allowed to run without asking in {product}."
+
 
 @pytest.mark.skipif(not shutil.which("codex"), reason="needs the real codex: the test reads what its own command writes")
-def test_join_lets_codex_call_the_asterism_tools_without_asking(exe, v, home, tmp_path):
-    """An agent is woken while its user is away: a prompt asking to approve `send` would leave it stuck.
-    The real codex runs here against a configuration folder of its own (CODEX_HOME)."""
+def test_only_a_person_lets_codex_call_the_tools_without_asking(exe, v, home, tmp_path):
+    """An agent that installs Asterism itself must not end up needing less approval than before: that is its
+    person's choice. The real codex runs here against configuration folders of its own (CODEX_HOME)."""
     import tomllib
-    codex_home = tmp_path / "codex_home"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
-    for _ in range(2):                                      # joining twice leaves one clean entry
-        out = join(exe, home, v, CODEX_THREAD_ID="thread-ap-1", CODEX_HOME=str(codex_home))
-        assert "Not added to any agent" not in out, out
-        conf = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
-        entry = conf["mcp_servers"]["asterism-local"]
-        assert Path(entry["command"]).resolve() == Path(exe).resolve() and entry["args"] == ["mcp"], entry
-        assert entry["default_tools_approval_mode"] == "approve", "its tools need no approval"
+
+    def entry(folder):
+        conf = tomllib.loads((folder / "config.toml").read_text(encoding="utf-8"))
         assert conf["mcp_servers"]["other"] == {"command": "other"}, "nothing else in the file is touched"
+        return conf["mcp_servers"]["asterism-local"]
+
+    by_agent = tmp_path / "codex_home_a"
+    by_agent.mkdir()
+    (by_agent / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
+    out = join(exe, home, v, CODEX_THREAD_ID="thread-ap-1", CODEX_HOME=str(by_agent))      # run by the conversation
+    e = entry(by_agent)
+    assert Path(e["command"]).resolve() == Path(exe).resolve() and e["args"] == ["mcp"], e
+    assert "default_tools_approval_mode" not in e, "the agent did not change what it may do without asking"
+    assert ALLOW_NOTE.format(product="Codex") in out and "were allowed" not in out, out
+
+    rc, shown = run(exe, home, "allow", "--client", "codex", CODEX_HOME=str(by_agent))      # the person's own command
+    assert rc == 0 and ALLOWED.format(product="Codex") in shown, shown
+    assert entry(by_agent)["default_tools_approval_mode"] == "approve"
+    rc, shown = run(exe, home, "allow", "--client", "codex", CODEX_HOME=str(by_agent))
+    assert rc == 0 and entry(by_agent)["default_tools_approval_mode"] == "approve", "doing it twice changes nothing"
+
+    by_person = tmp_path / "codex_home_p"
+    by_person.mkdir()
+    (by_person / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
+    out = join(exe, home, v, "--client", "codex", CODEX_HOME=str(by_person))                # a person in a terminal
+    assert entry(by_person)["default_tools_approval_mode"] == "approve"
+    assert ALLOWED.format(product="Codex") in out and "will ask for approval" not in out, out
 
 
 @pytest.mark.skipif(not shutil.which("claude"), reason="needs the real claude: the test reads what its own command writes")
-def test_join_lets_claude_code_call_the_asterism_tools_without_asking(exe, v, home, tmp_path):
-    """The real claude runs here against a configuration folder of its own (CLAUDE_CONFIG_DIR)."""
-    cfg = tmp_path / "claude_cfg"
-    cfg.mkdir()
+def test_only_a_person_lets_claude_code_call_the_tools_without_asking(exe, v, home, tmp_path):
+    """The real claude runs here against configuration folders of its own (CLAUDE_CONFIG_DIR)."""
     before = {"permissions": {"allow": ["Bash(ls:*)"], "deny": ["Read(./.env)"]}, "theme": "dark"}
-    (cfg / "settings.json").write_text(json.dumps(before), encoding="utf-8")
-    for _ in range(2):
-        out = join(exe, home, v, CLAUDE_CODE_SESSION_ID="s-ap-1", CLAUDE_CONFIG_DIR=str(cfg))
-        assert "Not added to any agent" not in out, out
-        servers = json.loads((cfg / ".claude.json").read_text(encoding="utf-8")).get("mcpServers", {})
-        assert "asterism-local" in servers and servers["asterism-local"]["args"] == ["mcp"], servers
-        after = json.loads((cfg / "settings.json").read_text(encoding="utf-8"))
-        assert after["permissions"]["allow"].count("mcp__asterism-local") == 1, "the server's tools are allowed, once"
-        assert "Bash(ls:*)" in after["permissions"]["allow"] and after["permissions"]["deny"] == ["Read(./.env)"]
-        assert after["theme"] == "dark", "nothing else in the file is touched"
+
+    def settings(folder):
+        st = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+        assert "Bash(ls:*)" in st["permissions"]["allow"] and st["permissions"]["deny"] == ["Read(./.env)"]
+        assert st["theme"] == "dark", "nothing else in the file is touched"
+        return st
+
+    by_agent = tmp_path / "claude_cfg_a"
+    by_agent.mkdir()
+    (by_agent / "settings.json").write_text(json.dumps(before), encoding="utf-8")
+    out = join(exe, home, v, CLAUDE_CODE_SESSION_ID="s-ap-1", CLAUDE_CONFIG_DIR=str(by_agent))  # run by the session
+    servers = json.loads((by_agent / ".claude.json").read_text(encoding="utf-8")).get("mcpServers", {})
+    assert "asterism-local" in servers and servers["asterism-local"]["args"] == ["mcp"], servers
+    assert "mcp__asterism-local" not in settings(by_agent)["permissions"]["allow"], "the agent did not allow itself"
+    assert ALLOW_NOTE.format(product="Claude Code") in out and "were allowed" not in out, out
+
+    rc, shown = run(exe, home, "allow", "--client", "claude", CLAUDE_CONFIG_DIR=str(by_agent))
+    assert rc == 0 and ALLOWED.format(product="Claude Code") in shown, shown
+    assert settings(by_agent)["permissions"]["allow"].count("mcp__asterism-local") == 1
+    rc, shown = run(exe, home, "allow", "--client", "claude", CLAUDE_CONFIG_DIR=str(by_agent))
+    assert rc == 0 and settings(by_agent)["permissions"]["allow"].count("mcp__asterism-local") == 1
+
+    by_person = tmp_path / "claude_cfg_p"
+    by_person.mkdir()
+    (by_person / "settings.json").write_text(json.dumps(before), encoding="utf-8")
+    out = join(exe, home, v, "--client", "claude", CLAUDE_CONFIG_DIR=str(by_person))
+    assert settings(by_person)["permissions"]["allow"].count("mcp__asterism-local") == 1
+    assert ALLOWED.format(product="Claude Code") in out, out
