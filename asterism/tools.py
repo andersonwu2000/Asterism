@@ -1,7 +1,7 @@
 """The agent tools, and the remote (ChatGPT connector) MCP face that serves them.
 
-The helper serves the same tools over stdio and carries the same wording; a test keeps the two copies
-equal. The face is stateless: one JSON-RPC request per POST, a JSON answer, and tools/call works without a
+The resident program (`program/`) serves the same tools over stdio and carries the same wording; the tests
+hold both copies to it. The face is stateless: one JSON-RPC request per POST, a JSON answer, and tools/call works without a
 prior initialize (ChatGPT's connector calls tools that way). It also answers events/* (MCP Events, see
 events.py), which is how ChatGPT is told that a message has arrived.
 """

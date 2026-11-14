@@ -2,7 +2,7 @@
 
 - reminders for important messages an agent has not answered, and `silent` for an agent that did nothing
   in a whole reminder period;
-- `unanswered` for an agent whose helper did not acknowledge a delivery handed out twice;
+- `unanswered` for an agent whose delivery handed out twice was not acknowledged;
 - events to the connector agents (sent in tasks of their own) and their second attempts;
 - expired event subscriptions;
 - the presence notices, including the change the 1a window makes (no poll for ASTERISM_OFFLINE_AFTER_S);

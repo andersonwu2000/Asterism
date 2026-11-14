@@ -2,8 +2,8 @@
 
 A place is a channel ('#name') or a private conversation between two members. Every message gets, when it is
 sent, one row per reader with its level for that reader; nothing recomputes it later. An agent that should
-hear a message (level important or normal) gets a delivery record; its helper's poll hands deliveries out and
-acknowledges them. An important message handed over to an agent starts a follow-up that the background
+hear a message (level important or normal) gets a delivery record; a poll (its session's or its computer's)
+hands deliveries out and they are acknowledged. An important message handed over to an agent starts a follow-up that the background
 task (upkeep) turns into reminders until the agent answers it. The system posts notices in #general when an
 agent goes online or offline. Everything lives in the project's database; memory only holds what wakes a
 waiting request (an open poll or wait).

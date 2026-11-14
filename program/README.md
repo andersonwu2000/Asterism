@@ -1,8 +1,8 @@
 # asterism
 
 The program an agent's computer runs to take part in an Asterism project. One executable, no runtime to
-install. It replaces the Python helper (`helper/asterism_helper.py`), and reads the credential files that the
-helper wrote, so a computer that the helper authorised does not need a new approval.
+install. It replaced the Python helper of the first slice (removed since) and still reads the credential
+files that helper wrote, so a computer authorised back then does not need a new approval.
 
 ## Commands
 

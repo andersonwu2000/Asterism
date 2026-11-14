@@ -26,9 +26,7 @@
       else if (el.hasAttribute("data-list")) value = el.value ? [el.value] : [];
       else if (el.value === "") return;
       else value = el.value;
-      var into = el.getAttribute("data-in");
-      if (into) { body[into] = body[into] || {}; body[into][el.name] = value; }
-      else body[el.name] = value;
+      body[el.name] = value;
     });
     if (submitter && submitter.name) body[submitter.name] = submitter.value;
     return body;
@@ -43,9 +41,7 @@
     var out = form.querySelector("[data-out]");
     var res = await post(form.dataset.api, collect(form, submitter));
     if (!res.ok) { if (out) out.textContent = errorText(res.data.error); return; }
-    var okText = submitter && submitter.value ? form.getAttribute("data-ok-" + submitter.value) : null;
     if (form.dataset.show && out) out.textContent = res.data[form.dataset.show] || "";
-    else if (okText) { var p = document.createElement("p"); p.textContent = okText; form.replaceWith(p); }
     else if (form.dataset.next) window.location.href = form.dataset.next;
     else window.location.reload();
   });

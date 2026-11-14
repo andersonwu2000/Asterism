@@ -32,7 +32,6 @@ from .store import Store
 SESSION_COOKIE = "asterism_session"
 LOGIN_COOKIE = "asterism_login"
 STATIC = Path(__file__).resolve().parent / "static"
-HELPER = Path(__file__).resolve().parent.parent / "helper" / "asterism_helper.py"
 
 _store: Store | None = None
 
@@ -204,11 +203,6 @@ async def me(request: Request) -> Any:
 
 # --------------------------------------------------------------------------- static
 
-async def helper_file(request: Request) -> Response:
-    return Response(HELPER.read_bytes(), media_type="text/x-python; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="asterism_helper.py"'})
-
-
 STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
                 ".woff": "font/woff", ".ttf": "font/ttf"}
 
@@ -358,29 +352,7 @@ async def api_revoke(request: Request) -> Any:
     return projects.revoke_credential(pj, actor, request.path_params["cred"])
 
 
-async def api_device(request: Request) -> Any:
-    slug, code = request.path_params["slug"], request.path_params["code"]
-    person = require_person(request)
-    if request.method == "GET":
-        v = agents.device_view(store(), slug, person, code)
-        return {"computer": v["computer"], "kind": v["kind"], "status": v["status"]}
-    b = await body_json(request)
-    return agents.device_decide(store(), slug, person, code, b.get("decision"), b.get("switches"))
-
-
-# --------------------------------------------------------------------------- device flow (no authentication)
-
-async def device_start(request: Request) -> Any:
-    b = await body_json(request)
-    return agents.device_start(store(), request.path_params["slug"], b.get("kind"), b.get("computer"))
-
-
-async def device_token(request: Request) -> Any:
-    b = await body_json(request)
-    return agents.device_token(store(), request.path_params["slug"], b.get("device_code"))
-
-
-# --------------------------------------------------------------------------- agent API (helper to server)
+# --------------------------------------------------------------------------- agent API (per session)
 
 def agent_caller(request: Request) -> agents.Caller:
     return agents.credential_caller(store(), request.path_params["slug"], bearer(request),
@@ -429,7 +401,7 @@ async def agent_poll(request: Request, c: agents.Caller) -> Any:
         timeout = float(request.query_params.get("timeout", "25"))
     except ValueError:
         raise bad_request("invalid_timeout", "timeout must be a number of seconds.") from None
-    # The helper going away ends the poll at once, which is what turns its agent offline after the grace
+    # The client going away ends the poll at once, which is what turns its agent offline after the grace
     # period instead of after the full poll timeout.
     return await agents.poll(c, timeout, disconnect_watch(request))
 
@@ -744,26 +716,11 @@ async def admin_page(request: Request) -> Response:
     return html(pages.admin(tr_for(request), person, pj.slug, view, projects.permissions(pj, actor)))
 
 
-async def device_page(request: Request) -> Response:
-    ctx = _page_context(request, request.path_params["slug"])
-    if isinstance(ctx, Response):
-        return ctx
-    person, pj, actor = ctx
-    code = request.query_params.get("code")
-    view = None
-    if code:
-        try:
-            view = agents.device_view(store(), pj.slug, person, code)
-        except ApiError as e:
-            return page_error(request, e, person)
-    return html(pages.device(tr_for(request), person, pj.slug, projects.info(pj)["name"], code, view, can_admin(pj, actor)))
-
-
 # --------------------------------------------------------------------------- guard middleware
 
 # Paths that never act on the session cookie, so a cross-site check would only get in the way of
 # clients that are not browsers.
-COOKIELESS_SUFFIXES = ("/mcp", "/device/start", "/device/token", "/redeem")
+COOKIELESS_SUFFIXES = ("/mcp", "/redeem")
 COOKIELESS_PREFIXES = ("/oauth/token", "/oauth/register")
 COOKIELESS_PARTS = ("/api/agent/", "/api/computer/")
 CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'"
@@ -830,7 +787,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/login/callback", login_callback),
         Route("/logout", logout, methods=["POST"]),
         Route("/api/me", api(me)),
-        Route("/helper.py", helper_file),
         Route("/static/{path:path}", static_file),
         Route("/join/{code}", join, methods=["GET", "POST"]),
         Route("/.well-known/oauth-protected-resource/{slug}/mcp", oauth_prm),
@@ -849,9 +805,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/members", members_page),
         Route("/{slug}/my", my_page),
         Route("/{slug}/admin", admin_page),
-        Route("/{slug}/device", device_page),
-        Route("/{slug}/device/start", api(device_start), methods=["POST"]),
-        Route("/{slug}/device/token", api(device_token), methods=["POST"]),
         Route("/{slug}/mcp", mcp, methods=["GET", "POST", "DELETE"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
@@ -862,7 +815,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/my/switches", api(api_switches), methods=["POST"]),
         Route("/{slug}/api/my/agent-invites", api(api_agent_invites, 201), methods=["POST"]),
         Route("/{slug}/api/my/credentials/{cred:int}/revoke", api(api_revoke), methods=["POST"]),
-        Route("/{slug}/api/device/{code}", api(api_device), methods=["GET", "POST"]),
         Route("/{slug}/api/channels", api(api_channels), methods=["GET"]),
         Route("/{slug}/api/channels", api(api_channel_create, 201), methods=["POST"]),
         Route("/{slug}/api/channels/{name}/mute", api(api_channel_mute), methods=["POST"]),

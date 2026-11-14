@@ -1,143 +1,34 @@
-"""Agents: authorising a computer (device flow), a session registering as an agent, and the agent's side of
+"""Agents: a session registering as an agent, and the agent's side of
 messages (send, messages, wait, the poll that hands out deliveries, ack).
 
-The helper-facing HTTP API and both MCP faces call these with a Caller that says which person, credential
+The per-session agent HTTP API and both MCP faces call these with a Caller that says which person, credential
 and session a call comes from.
 """
 from __future__ import annotations
 
 import asyncio
 import re
-import secrets
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from . import config, messaging, notices, presence, projects, util
-from .errors import ApiError, bad_request, conflict, invalid_credential, not_found
+from . import messaging, notices, presence, projects, util
+from .errors import ApiError, bad_request, conflict, invalid_credential
 from .projects import Actor, Project
 from .store import Store
 
 LOCAL_KINDS = ("claude-code", "codex")
-DEVICE_KINDS = ("claude-code", "codex", "other")      # `other`: the helper was told no particular agent
-USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ"           # no vowels (no words), no look-alikes
 SESSION_RE = re.compile(r"[\x21-\x7e]{1,200}")
 POLL_MAX_S = 60.0
 
 NOT_REGISTERED = "This session is not registered. Call register with your agent name first."
 
 
-# --------------------------------------------------------------------------- device flow (RFC 8628)
-
-def _device_error(code: str, message: str) -> ApiError:
-    return ApiError(400, code, message)
-
-
-def _norm_user_code(raw: str) -> str:
-    return "".join(ch for ch in str(raw).upper() if ch.isalnum())
-
-
-def device_start(store: Store, slug: str, kind: Any, computer: Any) -> dict[str, Any]:
-    projects.open_project(store, slug)
-    if kind not in DEVICE_KINDS:
-        raise bad_request("invalid_kind", "kind must be one of: " + ", ".join(DEVICE_KINDS))
-    label = util.clean_label(computer)
-    if not label:
-        raise bad_request("invalid_computer", "computer must name this computer.")
-    db = store.accounts()
-    device_code = util.new_secret()
-    t, ttl = util.now(), config.get().device_ttl_s
-    with db:
-        db.execute("DELETE FROM device_requests WHERE expires < ?", (t - 86400,))
-        while True:
-            user = "".join(secrets.choice(USER_CODE_ALPHABET) for _ in range(8))
-            if not db.execute("SELECT 1 FROM device_requests WHERE user_digest = ?", (util.digest(user),)).fetchone():
-                break
-        db.execute("INSERT INTO device_requests (slug, device_digest, user_digest, kind, computer, created, expires, status) "
-                   "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')", (slug, util.digest(device_code), util.digest(user), kind, label, t, t + ttl))
-    shown = f"{user[:4]}-{user[4:]}"
-    uri = f"{config.get().public_url}/{slug}/device"
-    util.log("device_started", project=slug, kind=kind, computer=label)
-    return {"device_code": device_code, "user_code": shown, "verification_uri": uri,
-            "verification_uri_complete": f"{uri}?code={shown}", "interval": 3, "expires_in": int(ttl)}
-
-
-def _status(r: sqlite3.Row) -> str:
-    if r["status"] == "issued":
-        return "approved"
-    if r["status"] == "pending" and r["expires"] < util.now():
-        return "expired"
-    return r["status"]
-
-
-def _device_by_user_code(store: Store, slug: str, user_code: str) -> sqlite3.Row:
-    r = store.accounts().execute("SELECT * FROM device_requests WHERE user_digest = ? AND slug = ?",
-                                 (util.digest(_norm_user_code(user_code)), slug)).fetchone()
-    if not r:
-        raise not_found("There is no such authorisation request. Check the code, or start again.")
-    return r
-
-
-def device_view(store: Store, slug: str, person: sqlite3.Row, user_code: str) -> dict[str, Any]:
-    pj = projects.open_project(store, slug)
-    actor = projects.require_member(pj, person)
-    r = _device_by_user_code(store, slug, user_code)
-    return {"computer": r["computer"], "kind": r["kind"], "status": _status(r),
-            "switches": projects.switches(pj, actor.person_id)}
-
-
-def device_decide(store: Store, slug: str, person: sqlite3.Row, user_code: str, decision: Any,
-                  switches: Any = None) -> dict[str, Any]:
-    """The signed-in person approves or denies a computer acting in their name; the switches of their
-    own group are set with the same click."""
-    pj = projects.open_project(store, slug)
-    actor = projects.require_member(pj, person)
-    projects.require(pj, actor, "manage_own_agents", "Authorising agents needs the manage_own_agents permission.")
-    if decision not in ("approve", "deny"):
-        raise bad_request("invalid_decision", "decision must be approve or deny.")
-    r = _device_by_user_code(store, slug, user_code)
-    status = _status(r)
-    if status == "expired":
-        raise ApiError(410, "gone", "This request has expired. Start the authorisation again.")
-    if status != "pending":
-        raise conflict(f"This request was already {status}.")
-    if decision == "approve" and switches is not None:
-        projects.set_switches(pj, actor, switches)
-    db = store.accounts()
-    with db:
-        db.execute("UPDATE device_requests SET status = ?, person_id = ? WHERE id = ?",
-                   ("approved" if decision == "approve" else "denied", person["id"], r["id"]))
-    util.log("device_decided", project=slug, request=r["id"], decision=decision, person=person["id"])
-    return {"status": "approved" if decision == "approve" else "denied"}
-
-
-def device_token(store: Store, slug: str, device_code: Any) -> dict[str, Any]:
-    """The helper's poll. The credential is created here, so it exists in clear only in this one answer."""
-    pj = projects.open_project(store, slug)
-    db = store.accounts()
-    r = db.execute("SELECT * FROM device_requests WHERE device_digest = ? AND slug = ?",
-                   (util.digest(str(device_code or "")), slug)).fetchone()
-    if not r or r["status"] == "issued":
-        raise _device_error("expired_token", "This device code is used up or unknown. Start the authorisation again.")
-    status = _status(r)
-    if status == "expired" or r["expires"] < util.now():
-        raise _device_error("expired_token", "Nobody approved this request in time. Start the authorisation again.")
-    if status == "denied":
-        raise _device_error("access_denied", "The person denied this request.")
-    if status == "pending":
-        raise _device_error("authorization_pending", "Waiting for the person to approve.")
-    holder = pj.db.execute("SELECT name FROM people WHERE person_id = ?", (r["person_id"],)).fetchone()
-    if not holder:                      # removed between approving and collecting
-        raise _device_error("access_denied", "The approving person is no longer a member.")
-    with db:
-        db.execute("UPDATE device_requests SET status = 'issued' WHERE id = ?", (r["id"],))
-    _, secret = issue_computer_credential(pj, r["person_id"], r["computer"], "device")
-    return {"credential": secret, "person": holder["name"]}
-
+# --------------------------------------------------------------------------- credentials
 
 def issue_computer_credential(pj: Project, person_id: int, computer: str, via: str) -> tuple[int, str]:
-    """A computer authorised to act for the person: by an approved device request or a redeemed agent
-    invitation link. Returns (id, the secret)."""
+    """A computer authorised to act for the person by a redeemed agent invitation link.
+    Returns (id, the secret)."""
     return projects.issue_credential(pj, person_id, "computer", computer, via)
 
 
@@ -154,7 +45,7 @@ class Caller:
 
 def credential_caller(store: Store, slug: str, credential: str | None, session: str | None,
                       kind: str | None) -> Caller:
-    """A helper's call: the credential says which person, the session header which session."""
+    """A call of the per-session agent API: the credential says which person, the session header which session."""
     pj = projects.open_project(store, slug)
     if not credential:
         raise invalid_credential()
@@ -328,10 +219,10 @@ def leave(c: Caller) -> dict[str, Any]:
 
 
 async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
-    """Held open by the helper while its session is registered; while it is open the agent is online.
+    """Held open by the client while its session is registered; while it is open the agent is online.
     It answers at once with the deliveries that wait for the agent (unless a `wait` of the agent is open,
     which takes the messages instead), and otherwise ends at the timeout, when the binding changes, or when
-    the helper goes away."""
+    the client goes away."""
     a = bound_agent(c)
     if a is None:
         raise ApiError(409, "not_registered", NOT_REGISTERED)

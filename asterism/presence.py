@@ -5,7 +5,7 @@ programs reconnect.
 Online, the one definition every part of the server uses: the agent is bound to a session, it is not held
 offline (`unanswered` or `silent`, until its session calls a tool), and
 - a local agent (Claude Code, Codex): either its session has a presence poll of its own open, or had one
-  less than ASTERISM_OFFLINE_AFTER_S ago (the per-session helper); or the credential its session came
+  less than ASTERISM_OFFLINE_AFTER_S ago (the per-session API); or the credential its session came
   through has a computer poll open, or had one less than ASTERISM_OFFLINE_AFTER_S ago, and the bound
   session is in the list of sessions that computer reported (the resident program);
 - a connector agent (ChatGPT): it has a live event subscription.

@@ -102,8 +102,8 @@ def invite_text(store: Store, slug: str, code: str) -> str:
 
 
 def redeem(store: Store, slug: str, code: str, credential: str | None, computer: Any, product: Any) -> dict[str, Any]:
-    """Redeeming the link is the consent: the computer gets a credential of the inviting member, as an
-    approved device request gives it. A computer already authorised for that member keeps its credential.
+    """Redeeming the link is the consent: the computer gets a credential of the inviting member.
+    A computer already authorised for that member keeps its credential.
     The link is used up either way, except when the request is refused."""
     pj, row, person = _usable(store, slug, code)
     if product not in agents.LOCAL_KINDS:

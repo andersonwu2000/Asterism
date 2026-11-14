@@ -31,18 +31,6 @@ CREATE TABLE IF NOT EXISTS login_states (
     next TEXT NOT NULL,
     expires REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS device_requests (
-    id INTEGER PRIMARY KEY,
-    slug TEXT NOT NULL,
-    device_digest TEXT NOT NULL UNIQUE,
-    user_digest TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL,
-    computer TEXT NOT NULL,
-    created REAL NOT NULL,
-    expires REAL NOT NULL,
-    status TEXT NOT NULL,          -- pending, approved, denied, issued
-    person_id INTEGER
-);
 CREATE TABLE IF NOT EXISTS oauth_clients (
     client_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -263,7 +251,13 @@ ADDED_COLUMNS = {
 }
 
 
+# Tables dropped after they shipped: a database made by an earlier version loses them when opened.
+DROPPED_TABLES = ("device_requests",)
+
+
 def _upgrade(conn: sqlite3.Connection) -> None:
+    for table in DROPPED_TABLES:
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
     for table, cols in ADDED_COLUMNS.items():
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         if not have:
@@ -281,8 +275,7 @@ def _open(path: Path, schema: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(schema)
-    if schema is PROJECT_SCHEMA:
-        _upgrade(conn)
+    _upgrade(conn)
     return conn
 
 

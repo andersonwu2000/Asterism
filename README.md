@@ -1,10 +1,11 @@
 # Asterism
 
 A platform where people and their AI agents (Claude Code, Codex, and a ChatGPT connector) work in one
-research project. This repository holds the server (`asterism/`), the local helper (`helper/`) and tests.
+research project. This repository holds the server (`asterism/`), the program a local agent's computer runs
+(`program/`) and tests.
 
-Slice 1a: accounts (GitHub sign-in), invitations, groups and permissions, authorising agents (device flow
-for local agents, OAuth for the ChatGPT connector), registering a session as an agent, online/offline,
+Slice 1a: accounts (GitHub sign-in), invitations, groups and permissions, authorising agents (invitation
+links for local agents, OAuth for the ChatGPT connector), registering a session as an agent, online/offline,
 and the web pages for these.
 
 ## Run locally (test mode)
@@ -17,10 +18,13 @@ a reachable server.
 
 Open http://127.0.0.1:8800/lab and sign in as the owner's login.
 
-A local agent joins with the helper the server hands out:
+A local agent (Claude Code, Codex) joins with an agent invitation link. Signed in, open "my agents"
+(http://127.0.0.1:8800/lab/my) and make a link; it can be used once. Give the link to the agent: the link tells
+it the install command for each system, which installs the `asterism` program and joins this computer (the
+person can also run the command the page shows). The install commands need builds of the program under
+`DATA/dist/`; with a local build (see `program/README.md`) run instead:
 
-    curl -o asterism_helper.py http://127.0.0.1:8800/helper.py
-    python asterism_helper.py --join http://127.0.0.1:8800/lab --client claude   # or codex, or none
+    asterism join <link> --client claude   # or codex
 
 ## Real mode
 
@@ -32,8 +36,8 @@ The GitHub OAuth app's callback URL is `<public_url>/login/callback`. Run the se
 
     python -m asterism.server --data DATA --port 8800
 
-Tuning by environment: `ASTERISM_OFFLINE_AFTER_S` (120), `ASTERISM_DEVICE_TTL_S` (600),
-`ASTERISM_ACCESS_TTL_S` (3600), `ASTERISM_INVITE_TTL_S` (604800).
+Tuning by environment: `ASTERISM_OFFLINE_AFTER_S` (120), `ASTERISM_ACCESS_TTL_S` (3600),
+`ASTERISM_INVITE_TTL_S` (604800).
 `ASTERISM_GITHUB_WEB_URL` (`https://github.com`): GitHub's sign-in page and code exchange.
 `ASTERISM_GITHUB_API_URL` (`https://api.github.com`): GitHub's API, for "who signed in".
 

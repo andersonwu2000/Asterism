@@ -231,40 +231,16 @@ def my(tr: Translator, person: dict[str, Any], slug: str, mine: dict[str, Any], 
     return layout(tr, tr("my.title"), "".join(parts), person, slug, can_admin)
 
 
-def switch_boxes(tr: Translator, values: dict[str, bool], toggle: str | None = None, form_field: bool = False) -> str:
+def switch_boxes(tr: Translator, values: dict[str, bool], toggle: str | None = None) -> str:
     """The four switches. On "my agents" each saves at once; on an approval page they go with the form."""
     out = []
     for k in SWITCHES:
         later = "" if k in ENFORCED_SWITCHES else f' <span class="muted">{e(tr("switch.later"))}</span>'
         checked = " checked" if values.get(k) else ""
-        if toggle:
-            attrs = f'data-toggle="{e(toggle)}"'
-        elif form_field:
-            attrs = 'value="1"'
-        else:
-            attrs = 'data-in="switches"'
+        attrs = f'data-toggle="{e(toggle)}"' if toggle else 'value="1"'
         out.append(f'<div><label><input type="checkbox" name="{k}" {attrs}{checked}> {e(tr("switch." + k))}</label>'
                    f'{later} <span class="out" data-out></span></div>')
     return "".join(out)
-
-
-def device(tr: Translator, person: dict[str, Any], slug: str, project_name: str, code: str | None,
-           view: dict[str, Any] | None, can_admin: bool) -> tuple[str, int]:
-    if not code or view is None:
-        body = (f'<form method="get" action="/{q(slug)}/device"><label>{e(tr("device.enter_code"))} '
-                f'<input name="code" required autofocus></label> <button>{e(tr("device.lookup"))}</button></form>')
-        return layout(tr, tr("device.title"), body, person, slug, can_admin)
-    if view["status"] != "pending":
-        return layout(tr, tr("device.title"), f'<p>{e(tr("device.status." + view["status"]))}</p>', person, slug, can_admin)
-    body = (f'<p>{e(tr("device.ask", computer=view["computer"], kind=tr("kind." + view["kind"]), project=project_name))}</p>'
-            f'<p>{e(tr("device.code", code=code))}</p><p class="muted">{e(tr("device.warning"))}</p>'
-            f'<form data-api="/{q(slug)}/api/device/{q(code)}" data-ok-approve="{e(tr("device.done.approve"))}" '
-            f'data-ok-deny="{e(tr("device.done.deny"))}">'
-            f'<h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>'
-            f'{switch_boxes(tr, view["switches"])}'
-            f'<p><button name="decision" value="approve">{e(tr("device.approve"))}</button> '
-            f'<button name="decision" value="deny">{e(tr("device.deny"))}</button> <span class="out" data-out></span></p></form>')
-    return layout(tr, tr("device.title"), body, person, slug, can_admin)
 
 
 def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str, project_name: str,
@@ -274,9 +250,9 @@ def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str,
     body = (f'<p>{e(tr("consent.ask", client=client_name, project=project_name, host=host))}</p>'
             f'<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="switches" value="1">'
             f'<h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>'
-            f'{switch_boxes(tr, switches, form_field=True)}'
-            f'<p><button name="decision" value="approve">{e(tr("device.approve"))}</button> '
-            f'<button name="decision" value="deny">{e(tr("device.deny"))}</button></p></form>')
+            f'{switch_boxes(tr, switches)}'
+            f'<p><button name="decision" value="approve">{e(tr("consent.approve"))}</button> '
+            f'<button name="decision" value="deny">{e(tr("consent.deny"))}</button></p></form>')
     return layout(tr, tr("consent.title"), body, person)
 
 

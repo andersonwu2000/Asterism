@@ -15,7 +15,6 @@ class Settings:
     github_client_secret: str
     test_mode: bool
     offline_after_s: float          # no presence poll for this long = offline
-    device_ttl_s: float             # a device authorisation request nobody approved expires
     access_ttl_s: float             # OAuth access token lifetime
     invite_ttl_s: float
     agent_invite_ttl_s: float       # life of an agent invitation link
@@ -61,7 +60,6 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
     return Settings(data=data, public_url=public, github_client_id=cid, github_client_secret=secret,
                     test_mode=test_mode,
                     offline_after_s=_env_s("ASTERISM_OFFLINE_AFTER_S", 120),
-                    device_ttl_s=_env_s("ASTERISM_DEVICE_TTL_S", 600),
                     access_ttl_s=_env_s("ASTERISM_ACCESS_TTL_S", 3600),
                     invite_ttl_s=_env_s("ASTERISM_INVITE_TTL_S", 604800),
                     agent_invite_ttl_s=_env_s("ASTERISM_AGENT_INVITE_TTL_S", 900),
