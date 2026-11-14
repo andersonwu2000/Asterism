@@ -163,9 +163,12 @@ def test_notices_reach_only_those_close_to_the_agent(v):
     for member in ("alice", "bob", "n1"):                   # a person gives an agent only groups the person is in
         r = v.alice.c.post(f"/{SLUG}/api/members/{member}/groups", json={"add": ["lemma-team"], "remove": []})
         assert r.status_code == 200, r.text
+    r = n1.c.post(f"/{SLUG}/api/agent/task", json={"group": "lemma-team", "text": "hold the lemma [nt]", "responsible": "n1"})
+    assert r.status_code == 200, r.text
+    off = "n1 is offline. Its tasks:" + chr(10) + f"{r.json()['task']['id']} [lemma-team] hold the lemma [nt]"
     leave(n1)
     assert until(lambda: system_messages(v.bob, off), 5)
-    assert system_messages(v.bob, off)[0]["level"] == "normal", "bob shares a custom group with n1"
+    assert system_messages(v.bob, off)[0]["level"] == "normal", "bob shares a custom group with n1, whose work is unattended now"
     assert system_messages(v.carol, off)[0]["level"] == "muted", "the default groups do not count"
     assert logged(v, "agent_offline", agent="n1", reason="left") and logged(v, "agent_online", agent="n1")
     time.sleep(REMIND_S + 1.5)
@@ -236,6 +239,8 @@ def test_the_connector_is_woken_by_signed_events(v):
                                                    "delivery": {"mode": "webhook", "url": url or recv.url,
                                                                 "secret": recv.secret}}, token).json()
         assert "error" in subscribe(agent="b1"), "only for an agent of one's own"
+        local = subscribe(agent="a1")["error"]["message"]
+        assert "its messages reach it through the Asterism program on its computer" in local and "helper" not in local
         assert "error" in subscribe(name="files.changed")
         assert "error" in subscribe(url=f"http://127.0.0.1:{free_port()}/nobody"), "the callback must prove itself"
         assert not v.alice.is_online("dot-e")

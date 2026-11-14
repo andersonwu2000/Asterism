@@ -657,3 +657,30 @@ def test_uninstall_stops_an_older_resident_program(exe, v, home, tmp_path):
     finally:
         if old.poll() is None:
             old.kill()
+
+
+# ------------------------------------------------------------------ the task tools
+
+def test_the_program_has_the_task_tools(exe, v, home):
+    join(exe, home, v, "--client", "none")
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-tk-1")
+    try:
+        schema = m.tools["task_update"]["inputSchema"]
+        assert set(schema["properties"]) == {"id", "group", "text", "responsible", "remove"} and not schema.get("required")
+        assert not m.tools["tasks"]["inputSchema"].get("properties")
+        assert not m.tool("register", name="tara")[1]
+        made, bad = m.tool("task_update", group="alice-agents", text="Through the program [tk1]", responsible="tara")
+        assert not bad and made["task"]["responsible"] == "tara" and made["task"]["assigned_by"] is None, made
+        tid = made["task"]["id"]
+        got, bad = m.tool("tasks")
+        assert not bad and tid in [x["id"] for x in got["tasks"]], got
+        who, bad = m.tool("whoami")
+        assert not bad and next(a for a in who["agents"] if a["name"] == "tara")["busy"] is True
+        changed, bad = m.tool("task_update", id=tid, responsible="")
+        assert not bad and changed["task"]["responsible"] is None, "an empty string means nobody"
+        msg, bad = m.tool("task_update", id=tid, text="x" * 2_001)
+        assert bad and isinstance(msg, str), "a refusal is the server's sentence"
+        gone, bad = m.tool("task_update", id=tid, remove=True)
+        assert not bad and gone["removed"] == tid
+    finally:
+        m.kill()

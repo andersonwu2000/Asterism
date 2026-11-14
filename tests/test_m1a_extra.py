@@ -120,7 +120,7 @@ def test_the_mcp_face_answers_the_protocol(srv):
     assert "tools" in r.json()["result"]["capabilities"]
     assert post({"jsonrpc": "2.0", "method": "notifications/initialized"}).status_code == 202
     names = [t["name"] for t in post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]]
-    assert names == ["register", "leave", "whoami", "send", "messages", "wait"]      # slice 1b adds the message tools
+    assert names == ["register", "leave", "whoami", "send", "messages", "wait", "tasks", "task_update"]
     assert post({"jsonrpc": "2.0", "id": 3, "method": "resources/list"}).json()["error"]["code"] == -32601
     assert post({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "nope"}}).json()["error"]["code"] == -32602
     assert post([{"jsonrpc": "2.0", "id": 5, "method": "ping"}]).json()["error"]["code"] == -32600
