@@ -653,13 +653,16 @@ _NOT_HANDED = ("l.seen IS NULL AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE 
                "AND d.message_id = l.message_id AND d.state IN ('out', 'done'))")
 
 
-def _unread_rows(pj: Project, me: Member, place: str | None = None, limit: int | None = None) -> list[sqlite3.Row]:
+def _unread_rows(pj: Project, me: Member, place: str | None = None, limit: int | None = None,
+                 important: bool = False) -> list[sqlite3.Row]:
     sql = ("SELECT m.* FROM levels l JOIN messages m ON m.id = l.message_id "
            "LEFT JOIN reads r ON r.reader_kind = l.reader_kind AND r.reader_id = l.reader_id AND r.place = m.place "
            "WHERE l.reader_kind = ? AND l.reader_id = ? AND l.message_id > coalesce(r.upto, 0)")
     args: list[Any] = [me.kind, me.id]
     if me.kind == "agent":
         sql += " AND " + _NOT_HANDED
+    if important:
+        sql += " AND l.level = 'important'"
     if place is not None:
         sql += " AND m.place = ?"
         args.append(place)
@@ -703,13 +706,17 @@ def _read_position(pj: Project, me: Member, place: str) -> int:
 
 
 def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, limit: Any) -> dict[str, Any]:
-    """`id`: one message again. `before`: older ones. Otherwise the unread messages of the place, and the read
-    position moves to the last one returned. Whatever is returned counts as handed over in full."""
+    """`id`: one message again. `before`: older ones. No place: the unread important messages of every place,
+    and no read position moves (the normal ones between them stay unread). Otherwise the unread messages of the
+    place, and the read position moves to the last one returned. Whatever is returned counts as handed over in
+    full."""
     one = _int(mid, "id")
     older = _int(before, "before")
     n = _limit(limit)
     if one is not None:
         rows = [_message(pj, me, one, "")]
+    elif (where is None or where == "") and older is None:
+        rows = _unread_rows(pj, me, None, n, important=True)
     else:
         if where is None or where == "":
             raise bad_request("bad_request", "Say which place to read: `in` is a #channel or a member's name; "

@@ -52,8 +52,9 @@ DESCRIPTIONS = {
     "send": "Post a message. `to` is a channel (`#name`) or a member's name for a private message. Write `@name` in "
             "the text to make it important for that member: they are woken and must answer. Set `reply_to` to the id "
             "of the message you are answering.",
-    "messages": "Read a channel or a private conversation. By default the unread messages; pass `id` to read one "
-                "message again, or `before` to read older ones.",
+    "messages": "Read messages. Without arguments: the unread important messages addressed to you, from every "
+                "channel and private conversation. With `in` (a channel `#name` or a member's name): all unread "
+                "messages of that place; pass `before` to read older ones. Pass `id` to read one message again.",
     "wait": "Block until a message for you arrives or `timeout_s` seconds pass (at most 100). Use it only to stay in "
             "the same turn after asking something.",
 }
@@ -551,6 +552,30 @@ def test_unread_and_the_messages_tool(w):
     assert sent["id"] not in [m["id"] for m in listed], "what was handed over in full is not unread"
 
 
+def test_messages_without_a_place_gives_the_unread_important_ones(w):
+    """What an agent asks first when it comes back or cannot be woken: is anyone waiting for me?"""
+    mira = Agent(w.srv, w.cred_a, "s-mira").register("mira")              # registered, never online
+    assert until(lambda: not w.alice.is_online("mira"), OFFLINE_S + 5)
+    m1 = w.alice.say("@mira the first thing [mi1]")
+    m2 = w.alice.say("a note for nobody in particular [mi2]")             # muted for mira
+    m3 = w.alice.say("a private word [mi3]", to="mira")
+    m4 = w.bob.say("@mira hello from bob [mi4]")                          # closed to bob: muted for mira
+    m5 = w.alice.say("@mira and one more in another channel [mi5]", to="#proofs")
+    r = mira.messages(limit=2)
+    assert r.status_code == 200, r.text
+    first = r.json()["messages"]
+    assert [m["id"] for m in first] == [m1["id"], m3["id"]], "important only, oldest first, from every place"
+    assert all(m["level"] == "important" for m in first) and first[1]["private"] is True
+    assert [m["id"] for m in mira.messages().json()["messages"]] == [m5["id"]]
+    assert mira.messages().json()["messages"] == [], "what was read this way is not given again"
+    left = [m["id"] for m in mira.messages(place="#general", limit=200).json()["messages"]]
+    assert m2["id"] in left and m4["id"] in left and m1["id"] not in left,         "the read position did not move: the muted ones between them are still unread there"
+    mira.online()
+    assert until(lambda: w.alice.is_online("mira"))
+    mira.absent("[mi", 2.0)                                               # nothing of it is pushed afterwards
+    assert mira.messages(before=m5["id"]).status_code == 400, "`before` needs a place"
+
+
 def test_wait_takes_the_message_instead_of_the_push(w):
     box = {}
 
@@ -627,6 +652,8 @@ def test_the_connector_has_the_same_message_tools(w):
     w.a1.say("the answer [rm2]", reply_to=sent["id"])
     got, bad = remote_tool(w.srv, "messages", token, "conv-1", **{"in": "#general", "limit": 200})
     assert not bad and any("[rm2]" in x["text"] for x in got["messages"])
+    got, bad = remote_tool(w.srv, "messages", token, "conv-1")
+    assert not bad and isinstance(got["messages"], list), "no arguments: the unread important ones"
     got, bad = remote_tool(w.srv, "wait", token, "conv-1", timeout_s=1)
     assert not bad and got["messages"] == []
 

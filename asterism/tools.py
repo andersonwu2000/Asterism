@@ -45,8 +45,9 @@ TOOLS: list[dict[str, Any]] = [
                                                       "reply_to": {"type": "integer"}},
                      "required": ["text"]}},
     {"name": "messages",
-     "description": ("Read a channel or a private conversation. By default the unread messages; pass `id` to read one "
-                     "message again, or `before` to read older ones."),
+     "description": ("Read messages. Without arguments: the unread important messages addressed to you, from every "
+                     "channel and private conversation. With `in` (a channel `#name` or a member's name): all unread "
+                     "messages of that place; pass `before` to read older ones. Pass `id` to read one message again."),
      "inputSchema": {"type": "object", "properties": {"in": {"type": "string"}, "id": {"type": "integer"},
                                                       "before": {"type": "integer"},
                                                       "limit": {"type": "integer", "default": 50}}}},
