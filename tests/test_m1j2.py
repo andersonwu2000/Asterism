@@ -544,3 +544,116 @@ def test_a_claude_code_session_stays_connected_while_it_is_idle(exe, v, home, tm
         assert not m.tool("send", text="yes [idle1a]", reply_to=sent["id"])[1]
     finally:
         m.kill()
+
+
+# ------------------------------------------------------------------ a newer program replaces an older resident program
+
+STANDIN = Path(__file__).resolve().parent / "standin_resident.py"
+
+
+def standin(home: Path, version: str) -> subprocess.Popen:
+    """A resident program of another version (see standin_resident.py), running and answering."""
+    p = subprocess.Popen([sys.executable, str(STANDIN), str(home), version], stdout=subprocess.PIPE, text=True,
+                         env=dict(CLEAN, ASTERISM_HOME=str(home)))
+    assert p.stdout.readline().strip() == "ready"
+    assert daemon_info(home)["pid"] == p.pid
+    return p
+
+
+def own_version(exe, home) -> str:
+    rc, out = run(exe, home, "--version")
+    assert rc == 0 and out.startswith("asterism "), out
+    return out.split()[1]
+
+
+def resident_version(exe, home) -> str:
+    rc, shown = run(exe, home, "status")
+    assert rc == 0, shown
+    return shown
+
+
+def test_join_replaces_an_older_resident_program(exe, v, home, tmp_path):
+    """Seen live on 2026-11-14: the installer put 0.1.2 in place and ran `join`, but the resident program of
+    0.1.0 started that morning went on running, with the fault 0.1.2 had fixed. A program that finds an older
+    resident program in its state folder ends it and starts its own; 0.1.0 knows no `stop`, so asking is not
+    enough."""
+    old = standin(home, "0.1.0")
+    try:
+        join(exe, home, v, "--client", "none")
+        assert until(lambda: old.poll() is not None, 10), "the older resident program is still running"
+        info = daemon_info(home)
+        assert info["pid"] != old.pid and alive(info["pid"]) and info["version"] == own_version(exe, home), info
+        assert f"version {own_version(exe, home)}" in resident_version(exe, home)
+        ch = Channel(tmp_path)
+        m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-rp-1", CLAUDE_CODE_MESSAGING_SOCKET=ch.address)
+        try:
+            assert not m.tool("register", name="rita")[1]
+            assert until(lambda: v.alice.is_online("rita"), 10), "and the new one serves the sessions"
+        finally:
+            m.kill()
+    finally:
+        if old.poll() is None:
+            old.kill()
+
+
+def test_a_session_replaces_an_older_resident_program_too(exe, v, home, tmp_path):
+    """A conversation opened after an update finds the old resident program: its `mcp` replaces it as `join` does."""
+    join(exe, home, v, "--client", "none")
+    first = daemon_info(home)["pid"]
+    kill_pid(first)
+    assert until(lambda: not alive(first), 5)
+    old = standin(home, "0.1.1")
+    ch = Channel(tmp_path)
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-rp-2", CLAUDE_CODE_MESSAGING_SOCKET=ch.address)
+    try:
+        assert not m.tool("register", name="remy")[1]
+        assert until(lambda: old.poll() is not None, 10), "the older resident program is still running"
+        assert until(lambda: (daemon_info(home) or {}).get("version") == own_version(exe, home), 10)
+        assert until(lambda: v.alice.is_online("remy"), 10)
+        sent = v.alice.say("@remy are you reachable through the new one? [rp2]")
+        assert until(lambda: ch.users("[rp2]"), 10)
+        assert not m.tool("send", text="yes [rp2a]", reply_to=sent["id"])[1]
+    finally:
+        m.kill()
+        if old.poll() is None:
+            old.kill()
+
+
+def test_an_older_program_leaves_a_newer_resident_program_alone(exe, v, home, tmp_path):
+    """A conversation that has been open since before an update runs the old `mcp`; it must not pull the
+    resident program back to its own version, or the two would replace each other for ever. Numbers compare
+    as numbers: 0.1.10 is newer than 0.1.9."""
+    join(exe, home, v, "--client", "none")
+    first = daemon_info(home)["pid"]
+    kill_pid(first)
+    assert until(lambda: not alive(first), 5)
+    major, minor, patch = (int(x) for x in own_version(exe, home).split("."))
+    assert patch < 10, "this test assumes a one-digit patch number of the program under test"
+    newer = standin(home, f"{major}.{minor}.{patch + 10}")     # e.g. 0.1.13 against 0.1.3: text order would say older
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-rp-3")
+    try:
+        who, bad = m.tool("whoami")
+        assert not bad and who["registered"] is False, who
+        rc, shown = run(exe, home, "status")
+        time.sleep(4)
+        assert newer.poll() is None and daemon_info(home)["pid"] == newer.pid, "the newer resident program was replaced"
+    finally:
+        m.kill()
+        newer.kill()
+
+
+def test_uninstall_stops_an_older_resident_program(exe, v, home, tmp_path):
+    """`uninstall` asks the resident program to stop; one that does not know the request is ended all the same."""
+    codex_home, claude_cfg = tmp_path / "codex_home", tmp_path / "claude_cfg"
+    codex_home.mkdir()
+    claude_cfg.mkdir()
+    env = {"CODEX_HOME": str(codex_home), "CLAUDE_CONFIG_DIR": str(claude_cfg)}
+    old = standin(home, "0.1.0")
+    try:
+        rc, out = run(exe, home, "uninstall", **env)
+        assert rc == 0 and "panicked" not in out, out
+        assert until(lambda: old.poll() is not None, 10), "the older resident program is still running"
+        assert not (home / "daemon.json").exists()
+    finally:
+        if old.poll() is None:
+            old.kill()

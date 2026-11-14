@@ -344,3 +344,45 @@ def test_a_session_that_blinks_is_not_announced(j):
     pc.report(("s-bl1", "claude-code"))
     assert until(lambda: len(system_notes(j.alice, "blinky is online.")) == 2, 5), "a real return is announced at once"
     pc.disconnect()
+
+
+# ------------------------------------------------------------------ a restart of the server is nobody's absence
+
+def test_a_restart_of_the_server_announces_nobody(j):
+    """Seen live on 2026-11-14: a session blinked just before the server went down for a deploy, the report of
+    its return was refused while the server was away, and eleven seconds after the restart the channel was told
+    that its agent was offline. Nothing can reach a server that is down, so the clocks that wait for a program
+    to speak (the grace of a session that left the list, the time a computer may be silent) start again when
+    the server starts."""
+    cred = redeem(new_link(j.alice), computer="pc-12").json()["credential"]
+    Agent(j.srv, cred, "s-rs1", client="claude-code").register("rhea")
+    Agent(j.srv, cred, "s-rs2", client="codex").register("rollo")
+    pc = Computer(j.srv, cred)
+    pc.report(("s-rs1", "claude-code"), ("s-rs2", "codex"))
+    pc.connect()
+    assert until(lambda: row(j, "rhea")["online"] and row(j, "rollo")["online"], 6)
+    assert until(lambda: len(system_notes(j.alice, "rhea is online.")) == 1
+                 and len(system_notes(j.alice, "rollo is online.")) == 1, 5)
+
+    pc._stop.set()                                          # no poll after the one in flight
+    pc.report(("s-rs2", "codex"))                           # rhea's session blinks ...
+    assert until(lambda: row(j, "rhea")["offline_because"] == "session_closed", 2)
+    j.srv.stop()                                            # ... and the server is gone before it is back
+    time.sleep(max(NOTICE_GRACE_S, OFFLINE_S) + 1.5)        # away for longer than both clocks
+    j.srv.start()
+    time.sleep(1.5)                                         # the background task has looked by now
+    assert row(j, "rollo")["online"], "a computer that was connected has the usual time to come back"
+    assert system_notes(j.alice, "rhea is offline.") == [] and system_notes(j.alice, "rollo is offline.") == []
+
+    pc.report(("s-rs1", "claude-code"), ("s-rs2", "codex"))  # the program reconnects, as it does after a pause
+    pc.connect()
+    assert until(lambda: row(j, "rhea")["online"], 5)
+    time.sleep(max(NOTICE_GRACE_S, OFFLINE_S) + 1.5)
+    for name in ("rhea", "rollo"):
+        assert system_notes(j.alice, f"{name} is offline.") == [], "nobody was away: the server was"
+        assert len(system_notes(j.alice, f"{name} is online.")) == 1, "and nobody is announced as back"
+        assert not logged(j, "agent_offline", agent=name)
+
+    pc.report(("s-rs2", "codex"))                           # a session that really goes is still announced
+    assert until(lambda: len(system_notes(j.alice, "rhea is offline.")) == 1, NOTICE_GRACE_S + 4)
+    pc.disconnect()
