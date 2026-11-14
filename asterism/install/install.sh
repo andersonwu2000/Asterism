@@ -58,7 +58,7 @@ main() {
         fail "none of sha256sum, shasum or openssl is installed, so the download cannot be checked."
     fi
 
-    bin_dir="$HOME/.asterism/bin"
+    bin_dir="${ASTERISM_HOME:-$HOME/.asterism}/bin"      # where the program itself keeps its state
     target="$bin_dir/asterism"
     mkdir -p "$bin_dir"
     part="$bin_dir/.asterism.part.$$"

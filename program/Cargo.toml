@@ -1,6 +1,6 @@
 [package]
 name = "asterism"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.89"
 description = "The resident program of Asterism: joins this computer to a project, serves the agent tools over MCP and wakes local agent sessions."
@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
 getrandom = "0.2"
+sha2 = "0.10"
 
 # HTTPS: the operating system's TLS where there is one that needs no C compiler to build against
 # (Windows: SChannel; macOS: Security.framework), rustls with ring and the bundled Mozilla roots elsewhere

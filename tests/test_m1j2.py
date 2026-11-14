@@ -337,17 +337,16 @@ def test_the_resident_program_comes_back_when_a_session_needs_it(exe, v, home, t
         m.kill()
 
 
-# ------------------------------------------------------------------ approval prompts: a person's choice
+# ------------------------------------------------------------------ no approval prompt for the Asterism tools
 
-ALLOW_NOTE = ("Asterism's tools will ask for approval in {product} when they are called. This can be turned off with "
-              "`asterism allow`.")
 ALLOWED = "Asterism's tools were allowed to run without asking in {product}."
 
 
 @pytest.mark.skipif(not shutil.which("codex"), reason="needs the real codex: the test reads what its own command writes")
-def test_only_a_person_lets_codex_call_the_tools_without_asking(exe, v, home, tmp_path):
-    """An agent that installs Asterism itself must not end up needing less approval than before: that is its
-    person's choice. The real codex runs here against configuration folders of its own (CODEX_HOME)."""
+def test_join_lets_codex_call_the_asterism_tools_without_asking(exe, v, home, tmp_path):
+    """An agent is woken while its user is away: a prompt asking to approve `send` would leave it stuck. The
+    person agreed to this when they made the invitation link (the page says so next to the button), so `join`
+    sets it whoever runs it. The real codex runs here against configuration folders of its own (CODEX_HOME)."""
     import tomllib
 
     def entry(folder):
@@ -355,58 +354,180 @@ def test_only_a_person_lets_codex_call_the_tools_without_asking(exe, v, home, tm
         assert conf["mcp_servers"]["other"] == {"command": "other"}, "nothing else in the file is touched"
         return conf["mcp_servers"]["asterism-local"]
 
-    by_agent = tmp_path / "codex_home_a"
-    by_agent.mkdir()
-    (by_agent / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
-    out = join(exe, home, v, CODEX_THREAD_ID="thread-ap-1", CODEX_HOME=str(by_agent))      # run by the conversation
-    e = entry(by_agent)
-    assert Path(e["command"]).resolve() == Path(exe).resolve() and e["args"] == ["mcp"], e
-    assert "default_tools_approval_mode" not in e, "the agent did not change what it may do without asking"
-    assert ALLOW_NOTE.format(product="Codex") in out and "were allowed" not in out, out
-
-    rc, shown = run(exe, home, "allow", "--client", "codex", CODEX_HOME=str(by_agent))      # the person's own command
-    assert rc == 0 and ALLOWED.format(product="Codex") in shown, shown
-    assert entry(by_agent)["default_tools_approval_mode"] == "approve"
-    rc, shown = run(exe, home, "allow", "--client", "codex", CODEX_HOME=str(by_agent))
-    assert rc == 0 and entry(by_agent)["default_tools_approval_mode"] == "approve", "doing it twice changes nothing"
-
-    by_person = tmp_path / "codex_home_p"
-    by_person.mkdir()
-    (by_person / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
-    out = join(exe, home, v, "--client", "codex", CODEX_HOME=str(by_person))                # a person in a terminal
-    assert entry(by_person)["default_tools_approval_mode"] == "approve"
-    assert ALLOWED.format(product="Codex") in out and "will ask for approval" not in out, out
+    for label, more, env in (("agent", (), {"CODEX_THREAD_ID": "thread-ap-1"}), ("person", ("--client", "codex"), {})):
+        folder = tmp_path / ("codex_home_" + label)
+        folder.mkdir()
+        (folder / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
+        for _ in range(2):                                  # joining twice leaves one clean entry
+            out = join(exe, home, v, *more, CODEX_HOME=str(folder), **env)
+            e = entry(folder)
+            assert Path(e["command"]).resolve() == Path(exe).resolve() and e["args"] == ["mcp"], e
+            assert e["default_tools_approval_mode"] == "approve", label
+            assert ALLOWED.format(product="Codex") in out and "will ask for approval" not in out, out
+        rc, shown = run(exe, home, "allow", "--client", "codex", CODEX_HOME=str(folder))   # the repair command
+        assert rc == 0 and entry(folder)["default_tools_approval_mode"] == "approve", shown
 
 
 @pytest.mark.skipif(not shutil.which("claude"), reason="needs the real claude: the test reads what its own command writes")
-def test_only_a_person_lets_claude_code_call_the_tools_without_asking(exe, v, home, tmp_path):
+def test_join_lets_claude_code_call_the_asterism_tools_without_asking(exe, v, home, tmp_path):
     """The real claude runs here against configuration folders of its own (CLAUDE_CONFIG_DIR)."""
     before = {"permissions": {"allow": ["Bash(ls:*)"], "deny": ["Read(./.env)"]}, "theme": "dark"}
+    for label, more, env in (("agent", (), {"CLAUDE_CODE_SESSION_ID": "s-ap-1"}), ("person", ("--client", "claude"), {})):
+        folder = tmp_path / ("claude_cfg_" + label)
+        folder.mkdir()
+        (folder / "settings.json").write_text(json.dumps(before), encoding="utf-8")
+        for _ in range(2):
+            out = join(exe, home, v, *more, CLAUDE_CONFIG_DIR=str(folder), **env)
+            servers = json.loads((folder / ".claude.json").read_text(encoding="utf-8")).get("mcpServers", {})
+            assert "asterism-local" in servers and servers["asterism-local"]["args"] == ["mcp"], servers
+            st = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+            assert st["permissions"]["allow"].count("mcp__asterism-local") == 1, label
+            assert "Bash(ls:*)" in st["permissions"]["allow"] and st["permissions"]["deny"] == ["Read(./.env)"]
+            assert st["theme"] == "dark", "nothing else in the file is touched"
+            assert ALLOWED.format(product="Claude Code") in out and "will ask for approval" not in out, out
 
-    def settings(folder):
-        st = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
-        assert "Bash(ls:*)" in st["permissions"]["allow"] and st["permissions"]["deny"] == ["Read(./.env)"]
-        assert st["theme"] == "dark", "nothing else in the file is touched"
-        return st
 
-    by_agent = tmp_path / "claude_cfg_a"
-    by_agent.mkdir()
-    (by_agent / "settings.json").write_text(json.dumps(before), encoding="utf-8")
-    out = join(exe, home, v, CLAUDE_CODE_SESSION_ID="s-ap-1", CLAUDE_CONFIG_DIR=str(by_agent))  # run by the session
-    servers = json.loads((by_agent / ".claude.json").read_text(encoding="utf-8")).get("mcpServers", {})
-    assert "asterism-local" in servers and servers["asterism-local"]["args"] == ["mcp"], servers
-    assert "mcp__asterism-local" not in settings(by_agent)["permissions"]["allow"], "the agent did not allow itself"
-    assert ALLOW_NOTE.format(product="Claude Code") in out and "were allowed" not in out, out
+# ------------------------------------------------------------------ keeping itself up to date, and uninstalling
 
-    rc, shown = run(exe, home, "allow", "--client", "claude", CLAUDE_CONFIG_DIR=str(by_agent))
-    assert rc == 0 and ALLOWED.format(product="Claude Code") in shown, shown
-    assert settings(by_agent)["permissions"]["allow"].count("mcp__asterism-local") == 1
-    rc, shown = run(exe, home, "allow", "--client", "claude", CLAUDE_CONFIG_DIR=str(by_agent))
-    assert rc == 0 and settings(by_agent)["permissions"]["allow"].count("mcp__asterism-local") == 1
+def sha256_of(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    by_person = tmp_path / "claude_cfg_p"
-    by_person.mkdir()
-    (by_person / "settings.json").write_text(json.dumps(before), encoding="utf-8")
-    out = join(exe, home, v, "--client", "claude", CLAUDE_CONFIG_DIR=str(by_person))
-    assert settings(by_person)["permissions"]["allow"].count("mcp__asterism-local") == 1
-    assert ALLOWED.format(product="Claude Code") in out, out
+
+def platform_key() -> str:
+    import platform
+    system = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+    return f"{system}-{arch}"
+
+
+def test_the_resident_program_replaces_itself_with_the_build_the_server_offers(exe, v, home, tmp_path):
+    """Only a program installed in <home>/bin updates itself. The "old" installed copy here is the built program
+    with a few bytes appended (it still runs); the server offers the pristine build under another version."""
+    name = "asterism.exe" if WIN else "asterism"
+    installed = home / "bin" / name
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(Path(exe).read_bytes() + b"\0old-copy")
+    if not WIN:
+        installed.chmod(0o755)
+    assert sha256_of(installed) != sha256_of(Path(exe))
+
+    dist = v.srv.data / "dist"
+    dist.mkdir(exist_ok=True)
+    offered = "asterism-" + platform_key() + (".exe" if WIN else "")
+    try:
+        # first a build that does not match its checksum: nothing may change
+        (dist / offered).write_bytes(Path(exe).read_bytes())
+        (dist / "manifest.json").write_text(json.dumps({"version": "9.9.8", "files": {platform_key(): {
+            "name": offered, "sha256": "0" * 64, "size": (dist / offered).stat().st_size}}}), encoding="utf-8")
+        rc, out = run(installed, home, "join", new_link(v.alice), "--client", "none", ASTERISM_UPDATE_CHECK_S="3")
+        assert rc == 0, out
+        first = daemon_info(home)["pid"]
+        time.sleep(8)
+        assert sha256_of(installed) != sha256_of(Path(exe)), "a build with a wrong checksum is not installed"
+        assert alive(first), "and the resident program keeps running"
+
+        # a session that is open before the update
+        ch = Channel(tmp_path)
+        m = Mcp(installed, home, CLAUDE_CODE_SESSION_ID="s-up-1", CLAUDE_CODE_MESSAGING_SOCKET=ch.address)
+        assert not m.tool("register", name="uma")[1]
+        assert until(lambda: v.alice.is_online("uma"), 10)
+
+        # now a good one
+        (dist / "manifest.json").write_text(json.dumps({"version": "9.9.9", "files": {platform_key(): {
+            "name": offered, "sha256": sha256_of(dist / offered), "size": (dist / offered).stat().st_size}}}), encoding="utf-8")
+        assert until(lambda: sha256_of(installed) == sha256_of(Path(exe)), 20, 0.5), "the installed program was not replaced"
+        assert until(lambda: (daemon_info(home) or {}).get("pid") not in (None, first) and alive(daemon_info(home)["pid"]), 20), \
+            "the new program took over as the resident program"
+        assert until(lambda: not alive(first), 10), "and the old one is gone"
+        second = daemon_info(home)["pid"]
+        log = (home / "daemon.log").read_text(encoding="utf-8", errors="replace")
+        assert "updated from" in log and "9.9.9" in log, log[-400:]
+        time.sleep(8)                                       # the same offer again: it is not fetched and restarted in a loop
+        assert daemon_info(home)["pid"] == second and alive(second), "no update loop"
+
+        # the session opened before the update is served by the new resident program
+        assert v.alice.is_online("uma"), "the session did not go offline across the update"
+        sent = v.alice.say("@uma are you still reachable? [up1]")
+        assert mention(sent, "uma")["result"] == "woken"
+        assert until(lambda: ch.users("[up1]"), 10), "the new resident program writes to the old session's channel"
+        assert not m.tool("send", text="yes [up1a]", reply_to=sent["id"])[1]
+        m.kill()
+
+    finally:
+        shutil.rmtree(dist, ignore_errors=True)
+
+
+def test_a_program_outside_the_state_folder_never_updates_itself(exe, v, home):
+    dist = v.srv.data / "dist"
+    dist.mkdir(exist_ok=True)
+    offered = "asterism-" + platform_key() + (".exe" if WIN else "")
+    try:
+        (dist / offered).write_bytes(b"not a program")
+        (dist / "manifest.json").write_text(json.dumps({"version": "9.9.9", "files": {platform_key(): {
+            "name": offered, "sha256": sha256_of(dist / offered), "size": 13}}}), encoding="utf-8")
+        before = sha256_of(Path(exe))
+        rc, out = run(exe, home, "join", new_link(v.alice), "--client", "none", ASTERISM_UPDATE_CHECK_S="2")
+        assert rc == 0, out
+        pid = daemon_info(home)["pid"]
+        time.sleep(7)
+        assert sha256_of(Path(exe)) == before and alive(pid), "a development build is left alone"
+    finally:
+        shutil.rmtree(dist, ignore_errors=True)
+
+
+@pytest.mark.skipif(not (shutil.which("codex") and shutil.which("claude")), reason="needs the real codex and claude")
+def test_uninstall_takes_out_what_join_put_in(exe, v, home, tmp_path):
+    import tomllib
+    codex_home, claude_cfg = tmp_path / "codex_home", tmp_path / "claude_cfg"
+    codex_home.mkdir()
+    claude_cfg.mkdir()
+    (codex_home / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
+    (claude_cfg / "settings.json").write_text(json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}, "theme": "dark"}), encoding="utf-8")
+    env = {"CODEX_HOME": str(codex_home), "CLAUDE_CONFIG_DIR": str(claude_cfg)}
+    join(exe, home, v, "--client", "codex", **env)
+    join(exe, home, v, "--client", "claude", **env)
+    pid = daemon_info(home)["pid"]
+    assert "asterism-local" in tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))["mcp_servers"]
+    assert "mcp__asterism-local" in json.loads((claude_cfg / "settings.json").read_text(encoding="utf-8"))["permissions"]["allow"]
+
+    rc, out = run(exe, home, "uninstall", **env)
+    assert rc == 0 and "panicked" not in out, out
+    assert until(lambda: not alive(pid), 10), "the resident program was stopped"
+    conf = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
+    assert "asterism-local" not in conf["mcp_servers"] and conf["mcp_servers"]["other"] == {"command": "other"}
+    servers = json.loads((claude_cfg / ".claude.json").read_text(encoding="utf-8")).get("mcpServers", {})
+    assert "asterism-local" not in servers
+    st = json.loads((claude_cfg / "settings.json").read_text(encoding="utf-8"))
+    assert st["permissions"]["allow"] == ["Bash(ls:*)"] and st["theme"] == "dark", "only its own entry is removed"
+    assert (home / "projects").is_dir() and list((home / "projects").glob("*.json")), "the computer stays authorised"
+    assert not (home / "daemon.json").exists() and not (home / "threads.json").exists()
+    assert "Codex" in out and "Claude Code" in out, "it says what it did"
+
+    rc, out = run(exe, home, "uninstall", **env)
+    assert rc == 0, "nothing left to remove is not an error: " + out
+    rc, out = run(exe, home, "uninstall", "--forget", **env)
+    assert rc == 0 and not list((home / "projects").glob("*.json")) if (home / "projects").exists() else True
+
+
+# ------------------------------------------------------------------ an idle session stays connected
+
+def test_a_claude_code_session_stays_connected_while_it_is_idle(exe, v, home, tmp_path):
+    """Seen live on 2026-11-14: three idle Claude Code sessions were reported gone and back every eleven
+    seconds, and the server posted two notices each time."""
+    join(exe, home, v, "--client", "none")
+    ch = Channel(tmp_path)
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-idle-1", CLAUDE_CODE_MESSAGING_SOCKET=ch.address)
+    try:
+        assert not m.tool("register", name="ida")[1]
+        assert until(lambda: v.alice.is_online("ida"), 10)
+        time.sleep(35)                                      # longer than any timer that could drop an idle connection
+        log = (home / "daemon.log").read_text(encoding="utf-8", errors="replace")
+        assert log.count("s-idle-1 connected") == 1 and "s-idle-1 gone" not in log, log[-600:]
+        assert not logged(v, "agent_offline", agent="ida"), "the server never saw it go"
+        assert v.alice.is_online("ida")
+        sent = v.alice.say("@ida still there after a quiet while? [idle1]")
+        assert until(lambda: ch.users("[idle1]"), 10), "and it is still woken"
+        assert not m.tool("send", text="yes [idle1a]", reply_to=sent["id"])[1]
+    finally:
+        m.kill()

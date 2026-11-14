@@ -243,7 +243,7 @@ fn add_command(product: &str, exe: &str) -> Vec<String> {
     c
 }
 
-fn remove_command(product: &str) -> Vec<String> {
+pub fn remove_command(product: &str) -> Vec<String> {
     let mut c: Vec<String> = vec![product.into(), "mcp".into(), "remove".into(), SERVER_NAME.into()];
     if product == "claude" {
         c.extend(["--scope".into(), "user".into()]);
@@ -275,15 +275,8 @@ fn add_to_product(product: &str, exe: &str) -> bool {
         Ok((st, _, _)) if st.success() => {
             println!("Added the MCP server {SERVER_NAME} to {product}.");
             let name = crate::allow::display(product);
-            // Turning approval prompts off is a person's choice: an agent that runs join itself (the
-            // environment names its conversation) leaves them as they are and only learns that it can be done.
-            if env("CODEX_THREAD_ID").is_some() || env("CLAUDE_CODE_SESSION_ID").is_some() {
-                println!(
-                    "Asterism's tools will ask for approval in {name} when they are called. This can be turned off with `asterism allow`."
-                );
-                return true;
-            }
-            // Not a reason to fail the join: the tools work, only with a prompt the person can answer.
+            // Whoever runs join: the person agreed to this when they made the invitation link (the page says
+            // so). Not a reason to fail the join: the tools work, only with a prompt the person can answer.
             match crate::allow::allow(product) {
                 Ok(()) => println!("{}", crate::allow::ALLOWED.replace("{product}", name)),
                 Err(e) => println!(

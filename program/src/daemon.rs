@@ -24,10 +24,10 @@ use crate::state::{self, Project};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::panic::{self, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
@@ -101,6 +101,7 @@ struct Daemon {
     w: Mutex<Wakeable>,
     cv: Condvar,
     projects: Mutex<HashMap<String, Arc<Proj>>>,
+    report_after: std::time::Instant,
 }
 
 pub fn run(home: PathBuf) -> i32 {
@@ -110,21 +111,17 @@ pub fn run(home: PathBuf) -> i32 {
     }
     let _ = LOG_PATH.set(home.join("daemon.log"));
     // One per state folder: the lock is released by the system when this process ends, however it ends.
-    let lockfile = match OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock")) {
-        Ok(f) => f,
+    match take_lock(&home) {
+        Ok(true) => {}
+        Ok(false) => return 0, // another one runs
         Err(e) => {
-            log(&format!("cannot open daemon.lock: {e}"));
-            return 1;
-        }
-    };
-    match lockfile.try_lock() {
-        Ok(()) => {}
-        Err(fs::TryLockError::WouldBlock) => return 0, // another one runs
-        Err(fs::TryLockError::Error(e)) => {
             log(&format!("cannot lock daemon.lock: {e}"));
             return 1;
         }
     }
+    // Started by a resident program that is replacing itself: the sessions of the one before reconnect
+    // within a second or two; reporting an empty list before that would show their agents offline.
+    let grace = if std::env::var_os("ASTERISM_REPLACING").is_some() { Duration::from_secs(5) } else { Duration::ZERO };
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(l) => l,
         Err(e) => {
@@ -132,6 +129,7 @@ pub fn run(home: PathBuf) -> i32 {
             return 1;
         }
     };
+    crate::sys::no_inherit(&listener);
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let token = match crate::sys::random_hex(32) {
         Ok(t) => t,
@@ -144,16 +142,19 @@ pub fn run(home: PathBuf) -> i32 {
         log(&format!("cannot write daemon.json: {e}"));
         return 1;
     }
+    let _ = ME.set((port, token.clone()));
     log(&format!("started, version {}, port {port}", crate::VERSION));
     let d = Arc::new(Daemon {
-        home,
+        home: home.clone(),
         token,
         agent: http::agent(),
         w: Mutex::new(Wakeable::default()),
         cv: Condvar::new(),
         projects: Mutex::new(HashMap::new()),
+        report_after: std::time::Instant::now() + grace,
     });
     d.reload();
+    crate::update::start(home);
     {
         let d = d.clone();
         supervise("reload", move || loop {
@@ -163,13 +164,46 @@ pub fn run(home: PathBuf) -> i32 {
     }
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        crate::sys::no_inherit(&stream);
         let d = d.clone();
         std::thread::spawn(move || {
             let _ = panic::catch_unwind(AssertUnwindSafe(|| d.serve_local(stream)));
         });
     }
-    drop(lockfile);
     0
+}
+
+/// `daemon.lock`, held while this process is the resident program. Kept here (not on the stack of `run`)
+/// so that an update can hand it to the new program, and take it back if that one does not come up.
+static LOCK: Mutex<Option<fs::File>> = Mutex::new(None);
+/// This program's port and token, to write `daemon.json` again after an update that did not happen.
+static ME: OnceLock<(u16, String)> = OnceLock::new();
+
+/// Ok(false): another resident program holds the lock.
+pub fn take_lock(home: &Path) -> std::io::Result<bool> {
+    let f = OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock"))?;
+    match f.try_lock() {
+        Ok(()) => {
+            *lock(&LOCK) = Some(f);
+            Ok(true)
+        }
+        Err(fs::TryLockError::WouldBlock) => Ok(false),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+pub fn release_lock() {
+    lock(&LOCK).take();
+}
+
+pub fn write_daemon_again(home: &Path) {
+    if let Some((port, token)) = ME.get() {
+        let _ = state::write_daemon(home, *port, token);
+    }
+}
+
+pub fn log_line(line: &str) {
+    log(line);
 }
 
 /// Run `body` on its own thread and start it again if it panics (after a pause). A body that returns
@@ -267,6 +301,8 @@ impl Daemon {
 
     /// Send the list of wakeable sessions whenever it changed (or the server may have lost it).
     fn reporter(&self, p: &Proj) {
+        let wait = self.report_after.saturating_duration_since(std::time::Instant::now());
+        nap(p, wait);
         let mut pause = Backoff(1);
         loop {
             let (gen, sessions) = {
@@ -313,8 +349,10 @@ impl Daemon {
     /// Keep the computer's poll open; deliver and acknowledge what it hands out.
     fn poller(&self, p: &Proj) {
         // The server keeps the last list it was given; polling before ours is in would serve sessions of
-        // an earlier run of this program.
-        {
+        // an earlier run of this program. Except when we replace a running one: its list is the right one
+        // until its sessions have reconnected, and a poll left closed that long would show them offline.
+        let replacing = self.report_after > std::time::Instant::now();
+        if !replacing {
             let mut w = lock(&self.w);
             while p.reported.load(Ordering::SeqCst) == u64::MAX {
                 if p.stopped() {
@@ -423,6 +461,7 @@ impl Daemon {
     fn serve_local(self: &Arc<Self>, stream: TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         let Ok(read_half) = stream.try_clone() else { return };
+        crate::sys::no_inherit(&read_half);
         let mut r = BufReader::new(read_half);
         let Ok(Some(req)) = local::read_line(&mut r) else { return };
         if !same_secret(req["token"].as_str().unwrap_or(""), &self.token) {
@@ -437,6 +476,12 @@ impl Daemon {
             "reload" => {
                 self.reload();
                 answer(json!({"ok": true}));
+            }
+            "stop" => {
+                // `asterism uninstall`.
+                log("stopped on request");
+                answer(json!({"ok": true}));
+                std::process::exit(0);
             }
             "status" => {
                 answer(self.status());
@@ -469,9 +514,8 @@ impl Daemon {
                 };
                 log(&format!("claude-code session {session} connected"));
                 if answer(json!({"ok": true})) {
-                    let _ = r.get_ref().set_read_timeout(None);
-                    let mut sink = [0u8; 256];
-                    while matches!(r.read(&mut sink), Ok(n) if n > 0) {}
+                    // Until the session's `mcp` ends: only then is the session gone.
+                    local::wait_for_close(&mut r);
                 }
                 let mut w = lock(&self.w);
                 // A restarted `mcp` of the same session may have connected meanwhile; keep that one.

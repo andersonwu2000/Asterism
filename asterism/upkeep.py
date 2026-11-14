@@ -72,6 +72,8 @@ def _due_times(pj: Project) -> list[float]:
                            "AND offline_reason IS NULL AND last_poll IS NOT NULL"):
         if not presence.polling(pj.slug, a):
             out.append(a["last_poll"] + s.offline_after_s)
+    # A session that left its computer's list is announced offline when the grace ends.
+    out += [r[0] + s.notice_grace_s for r in pj.db.execute("SELECT quiet_since FROM agents WHERE quiet_since IS NOT NULL")]
     # A computer whose connection closed is disconnected (and its agents offline) a grace period later.
     for r in pj.db.execute("SELECT id, last_poll FROM credentials WHERE connected = 1 AND revoked IS NULL "
                            "AND last_poll IS NOT NULL"):

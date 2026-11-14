@@ -184,6 +184,7 @@ def _invite(tr: Translator, slug: str) -> str:
     return (f'<h2>{e(tr("invite.title"))}</h2><p class="muted">{e(tr("invite.skip"))}</p>'
             f'<p><button type="button" id="invite-agent" data-api="/{q(slug)}/api/my/agent-invites">'
             f'{e(tr("invite.button"))}</button> <span class="out" data-out></span></p>'
+            f'<p class="muted" id="invite-consent">{e(tr("invite.consent"))}</p>'
             f'<div id="invite-result" hidden></div>')
 
 

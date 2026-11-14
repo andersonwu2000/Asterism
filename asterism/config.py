@@ -19,6 +19,7 @@ class Settings:
     access_ttl_s: float             # OAuth access token lifetime
     invite_ttl_s: float
     agent_invite_ttl_s: float       # life of an agent invitation link
+    notice_grace_s: float           # a session away from its computer's list this long is announced offline
     recent_speaker_s: float         # an agent that spoke in a channel this recently still hears it
     redeliver_after_s: float        # a delivery nobody acknowledged is handed out again after this long
     remind_after_s: float           # an important message not answered for this long is followed by a reminder
@@ -64,6 +65,7 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     access_ttl_s=_env_s("ASTERISM_ACCESS_TTL_S", 3600),
                     invite_ttl_s=_env_s("ASTERISM_INVITE_TTL_S", 604800),
                     agent_invite_ttl_s=_env_s("ASTERISM_AGENT_INVITE_TTL_S", 900),
+                    notice_grace_s=_env_s("ASTERISM_NOTICE_GRACE_S", 30),
                     recent_speaker_s=_env_s("ASTERISM_RECENT_SPEAKER_S", 1800),
                     redeliver_after_s=_env_s("ASTERISM_REDELIVER_AFTER_S", 30),
                     remind_after_s=_env_s("ASTERISM_REMIND_AFTER_S", 300),

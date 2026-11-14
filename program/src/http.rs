@@ -100,6 +100,19 @@ pub fn call(
     })
 }
 
+/// Fetch a file into `dest`, at most `max` bytes (one more is read, so that a longer file shows).
+/// Returns the number of bytes written.
+pub fn download(agent: &Agent, url: &str, dest: &std::path::Path, max: u64, timeout: Duration) -> Result<u64, Fail> {
+    let mut res = agent.get(url).config().timeout_global(Some(timeout)).build().call().map_err(|e| Fail::Unreachable(describe(&e)))?;
+    let status = res.status().as_u16();
+    if status != 200 {
+        return Err(Fail::Refused { status, message: format!("HTTP {status}") });
+    }
+    let mut out = std::fs::File::create(dest).map_err(|e| Fail::Unreachable(e.to_string()))?;
+    let mut body = std::io::Read::take(res.body_mut().as_reader(), max + 1);
+    std::io::copy(&mut body, &mut out).map_err(|e| Fail::Unreachable(e.to_string()))
+}
+
 /// A short reason without the address (which may carry an invitation code).
 fn describe(e: &ureq::Error) -> String {
     match e {

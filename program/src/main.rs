@@ -7,7 +7,8 @@
 //!   joined project and puts each delivery in front of the right local session.
 //! - `mcp`: started by the product in every session; the agent tools on stdio (MCP).
 //! - `status`: what is running and connected, for a person.
-//! - `allow`: a person's choice to let Claude Code or Codex run Asterism's tools without asking.
+//! - `allow`: lets Claude Code or Codex run Asterism's tools without asking again (`join` already does).
+//! - `uninstall [--forget]`: takes out what `join` put in.
 //!
 //! Everything lives in the state folder (`ASTERISM_HOME`, default `~/.asterism`); see `state.rs`.
 
@@ -21,6 +22,8 @@ mod push;
 mod state;
 mod status;
 mod sys;
+mod uninstall;
+mod update;
 
 use std::panic;
 
@@ -30,6 +33,7 @@ const USAGE: &str = "Usage:
   asterism join <invitation link> [--name NAME] [--client claude|codex|none]
   asterism status
   asterism allow [--client claude|codex]   (let the product run Asterism's tools without asking)
+  asterism uninstall [--forget]            (take Asterism out of this computer; --forget: its credentials too)
   asterism mcp      (started by Claude Code or Codex)
   asterism daemon   (started by the commands above when it is not running)";
 
@@ -61,6 +65,7 @@ fn run() -> i32 {
         Some("mcp") => mcp::run(home),
         Some("status") => status::run(&home),
         Some("allow") => allow::run(&args[1..]),
+        Some("uninstall") => uninstall::run(&home, &args[1..]),
         Some("--version") | Some("version") => {
             println!("asterism {VERSION}");
             0

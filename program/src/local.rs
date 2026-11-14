@@ -22,7 +22,6 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub const MAX_LINE: u64 = 64 * 1024;
@@ -76,15 +75,9 @@ pub fn ensure_daemon(home: &Path) -> Result<DaemonInfo, String> {
     }
     state::ensure_dir(home).map_err(|e| format!("cannot create {} ({e})", home.display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this program's own file ({e})"))?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("daemon")
-        .env("ASTERISM_HOME", home)
-        // Not the starter's folder: a running program keeps its folder from being removed on Windows.
-        .current_dir(home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    crate::sys::spawn_detached(&mut cmd).map_err(|e| format!("cannot start the resident program ({e})"))?;
+    // In the state folder, not the starter's: a running program keeps its folder from being removed on Windows.
+    crate::sys::spawn_detached(&exe, &["daemon"], &[("ASTERISM_HOME", home.as_os_str())], home)
+        .map_err(|e| format!("cannot start the resident program ({e})"))?;
     let end = Instant::now() + Duration::from_secs(15);
     while Instant::now() < end {
         std::thread::sleep(Duration::from_millis(100));
@@ -119,12 +112,24 @@ pub fn hold_claude(info: &DaemonInfo, session: &str, socket: &str, socket_token:
     if got["ok"] != json!(true) {
         return Err(got["error"].as_str().unwrap_or("refused").to_string());
     }
-    s.set_read_timeout(None).map_err(|e| e.to_string())?;
+    // The clone in `r` is a socket handle of its own with the timeout `connect` gave it; it is the one read.
+    let _ = s.set_read_timeout(None);
+    wait_for_close(&mut r);
+    Ok(())
+}
+
+/// Block until the other end closes the connection. A quiet connection is not a closed one: a read that
+/// times out (if a timeout is still set somewhere) or is interrupted just reads again; only the end of the
+/// stream or a real error ends the wait.
+pub fn wait_for_close(r: &mut BufReader<TcpStream>) {
+    let _ = r.get_ref().set_read_timeout(None);
     let mut sink = [0u8; 256];
     loop {
         match r.read(&mut sink) {
-            Ok(0) | Err(_) => return Ok(()),
+            Ok(0) => return,
             Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => {}
+            Err(_) => return,
         }
     }
 }

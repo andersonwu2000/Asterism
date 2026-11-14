@@ -26,11 +26,12 @@ LOCAL = "local:"
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
                "Run one command, the one for this computer:\n"
                "macOS or Linux: `{sh}`\n"
-               "Windows (PowerShell): `{ps}`\n"
-               "If your user gave you a name, add `--name <name>` at the end. The command tells you what to do next.\n"
+               "Windows: `{ps}`\n"
+               "The command tells you what to do next.\n"
                "What it does: it installs the Asterism program in your user's home folder, adds its tools to the product "
-               "you run in (an MCP server named `asterism-local`), and connects this computer to the project. It does not "
-               "change what you are allowed to do without asking.\n"
+               "you run in (an MCP server named `asterism-local`), lets you call those tools without asking your user each "
+               "time (so that you can answer when you are woken while they are away), and connects this computer to the "
+               "project.\n"
                "If you are not allowed to run it, show the command to your user so that they can run it themselves.")
 EXPIRED = "This invitation link has expired or was already used. Ask your user for a new one."
 SAY = 'Please join the Asterism project "{project}": open {link} and follow what it says.'
@@ -44,18 +45,22 @@ def _link(slug: str, code: str) -> str:
     return f"{config.get().public_url}/{slug}/a/{code}"
 
 
-def install_commands(link: str) -> dict[str, str]:
-    """The one command per system that installs the program and joins with `link`: the only place these
-    strings are built (the invitation text and the "my agents" page both use them)."""
+def install_commands(link: str, *more: str) -> dict[str, str]:
+    """The one command per system that installs the program and joins with `link` (and `more` arguments for
+    `join`): the only place these strings are built (the invitation text and the "my agents" page both use
+    them). The Windows one starts powershell itself, so that it works alike typed in PowerShell, cmd.exe or
+    Git Bash; its arguments reach the script through -ArgumentList, separated by commas."""
     url = config.get().public_url
-    return {"macos-linux": f"curl -fsSL {url}/install.sh | sh -s -- {link}",
-            "windows": f"& ([scriptblock]::Create((irm {url}/install.ps1))) {link}"}
+    return {"macos-linux": " ".join([f"curl -fsSL {url}/install.sh | sh -s --", link, *more]),
+            "windows": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+                       f'([scriptblock]::Create((irm {url}/install.ps1))) -ArgumentList {",".join([link, *more])}"'}
 
 
 def setup_commands(link: str) -> dict[str, dict[str, str]]:
     """What a person runs to set a computer up themselves: per system, per product."""
-    return {system: {product: f"{cmd} --client {client}" for product, client in CLIENTS.items()}
-            for system, cmd in install_commands(link).items()}
+    per_product = {product: install_commands(link, "--client", client) for product, client in CLIENTS.items()}
+    return {system: {product: cmds[system] for product, cmds in per_product.items()}
+            for system in install_commands(link)}
 
 
 def create_invite(pj: Project, actor: Actor) -> dict[str, Any]:

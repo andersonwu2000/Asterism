@@ -2,9 +2,8 @@
 //! be away; an approval prompt would leave it stuck (and `codex exec` with approval policy "never" refuses
 //! the call outright). Each function changes only its own entry and keeps the rest of the file as it was.
 //!
-//! This is a person's choice: `join` does it only when a person ran it (no conversation in the environment),
-//! and `asterism allow` does it on request. An agent that installs Asterism itself must not end up needing
-//! less approval than before.
+//! `join` does this for the product it hooks, whoever runs it: the person agreed to it when they made the
+//! invitation link. `asterism allow` does it again on request (a repair).
 
 use serde_json::Value;
 use std::fs;
@@ -203,6 +202,29 @@ fn claude(path: &Path) -> Result<(), String> {
     allow.push(Value::String(CLAUDE_RULE.into()));
     let text = serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n";
     replace(path, text.as_bytes()).map_err(|e| format!("cannot write {} ({e})", path.display()))
+}
+
+/// Take `mcp__asterism-local` out of Claude Code's `permissions.allow` (only that entry). Ok(Some(path)) when
+/// it was there and is gone, Ok(None) when there was nothing to take out.
+pub fn disallow_claude() -> Result<Option<PathBuf>, String> {
+    let path = claude_settings();
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {} ({e})", path.display())),
+    };
+    let Ok(mut settings) = serde_json::from_slice::<Value>(&raw) else {
+        return Err(format!("{} is not valid JSON, so it was left as it is", path.display()));
+    };
+    let Some(allow) = settings.pointer_mut("/permissions/allow").and_then(Value::as_array_mut) else { return Ok(None) };
+    let before = allow.len();
+    allow.retain(|v| v.as_str() != Some(CLAUDE_RULE));
+    if allow.len() == before {
+        return Ok(None);
+    }
+    let text = serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n";
+    replace(&path, text.as_bytes()).map_err(|e| format!("cannot write {} ({e})", path.display()))?;
+    Ok(Some(path))
 }
 
 /// Replace the whole file at once, keeping the permissions it had.

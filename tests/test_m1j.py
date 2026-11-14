@@ -16,19 +16,21 @@ import pytest
 
 from test_m1b import ENV, SLUG, Agent, Person, build_world, connector_token, mention, remote_tool, until
 
-INVITE_TTL_S, OFFLINE_S, REDELIVER_S = 5, 3, 2
+INVITE_TTL_S, OFFLINE_S, REDELIVER_S, NOTICE_GRACE_S = 5, 3, 2, 3
 ENVJ = dict(ENV, ASTERISM_AGENT_INVITE_TTL_S=str(INVITE_TTL_S), ASTERISM_OFFLINE_AFTER_S=str(OFFLINE_S),
-            ASTERISM_REDELIVER_AFTER_S=str(REDELIVER_S))
+            ASTERISM_REDELIVER_AFTER_S=str(REDELIVER_S), ASTERISM_NOTICE_GRACE_S=str(NOTICE_GRACE_S))
 
 # Agent-facing wording, word for word from the specification.
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
                "Run one command, the one for this computer:\n"
                "macOS or Linux: `curl -fsSL {url}/install.sh | sh -s -- {link}`\n"
-               "Windows (PowerShell): `& ([scriptblock]::Create((irm {url}/install.ps1))) {link}`\n"
-               "If your user gave you a name, add `--name <name>` at the end. The command tells you what to do next.\n"
+               'Windows: `powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+               '([scriptblock]::Create((irm {url}/install.ps1))) -ArgumentList {link}"`\n'
+               "The command tells you what to do next.\n"
                "What it does: it installs the Asterism program in your user's home folder, adds its tools to the product "
-               "you run in (an MCP server named `asterism-local`), and connects this computer to the project. It does not "
-               "change what you are allowed to do without asking.\n"
+               "you run in (an MCP server named `asterism-local`), lets you call those tools without asking your user each "
+               "time (so that you can answer when you are woken while they are away), and connects this computer to the "
+               "project.\n"
                "If you are not allowed to run it, show the command to your user so that they can run it themselves.")
 EXPIRED = "This invitation link has expired or was already used. Ask your user for a new one."
 HINT = ("You are connected through the remote connector, which cannot wake you: you will see messages only when you "
@@ -270,8 +272,10 @@ def test_an_invitation_comes_with_what_to_paste_and_what_to_run(j):
     assert got["commands"] == {
         "macos-linux": {"claude-code": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client claude",
                         "codex": f"curl -fsSL {srv}/install.sh | sh -s -- {url} --client codex"},
-        "windows": {"claude-code": f"& ([scriptblock]::Create((irm {srv}/install.ps1))) {url} --client claude",
-                    "codex": f"& ([scriptblock]::Create((irm {srv}/install.ps1))) {url} --client codex"},
+        "windows": {"claude-code": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+                                   f'([scriptblock]::Create((irm {srv}/install.ps1))) -ArgumentList {url},--client,claude"',
+                    "codex": 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Command -ScriptBlock '
+                             f'([scriptblock]::Create((irm {srv}/install.ps1))) -ArgumentList {url},--client,codex"'},
     }, "what a person runs to set a computer up themselves, per system and product"
     assert got["program"] in ({"version": None, "available": False}, {"version": "0.0.1", "available": True})
 
@@ -281,6 +285,7 @@ def test_the_my_agents_page_invites_agents_and_no_longer_mentions_the_helper(j):
     assert page.status_code == 200
     text = html.unescape(page.text)
     assert 'id="invite-agent"' in page.text and 'id="invite-result"' in page.text, "a button and where its result goes"
+    assert 'id="invite-consent"' in page.text, "what the person agrees to by sending a link is said next to the button"
     assert "helper.py" not in text and "--join" not in text and "asterism_helper" not in text
     my = j.alice.c.get(f"/{SLUG}/api/my").json()
     assert set(my["program"]) == {"version", "available"}
@@ -294,3 +299,42 @@ def test_a_stale_credential_is_told_to_ask_for_a_new_link(j):
     r = httpx.get(f"{j.srv.url}/{SLUG}/api/computer/poll", params={"timeout": 1},
                   headers={"Authorization": "Bearer not-a-credential"})
     assert r.status_code == 401 and r.json()["message"] == STALE
+
+
+# ------------------------------------------------------------------ a session that blinks is not announced
+
+def system_notes(person, text: str) -> list[dict]:
+    return [m for m in person.read() if m["from_kind"] == "system" and m["text"] == text]
+
+
+def test_a_session_that_blinks_is_not_announced(j):
+    """Seen live on 2026-11-14: a resident program dropped and re-made a session's connection every eleven
+    seconds, and the channel got an "is offline." and an "is online." notice each time. A session that leaves
+    its computer's list is offline at once for delivery, but nobody is told unless it stays away."""
+    cred = redeem(new_link(j.alice), computer="pc-11").json()["credential"]
+    Agent(j.srv, cred, "s-bl1", client="claude-code").register("blinky")
+    pc = Computer(j.srv, cred)
+    pc.report(("s-bl1", "claude-code"))
+    pc.connect()
+    assert until(lambda: row(j, "blinky")["online"], 6)
+    assert until(lambda: len(system_notes(j.alice, "blinky is online.")) == 1, 5)
+    offline_logged = len(logged(j, "agent_offline", agent="blinky"))
+
+    for _ in range(4):                                      # gone for a moment, back again
+        pc.report()
+        assert until(lambda: row(j, "blinky")["offline_because"] == "session_closed", 3), "offline at once, for delivery"
+        pc.report(("s-bl1", "claude-code"))
+        assert until(lambda: row(j, "blinky")["online"], 3)
+    time.sleep(NOTICE_GRACE_S + 2)
+    assert system_notes(j.alice, "blinky is offline.") == [], "a blink is not announced"
+    assert len(system_notes(j.alice, "blinky is online.")) == 1, "and neither is coming back from one"
+    assert len(logged(j, "agent_offline", agent="blinky")) == offline_logged, "nor written down as going offline"
+
+    pc.report()                                             # this time it stays away
+    time.sleep(1.0)
+    assert system_notes(j.alice, "blinky is offline.") == [], "not before the grace has passed"
+    assert until(lambda: len(system_notes(j.alice, "blinky is offline.")) == 1, NOTICE_GRACE_S + 4), "then it is said, once"
+    assert logged(j, "agent_offline", agent="blinky")
+    pc.report(("s-bl1", "claude-code"))
+    assert until(lambda: len(system_notes(j.alice, "blinky is online.")) == 2, 5), "a real return is announced at once"
+    pc.disconnect()

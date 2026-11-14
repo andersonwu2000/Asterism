@@ -4,7 +4,7 @@ notice per change that the system posts in #general.
 sync() compares what presence says now with what was last announced (agents.announced, kept in the
 database so a restart neither repeats nor loses a change) and posts the notice when they differ. It is
 called where a change happens (poll opened, leave, subscribe, a tool call ending a hold) and, for the
-changes that time makes (no poll any more, a subscription expired), by the background task.
+changes that time makes (no poll any more, a subscription expired, a grace that ended), by the background task.
 """
 from __future__ import annotations
 
@@ -23,10 +23,26 @@ def _reason(a: sqlite3.Row) -> str:
 
 
 def sync(pj: Project, agent_id: int) -> None:
+    """A session that only left its computer's list (`session_closed`) is offline at once for delivery, but
+    its going is announced only once ASTERISM_NOTICE_GRACE_S has passed without it coming back
+    (agents.quiet_since holds when that started); a session back in time is neither announced nor logged.
+    Every other way of going offline is announced at once."""
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
     if a is None:
         return
-    online = presence.is_online(pj.slug, a, pj.db)
+    because = presence.offline_because(pj.slug, a, pj.db)
+    online = because is None
+    if a["announced"] == 1 and because == "session_closed":
+        if a["quiet_since"] is None:
+            with pj.db:
+                pj.db.execute("UPDATE agents SET quiet_since = ? WHERE id = ?", (util.now(), agent_id))
+            presence.kick()             # the background task looks again when the grace ends
+            return
+        if util.now() - a["quiet_since"] < config.get().notice_grace_s:
+            return
+    if a["quiet_since"] is not None:    # back within the grace, announced now, or gone another way
+        with pj.db:
+            pj.db.execute("UPDATE agents SET quiet_since = NULL WHERE id = ?", (agent_id,))
     if a["announced"] is not None and bool(a["announced"]) == online:
         return
     with pj.db:

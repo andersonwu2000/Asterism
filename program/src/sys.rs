@@ -67,7 +67,142 @@ mod win {
     pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     pub const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    pub const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
+    const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
+
+    #[repr(C)]
+    struct StartupInfoW {
+        cb: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        x: u32,
+        y: u32,
+        x_size: u32,
+        y_size: u32,
+        x_count_chars: u32,
+        y_count_chars: u32,
+        fill_attribute: u32,
+        flags: u32,
+        show_window: u16,
+        reserved2_size: u16,
+        reserved2: *mut u8,
+        std_input: *mut c_void,
+        std_output: *mut c_void,
+        std_error: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct ProcessInformation {
+        process: *mut c_void,
+        thread: *mut c_void,
+        process_id: u32,
+        thread_id: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateProcessW(
+            application: *const u16,
+            command_line: *mut u16,
+            process_attributes: *mut c_void,
+            thread_attributes: *mut c_void,
+            inherit_handles: i32,
+            creation_flags: u32,
+            environment: *mut c_void,
+            current_directory: *const u16,
+            startup_info: *mut StartupInfoW,
+            process_information: *mut ProcessInformation,
+        ) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// CreateProcessW with no handle inherited and no stdio (the program has none; Rust's stdio then
+    /// discards what is written to it).
+    pub fn create_process(
+        exe: &std::path::Path,
+        args: &[&str],
+        env: &[(&str, &std::ffi::OsStr)],
+        dir: &std::path::Path,
+        flags: u32,
+    ) -> std::io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        let exe_s = exe.as_os_str();
+        if exe_s.encode_wide().any(|c| c == u16::from(b'"')) || args.iter().any(|a| a.contains(['"', ' ', '\t'])) {
+            return Err(std::io::Error::other("a path or argument that cannot be quoted simply"));
+        }
+        // The program path quoted (it may hold spaces), then the plain arguments.
+        let mut line: Vec<u16> = Vec::new();
+        line.push(u16::from(b'"'));
+        line.extend(exe_s.encode_wide());
+        line.push(u16::from(b'"'));
+        for a in args {
+            line.push(u16::from(b' '));
+            line.extend(a.encode_utf16());
+        }
+        line.push(0);
+        // Our environment with `env` set over it, as "k=v\0...\0\0".
+        let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+            std::env::vars_os().filter(|(k, _)| !env.iter().any(|(e, _)| k.eq_ignore_ascii_case(e))).collect();
+        vars.extend(env.iter().map(|(k, v)| (std::ffi::OsString::from(k), v.to_os_string())));
+        vars.sort_by_key(|(k, _)| k.to_ascii_uppercase());
+        let mut block: Vec<u16> = Vec::new();
+        for (k, v) in &vars {
+            block.extend(k.encode_wide());
+            block.push(u16::from(b'='));
+            block.extend(v.encode_wide());
+            block.push(0);
+        }
+        block.push(0);
+        let dir_w = wide(dir.as_os_str());
+        // SAFETY: all-zero is a valid STARTUPINFOW / PROCESS_INFORMATION (null pointers, zero numbers).
+        let mut si: StartupInfoW = unsafe { std::mem::zeroed() };
+        si.cb = std::mem::size_of::<StartupInfoW>() as u32;
+        si.flags = STARTF_USESTDHANDLES; // with the three handles null: no stdio at all
+        let mut pi: ProcessInformation = unsafe { std::mem::zeroed() };
+        // SAFETY: every buffer is NUL-terminated and lives across the call; the handles returned are closed.
+        let ok = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                line.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                flags,
+                block.as_mut_ptr() as *mut c_void,
+                dir_w.as_ptr(),
+                &mut si,
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe {
+            CloseHandle(pi.thread);
+            CloseHandle(pi.process);
+        }
+        Ok(())
+    }
 }
+
+/// Keep a socket of ours out of the programs we start. On Windows a socket accepted from a listener can be
+/// inherited; a resident program that starts its successor would otherwise hand it the sessions'
+/// connections, and the sessions would not see them end when it exits.
+#[cfg(windows)]
+pub fn no_inherit<S: std::os::windows::io::AsRawSocket>(s: &S) {
+    // SAFETY: a socket handle of this process; failure only means it stays as it was.
+    unsafe { win::SetHandleInformation(s.as_raw_socket() as *mut std::ffi::c_void, win::HANDLE_FLAG_INHERIT, 0) };
+}
+
+/// Elsewhere Rust opens every socket close-on-exec already.
+#[cfg(unix)]
+pub fn no_inherit<S>(_: &S) {}
 
 /// Children of a program without a console (the resident program) would each open a console window.
 pub fn no_window(cmd: &mut Command) {
@@ -80,43 +215,40 @@ pub fn no_window(cmd: &mut Command) {
     let _ = cmd;
 }
 
-/// Start `cmd` so that it outlives this process and the session that started it, and holds none of our
-/// stdio: the resident program.
-pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<()> {
+/// Start `exe args` in `dir`, with `env` added to ours, so that it outlives this process and the session that
+/// started it and holds nothing of ours: the resident program.
+///
+/// Nothing of ours means no handle at all, not only our stdio. Whoever started us may have handed us more
+/// inheritable handles than our stdio (PowerShell gives a native command the pipe of its own caller, for
+/// one); a resident program that inherits the write end of such a pipe keeps the agent's shell tool, which
+/// waits for the end of that pipe, hanging for as long as the resident program runs.
+pub fn spawn_detached(exe: &std::path::Path, args: &[&str], env: &[(&str, &std::ffi::OsStr)], dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
-        use std::os::windows::process::CommandExt;
-        // Windows hands every inheritable handle to a child, not only the ones named as its stdio. Our
-        // stdio handles are inheritable (our starter made them so for us); a resident program holding the
-        // write end of `join`'s output pipe would keep whoever reads it waiting until it exits.
-        for h in [
-            std::io::stdin().as_raw_handle(),
-            std::io::stdout().as_raw_handle(),
-            std::io::stderr().as_raw_handle(),
-        ] {
-            if !h.is_null() {
-                // SAFETY: a handle of this process; failure only means it was not inheritable anyway.
-                unsafe { win::SetHandleInformation(h, win::HANDLE_FLAG_INHERIT, 0) };
-            }
-        }
-        let base = win::DETACHED_PROCESS | win::CREATE_NEW_PROCESS_GROUP;
+        // std's Command always lets the child inherit every inheritable handle; CreateProcessW with
+        // bInheritHandles = FALSE is the only way to give it none.
+        let base = win::DETACHED_PROCESS | win::CREATE_NEW_PROCESS_GROUP | win::CREATE_UNICODE_ENVIRONMENT;
         // Breaking away from the starter's job keeps the program alive when the product closes the job
         // of the session (where the job allows it; otherwise CreateProcess refuses and we go without).
-        cmd.creation_flags(base | win::CREATE_BREAKAWAY_FROM_JOB);
-        if cmd.spawn().is_ok() {
-            return Ok(());
-        }
-        cmd.creation_flags(base);
-        cmd.spawn().map(|_| ())
+        win::create_process(exe, args, env, dir, base | win::CREATE_BREAKAWAY_FROM_JOB)
+            .or_else(|_| win::create_process(exe, args, env, dir, base))
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY: setsid is async-signal-safe; a new session leaves the terminal's hangup and job control.
+        let mut cmd = Command::new(exe);
+        cmd.args(args).current_dir(dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        // SAFETY: setsid and fcntl are async-signal-safe. A new session leaves the terminal's hangup and job
+        // control; every descriptor above stdio that we inherited open closes at exec.
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
+                for fd in 3..1024 {
+                    libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                }
                 Ok(())
             });
         }

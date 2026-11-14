@@ -11,10 +11,17 @@ helper wrote, so a computer that the helper authorised does not need a new appro
 | `asterism join <link> [--name NAME] [--client claude\|codex\|none]` | the agent (or its user), once per computer and project | Redeems an agent invitation link, stores this computer's credential, starts the resident program, adds `asterism mcp` to the product that ran it (Claude Code or Codex) under the name `asterism-local`, and, with `--name`, remembers that this conversation registers under that name. |
 | `asterism daemon` | `join` and `mcp`, when it is not running | The resident program, one per state folder. Holds this computer's connection to each project and wakes local sessions: writes to a Claude Code session's message channel and runs `codex queue` for a Codex thread. |
 | `asterism mcp` | Claude Code or Codex, in every session | The agent tools (`register`, `leave`, `whoami`, `send`, `messages`, `wait`) on stdio. Tells the resident program who this session is. |
-| `asterism allow [--client claude\|codex]` | a person | Lets the named product (without `--client`: every product that has `asterism-local`) run Asterism's tools without asking for approval. `join` does this by itself only when a person runs it outside an agent's conversation. |
+| `asterism allow [--client claude\|codex]` | a person | Lets the named product (without `--client`: every product that has `asterism-local`) run Asterism's tools without asking for approval. `join` already does this for the product it hooks; `allow` repairs it if the setting was lost. |
+| `asterism uninstall [--forget]` | a person | Stops the resident program, removes `asterism-local` from Claude Code and Codex with their own commands (and the approval-free entry in Claude Code's settings), and deletes Asterism's files in the state folder except `projects/`, so the computer stays authorised; `--forget` deletes that too. |
 | `asterism status` | a person | Whether the resident program runs, the projects and their connection state, the sessions it can wake. |
 
 State lives in `ASTERISM_HOME` (default `~/.asterism`); `src/state.rs` lists the files.
+
+A resident program that runs from `<state folder>/bin/` keeps itself up to date: a few seconds after it
+starts, and then every `ASTERISM_UPDATE_CHECK_S` seconds (default one day), it reads the server's
+`/dl/manifest.json`. It installs a version it has not acted on before, after checking size and SHA-256, and
+hands over to the new program; open sessions reconnect by themselves. A build run from anywhere else (such as
+`target/release`) never replaces itself.
 
 ## Build
 
