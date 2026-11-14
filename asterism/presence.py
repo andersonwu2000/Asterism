@@ -38,9 +38,10 @@ def held(a: sqlite3.Row) -> bool:
 
 
 def busy(db: sqlite3.Connection, a: sqlite3.Row) -> bool:
-    """The agent holds a task; idle is not busy. The one definition every rule that needs it calls (notices,
-    channel messages without a mention). There is no task table yet, so no agent is busy."""
-    return False
+    """The agent is responsible for at least one task; otherwise it is idle. The one definition every rule
+    that needs it calls (notices, channel messages without a mention, the member lists)."""
+    return db.execute("SELECT 1 FROM tasks WHERE responsible_kind = 'agent' AND responsible_id = ? LIMIT 1",
+                      (a["id"],)).fetchone() is not None
 
 
 def subscribed(db: sqlite3.Connection, agent_id: int) -> bool:

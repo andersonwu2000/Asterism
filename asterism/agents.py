@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from . import messaging, notices, presence, projects, util
+from . import messaging, notices, presence, projects, tasks, util
 from .errors import ApiError, bad_request, conflict, invalid_credential
 from .projects import Actor, Project
 from .store import Store
@@ -103,8 +103,10 @@ def whoami(c: Caller) -> dict[str, Any]:
         out["note"] = NOT_REGISTERED
     if "read" in projects.permissions(pj, actor):
         out.update(projects.people_and_agents(pj))
+        out["channels"] = [{"name": n, "pins": []} for n in messaging.channel_names(pj)]
     else:
-        out.update(people=[], agents=[], note="This agent lacks the read permission, so the member list is hidden.")
+        out.update(people=[], agents=[], channels=[],
+                   note="This agent lacks the read permission, so the member list is hidden.")
     return out
 
 
@@ -327,6 +329,15 @@ def messages(c: Caller, where: Any, mid: Any, before: Any, limit: Any) -> dict[s
 
 def ack(c: Caller, ids: Any) -> dict[str, Any]:
     return messaging.ack(c.pj, messaging.agent_member(_agent(c)), ids)
+
+
+def task_list(c: Caller) -> dict[str, Any]:
+    return tasks.agent_tasks(c.pj, _agent(c))
+
+
+def task_update(c: Caller, args: dict[str, Any]) -> dict[str, Any]:
+    """An argument left out is not a change: `args` goes on as it came."""
+    return tasks.agent_update(c.pj, _agent(c), args)
 
 
 async def wait(c: Caller, timeout_s: Any, disconnected: Callable[[], Awaitable[Any]] | None = None) -> dict[str, Any]:

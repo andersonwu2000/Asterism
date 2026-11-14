@@ -19,10 +19,10 @@ PERMISSIONS = ["read", "post", "create_channel", "create_schedule", "assign_task
 MANAGEMENT = {"manage_members", "manage_groups", "project_settings"}
 DEFAULT_GROUPS = [
     ("owner", PERMISSIONS),
-    ("human", ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents"]),
+    ("human", ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents", "edit_tasks"]),
     ("ai", ["read", "post", "edit_tasks"]),
 ]
-# The four switches of a person's ownership group. others_assign is not enforced yet (no tasks).
+# The four switches of a person's ownership group.
 SWITCHES = ("others_mention", "others_channel", "others_assign", "others_regroup")
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
@@ -257,6 +257,7 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
                 pj.db.execute("DELETE FROM group_members WHERE group_id = ? AND member_kind = ? AND member_id = ?",
                               (groups[gname]["id"], kind, mid))
     util.log("groups_changed", project=pj.slug, member=target, add=add, remove=remove, by=actor.person_id)
+    _members_changed(pj, actor)
     return {"groups": [g["name"] for g in groups_of(pj, kind, mid)]}
 
 
@@ -373,8 +374,8 @@ def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None
     because = presence.offline_because(pj.slug, a, pj.db)
     return {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"],
             "groups": [g["name"] for g in groups_of(pj, "agent", a["id"])],
-            "online": because is None, "offline_because": because, "last_active": util.iso(a["last_active"]),
-            "generation": a["generation"]}
+            "online": because is None, "offline_because": because, "busy": presence.busy(pj.db, a),
+            "last_active": util.iso(a["last_active"]), "generation": a["generation"]}
 
 
 def people_and_agents(pj: Project) -> dict[str, Any]:
@@ -500,6 +501,7 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
             require(pj, actor, "manage_members", "Removing another person's agent needs the manage_members permission.")
         _purge_agents(pj, "id = ?", (agent["id"],))
         util.log("agent_removed", project=pj.slug, agent=name, by=actor.person_id)
+        _members_changed(pj, actor)
         return {"removed": name}
     person = pj.db.execute("SELECT * FROM people WHERE name = ?", (name,)).fetchone()
     if not person:
@@ -525,7 +527,14 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
     with pj.accounts:
         pj.accounts.execute("DELETE FROM oauth_tokens WHERE slug = ? AND person_id = ?", (pj.slug, pid))
     util.log("person_removed", project=pj.slug, person=pid, by=actor.person_id)
+    _members_changed(pj, actor)
     return {"removed": name}
+
+
+def _members_changed(pj: Project, actor: Actor) -> None:
+    """Members left groups or the project: the task table follows (tasks.members_changed)."""
+    from . import tasks                 # tasks builds on this module
+    tasks.members_changed(pj, actor)
 
 
 def _forget_reader(pj: Project, kind: str, member_id: int) -> None:

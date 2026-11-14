@@ -5,7 +5,7 @@ sent, one row per reader with its level for that reader; nothing recomputes it l
 hear a message (level important or normal) gets a delivery record; a poll (its session's or its computer's)
 hands deliveries out and they are acknowledged. An important message handed over to an agent starts a follow-up that the background
 task (upkeep) turns into reminders until the agent answers it. The system posts notices in #general when an
-agent goes online or offline. Everything lives in the project's database; memory only holds what wakes a
+agent goes online or offline, and messages when somebody else changes an agent's task (tasks.py). Everything lives in the project's database; memory only holds what wakes a
 waiting request (an open poll or wait).
 """
 from __future__ import annotations
@@ -32,6 +32,10 @@ CHAIN_REMINDER = ("This thread of replies between agents is already {n} messages
 LEVELS = ("important", "normal", "muted")
 REMINDER = "You have not answered message {id} from {sender}. Answer with send, reply_to={id}."
 NOTICE = {True: "{name} is online.", False: "{name} is offline."}
+NO_ANSWER = "(Asterism message. No answer needed.)"
+# The last line of a notice that reaches an agent at level normal: it may move the work around.
+RECOORDINATE = ("(Asterism notice. No answer needed. If this changes who should do which task, settle it with the agents "
+                "you work with and update the task table.)")
 
 
 # --------------------------------------------------------------------------- members and places
@@ -220,11 +224,14 @@ _CLOSER_RE = re.compile(r"<(?=/asterism-message)", re.IGNORECASE)
 
 
 def frame(m: dict[str, Any], notice: bool = False) -> str:
-    """The full text put in front of an agent for the message object `m`. A notice never asks for an answer."""
+    """The full text put in front of an agent for the message object `m`. A notice never asks for an answer; one
+    at level normal asks the agent to settle the tasks again if they need it."""
     place = "private" if m.get("private") else m["in"]
     reply = f' reply-to="{_attr(m["reply_to"])}"' if m.get("reply_to") else ""
-    last = (f"(Asterism message. To answer: send with reply_to={m['id']}.)"
-            if m["level"] == "important" and not notice else "(Asterism message. No answer needed.)")
+    if notice:
+        last = RECOORDINATE if m["level"] == "normal" else NO_ANSWER
+    else:
+        last = f"(Asterism message. To answer: send with reply_to={m['id']}.)" if m["level"] == "important" else NO_ANSWER
     return (f'<asterism-message id="{m["id"]}" in="{_attr(place)}" from="{_attr(m["from"])}" '
             f'relation="{_attr(m["relation"])}" level="{_attr(m["level"])}"{reply}>\n'
             f'{_CLOSER_RE.sub("&lt;", m["text"])}\n</asterism-message>\n{last}')
@@ -454,36 +461,66 @@ def _waiting_for(pj: Project, a: sqlite3.Row) -> set[str]:
         "AND d.state IN ('pending', 'out') AND l.level = 'important')", (a["id"], a["id"]))}
 
 
-def post_notice(pj: Project, a: sqlite3.Row, online: bool) -> int:
-    """'<name> is online.' / '<name> is offline.' from the system in #general. Its level: important for whoever
-    waits for the agent's answer (going offline only), normal for those close to it (an agent only while it
-    is busy, presence.busy), muted for everyone else;
-    a reader who muted #general hears a normal notice as muted. Agents that are online get it as a delivery
-    of kind notice; the agent itself gets nothing. Hop 0 and no mentions: it never counts as speaking."""
-    t = util.now()
+def post_notice(pj: Project, a: sqlite3.Row, online: bool, text: str, assigners: set[int]) -> int:
+    """The notice of a change of the agent's presence, from the system in #general; `text` lists its tasks and
+    `assigners` are the people who locked one of them. The changes that may move the work around are an agent
+    that is responsible for a task going offline and one that is responsible for none coming online. Levels:
+    - important: whoever waits for the agent's answer, and the people in `assigners`, when it goes offline;
+    - normal, for a change that may move the work around: those close to it (_close_to) who have not muted
+      #general, an agent only while it is busy itself (presence.busy);
+    - muted: everyone else, and every other change.
+    Agents that are online get it as a delivery of kind notice; the agent itself gets nothing. Hop 0 and no
+    mentions: it never counts as speaking."""
     close = _close_to(pj, a)
-    waiting = set() if online else _waiting_for(pj, a)
+    waiting = set() if online else _waiting_for(pj, a) | {f"person:{p}" for p in assigners}
+    moves = online != presence.busy(pj.db, a)
     muted = {f"{r['member_kind']}:{r['member_id']}" for r in pj.db.execute(
         "SELECT member_kind, member_id FROM mutes WHERE channel = 'general'")}
-    readers = [Member("person", r["person_id"], r["person_id"], r["name"])
-               for r in pj.db.execute("SELECT * FROM people ORDER BY person_id")]
-    others = {x["id"]: x for x in pj.db.execute("SELECT * FROM agents WHERE id != ? ORDER BY id", (a["id"],))}
-    readers += [agent_member(x) for x in others.values()]
+
+    def level(r: Member, row: sqlite3.Row | None) -> str:
+        if r.key in waiting:
+            return "important"
+        near = moves and r.key in close and r.key not in muted and (row is None or presence.busy(pj.db, row))
+        return "normal" if near else "muted"
+    return _post_system(pj, text, level, notice=True, without=a["id"])
+
+
+def post_from_system(pj: Project, text: str, agents: dict[int, str]) -> int:
+    """An ordinary message from the system in #general (hop 0, no mentions) to the agents in `agents` (agent id
+    -> level, important or normal); muted for every other reader. It is delivered like any message: an
+    important one is kept for an agent that is offline and followed up until it is answered."""
+    return _post_system(pj, text, lambda r, row: agents.get(r.id, "muted") if r.kind == "agent" else "muted",
+                        notice=False)
+
+
+def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: int | None = None) -> int:
+    """Write a message from the system in #general with each reader's level, level_of(member, agent row or None),
+    and the agents' deliveries: a notice only to agents that are online, a message as _distribute does."""
+    t = util.now()
+    readers: list[tuple[Member, sqlite3.Row | None]] = [
+        (Member("person", r["person_id"], r["person_id"], r["name"]), None)
+        for r in pj.db.execute("SELECT * FROM people ORDER BY person_id")]
+    readers += [(agent_member(x), x) for x in pj.db.execute("SELECT * FROM agents WHERE id != ? ORDER BY id",
+                                                             (-1 if without is None else without,))]
     woken: list[int] = []
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
-                            "reply_to, hop, mentions, sent) VALUES ('#general', 'system', NULL, NULL, 'system', ?, "
-                            "NULL, 0, '[]', ?)", (NOTICE[online].format(name=a["name"]), t)).lastrowid
+                            "reply_to, hop, mentions, sent, notice) VALUES ('#general', 'system', NULL, NULL, 'system', "
+                            "?, NULL, 0, '[]', ?, ?)", (text, t, 1 if notice else None)).lastrowid
         levels = []
-        for r in readers:
-            # An agent close to it hears the change only when it is busy: a change that may move the work
-            # around is for the agents that hold a task; an idle one is not woken by it.
-            near = r.key in close and r.key not in muted and (r.kind == "person" or presence.busy(pj.db, others[r.id]))
-            level = "important" if r.key in waiting else "normal" if near else "muted"
+        for r, row in readers:
+            level = level_of(r, row)
             levels.append((mid, r.kind, r.id, level))
-            if r.kind == "agent" and level != "muted" and presence.is_online(pj.slug, others[r.id], pj.db):
+            if row is None or level == "muted":
+                continue
+            online = presence.is_online(pj.slug, row, pj.db)
+            if notice and online:
                 pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
                               "VALUES (?, 'notice', ?, 'pending', 'push', ?)", (r.id, mid, t))
+                woken.append(r.id)
+            elif not notice and (level == "important" or online):
+                pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
+                              "VALUES (?, 'message', ?, 'pending', ?, ?)", (r.id, mid, "push" if online else "return", t))
                 woken.append(r.id)
         pj.db.executemany("INSERT INTO levels (message_id, reader_kind, reader_id, level) VALUES (?, ?, ?, ?)", levels)
     util.log("message_sent", project=pj.slug, id=mid, **{"in": "#general"}, **{"from": "system"}, hop=0)
@@ -584,7 +621,7 @@ def drop_unheard(pj: Project, me: Member) -> None:
 
 
 def _follow(pj: Project, me: Member, mids: list[int], t: float) -> None:
-    """Important messages (never notices) handed over to an agent and not answered yet start their reminder
+    """Important messages (never notices of presence) handed over to an agent and not answered yet start their reminder
     clock (inside the caller's transaction). People are never reminded."""
     if me.kind != "agent" or not mids:
         return
@@ -592,7 +629,7 @@ def _follow(pj: Project, me: Member, mids: list[int], t: float) -> None:
     pj.db.execute(f"INSERT OR IGNORE INTO followups (agent_id, message_id, handed, period, due) "
                   f"SELECT ?, l.message_id, ?, ?, ? FROM levels l JOIN messages m ON m.id = l.message_id "
                   f"WHERE l.reader_kind = 'agent' AND l.reader_id = ? AND l.level = 'important' "
-                  f"AND m.sender_kind != 'system' AND l.message_id IN ({marks}) "
+                  f"AND m.notice IS NULL AND l.message_id IN ({marks}) "
                   f"AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.sender_kind = 'agent' AND r.sender_id = ? "
                   f"AND r.reply_to = l.message_id)",
                   (me.id, t, t, t + config.get().remind_after_s, me.id, *mids, me.id))

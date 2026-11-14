@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import config, messaging, presence, util
+from . import config, messaging, presence, tasks, util
 from .projects import Project
 
 
@@ -53,7 +53,7 @@ def sync(pj: Project, agent_id: int) -> None:
         util.log("agent_online", project=pj.slug, agent=a["name"])
     else:
         util.log("agent_offline", project=pj.slug, agent=a["name"], reason=_reason(a))
-    messaging.post_notice(pj, a, online)
+    messaging.post_notice(pj, a, online, tasks.presence_text(pj, a, online), tasks.assigners(pj, a))
 
 
 def online_now(pj: Project, agent_ids: list[int]) -> dict[int, bool]:

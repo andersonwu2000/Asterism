@@ -36,3 +36,33 @@
 #composer{margin-top:.5rem}
 #composer textarea{width:100%;box-sizing:border-box;font:inherit}
 #reply-target{font-size:.9rem;color:#444}
+/* The task table above the channels: groups with tasks as cards, groups without as one line each. */
+#task-panel{border:1px solid #ccc;border-radius:.3rem;padding:.4rem .6rem;margin-bottom:1rem}
+#task-panel.folded{padding-bottom:.2rem}
+.task-head{display:flex;flex-wrap:wrap;gap:.25rem .75rem;align-items:baseline}
+.task-head h2{margin:0;font-size:1.1rem}
+#task-fold{margin-left:auto}
+.tgroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:.6rem;margin-top:.5rem}
+.tgroup{border:1px solid #e2e2e2;border-radius:.3rem;padding:.35rem .5rem;min-width:0}
+.tghead{display:flex;flex-wrap:wrap;gap:.2rem .6rem;align-items:baseline}
+.tghead h3{margin:0;font-size:.95rem}
+.tmembers{font-size:.85rem;color:#444}
+.tmember{display:inline-block;margin-right:.6rem;white-space:nowrap}
+.dot{display:inline-block;width:.5rem;height:.5rem;border-radius:50%;border:1px solid #999;margin-right:.25rem;vertical-align:middle}
+.dot.on{background:#3a3;border-color:#3a3}
+.tlist{list-style:none;padding:0;margin:.3rem 0 0}
+.tlist li.towner{font-size:.8rem;color:#666;margin-top:.3rem}
+.tlist li.task{padding:.2rem 0 .2rem .5rem;border-left:2px solid #ddd;margin:.1rem 0}
+.tlist li.task.locked{border-left-color:#c33}
+.tline{overflow-wrap:anywhere}
+.tid{color:#888;font-size:.8rem;margin-right:.35rem}
+.ttools{font-size:.8rem;display:flex;flex-wrap:wrap;gap:.2rem .6rem;align-items:center;margin-top:.1rem}
+.ttools select,.ttools button{font-size:.8rem;max-width:12rem}
+.tedit textarea{width:100%;box-sizing:border-box;font:inherit}
+.tadd{display:flex;gap:.3rem;margin-top:.35rem;flex-wrap:wrap}
+.tadd input{flex:1 1 10rem;min-width:0}
+.tquiet{margin-top:.5rem;font-size:.9rem}
+.tquiet .tgroup{border:none;border-top:1px solid #eee;border-radius:0;padding:.2rem 0}
+.tquiet .tghead h3{font-weight:normal}
+.tplus{font-size:.75rem;background:none;border:none;color:#06c;cursor:pointer;padding:0}
+.tplus:hover,.tplus:focus-visible{text-decoration:underline}

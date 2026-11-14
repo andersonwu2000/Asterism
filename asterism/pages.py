@@ -13,7 +13,6 @@ from typing import Any, Iterable
 from .i18n import Translator
 from .projects import SWITCHES
 
-ENFORCED_SWITCHES = {"others_regroup", "others_mention", "others_channel"}   # others_assign waits for tasks
 
 
 def e(v: Any) -> str:
@@ -235,11 +234,10 @@ def switch_boxes(tr: Translator, values: dict[str, bool], toggle: str | None = N
     """The four switches. On "my agents" each saves at once; on an approval page they go with the form."""
     out = []
     for k in SWITCHES:
-        later = "" if k in ENFORCED_SWITCHES else f' <span class="muted">{e(tr("switch.later"))}</span>'
         checked = " checked" if values.get(k) else ""
         attrs = f'data-toggle="{e(toggle)}"' if toggle else 'value="1"'
         out.append(f'<div><label><input type="checkbox" name="{k}" {attrs}{checked}> {e(tr("switch." + k))}</label>'
-                   f'{later} <span class="out" data-out></span></div>')
+                   f' <span class="out" data-out></span></div>')
     return "".join(out)
 
 
@@ -316,7 +314,12 @@ def messages(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, 
     data = {"slug": slug, "me": person["name"], "agents": view["agents"], "agent-mutes": view["agent_mutes"]}
     attrs = " ".join(f'data-{k}="{e(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))}"'
                      for k, v in data.items())
-    body = (f'<div id="chat" {attrs}>'
+    # The task table above the channels; messages.js fills it from /api/tasks and keeps it current.
+    panel = (f'<section id="task-panel" data-can-edit="{"1" if view["can_edit_tasks"] else ""}">'
+             f'<div class="task-head"><h2>{e(tr("task.title"))}</h2> <span id="task-summary" class="muted"></span> '
+             f'<button type="button" id="task-fold" aria-expanded="true" aria-controls="task-body">'
+             f'{e(tr("task.hide"))}</button></div><div id="task-body"></div></section>')
+    body = (f'{panel}<div id="chat" {attrs}>'
             f'<aside class="places"><h2>{e(tr("msg.channels"))}</h2><ul id="channels">{channels}</ul>{new_channel}'
             f'<h2>{e(tr("msg.private"))}</h2><ul id="privates">{private}</ul>{start}</aside>'
             f'<section class="room"><header class="room-head"><h2 id="place-title"></h2>'

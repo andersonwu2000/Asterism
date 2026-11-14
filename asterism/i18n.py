@@ -139,7 +139,6 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "switch.others_channel": "別人的頻道訊息會送到我的 agent",
         "switch.others_assign": "別人可以指定任務給我的 agent",
         "switch.others_regroup": "別人可以調整我的 agent 的身份組",
-        "switch.later": "（之後的版本才生效）",
 
         "consent.title": "授權連接器",
         "consent.approve": "同意",
@@ -200,6 +199,30 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "msg.show_all": "顯示全部",
         "msg.collapse": "收合",
 
+        "task.title": "任務表",
+        "task.hide": "收合",
+        "task.show": "展開",
+        "task.summary": "{n} 項任務，{open} 項沒人負責",
+        "task.nobody": "沒人負責",
+        "task.online": "在線",
+        "task.offline": "離線",
+        "task.busy": "忙碌",
+        "task.no_members": "（沒有成員）",
+        "task.no_tasks": "沒有任務",
+        "task.locked": "{name} 指定，已鎖定",
+        "task.lock": "鎖定",
+        "task.lock_hint": "鎖定後，只有鎖定的人和這個 agent 的主人能改這項任務；agent 自己也不能改。",
+        "task.responsible": "負責",
+        "task.edit": "改內容",
+        "task.save": "儲存",
+        "task.cancel": "取消",
+        "task.remove": "移除",
+        "task.confirm_remove": "確定要移除任務 {id} 嗎？",
+        "task.add": "新增任務",
+        "task.add_to": "新增任務到 {group}",
+        "task.text_label": "任務內容（最多 2,000 字）",
+        "task.refused": "沒有完成：{message}",
+
         "error.title": "出了問題",
         "error.not_found": "找不到這個頁面或項目。",
         "error.forbidden": "你沒有權限做這件事。",
@@ -242,7 +265,7 @@ class Translator:
 
     def js_messages(self) -> dict[str, str]:
         """The texts the page script needs, sent along with each page."""
-        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg.", "invite."))]
+        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg.", "invite.", "task.", "group."))]
         return {k: self(k) for k in keys}
 
 

@@ -258,8 +258,8 @@ def _check_agent(pj: Project, person_id: int, args: dict[str, Any]) -> sqlite3.R
         raise RpcError(-32024, f"The agent {agent!r} belongs to another collaborator; this connector can only subscribe "
                                f"for its own agents. {HOW_TO_SUBSCRIBE}")
     if a["kind"] != "chatgpt":
-        raise RpcError(-32024, f"The agent {agent!r} is a local agent; its messages reach it through its helper. "
-                               f"{HOW_TO_SUBSCRIBE}")
+        raise RpcError(-32024, f"The agent {agent!r} is a local agent; its messages reach it through the Asterism "
+                               f"program on its computer. {HOW_TO_SUBSCRIBE}")
     return a
 
 

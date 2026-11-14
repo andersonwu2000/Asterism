@@ -6,6 +6,7 @@ from its event loop thread, so each domain function, having no await inside, run
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -171,7 +172,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to INTEGER,
     hop INTEGER NOT NULL,
     mentions TEXT NOT NULL,        -- JSON list of the member and group names mentioned
-    sent REAL NOT NULL
+    sent REAL NOT NULL,
+    notice INTEGER                 -- 1: a notice of presence (never asks for an answer); NULL: any other message
 );
 CREATE INDEX IF NOT EXISTS messages_place ON messages(place, id);
 CREATE INDEX IF NOT EXISTS messages_speaker ON messages(sender_kind, sender_id, place, sent);
@@ -234,6 +236,16 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS subscriptions_agent ON subscriptions(agent_id, expires);
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- increasing, never used twice
+    group_id INTEGER NOT NULL,     -- fixed when the task is made
+    text TEXT NOT NULL,
+    responsible_kind TEXT,         -- person, agent; NULL: nobody is responsible
+    responsible_id INTEGER,
+    assigned_by INTEGER,           -- the person who locked it (only while an agent is responsible); NULL: not locked
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
 CREATE TABLE IF NOT EXISTS chain_reminders (
     agent_id INTEGER NOT NULL,     -- the agent was reminded once about replying to this message
     reply_to INTEGER NOT NULL,
@@ -248,7 +260,14 @@ ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
                     ("last_poll", "REAL"), ("connected", "INTEGER")],
+    # Until tasks came, every message from the system was a notice of presence.
+    "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END")],
 }
+
+
+# Permissions a default group gained after it shipped: a database made by an earlier version gives them to that
+# group when opened (custom groups are never touched).
+ADDED_PERMISSIONS = {"human": ["edit_tasks"]}
 
 
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened.
@@ -267,6 +286,15 @@ def _upgrade(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
                 if fill:
                     conn.execute(f"UPDATE {table} SET {name} = {fill[0]}")
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'groups'").fetchone():
+        for gname, perms in ADDED_PERMISSIONS.items():
+            row = conn.execute("SELECT id, permissions FROM groups WHERE kind = 'default' AND name = ?", (gname,)).fetchone()
+            if row is None:
+                continue
+            have = json.loads(row[1])
+            missing = [p for p in perms if p not in have]
+            if missing:
+                conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(have + missing), row[0]))
     conn.commit()
 
 

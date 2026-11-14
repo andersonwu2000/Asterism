@@ -1,6 +1,7 @@
 // The messages page: the places on the left, the messages of the chosen place, the input box.
-// It speaks only the project's JSON API (/api/channels, /api/messages, /api/read, mute, new channel) and asks
-// for news every few seconds. All texts come from the page's message catalogue (body data-msg).
+// It speaks only the project's JSON API (/api/channels, /api/messages, /api/read, mute, new channel, /api/tasks)
+// and asks for news every few seconds; the task table sits above it all. All texts come from the page's message
+// catalogue (body data-msg).
 //
 // Message text is hostile input. It is rendered as Markdown with these rules: raw HTML in a message is shown
 // as text, Markdown images become plain links, and the HTML that Markdown produces goes through DOMPurify
@@ -554,6 +555,248 @@
     AGENTS.forEach(function (a) {
       el.settings.appendChild(settingBox(t("msg.mute_agent", {name: a}), (AGENT_MUTES[name] || []).indexOf(a) >= 0, a));
     });
+  }
+
+  // ------------------------------------------------------------------ the task table
+  //
+  // Above the channels: per group its members (online, busy) with the tasks each is responsible for, then the
+  // tasks nobody is responsible for. Read from /api/tasks with the same rhythm as the messages; a refresh waits
+  // while the person is editing in the panel. Groups without tasks take one line. A person who may edit tasks
+  // (data-can-edit) adds, rewrites, reassigns, locks and removes them; a refusal shows the server's sentence.
+
+  var tp = {
+    panel: document.getElementById("task-panel"), body: document.getElementById("task-body"),
+    fold: document.getElementById("task-fold"), summary: document.getElementById("task-summary")
+  };
+  var tasks = {canEdit: !!(tp.panel && tp.panel.dataset.canEdit), last: "", open: true, adding: null};
+  var OWN_SUFFIX = "-agents";
+
+  function make(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function groupLabel(g) {
+    if (g.kind === "default" && MSG["group." + g.name]) return t("group." + g.name);
+    if (g.kind === "ownership" && g.name.slice(-OWN_SUFFIX.length) === OWN_SUFFIX) {
+      return t("group.ownership", {owner: g.name.slice(0, -OWN_SUFFIX.length)});
+    }
+    return g.name;
+  }
+
+  function refused(out, data) {
+    out.textContent = data.message ? t("task.refused", {message: data.message}) : errorText(data.error);
+  }
+
+  async function taskCall(path, body, out) {
+    var r = await post(path, body);
+    if (!r.ok) { refused(out, r.data); return false; }
+    tasks.last = "";
+    await loadTasks(true);
+    return true;
+  }
+
+  function memberChip(m) {
+    var chip = make("span", "tmember");
+    chip.appendChild(document.createTextNode(m.name));
+    if (m.kind === "agent") {                 // people's presence is not known yet: only agents get the marks
+      var dot = make("span", "dot" + (m.online ? " on" : ""));
+      dot.title = t(m.online ? "task.online" : "task.offline");
+      dot.setAttribute("aria-label", dot.title);
+      chip.insertBefore(dot, chip.firstChild);
+      if (m.busy) chip.appendChild(make("span", "tag", t("task.busy")));
+    }
+    return chip;
+  }
+
+  function taskRow(task, group) {
+    var li = make("li", "task" + (task.assigned_by ? " locked" : ""));
+    var line = make("div", "tline");
+    line.appendChild(make("span", "tid", "#" + task.id));
+    var text = make("span", "ttext", task.text);
+    line.appendChild(text);
+    if (task.assigned_by) line.appendChild(make("span", "tag", t("task.locked", {name: task.assigned_by})));
+    li.appendChild(line);
+    if (!tasks.canEdit) return li;
+
+    var tools = make("div", "ttools"), out = make("span", "out");
+    var who = make("select");
+    who.setAttribute("aria-label", t("task.responsible"));
+    var none = make("option", "", t("task.nobody"));
+    none.value = "";
+    who.appendChild(none);
+    group.members.forEach(function (m) {
+      var o = make("option", "", m.name);
+      o.value = m.name;
+      who.appendChild(o);
+    });
+    who.value = task.responsible || "";
+    who.addEventListener("change", async function () {
+      if (!(await taskCall("tasks/" + task.id, {responsible: who.value}, out))) who.value = task.responsible || "";
+    });
+    var whoLabel = make("label", "", t("task.responsible") + " ");
+    whoLabel.appendChild(who);
+    tools.appendChild(whoLabel);
+
+    if (task.responsible_kind === "agent") {
+      var lock = make("input"), lockLabel = make("label");
+      lock.type = "checkbox";
+      lock.checked = !!task.assigned_by;
+      lockLabel.title = t("task.lock_hint");
+      lockLabel.appendChild(lock);
+      lockLabel.appendChild(document.createTextNode(" " + t("task.lock")));
+      lock.addEventListener("change", async function () {
+        if (!(await taskCall("tasks/" + task.id, {locked: lock.checked}, out))) lock.checked = !lock.checked;
+      });
+      tools.appendChild(lockLabel);
+    }
+
+    var editBtn = make("button", "", t("task.edit"));
+    editBtn.type = "button";
+    editBtn.addEventListener("click", function () {
+      var form = make("form", "tedit"), area = make("textarea");
+      area.value = task.text;
+      area.rows = 2;
+      area.maxLength = 2000;
+      area.setAttribute("aria-label", t("task.text_label"));
+      var save = make("button", "", t("task.save")), cancel = make("button", "", t("task.cancel"));
+      cancel.type = "button";
+      cancel.addEventListener("click", function () { form.replaceWith(line); tasks.last = ""; });
+      form.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        await taskCall("tasks/" + task.id, {text: area.value}, out);
+      });
+      form.appendChild(area);
+      form.appendChild(save);
+      form.appendChild(document.createTextNode(" "));
+      form.appendChild(cancel);
+      line.replaceWith(form);
+      area.focus();
+    });
+    var removeBtn = make("button", "", t("task.remove"));
+    removeBtn.type = "button";
+    removeBtn.addEventListener("click", async function () {
+      if (window.confirm(t("task.confirm_remove", {id: task.id}))) await taskCall("tasks/" + task.id + "/remove", {}, out);
+    });
+    tools.appendChild(editBtn);
+    tools.appendChild(removeBtn);
+    tools.appendChild(out);
+    li.appendChild(tools);
+    return li;
+  }
+
+  function addForm(g) {
+    var form = make("form", "tadd"), input = make("input"), btn = make("button", "", t("task.add")), out = make("span", "out");
+    input.name = "text";
+    input.maxLength = 2000;
+    input.required = true;
+    input.placeholder = t("task.text_label");
+    input.setAttribute("aria-label", t("task.add_to", {group: groupLabel(g)}));
+    form.appendChild(input);
+    form.appendChild(btn);
+    form.appendChild(out);
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      if (!input.value.trim()) return;
+      if (await taskCall("tasks", {group: g.name, text: input.value}, out)) tasks.adding = null;
+    });
+    return form;
+  }
+
+  function groupBlock(g) {
+    var box = make("section", "tgroup" + (g.tasks.length ? "" : " quiet"));
+    var head = make("div", "tghead");
+    var name = make("h3", "", groupLabel(g));
+    if (groupLabel(g) !== g.name) name.appendChild(make("small", "muted", " " + g.name));
+    head.appendChild(name);
+    var who = make("span", "tmembers");
+    if (!g.members.length) who.appendChild(make("span", "muted", t("task.no_members")));
+    g.members.forEach(function (m) { who.appendChild(memberChip(m)); });
+    head.appendChild(who);
+    if (tasks.canEdit && !g.tasks.length && tasks.adding !== g.name) {
+      var plus = make("button", "tplus", "+ " + t("task.add"));
+      plus.type = "button";
+      plus.setAttribute("aria-label", t("task.add_to", {group: groupLabel(g)}));
+      plus.addEventListener("click", function () { tasks.adding = g.name; drawTasks(tasks.data); });
+      head.appendChild(plus);
+    }
+    box.appendChild(head);
+    if (g.tasks.length) {
+      var list = make("ul", "tlist");
+      // Each member's tasks in the order of the members, then the tasks nobody is responsible for.
+      var order = g.members.map(function (m) { return m.name; }).concat([null]);
+      order.forEach(function (who) {
+        var mine = g.tasks.filter(function (x) { return x.responsible === who; });
+        if (!mine.length) return;
+        var sub = make("li", "towner", who === null ? t("task.nobody") : who);
+        list.appendChild(sub);
+        mine.forEach(function (x) { list.appendChild(taskRow(x, g)); });
+      });
+      box.appendChild(list);
+    }
+    if (tasks.canEdit && (g.tasks.length || tasks.adding === g.name)) {
+      var form = addForm(g);
+      box.appendChild(form);
+      if (tasks.adding === g.name && !g.tasks.length) setTimeout(function () { form.elements.text.focus(); }, 0);
+    }
+    return box;
+  }
+
+  function drawTasks(data) {
+    tasks.data = data;
+    var groups = data.groups || [], n = 0, open = 0;
+    groups.forEach(function (g) {
+      n += g.tasks.length;
+      open += g.tasks.filter(function (x) { return !x.responsible; }).length;
+    });
+    tp.summary.textContent = t("task.summary", {n: n, open: open});
+    tp.body.textContent = "";
+    var busy = groups.filter(function (g) { return g.tasks.length; });
+    var quiet = groups.filter(function (g) { return !g.tasks.length; });
+    var grid = make("div", "tgroups");
+    busy.forEach(function (g) { grid.appendChild(groupBlock(g)); });
+    tp.body.appendChild(grid);
+    if (quiet.length) {
+      var rest = make("div", "tquiet");
+      quiet.forEach(function (g) { rest.appendChild(groupBlock(g)); });
+      tp.body.appendChild(rest);
+    }
+  }
+
+  // Someone is typing in the panel or has an editor open: a redraw would throw that away.
+  function editing() {
+    var a = document.activeElement;
+    return !!tp.body.querySelector("form.tedit") || !!(a && tp.body.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)
+                                                       && a.value);
+  }
+
+  async function loadTasks(force) {
+    if (!tp.panel) return;
+    if (!force && editing()) return;
+    var r = await get("tasks");
+    if (!r.ok) return;
+    var raw = JSON.stringify(r.data);
+    if (raw === tasks.last && !force) return;
+    if (!force && editing()) return;
+    tasks.last = raw;
+    drawTasks(r.data);
+  }
+
+  function setTaskFold(open) {
+    tasks.open = open;
+    tp.body.hidden = !open;
+    tp.fold.setAttribute("aria-expanded", String(open));
+    tp.fold.textContent = t(open ? "task.hide" : "task.show");
+    tp.panel.classList.toggle("folded", !open);
+    if (open) loadTasks(true);
+  }
+
+  if (tp.panel) {
+    tp.fold.addEventListener("click", function () { setTaskFold(!tasks.open); });
+    setInterval(function () { loadTasks(false); }, NEWS_EVERY_MS);
+    loadTasks(true);
   }
 
   // ------------------------------------------------------------------ wiring

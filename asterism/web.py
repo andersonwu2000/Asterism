@@ -23,7 +23,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import accounts, agents, computers, config, downloads, messaging, oauth, pages, projects, tools, upkeep, util
+from . import accounts, agents, computers, config, downloads, messaging, oauth, pages, projects, tasks, tools, upkeep, util
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import Translator, pick_locale
 from .projects import Actor, Project
@@ -337,6 +337,26 @@ async def api_member_remove(request: Request) -> Any:
     return projects.remove_member(pj, actor, request.path_params["name"])
 
 
+async def api_tasks(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return tasks.table(pj, actor)
+
+
+async def api_task_create(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return tasks.person_create(pj, actor, await body_json(request))
+
+
+async def api_task_change(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return tasks.person_change(pj, actor, request.path_params["tid"], await body_json(request))
+
+
+async def api_task_remove(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return tasks.person_remove(pj, actor, request.path_params["tid"])
+
+
 async def api_my(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     return projects.my_view(pj, actor)
@@ -418,6 +438,14 @@ async def agent_messages(request: Request, c: agents.Caller) -> Any:
 
 async def agent_wait(request: Request, c: agents.Caller) -> Any:
     return await agents.wait(c, request.query_params.get("timeout_s"), disconnect_watch(request))
+
+
+async def agent_tasks(request: Request, c: agents.Caller) -> Any:
+    return agents.task_list(c)
+
+
+async def agent_task(request: Request, c: agents.Caller) -> Any:
+    return agents.task_update(c, await body_json(request))
 
 
 async def agent_ack(request: Request, c: agents.Caller) -> Any:
@@ -676,6 +704,7 @@ async def messages_page(request: Request) -> Response:
     me = messaging.person_member(pj, actor.person_id)
     view = {"places": messaging.channels_view(pj, me),
             "can_create": "create_channel" in projects.permissions(pj, actor),
+            "can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor),
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
                                                          (actor.person_id,))],
             "agents": [r["name"] for r in pj.db.execute("SELECT name FROM agents WHERE person_id = ? ORDER BY name",
@@ -821,6 +850,10 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/messages", api(api_messages), methods=["GET"]),
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),
+        Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
+        Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),
+        Route("/{slug}/api/tasks/{tid:int}", api(api_task_change), methods=["POST"]),
+        Route("/{slug}/api/tasks/{tid:int}/remove", api(api_task_remove), methods=["POST"]),
         Route("/{slug}/api/agent/register", agent_api(agent_register, "after"), methods=["POST"]),
         Route("/{slug}/api/agent/leave", agent_api(agent_leave, None), methods=["POST"]),
         Route("/{slug}/api/agent/whoami", agent_api(agent_whoami)),
@@ -828,6 +861,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/agent/send", agent_api(agent_send), methods=["POST"]),
         Route("/{slug}/api/agent/messages", agent_api(agent_messages)),
         Route("/{slug}/api/agent/wait", agent_api(agent_wait)),
+        Route("/{slug}/api/agent/tasks", agent_api(agent_tasks)),
+        Route("/{slug}/api/agent/task", agent_api(agent_task), methods=["POST"]),
         Route("/{slug}/api/agent/ack", agent_api(agent_ack, None), methods=["POST"]),
         Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
         Route("/{slug}/api/computer/poll", api(computer_poll)),
