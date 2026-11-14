@@ -386,7 +386,8 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
                 switches[r.person_id] = projects.ownership_group(pj, r.person_id)
             sw = switches[r.person_id]
             own = sender.kind != "system" and sender.person_id == r.person_id
-            heard = channel and not mentioned and r.key not in muted and online[r.id] and r.id in recent
+            heard = channel and not mentioned and r.key not in muted and online[r.id] and r.id in recent \
+                and not presence.busy(pj.db, a)
             if own and (mentioned or not channel):
                 level = "important"
             elif not own and mentioned and sw is not None and sw["others_mention"]:
@@ -455,7 +456,8 @@ def _waiting_for(pj: Project, a: sqlite3.Row) -> set[str]:
 
 def post_notice(pj: Project, a: sqlite3.Row, online: bool) -> int:
     """'<name> is online.' / '<name> is offline.' from the system in #general. Its level: important for whoever
-    waits for the agent's answer (going offline only), normal for those close to it, muted for everyone else;
+    waits for the agent's answer (going offline only), normal for those close to it (an agent only while it
+    is busy, presence.busy), muted for everyone else;
     a reader who muted #general hears a normal notice as muted. Agents that are online get it as a delivery
     of kind notice; the agent itself gets nothing. Hop 0 and no mentions: it never counts as speaking."""
     t = util.now()
@@ -474,8 +476,10 @@ def post_notice(pj: Project, a: sqlite3.Row, online: bool) -> int:
                             "NULL, 0, '[]', ?)", (NOTICE[online].format(name=a["name"]), t)).lastrowid
         levels = []
         for r in readers:
-            level = ("important" if r.key in waiting
-                     else "normal" if r.key in close and r.key not in muted else "muted")
+            # An agent close to it hears the change only when it is busy: a change that may move the work
+            # around is for the agents that hold a task; an idle one is not woken by it.
+            near = r.key in close and r.key not in muted and (r.kind == "person" or presence.busy(pj.db, others[r.id]))
+            level = "important" if r.key in waiting else "normal" if near else "muted"
             levels.append((mid, r.kind, r.id, level))
             if r.kind == "agent" and level != "muted" and presence.is_online(pj.slug, others[r.id], pj.db):
                 pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "

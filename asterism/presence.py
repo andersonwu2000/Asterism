@@ -37,6 +37,12 @@ def held(a: sqlite3.Row) -> bool:
     return a["offline_reason"] in HOLDS
 
 
+def busy(db: sqlite3.Connection, a: sqlite3.Row) -> bool:
+    """The agent holds a task; idle is not busy. The one definition every rule that needs it calls (notices,
+    channel messages without a mention). There is no task table yet, so no agent is busy."""
+    return False
+
+
 def subscribed(db: sqlite3.Connection, agent_id: int) -> bool:
     return db.execute("SELECT 1 FROM subscriptions WHERE agent_id = ? AND expires > ?",
                       (agent_id, util.now())).fetchone() is not None

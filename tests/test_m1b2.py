@@ -110,8 +110,10 @@ def test_an_active_agent_is_reminded_again_and_a_silent_one_goes_offline(v):
     m = system_messages(v.alice, off)[0]
     assert (m["from"], m["relation"], m["level"]) == ("system", "system", "important"), "alice was waiting for r3's answer"
     assert system_messages(v.bob, off)[0]["level"] == "muted"
-    d = until(lambda: notices(busy, off), 5)
-    assert d and d[0]["message"]["level"] == "normal" and d[0]["frame"].endswith("\n(Asterism message. No answer needed.)")
+    time.sleep(1.5)                                        # r2 holds no task: a change of state is not sent to it
+    assert not notices(busy, off), "only agents that hold a task are sent a change that may move the work around"
+    seen = [m for m in busy.messages(place="#general", limit=200).json()["messages"] if m["text"] == off]
+    assert seen and seen[0]["level"] == "muted", "it is there to read, muted"
     assert not notices(v.b1, off), "an agent of someone else is not told"
 
     late = v.alice.say("@r3 this arrived while you were out [f3]")
@@ -153,7 +155,8 @@ def test_notices_reach_only_those_close_to_the_agent(v):
     seen = until(lambda: system_messages(v.alice, on), 5)
     assert seen and (seen[0]["level"], seen[0]["from"], seen[0]["reply_to"]) == ("normal", "system", None)
     assert system_messages(v.bob, on)[0]["level"] == "muted" and system_messages(v.carol, on)[0]["level"] == "muted"
-    assert until(lambda: notices(v.a1, on), 5) and not notices(v.b1, on)
+    time.sleep(1.5)
+    assert not notices(v.a1, on) and not notices(v.b1, on), "no agent holds a task yet, so none is woken by the notice"
 
     r = v.alice.c.post(f"/{SLUG}/api/groups", json={"name": "lemma-team", "permissions": []})
     assert r.status_code == 201, r.text
