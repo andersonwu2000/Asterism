@@ -23,7 +23,8 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import accounts, agents, computers, config, downloads, messaging, oauth, pages, projects, tasks, tools, upkeep, util
+from . import (accounts, agents, computers, config, downloads, messaging, oauth, pages, pins, projects, schedules, tasks,
+               tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import Translator, pick_locale
 from .projects import Actor, Project
@@ -475,6 +476,36 @@ async def api_channel_mute(request: Request) -> Any:
     return messaging.set_mute(pj, actor, request.path_params["name"], b.get("muted"), b.get("agent"))
 
 
+async def api_pin(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return pins.add(pj, actor, request.path_params["name"], await body_json(request))
+
+
+async def api_unpin(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return pins.remove(pj, actor, request.path_params["name"], request.path_params["pid"])
+
+
+async def api_schedules(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return schedules.listing(pj, actor)
+
+
+async def api_schedule_create(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return schedules.create(pj, actor, await body_json(request))
+
+
+async def api_schedule_change(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return schedules.change(pj, actor, request.path_params["sid"], await body_json(request))
+
+
+async def api_schedule_remove(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return schedules.remove(pj, actor, request.path_params["sid"])
+
+
 async def api_messages(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     q = request.query_params
@@ -713,6 +744,22 @@ async def messages_page(request: Request) -> Response:
     return html(pages.messages(tr_for(request), person, pj.slug, view, can_admin(pj, actor)))
 
 
+async def schedules_page(request: Request) -> Response:
+    ctx = _page_context(request, request.path_params["slug"])
+    if isinstance(ctx, Response):
+        return ctx
+    person, pj, actor = ctx
+    mine = projects.permissions(pj, actor)
+    view = {"can_create": {"create_schedule", "post"} <= mine, "can_manage": "manage_members" in mine,
+            "min_every_s": config.get().schedule_min_every_s,
+            "places": {"channels": messaging.channel_names(pj),
+                       "people": [r["name"] for r in pj.db.execute(
+                           "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
+                       "agents": [r["name"] for r in pj.db.execute(
+                           "SELECT name FROM agents WHERE person_id = ? ORDER BY name", (actor.person_id,))]}}
+    return html(pages.schedules(tr_for(request), person, pj.slug, view, can_admin(pj, actor)))
+
+
 async def members_page(request: Request) -> Response:
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
@@ -834,6 +881,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/members", members_page),
         Route("/{slug}/my", my_page),
         Route("/{slug}/admin", admin_page),
+        Route("/{slug}/schedules", schedules_page),
         Route("/{slug}/mcp", mcp, methods=["GET", "POST", "DELETE"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
@@ -847,6 +895,12 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/channels", api(api_channels), methods=["GET"]),
         Route("/{slug}/api/channels", api(api_channel_create, 201), methods=["POST"]),
         Route("/{slug}/api/channels/{name}/mute", api(api_channel_mute), methods=["POST"]),
+        Route("/{slug}/api/channels/{name}/pins", api(api_pin, 201), methods=["POST"]),
+        Route("/{slug}/api/channels/{name}/pins/{pid:int}/remove", api(api_unpin), methods=["POST"]),
+        Route("/{slug}/api/schedules", api(api_schedules), methods=["GET"]),
+        Route("/{slug}/api/schedules", api(api_schedule_create, 201), methods=["POST"]),
+        Route("/{slug}/api/schedules/{sid:int}", api(api_schedule_change), methods=["POST"]),
+        Route("/{slug}/api/schedules/{sid:int}/remove", api(api_schedule_remove), methods=["POST"]),
         Route("/{slug}/api/messages", api(api_messages), methods=["GET"]),
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),

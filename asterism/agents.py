@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from . import messaging, notices, presence, projects, tasks, util
+from . import messaging, notices, pins, presence, projects, tasks, util
 from .errors import ApiError, bad_request, conflict, invalid_credential
 from .projects import Actor, Project
 from .store import Store
@@ -103,7 +103,8 @@ def whoami(c: Caller) -> dict[str, Any]:
         out["note"] = NOT_REGISTERED
     if "read" in projects.permissions(pj, actor):
         out.update(projects.people_and_agents(pj))
-        out["channels"] = [{"name": n, "pins": []} for n in messaging.channel_names(pj)]
+        pinned = pins.short(pj)
+        out["channels"] = [{"name": n, "pins": pinned.get(n, [])} for n in messaging.channel_names(pj)]
     else:
         out.update(people=[], agents=[], channels=[],
                    note="This agent lacks the read permission, so the member list is hidden.")

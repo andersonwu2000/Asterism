@@ -173,7 +173,8 @@ CREATE TABLE IF NOT EXISTS messages (
     hop INTEGER NOT NULL,
     mentions TEXT NOT NULL,        -- JSON list of the member and group names mentioned
     sent REAL NOT NULL,
-    notice INTEGER                 -- 1: a notice of presence (never asks for an answer); NULL: any other message
+    notice INTEGER,                -- 1: a notice of presence (never asks for an answer); NULL: any other message
+    schedule_id INTEGER            -- the schedule that posted it; NULL: posted by hand (or by the system)
 );
 CREATE INDEX IF NOT EXISTS messages_place ON messages(place, id);
 CREATE INDEX IF NOT EXISTS messages_speaker ON messages(sender_kind, sender_id, place, sent);
@@ -246,6 +247,30 @@ CREATE TABLE IF NOT EXISTS tasks (
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
+CREATE TABLE IF NOT EXISTS pins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,         -- the channel's name, without the '#'
+    path TEXT,                     -- a file of the repository; or
+    message_id INTEGER,            -- a message of that channel
+    by_person INTEGER NOT NULL,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pins_channel ON pins(channel, id);
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,    -- its creator; the runs are posted in their name
+    place TEXT NOT NULL,           -- where it posts, as messages.place
+    to_name TEXT NOT NULL,         -- that place as the creator named it: '#name' or a member's name
+    text TEXT NOT NULL,
+    level TEXT NOT NULL,           -- important, normal, muted: the level of every reader (see messaging)
+    start_at REAL NOT NULL,
+    every_s INTEGER,               -- NULL: it runs once
+    next_at REAL,                  -- the next run; in the past only for a time missed, made up by one run
+    paused INTEGER NOT NULL DEFAULT 0,
+    paused_because TEXT,           -- permission, target; NULL when paused by hand
+    last_message INTEGER,
+    created REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS chain_reminders (
     agent_id INTEGER NOT NULL,     -- the agent was reminded once about replying to this message
     reply_to INTEGER NOT NULL,
@@ -261,7 +286,12 @@ ADDED_COLUMNS = {
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
                     ("last_poll", "REAL"), ("connected", "INTEGER")],
     # Until tasks came, every message from the system was a notice of presence.
-    "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END")],
+    "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER")],
+}
+
+# Indexes on such added columns: made after the columns, since the schema script runs before them.
+ADDED_INDEXES = {
+    "messages": ["CREATE INDEX IF NOT EXISTS messages_schedule ON messages(schedule_id) WHERE schedule_id IS NOT NULL"],
 }
 
 
@@ -286,6 +316,10 @@ def _upgrade(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
                 if fill:
                     conn.execute(f"UPDATE {table} SET {name} = {fill[0]}")
+    for table, statements in ADDED_INDEXES.items():
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+            for sql in statements:
+                conn.execute(sql)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'groups'").fetchone():
         for gname, perms in ADDED_PERMISSIONS.items():
             row = conn.execute("SELECT id, permissions FROM groups WHERE kind = 'default' AND name = ?", (gname,)).fetchone()

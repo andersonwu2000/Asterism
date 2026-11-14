@@ -522,6 +522,7 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
             pj.db.execute("DELETE FROM group_members WHERE group_id = ?", (own["id"],))
             pj.db.execute("DELETE FROM groups WHERE id = ?", (own["id"],))
         pj.db.execute("DELETE FROM superseded WHERE person_id = ?", (pid,))
+        pj.db.execute("DELETE FROM schedules WHERE person_id = ?", (pid,))     # a person's schedules go with them
         _forget_reader(pj, "person", pid)
         pj.db.execute("DELETE FROM people WHERE person_id = ?", (pid,))
     with pj.accounts:

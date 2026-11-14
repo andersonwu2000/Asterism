@@ -66,3 +66,33 @@
 .tquiet .tghead h3{font-weight:normal}
 .tplus{font-size:.75rem;background:none;border:none;color:#06c;cursor:pointer;padding:0}
 .tplus:hover,.tplus:focus-visible{text-decoration:underline}
+/* A channel's pins above its messages. */
+#pins{border:1px solid #e2e2e2;border-radius:.3rem;padding:.3rem .5rem;margin-bottom:.5rem;font-size:.9rem}
+#pins h3{margin:0 0 .2rem;font-size:.85rem;color:#666;font-weight:normal}
+#pins ul{list-style:none;padding:0;margin:0}
+#pins li.pin{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .4rem;padding:.1rem 0}
+#pins li.pin a{overflow-wrap:anywhere;min-width:0}
+.pin-by{font-size:.8rem}
+.pin-remove{font-size:.75rem;background:none;border:none;color:#888;cursor:pointer;padding:0 .2rem}
+.pin-remove:hover,.pin-remove:focus-visible{color:#c33}
+.pin-add{display:flex;gap:.3rem;margin-top:.3rem;flex-wrap:wrap}
+.pin-add input{flex:1 1 12rem;min-width:0}
+.tag.scheduled{border-color:#69c;color:#36a}
+/* The schedules page. */
+.sch-form{border:1px solid #ccc;border-radius:.3rem;padding:.5rem .6rem;max-width:40rem}
+.sch-fields{display:grid;gap:.4rem}
+.sch-field{display:grid;grid-template-columns:minmax(7rem,12rem) 1fr;gap:.5rem;align-items:baseline}
+@media (max-width:40rem){.sch-field{grid-template-columns:1fr;gap:.1rem}}
+.sch-label{font-size:.9rem;color:#444}
+.sch-field textarea{width:100%;box-sizing:border-box;font:inherit}
+.sch-field select,.sch-field input{max-width:100%}
+.sch-repeat input{width:5rem}
+.sch-tools{display:flex;flex-wrap:wrap;gap:.3rem .6rem;align-items:center;margin-top:.4rem;font-size:.9rem}
+.sch-list{list-style:none;padding:0;margin:0;max-width:48rem}
+.sch-list li.sch{border-left:3px solid #ddd;padding:.35rem .6rem;margin:.5rem 0}
+.sch-list li.sch.paused{border-left-color:#c90;background:#fbf8f0}
+.sch-head{display:flex;flex-wrap:wrap;gap:.2rem .6rem;align-items:baseline}
+.sch-head .tag.important{border-color:#c33;color:#c33}
+.sch-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:.2rem 0}
+.sch-when{font-size:.85rem}
+.sch-paused{font-size:.85rem;color:#a60}

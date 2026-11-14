@@ -1,7 +1,7 @@
 // The messages page: the places on the left, the messages of the chosen place, the input box.
-// It speaks only the project's JSON API (/api/channels, /api/messages, /api/read, mute, new channel, /api/tasks)
-// and asks for news every few seconds; the task table sits above it all. All texts come from the page's message
-// catalogue (body data-msg).
+// It speaks only the project's JSON API (/api/channels, /api/messages, /api/read, mute, new channel, pins,
+// /api/tasks) and asks for news every few seconds; the task table sits above it all, a channel's pins above its
+// messages. All texts come from the page's message catalogue (body data-msg).
 //
 // Message text is hostile input. It is rendered as Markdown with these rules: raw HTML in a message is shown
 // as text, Markdown images become plain links, and the HTML that Markdown produces goes through DOMPurify
@@ -39,8 +39,10 @@
     settingsToggle: document.getElementById("settings-toggle"), form: document.getElementById("composer"),
     text: document.getElementById("text"), out: document.getElementById("composer-out"),
     reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel"),
-    newChannel: document.getElementById("new-channel"), newPrivate: document.getElementById("new-private")
+    newChannel: document.getElementById("new-channel"), newPrivate: document.getElementById("new-private"),
+    pins: document.getElementById("pins")
   };
+  var CAN_PIN = !!(el.pins && el.pins.dataset.canPin);
   var state = {place: null, first: 0, last: 0, replyTo: null, places: {channels: [], "private": []}, busy: false};
 
   // ------------------------------------------------------------------ the JSON API
@@ -182,6 +184,7 @@
     if (state.place && state.place.charAt(0) !== "#" && !seen) {   // a conversation not started yet
       el.privates.insertBefore(placeItem(state.place, state.place, 0, 0), el.privates.firstChild);
     }
+    drawPins();
   }
 
   async function loadPlaces() {
@@ -325,6 +328,13 @@
       tag.textContent = t("msg.kind_agent");
       meta.appendChild(tag);
     }
+    if (m.scheduled) {
+      var sch = document.createElement("span");
+      sch.className = "tag scheduled";
+      sch.textContent = t("msg.scheduled");
+      sch.title = t("msg.scheduled_hint", {name: m.from});
+      meta.appendChild(sch);
+    }
     if (m.level === "important") {
       var imp = document.createElement("span");
       imp.className = "tag";
@@ -349,6 +359,14 @@
       btn.textContent = t("msg.reply");
       btn.addEventListener("click", function () { setReply(m.id); el.text.focus(); });
       meta.appendChild(btn);
+    }
+    if (CAN_PIN && m["in"] && m["in"].charAt(0) === "#") {
+      var pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.textContent = t("msg.pin");
+      pinBtn.addEventListener("click", function () { addPin({message: m.id}); });
+      meta.appendChild(document.createTextNode(" "));
+      meta.appendChild(pinBtn);
     }
     li.appendChild(meta);
     var box = renderText(m.text);
@@ -555,6 +573,114 @@
     AGENTS.forEach(function (a) {
       el.settings.appendChild(settingBox(t("msg.mute_agent", {name: a}), (AGENT_MUTES[name] || []).indexOf(a) >= 0, a));
     });
+  }
+
+  // ------------------------------------------------------------------ pins
+  //
+  // Above a channel's messages: its pins, oldest first, as /api/channels gives them. A file opens its address in a
+  // new tab; a message jumps to that message (loading older ones when needed). A person who may pin (data-can-pin)
+  // pins a file by its path here and a message with the button on the message, and removes either. The list is
+  // redrawn only when it changed, and never while a path is being typed.
+
+  var pinsShown = "";
+
+  function currentPins() {
+    if (!state.place || state.place.charAt(0) !== "#") return null;
+    var name = state.place.slice(1);
+    var ch = state.places.channels.filter(function (c) { return c.name === name; })[0];
+    return ch ? (ch.pins || []) : [];
+  }
+
+  function pinItem(p) {
+    var li = document.createElement("li");
+    li.className = "pin";
+    var link = document.createElement("a");
+    if (p.kind === "file") {
+      link.href = p.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.title = t("pin.file_hint");
+      link.className = "pin-file";
+      link.textContent = p.path;
+    } else {
+      link.href = "#";
+      link.title = t("pin.message_hint");
+      link.className = "pin-message";
+      link.textContent = "#" + p.message + " " + (p.from || "") + ": " + p.text;
+      link.addEventListener("click", function (ev) { ev.preventDefault(); jumpTo(p.message); });
+    }
+    li.appendChild(link);
+    var by = document.createElement("span");
+    by.className = "muted pin-by";
+    by.textContent = " " + t("pin.by", {name: p.by});
+    li.appendChild(by);
+    if (CAN_PIN) {
+      var x = document.createElement("button");
+      x.type = "button";
+      x.className = "pin-remove";
+      x.textContent = "✕";
+      x.title = t("pin.remove");
+      x.setAttribute("aria-label", t("pin.remove_label", {what: p.kind === "file" ? p.path : "#" + p.message}));
+      x.addEventListener("click", async function () {
+        var r = await post("channels/" + encodeURIComponent(state.place.slice(1)) + "/pins/" + p.id + "/remove", {});
+        if (!r.ok) { pinOut(r.data); return; }
+        await loadPlaces();
+      });
+      li.appendChild(x);
+    }
+    return li;
+  }
+
+  function pinOut(data) {
+    var out = el.pins.querySelector(".out");
+    if (out) out.textContent = data.message ? t("pin.refused", {message: data.message}) : errorText(data.error);
+  }
+
+  function drawPins() {
+    if (!el.pins) return;
+    var list = currentPins();
+    var input = el.pins.querySelector("input");
+    if (input && input.value && document.activeElement === input) return;
+    var key = JSON.stringify([state.place, list]);
+    if (key === pinsShown) return;
+    pinsShown = key;
+    el.pins.textContent = "";
+    el.pins.hidden = list === null || (!list.length && !CAN_PIN);
+    if (el.pins.hidden) return;
+    var head = document.createElement("h3");
+    head.textContent = t("pin.title");
+    el.pins.appendChild(head);
+    var ul = document.createElement("ul");
+    list.forEach(function (p) { ul.appendChild(pinItem(p)); });
+    el.pins.appendChild(ul);
+    if (!CAN_PIN) return;
+    var form = document.createElement("form"), path = document.createElement("input");
+    var btn = document.createElement("button"), out = document.createElement("span");
+    form.className = "pin-add";
+    path.name = "path";
+    path.maxLength = 300;
+    path.required = true;
+    path.placeholder = t("pin.path");
+    path.setAttribute("aria-label", t("pin.path"));
+    btn.textContent = t("pin.add_file");
+    out.className = "out";
+    form.appendChild(path);
+    form.appendChild(btn);
+    form.appendChild(out);
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      if (path.value.trim()) addPin({path: path.value});
+    });
+    el.pins.appendChild(form);
+  }
+
+  async function addPin(body) {
+    if (!state.place || state.place.charAt(0) !== "#") return;
+    var r = await post("channels/" + encodeURIComponent(state.place.slice(1)) + "/pins", body);
+    if (!r.ok) { pinOut(r.data); return; }
+    var input = el.pins.querySelector("input");
+    if (input) { input.value = ""; input.blur(); }
+    await loadPlaces();
   }
 
   // ------------------------------------------------------------------ the task table

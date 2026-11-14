@@ -23,6 +23,7 @@ class Settings:
     redeliver_after_s: float        # a delivery nobody acknowledged is handed out again after this long
     remind_after_s: float           # an important message not answered for this long is followed by a reminder
     subscription_ttl_s: float       # longest lifetime of an event subscription
+    schedule_min_every_s: float     # the shortest interval of a repeating schedule
     github_web_url: str            # no trailing slash; sign-in page and code exchange
     github_api_url: str             # no trailing slash; "who is this"
 
@@ -68,6 +69,7 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     redeliver_after_s=_env_s("ASTERISM_REDELIVER_AFTER_S", 30),
                     remind_after_s=_env_s("ASTERISM_REMIND_AFTER_S", 300),
                     subscription_ttl_s=_env_s("ASTERISM_SUBSCRIPTION_TTL_S", 86400),
+                    schedule_min_every_s=_env_s("ASTERISM_SCHEDULE_MIN_EVERY_S", 300),
                     github_web_url=_env_url("ASTERISM_GITHUB_WEB_URL", "https://github.com"),
                     github_api_url=_env_url("ASTERISM_GITHUB_API_URL", "https://api.github.com"))
 

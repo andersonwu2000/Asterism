@@ -5,7 +5,9 @@ sent, one row per reader with its level for that reader; nothing recomputes it l
 hear a message (level important or normal) gets a delivery record; a poll (its session's or its computer's)
 hands deliveries out and they are acknowledged. An important message handed over to an agent starts a follow-up that the background
 task (upkeep) turns into reminders until the agent answers it. The system posts notices in #general when an
-agent goes online or offline, and messages when somebody else changes an agent's task (tasks.py). Everything lives in the project's database; memory only holds what wakes a
+agent goes online or offline, and messages when somebody else changes an agent's task (tasks.py). A schedule's
+run (schedules.py) goes through the same path as a person's message, with its own level for every reader.
+Everything lives in the project's database; memory only holds what wakes a
 waiting request (an open poll or wait).
 """
 from __future__ import annotations
@@ -16,7 +18,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from . import config, presence, projects, util
 from .errors import ApiError, bad_request, conflict, forbidden, not_found
@@ -212,6 +214,8 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
                              "mentions": json.loads(r["mentions"])}
         if not r["place"].startswith("#"):
             m["private"] = True
+        if r["schedule_id"] is not None:
+            m["scheduled"] = True
         out.append(m)
     return out
 
@@ -328,22 +332,69 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
         if first:
             util.log("reply_chain_reminded", project=pj.slug, agent=sender.name, reply_to=rid, hop=hop)
             raise ApiError(409, "reply_chain", CHAIN_REMINDER.format(n=hop))
-    channel = place.startswith("#")
-    found, unknown = parse_mentions(pj, text) if channel else ([], [])
+    found, unknown = parse_mentions(pj, text) if place.startswith("#") else ([], [])
+    mid, results = _post(pj, sender, place, text, orig, hop, found)
+    return {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
+
+
+def post_scheduled(pj: Project, sender: Member, place: str, text: str, level: str, schedule_id: int,
+                   then: Callable[[int], None]) -> int:
+    """A run of a schedule: a message from its creator (hop 0) whose text is not searched for mentions; every
+    reader's level comes from the schedule's `level` (_distribute). `then(message id)` runs inside the same
+    transaction (the schedule's own bookkeeping)."""
+    return _post(pj, sender, place, text, None, 0, [], (level, schedule_id), then)[0]
+
+
+def _post(pj: Project, sender: Member, place: str, text: str, orig: sqlite3.Row | None, hop: int,
+          found: list[tuple[str, str, Any]], scheduled: tuple[str, int] | None = None,
+          then: Callable[[int], None] | None = None) -> tuple[int, list[dict[str, Any]]]:
+    """Write a message checked by the caller, each reader's level and the deliveries; wake the agents."""
+    rid = orig["id"] if orig is not None else None
     t = util.now()
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
-                            "reply_to, hop, mentions, sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "reply_to, hop, mentions, sent, schedule_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (place, sender.kind, sender.id, sender.person_id, sender.name, text, rid, hop,
-                             json.dumps([n for n, _, _ in found]), t)).lastrowid
-        results, woken = _distribute(pj, mid, place, sender, found, orig, t)
+                             json.dumps([n for n, _, _ in found]), t,
+                             scheduled[1] if scheduled else None)).lastrowid
+        results, woken = _distribute(pj, mid, place, sender, found, orig, t, scheduled[0] if scheduled else None)
+        if scheduled:
+            _unstack(pj, scheduled[1], mid, t)
         if sender.kind == "agent" and rid is not None:      # an answer ends the follow-up of what it answers
             pj.db.execute("UPDATE followups SET answered = ?, due = NULL WHERE agent_id = ? AND message_id = ? "
                           "AND answered IS NULL", (t, sender.id, rid))
+        if then is not None:
+            then(mid)
     util.log("message_sent", project=pj.slug, id=mid, **_log_place(pj, place, sender), hop=hop)
     for aid in woken:
         notify(pj.slug, aid)
-    return {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
+    return mid, results
+
+
+def _unstack(pj: Project, schedule_id: int, mid: int, t: float) -> None:
+    """One schedule never stacks answers owed (inside the caller's transaction). For each agent the new message
+    `mid` is important for, an earlier message of the same schedule that was important for it and that it has
+    not answered becomes muted for it; its waiting delivery is dropped, and its follow-up (and a reminder about
+    it not handed over yet) moves to the new message with its clock as it stands."""
+    agents = [r[0] for r in pj.db.execute("SELECT reader_id FROM levels WHERE message_id = ? AND reader_kind = 'agent' "
+                                          "AND level = 'important'", (mid,))]
+    for aid in agents:
+        earlier = [r[0] for r in pj.db.execute(
+            "SELECT m.id FROM messages m JOIN levels l ON l.message_id = m.id AND l.reader_kind = 'agent' "
+            "AND l.reader_id = ? WHERE m.schedule_id = ? AND m.id < ? AND l.level = 'important' "
+            "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.sender_kind = 'agent' AND r.sender_id = ? "
+            "AND r.reply_to = m.id) ORDER BY m.id", (aid, schedule_id, mid, aid))]
+        for e in earlier:
+            pj.db.execute("UPDATE levels SET level = 'muted' WHERE message_id = ? AND reader_kind = 'agent' "
+                          "AND reader_id = ?", (e, aid))
+            pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND message_id = ? "
+                          "AND kind = 'message' AND state IN ('pending', 'out')", (t, aid, e))
+            pj.db.execute("UPDATE deliveries SET message_id = ? WHERE agent_id = ? AND message_id = ? "
+                          "AND kind = 'reminder' AND state = 'pending'", (mid, aid, e))
+            # The oldest clock wins if, against the rule, more than one was running.
+            pj.db.execute("UPDATE OR IGNORE followups SET message_id = ? WHERE agent_id = ? AND message_id = ? "
+                          "AND answered IS NULL", (mid, aid, e))
+            pj.db.execute("DELETE FROM followups WHERE agent_id = ? AND message_id = ? AND answered IS NULL", (aid, e))
 
 
 def _log_place(pj: Project, place: str, sender: Member) -> dict[str, Any]:
@@ -354,9 +405,10 @@ def _log_place(pj: Project, place: str, sender: Member) -> dict[str, Any]:
 
 
 def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[tuple[str, str, Any]],
-                orig: sqlite3.Row | None, t: float) -> tuple[list[dict[str, Any]], list[int]]:
+                orig: sqlite3.Row | None, t: float, fixed: str | None = None) -> tuple[list[dict[str, Any]], list[int]]:
     """Write each reader's level and the agents' deliveries (inside the caller's transaction). Returns the
-    answer's mention results and the agents to wake."""
+    answer's mention results and the agents to wake. `fixed`: the level of a schedule's run, which takes the
+    place of mentions and of what the agent is doing (_scheduled_level)."""
     s = config.get()
     channel = place.startswith("#")
     if channel:
@@ -385,7 +437,10 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     for r in readers:
         mentioned = r.key in direct or r.key in via_group
         if r.kind == "person":
-            level = ("important" if not channel or mentioned else "muted" if r.key in muted else "normal")
+            if fixed is not None:
+                level = _scheduled_level(fixed, r.key in muted, True, False, False)
+            else:
+                level = ("important" if not channel or mentioned else "muted" if r.key in muted else "normal")
         else:
             a = agent_rows[r.id]
             online[r.id] = presence.is_online(pj.slug, a, pj.db)
@@ -395,7 +450,10 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
             own = sender.kind != "system" and sender.person_id == r.person_id
             heard = channel and not mentioned and r.key not in muted and online[r.id] and r.id in recent \
                 and not presence.busy(pj.db, a)
-            if own and (mentioned or not channel):
+            if fixed is not None:
+                level = _scheduled_level(fixed, r.key in muted, own, bool(sw is not None and sw["others_mention"]),
+                                         bool(sw is not None and sw["others_channel"]))
+            elif own and (mentioned or not channel):
                 level = "important"
             elif not own and mentioned and sw is not None and sw["others_mention"]:
                 level = "important"
@@ -434,6 +492,20 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
                     counts[outcome(key)] += 1
             results.append({"name": name, "group": True, **counts})
     return results, woken
+
+
+def _scheduled_level(level: str, muted: bool, own: bool, others_mention: bool, others_channel: bool) -> str:
+    """A reader's level for a run of a schedule at `level`. A person counts as on the creator's side.
+    - important: important for a person and for an agent of the creator's side; another person's agent only
+      with its others_mention switch on (as if it had been mentioned);
+    - normal: normal for a person and for an agent of the creator's side or with others_channel on, whatever the
+      agent is doing; muted where the reader muted the channel;
+    - muted: muted."""
+    if level == "important":
+        return "important" if own or others_mention else "muted"
+    if level == "normal":
+        return "normal" if not muted and (own or others_channel) else "muted"
+    return "muted"
 
 
 # --------------------------------------------------------------------------- notices
@@ -781,8 +853,10 @@ def channels_view(pj: Project, me: Member) -> dict[str, Any]:
     counts = _counts(pj, me)
     muted = {r["channel"] for r in pj.db.execute("SELECT channel FROM mutes WHERE member_kind = ? AND member_id = ?",
                                                   (me.kind, me.id))}
+    from . import pins                  # pins builds on this module
+    pinned = pins.by_channel(pj)
     channels = [{"name": n, "unread": counts.get("#" + n, (0, 0))[0], "important": counts.get("#" + n, (0, 0))[1],
-                 "muted": n in muted} for n in channel_names(pj)]
+                 "muted": n in muted, "pins": pinned.get(n, [])} for n in channel_names(pj)]
     mine = [r["place"] for r in pj.db.execute(
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
         "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))]

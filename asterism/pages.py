@@ -36,6 +36,7 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     nav = [f'<a href="/">{e(tr("nav.home"))}</a>']
     if person and slug:
         nav.append(f'<a href="/{q(slug)}">{e(tr("nav.messages"))}</a>')
+        nav.append(f'<a href="/{q(slug)}/schedules">{e(tr("nav.schedules"))}</a>')
         nav.append(f'<a href="/{q(slug)}/members">{e(tr("nav.members"))}</a>')
         nav.append(f'<a href="/{q(slug)}/my">{e(tr("nav.my"))}</a>')
         if can_admin:
@@ -325,6 +326,7 @@ def messages(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, 
             f'<section class="room"><header class="room-head"><h2 id="place-title"></h2>'
             f'<button type="button" id="settings-toggle" aria-expanded="false">{e(tr("msg.settings"))}</button></header>'
             f'<div id="settings" hidden></div>'
+            f'<div id="pins" data-can-pin="{"1" if view["can_create"] else ""}" hidden></div>'
             f'<button type="button" id="older" hidden>{e(tr("msg.older"))}</button>'
             f'<ol id="messages" aria-live="polite"></ol>'
             f'<form id="composer"><div id="reply-target" hidden><span></span> '
@@ -337,3 +339,18 @@ def messages(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, 
                   styles=["vendor/katex/katex.min.css", "messages.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js",
                            "vendor/katex/katex.min.js", "messages.js"])
+
+
+def schedules(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, Any], can_admin: bool) -> tuple[str, int]:
+    """The scheduled messages. The list (#schedules) is drawn by schedules.js from the JSON API; the form to make
+    one (#schedule-form) is here only for a person who may create, with the places they can post to."""
+    data = {"slug": slug, "me": person["name"], "can-manage": "1" if view["can_manage"] else "",
+            "places": view["places"], "min-every": view["min_every_s"]}
+    attrs = " ".join(f'data-{k}="{e(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))}"'
+                     for k, v in data.items())
+    parts = [f'<p class="muted">{e(tr("sch.intro"))}</p>']
+    if view["can_create"]:
+        parts.append(f'<h2>{e(tr("sch.new"))}</h2><form id="schedule-form" class="sch-form"></form>')
+    parts.append(f'<h2>{e(tr("sch.list"))}</h2><div id="schedules" {attrs}></div>')
+    return layout(tr, tr("sch.title"), "".join(parts), person, slug, can_admin,
+                  styles=["messages.css"], scripts=["schedules.js"])

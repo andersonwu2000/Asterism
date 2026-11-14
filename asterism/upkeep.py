@@ -6,7 +6,9 @@
 - events to the connector agents (sent in tasks of their own) and their second attempts;
 - expired event subscriptions;
 - the presence notices, including the change the 1a window makes (no poll for ASTERISM_OFFLINE_AFTER_S);
-- the log lines of a computer's connection going away (no computer poll for ASTERISM_OFFLINE_AFTER_S).
+- the log lines of a computer's connection going away (no computer poll for ASTERISM_OFFLINE_AFTER_S);
+- the runs of scheduled messages (schedules.py), before the reminders, so that a reminder names a schedule's
+  newest message.
 
 It runs one sweep over all projects, then sleeps until the earliest time something falls due or until it is
 kicked (presence.kick: a message was sent, a poll ended, a binding changed, an event attempt finished). A
@@ -18,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from . import config, events, messaging, notices, presence, util
+from . import config, events, messaging, notices, presence, schedules, util
 from .projects import Project
 from .store import Store
 
@@ -83,7 +85,7 @@ def _due_times(pj: Project) -> list[float]:
         "SELECT d.handed_out FROM deliveries d JOIN agents a ON a.id = d.agent_id WHERE a.kind != 'chatgpt' "
         "AND a.offline_reason IS NULL AND d.state = 'out' AND d.attempts >= 2")]
     out += [r[0] for r in pj.db.execute("SELECT due FROM followups WHERE answered IS NULL AND due IS NOT NULL")]
-    return out + events.next_due(pj)
+    return out + events.next_due(pj) + schedules.next_due(pj)
 
 
 def server_started(store: Store) -> None:
@@ -120,6 +122,8 @@ def sweep(store: Store) -> float | None:
         pj = Project(store, slug, db)
         _guard(pj, "expire", lambda: events.expire(pj, t))
         _guard(pj, "unanswered", lambda: _unanswered(pj, t))
+        for sid in schedules.due(pj, t):
+            _guard(pj, "schedule", lambda sid=sid: schedules.run(pj, sid, t))
         for f in pj.db.execute("SELECT * FROM followups WHERE answered IS NULL AND due <= ? ORDER BY due", (t,)).fetchall():
             _guard(pj, "remind", lambda f=f: _remind(pj, f, t))
         for r in pj.db.execute("SELECT id FROM credentials WHERE connected = 1").fetchall():
