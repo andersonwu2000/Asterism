@@ -1,0 +1,104 @@
+# Builds the program `asterism` (program/) for six platforms.
+#
+# - every push that touches program/: build and unit-test, keep the binaries as artifacts of the run;
+# - a tag `program-v<version>`: the same, then a GitHub release holding the six binaries and manifest.json
+#   (the file the server serves as /dl/manifest.json, without the `url` fields it adds itself).
+#
+# Only actions published by GitHub itself are used; Rust comes from the rustup that the runners ship.
+name: program
+
+on:
+  push:
+    branches: [main]
+    paths: ["program/**", ".github/workflows/program.yml"]
+    tags: ["program-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.key }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: windows-x64, os: windows-latest, target: x86_64-pc-windows-msvc, exe: asterism.exe, out: asterism-windows-x64.exe, test: true }
+          - { key: windows-arm64, os: windows-11-arm, target: aarch64-pc-windows-msvc, exe: asterism.exe, out: asterism-windows-arm64.exe, test: true }
+          - { key: macos-arm64, os: macos-latest, target: aarch64-apple-darwin, exe: asterism, out: asterism-macos-arm64, test: true }
+          # Built on the same Apple Silicon runner; its unit tests are not run there.
+          - { key: macos-x64, os: macos-latest, target: x86_64-apple-darwin, exe: asterism, out: asterism-macos-x64, test: false }
+          # musl: one static file that does not depend on the glibc of the machine it lands on.
+          - { key: linux-x64, os: ubuntu-latest, target: x86_64-unknown-linux-musl, exe: asterism, out: asterism-linux-x64, test: true }
+          - { key: linux-arm64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, exe: asterism, out: asterism-linux-arm64, test: true }
+    defaults:
+      run:
+        shell: bash
+        working-directory: program
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc --version
+      - name: musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Unit tests
+        if: matrix.test
+        run: cargo test --release --locked --target ${{ matrix.target }}
+      - name: It starts
+        if: matrix.test
+        run: ASTERISM_HOME="$RUNNER_TEMP/asterism-home" ./target/${{ matrix.target }}/release/${{ matrix.exe }} status
+      - name: Name the binary
+        run: |
+          mkdir -p ../out
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} ../out/${{ matrix.out }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: out/${{ matrix.out }}
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/program-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: The tag must be the version in Cargo.toml
+        run: |
+          version="${GITHUB_REF_NAME#program-v}"
+          in_crate="$(grep -m1 '^version' program/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          test "$version" = "$in_crate" || { echo "tag says $version, Cargo.toml says $in_crate"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: manifest.json
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          files = {}
+          for name in sorted(os.listdir("dist")):
+              key = name.removeprefix("asterism-").removesuffix(".exe")
+              data = open(os.path.join("dist", name), "rb").read()
+              files[key] = {"name": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+          assert sorted(files) == ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "windows-x64"], files
+          json.dump({"version": os.environ["VERSION"], "files": files}, open("dist/manifest.json", "w"), indent=1)
+          print(open("dist/manifest.json").read())
+          PY
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "asterism $VERSION" --notes "The program asterism, version $VERSION, for six platforms. manifest.json lists the files with their SHA-256."
