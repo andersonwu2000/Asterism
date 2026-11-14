@@ -1,7 +1,7 @@
 """Acceptance checks for M1 slice 1a: accounts, members, groups, authorising and registering agents.
 
 Black box. A real server process runs in test mode (GitHub sign-in replaced by a stand-in) and is driven
-over HTTP; the real helper is driven over stdio. Nothing here imports the server's code.
+over HTTP. Nothing here imports the server's code.
 
 The tests run in file order and share one server: later tests build on the people created by earlier ones.
 
@@ -11,7 +11,6 @@ import base64
 import hashlib
 import json
 import os
-import queue
 import secrets
 import socket
 import subprocess
@@ -28,11 +27,11 @@ ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 SLUG = "lab"
 REPO = "https://github.com/example/lab"
-OFFLINE_S, DEVICE_TTL_S, ACCESS_TTL_S = 3, 8, 8
+OFFLINE_S, ACCESS_TTL_S = 3, 8
 # Nothing of the session that runs the tests may leak into the processes under test.
 CLEAN = {k: v for k, v in os.environ.items() if not k.upper().startswith(("ASTERISM", "CLAUDE", "CODEX"))}
 ENV = dict(CLEAN, PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8", ASTERISM_OFFLINE_AFTER_S=str(OFFLINE_S),
-           ASTERISM_DEVICE_TTL_S=str(DEVICE_TTL_S), ASTERISM_ACCESS_TTL_S=str(ACCESS_TTL_S))
+           ASTERISM_ACCESS_TTL_S=str(ACCESS_TTL_S))
 SECRETS: list[str] = []          # every secret a test was handed; none may be stored in clear
 REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
 
@@ -135,24 +134,15 @@ def online(c, name):
     return bool(row and row["online"])
 
 
-def device_start(srv, kind="claude-code", computer="pc-1") -> dict:
-    r = httpx.post(f"{srv.url}/{SLUG}/device/start", json={"kind": kind, "computer": computer}, timeout=30)
-    assert r.status_code == 200, r.text
-    SECRETS.append(r.json()["device_code"])
-    return r.json()
-
-
-def device_token(srv, d) -> httpx.Response:
-    return httpx.post(f"{srv.url}/{SLUG}/device/token", json={"device_code": d["device_code"]}, timeout=30)
-
-
 def authorise(srv, person: httpx.Client, kind="claude-code", computer="pc-1", switches=None) -> str:
-    """The whole device flow: a helper asks, the person approves, the helper gets its credential."""
-    d = device_start(srv, kind, computer)
-    body = {"decision": "approve", **({"switches": switches} if switches else {})}
-    r = person.post(f"/{SLUG}/api/device/{d['user_code']}", json=body)
-    assert r.status_code == 200, r.text
-    r = device_token(srv, d)
+    """A person makes an agent invitation link and a computer redeems it: that computer's credential."""
+    if switches:
+        assert person.post(f"/{SLUG}/api/my/switches", json=switches).status_code == 200
+    r = person.post(f"/{SLUG}/api/my/agent-invites")
+    assert r.status_code == 201, r.text
+    link = r.json()["url"]
+    SECRETS.append(link.rsplit("/", 1)[1])
+    r = httpx.post(link + "/redeem", json={"computer": computer, "product": kind}, timeout=30)
     assert r.status_code == 200, r.text
     SECRETS.append(r.json()["credential"])
     return r.json()["credential"]
@@ -251,31 +241,14 @@ def test_inviting_needs_the_permission(srv, bob):
 
 # --------------------------------------------------------------------------------------------- authorising a local agent
 
-def test_a_helper_gets_a_credential_only_after_its_person_approves(srv, alice):
-    d = device_start(srv, computer="alice-laptop")
-    assert d["user_code"] in d["verification_uri_complete"] and d["verification_uri_complete"].startswith(srv.url)
-    assert err(device_token(srv, d)) == "authorization_pending"
-    page = httpx.get(d["verification_uri_complete"], follow_redirects=False)
-    assert page.status_code in (301, 302, 303, 307) and "/login" in page.headers["location"], "sign in first"
-    seen = alice.get(f"/{SLUG}/api/device/{d['user_code']}").json()
-    assert (seen["computer"], seen["kind"], seen["status"]) == ("alice-laptop", "claude-code", "pending")
-    assert browser(srv, "carol").post(f"/{SLUG}/api/device/{d['user_code']}", json={"decision": "approve"}).status_code == 403
-    assert err(device_token(srv, d)) == "authorization_pending", "a non-member's approval counts for nothing"
-    assert alice.post(f"/{SLUG}/api/device/{d['user_code']}", json={"decision": "approve"}).status_code == 200
-    r = device_token(srv, d)
-    assert r.status_code == 200 and r.json()["person"] == "alice" and r.json()["credential"], r.text
-    SECRETS.append(r.json()["credential"])
-    assert device_token(srv, d).status_code == 400, "the credential is handed over once"
-
-
-def test_a_denied_or_expired_request_yields_nothing(srv, bob):
-    d = device_start(srv, computer="bob-pc")
-    assert bob.post(f"/{SLUG}/api/device/{d['user_code']}", json={"decision": "deny"}).status_code == 200
-    assert err(device_token(srv, d)) == "access_denied"
-    d = device_start(srv, computer="bob-pc")
-    time.sleep(DEVICE_TTL_S + 1.5)
-    assert err(device_token(srv, d)) == "expired_token"
-    assert bob.post(f"/{SLUG}/api/device/{d['user_code']}", json={"decision": "approve"}).status_code != 200
+def test_the_old_helper_and_its_device_flow_are_gone(srv, alice):
+    """Slice 1j replaced them: a computer joins with an agent invitation link and the `asterism` program."""
+    r = alice.get("/helper.py")
+    assert r.status_code == 404 and "asterism_helper" not in r.text
+    assert alice.get(f"/{SLUG}/device").status_code == 404
+    assert httpx.post(f"{srv.url}/{SLUG}/device/start", json={"kind": "codex", "computer": "pc"}).status_code in (404, 405)
+    assert httpx.post(f"{srv.url}/{SLUG}/device/token", json={"device_code": "x"}).status_code in (404, 405)
+    assert alice.get(f"/{SLUG}/api/device/AB-CD").status_code in (404, 405)
 
 
 # --------------------------------------------------------------------------------------------- registering
@@ -501,138 +474,6 @@ def test_a_connector_is_approved_by_a_signed_in_member(srv, alice):
     SECRETS.extend([r.json()["access_token"], r.json()["refresh_token"]])
     assert tool(srv, "whoami", r.json()["access_token"], "conv-1")[0]["agent"] == "dot-a", "the same person, the same agent"
     assert httpx.post(asm["token_endpoint"], data=fresh).status_code >= 400, "a refresh token is used once"
-
-
-# --------------------------------------------------------------------------------------------- the real helper
-
-class Stdio:
-    """The helper as an agent runs it: an MCP server on stdio, newline-delimited JSON-RPC."""
-
-    def __init__(self, script, project_url, home, cwd, client_name="claude-code", **env):
-        self.p = subprocess.Popen([PY, str(script), "--project", project_url], cwd=str(cwd), text=True, encoding="utf-8",
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  env=dict(ENV, ASTERISM_HOME=str(home), **env))
-        self.q, self.n = queue.Queue(), 0
-        threading.Thread(target=self._read, daemon=True).start()
-        self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                "clientInfo": {"name": client_name, "version": "0"}})
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        self.rpc("tools/list")
-
-    def _read(self):
-        for line in self.p.stdout:
-            try:
-                self.q.put(json.loads(line))
-            except ValueError:
-                pass
-
-    def _send(self, msg):
-        self.p.stdin.write(json.dumps(msg) + "\n")
-        self.p.stdin.flush()
-
-    def rpc(self, method, params=None, timeout=30):
-        self.n += 1
-        self._send({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params or {}})
-        end = time.time() + timeout
-        while time.time() < end:
-            try:
-                m = self.q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if m.get("id") == self.n:
-                return m
-        raise AssertionError(f"the helper did not answer {method}: " + self.p.stderr.read()[-500:] if self.p.poll() is not None else method)
-
-    def tool(self, tool_name, meta=None, **args):
-        params = {"name": tool_name, "arguments": args, **({"_meta": meta} if meta else {})}
-        res = self.rpc("tools/call", params)["result"]
-        text = res["content"][0]["text"]
-        return (text if res.get("isError") else json.loads(text)), bool(res.get("isError"))
-
-    def kill(self):
-        self.p.kill()
-        self.p.wait(10)
-
-
-@pytest.fixture(scope="module")
-def installed(srv, alice, tmp_path_factory):
-    """The helper downloaded from the server and joined on a computer of alice's."""
-    box = tmp_path_factory.mktemp("box")
-    script, home = box / "asterism_helper.py", box / "home"
-    r = httpx.get(srv.url + "/helper.py")
-    assert r.status_code == 200
-    script.write_bytes(r.content)
-    p = subprocess.Popen([PY, str(script), "--join", f"{srv.url}/{SLUG}", "--client", "none"], cwd=str(box), text=True,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(ENV, ASTERISM_HOME=str(home)))
-    line = ""
-    for _ in range(30):                      # it may say other things first
-        line = p.stdout.readline()
-        if not line or line.startswith("Open this address to approve: "):
-            break
-    assert line.startswith("Open this address to approve: "), line
-    link = line.split(": ", 1)[1].strip()
-    code = urllib.parse.parse_qs(urllib.parse.urlparse(link).query)["code"][0]
-    assert alice.post(f"/{SLUG}/api/device/{code}", json={"decision": "approve"}).status_code == 200
-    rest = p.communicate(timeout=30)[0]
-    assert p.returncode == 0, rest
-    creds = _credentials_in(home)
-    assert creds and not any(c in line + rest for c in creds), "the credential is stored, and not printed"
-    return script, home, box
-
-
-def _credentials_in(home):
-    """The `credential` fields of the helper's JSON state files."""
-    found = []
-    def walk(v):
-        if isinstance(v, dict):
-            found.extend(x for k, x in v.items() if k == "credential" and isinstance(x, str))
-            for x in v.values():
-                walk(x)
-        elif isinstance(v, list):
-            for x in v:
-                walk(x)
-    for f in home.rglob("*.json"):
-        walk(json.loads(f.read_text(encoding="utf-8")))
-    SECRETS.extend(found)
-    return found
-
-
-def test_the_helper_joins_once_per_computer_and_carries_a_session(srv, alice, installed):
-    script, home, box = installed
-    again = subprocess.run([PY, str(script), "--join", f"{srv.url}/{SLUG}", "--client", "none"], cwd=str(box), text=True,
-                           capture_output=True, env=dict(ENV, ASTERISM_HOME=str(home)), timeout=30)
-    assert again.returncode == 0 and "Open this address" not in again.stdout, "a second agent on this computer needs no approval"
-    h = Stdio(script, f"{srv.url}/{SLUG}", home, box, ASTERISM_SESSION="s-h1")
-    try:
-        who, bad = h.tool("whoami")
-        assert not bad and who["registered"] is False
-        got, bad = h.tool("register", name="holly")
-        assert not bad and got["owner"] == "alice", got
-        assert until(lambda: online(alice, "holly")), "the helper keeps the connection that makes its agent online"
-        msg, bad = h.tool("register", name="alice")
-        assert bad and isinstance(msg, str)
-    finally:
-        h.kill()
-    assert until(lambda: not online(alice, "holly"), OFFLINE_S + 5), "the session is gone, the agent is offline"
-
-
-def test_a_restarted_helper_keeps_its_codex_session(srv, alice, installed):
-    script, home, box = installed
-    work = box / "codex-work"
-    work.mkdir()
-    first = Stdio(script, f"{srv.url}/{SLUG}", home, work, client_name="codex-mcp-client")
-    got, bad = first.tool("register", meta={"sessionId": "thread-9"}, name="cedar")
-    assert not bad and got["agent"] == "cedar", got
-    assert until(lambda: online(alice, "cedar"))
-    first.kill()
-    second = Stdio(script, f"{srv.url}/{SLUG}", home, work, client_name="codex-mcp-client")     # no tool call is made
-    try:
-        time.sleep(OFFLINE_S + 3)
-        assert online(alice, "cedar"), "restarted by the same parent in the same folder: the session carries on"
-        who, bad = second.tool("whoami", meta={"sessionId": "thread-9"})
-        assert not bad and who["agent"] == "cedar"
-    finally:
-        second.kill()
 
 
 # --------------------------------------------------------------------------------------------- storage

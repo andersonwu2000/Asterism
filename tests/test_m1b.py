@@ -14,9 +14,7 @@ import base64
 import hashlib
 import json
 import os
-import queue
 import secrets
-import shutil
 import socket
 import subprocess
 import sys
@@ -35,7 +33,7 @@ OFFLINE_S, RECENT_S, REDELIVER_S = 3, 8, 2
 CLEAN = {k: v for k, v in os.environ.items() if not k.upper().startswith(("ASTERISM", "CLAUDE", "CODEX"))}
 ENV = dict(CLEAN, PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8", ASTERISM_OFFLINE_AFTER_S=str(OFFLINE_S),
            ASTERISM_RECENT_SPEAKER_S=str(RECENT_S), ASTERISM_REDELIVER_AFTER_S=str(REDELIVER_S),
-           ASTERISM_REMIND_AFTER_S="3600", ASTERISM_DEVICE_TTL_S="60", ASTERISM_ACCESS_TTL_S="3600")
+           ASTERISM_REMIND_AFTER_S="3600", ASTERISM_ACCESS_TTL_S="3600")
 REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
 
 # Agent-facing wording, word for word from the specification (section 8).
@@ -235,9 +233,10 @@ class Agent:
 
 
 def authorise(srv, person: Person, kind="claude-code", computer="pc") -> str:
-    d = httpx.post(f"{srv.url}/{SLUG}/device/start", json={"kind": kind, "computer": computer}, timeout=30).json()
-    assert person.c.post(f"/{SLUG}/api/device/{d['user_code']}", json={"decision": "approve"}).status_code == 200
-    r = httpx.post(f"{srv.url}/{SLUG}/device/token", json={"device_code": d["device_code"]}, timeout=30)
+    """A person makes an agent invitation link and a computer redeems it: that computer's credential."""
+    r = person.c.post(f"/{SLUG}/api/my/agent-invites")
+    assert r.status_code == 201, r.text
+    r = httpx.post(r.json()["url"] + "/redeem", json={"computer": computer, "product": kind}, timeout=30)
     assert r.status_code == 200, r.text
     return r.json()["credential"]
 
@@ -658,55 +657,7 @@ def test_the_connector_has_the_same_message_tools(w):
     assert not bad and got["messages"] == []
 
 
-# ------------------------------------------------------------------ the real helper
-
-class Stdio:
-    """The helper as an agent runs it: an MCP server on stdio, newline-delimited JSON-RPC."""
-
-    def __init__(self, script, project_url, home, cwd, client_name="claude-code", **env):
-        self.p = subprocess.Popen([PY, str(script), "--project", project_url], cwd=str(cwd), text=True, encoding="utf-8",
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  env=dict(ENV, ASTERISM_HOME=str(home), **env))
-        self.q, self.n = queue.Queue(), 0
-        threading.Thread(target=self._read, daemon=True).start()
-        self.init = self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                            "clientInfo": {"name": client_name, "version": "0"}})["result"]
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        self.tools = {t["name"]: t for t in self.rpc("tools/list")["result"]["tools"]}
-
-    def _read(self):
-        for line in self.p.stdout:
-            try:
-                self.q.put(json.loads(line))
-            except ValueError:
-                pass
-
-    def _send(self, msg):
-        self.p.stdin.write(json.dumps(msg) + "\n")
-        self.p.stdin.flush()
-
-    def rpc(self, method, params=None, timeout=30):
-        self.n += 1
-        self._send({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params or {}})
-        end = time.time() + timeout
-        while time.time() < end:
-            try:
-                m = self.q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if m.get("id") == self.n:
-                return m
-        raise AssertionError(f"the helper did not answer {method}")
-
-    def tool(self, tool_name, **args):
-        res = self.rpc("tools/call", {"name": tool_name, "arguments": args})["result"]
-        text = res["content"][0]["text"]
-        return (text if res.get("isError") else json.loads(text)), bool(res.get("isError"))
-
-    def kill(self):
-        self.p.kill()
-        self.p.wait(10)
-
+# ------------------------------------------------------------------ a stand-in for Claude Code's message channel
 
 class Channel:
     """A stand-in for the message channel of a Claude Code session: a named pipe on Windows, a Unix socket
@@ -764,113 +715,6 @@ class Channel:
 
     def users(self, tag) -> list[str]:
         return [x["message"]["content"] for x in self.lines() if x.get("type") == "user" and tag in x["message"]["content"]]
-
-
-@pytest.fixture(scope="module")
-def installed(w, tmp_path_factory):
-    """The helper downloaded from the server and joined on a computer of alice's."""
-    box = tmp_path_factory.mktemp("box")
-    script, home = box / "asterism_helper.py", box / "home"
-    script.write_bytes(httpx.get(w.srv.url + "/helper.py").content)
-    p = subprocess.Popen([PY, str(script), "--join", f"{w.srv.url}/{SLUG}", "--client", "none"], cwd=str(box), text=True,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(ENV, ASTERISM_HOME=str(home)))
-    line = ""
-    for _ in range(30):
-        line = p.stdout.readline()
-        if not line or line.startswith("Open this address to approve: "):
-            break
-    assert line.startswith("Open this address to approve: "), line
-    code = urllib.parse.parse_qs(urllib.parse.urlparse(line.split(": ", 1)[1].strip()).query)["code"][0]
-    assert w.alice.c.post(f"/{SLUG}/api/device/{code}", json={"decision": "approve"}).status_code == 200
-    assert p.wait(30) == 0
-    return script, home, box
-
-
-def test_the_helper_speaks_the_agreed_words_and_has_the_message_tools(w, installed):
-    script, home, box = installed
-    h = Stdio(script, f"{w.srv.url}/{SLUG}", home, box, ASTERISM_SESSION="s-h1")
-    try:
-        assert h.init["instructions"] == INSTRUCTIONS
-        assert {n: t["description"] for n, t in h.tools.items()} == DESCRIPTIONS
-        assert not h.tool("register", name="holly")[1]
-        sent, bad = h.tool("send", to="#general", text="@a1 hello from the helper [hp1]")
-        assert not bad and sent["mentions"] == [{"name": "a1", "result": "woken"}], sent
-        w.a1.take("[hp1]")
-        w.a1.say("hello holly [hp2]", reply_to=sent["id"])
-        got, bad = h.tool("wait", timeout_s=8)
-        assert not bad and [m["text"] for m in got["messages"]] == ["hello holly [hp2]"], got
-        msg, bad = h.tool("send", to="#nowhere", text="x")
-        assert bad and "#general" in msg, "a refusal is the server's sentence"
-        got, bad = h.tool("messages", id=sent["id"])
-        assert not bad and got["messages"][0]["text"].endswith("[hp1]")
-        assert "unread" in h.tool("whoami")[0] or w.alice.say("filler [hp3]") and "unread" in h.tool("whoami")[0]
-    finally:
-        h.kill()
-
-
-def test_the_helper_puts_the_whole_message_in_front_of_claude_code(w, installed, tmp_path):
-    script, home, box = installed
-    ch = Channel(tmp_path)
-    h = Stdio(script, f"{w.srv.url}/{SLUG}", home, box, ASTERISM_SESSION="s-h2",
-              CLAUDE_CODE_MESSAGING_SOCKET=ch.address, CLAUDE_CODE_MESSAGING_TOKEN="tok-for-the-channel")
-    try:
-        assert not h.tool("register", name="hazel")[1]
-        assert until(lambda: w.alice.is_online("hazel"))
-        sent = w.alice.say("@hazel line one [cc1]\nline two with \"quotes\" and 數學 $x^2$")
-        assert mention(sent, "hazel")["result"] == "woken"
-        shown = until(lambda: ch.users("[cc1]"), 10)
-        assert shown, "the helper wrote nothing to the session's message channel"
-        m = {"id": sent["id"], "in": "#general", "from": "alice", "relation": "your own user", "level": "important",
-             "text": "@hazel line one [cc1]\nline two with \"quotes\" and 數學 $x^2$"}
-        assert shown[0] == frame(m)
-        assert {"type": "auth", "token": "tok-for-the-channel"} in ch.lines()
-        time.sleep(REDELIVER_S * 2 + 1.5)
-        assert len(ch.users("[cc1]")) == 1, "the helper acknowledged it, so it is not written twice"
-        assert w.alice.is_online("hazel")
-    finally:
-        h.kill()
-
-
-@pytest.mark.skipif(not shutil.which("node"), reason="the stand-in codex is laid out as npm installs it and needs node")
-def test_the_helper_queues_the_whole_message_on_the_codex_thread(w, installed, tmp_path):
-    script, home, box = installed
-    fake = tmp_path / "bin"
-    jsdir = fake / "node_modules" / "@openai" / "codex" / "bin"
-    jsdir.mkdir(parents=True)
-    (jsdir / "codex.js").write_text(
-        'const fs=require("fs"),path=require("path");const dir=path.resolve(__dirname,"../../../..");'
-        'const a=process.argv.slice(2);const f=path.join(dir,"calls.json");'
-        'const all=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,"utf8")):[];all.push(a);'
-        'fs.writeFileSync(f,JSON.stringify(all));\n', encoding="utf-8")
-    if sys.platform == "win32":
-        (fake / "codex.cmd").write_text('@node "%~dp0node_modules\\@openai\\codex\\bin\\codex.js" %*\n', encoding="ascii")
-    else:
-        (fake / "codex").write_text('#!/bin/sh\nexec node "$(dirname "$0")/node_modules/@openai/codex/bin/codex.js" "$@"\n')
-        (fake / "codex").chmod(0o755)
-
-    def calls(tag):
-        f = fake / "calls.json"
-        try:
-            return [c for c in json.loads(f.read_text(encoding="utf-8")) if any(tag in x for x in c)] if f.exists() else []
-        except ValueError:
-            return []
-
-    h = Stdio(script, f"{w.srv.url}/{SLUG}", home, box, client_name="codex-mcp-client", ASTERISM_SESSION="thread-cx-1",
-              PATH=str(fake) + os.pathsep + CLEAN.get("PATH", ""))
-    try:
-        assert not h.tool("register", name="cedar")[1]
-        assert until(lambda: w.alice.is_online("cedar"))
-        text = '@cedar first line [cx1]\nsecond line & echo hacked > "%TEMP%\\x" | $(whoami) `id`'
-        sent = w.alice.say(text)
-        got = until(lambda: calls("[cx1]"), 12)
-        assert got, "the helper did not run codex"
-        m = {"id": sent["id"], "in": "#general", "from": "alice", "relation": "your own user", "level": "important", "text": text}
-        assert got[0] == ["queue", "--thread", "thread-cx-1", "--message", frame(m)], "the whole frame, as one argument, no shell"
-        full = w.alice.say("@cedar " + "長" * 3_980 + " [cx2]")                 # the longest message there can be
-        got = until(lambda: calls("[cx2]"), 12)
-        assert got and got[0][4] == frame(dict(m, id=full["id"], text="@cedar " + "長" * 3_980 + " [cx2]"))
-    finally:
-        h.kill()
 
 
 # ------------------------------------------------------------------ what is kept

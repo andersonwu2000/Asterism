@@ -1,12 +1,11 @@
 """Checks beyond the acceptance tests: the MCP face's protocol edges, real-mode sign-in, cross-site
-refusal, the pages, and two rules that are easy to break by accident (tool wording shared by the helper
-and the server; no interface text outside the message catalogue).
+refusal, the pages, and a rule that is easy to break by accident (no interface text outside the message
+catalogue).
 
     python -m pytest tests/test_m1a_extra.py -q
 """
 import base64
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -89,15 +88,6 @@ def connector_token(url, person):
 
 # --------------------------------------------------------------------------- shared wording
 
-def test_the_helper_and_the_server_describe_the_tools_alike():
-    spec = importlib.util.spec_from_file_location("helper_under_test", ROOT / "helper" / "asterism_helper.py")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    from asterism import tools
-    assert helper.TOOLS == tools.TOOLS
-    assert helper.INSTRUCTIONS == tools.INSTRUCTIONS
-
-
 def test_pages_hold_no_interface_text_of_their_own():
     """Interface text lives in the message catalogue; a page or the page script that contains CJK text
     (the only locale today) has a string that bypasses it."""
@@ -109,7 +99,7 @@ def test_pages_hold_no_interface_text_of_their_own():
 
 def test_sign_in_only_returns_to_paths_on_this_server():
     from asterism.util import safe_next
-    assert safe_next("/lab/device?code=AB-CD") == "/lab/device?code=AB-CD"
+    assert safe_next("/lab/my?tab=AB-CD") == "/lab/my?tab=AB-CD"
     for bad in ("//evil.example/x", "https://evil.example/", "/\\evil.example", "javascript:alert(1)", "", None,
                 "/x\r\nSet-Cookie: a=b"):
         assert safe_next(bad) == "/", bad
@@ -179,14 +169,11 @@ def test_real_mode_sends_the_browser_to_github_with_a_state(tmp_path):
 
 def test_every_page_renders_and_escapes(srv):
     alice = signed_in(srv, "alice")
-    for path in ("/", "/lab/members", "/lab/my", "/lab/admin", "/lab/device"):
+    for path in ("/", "/lab/members", "/lab/my", "/lab/admin"):
         r = alice.get(path)
         assert r.status_code == 200 and "<html" in r.text, path
         assert "Lab <b>&" not in r.text, "the project name is escaped"
     assert "Lab &lt;b&gt;&amp;" in alice.get("/lab/members").text
-    d = httpx.post(f"{srv}/lab/device/start", json={"kind": "codex", "computer": "<script>x</script>"}).json()
-    page = alice.get(urllib.parse.urlsplit(d["verification_uri_complete"]).path + "?code=" + d["user_code"])
-    assert page.status_code == 200 and "<script>x</script>" not in page.text and "others_regroup" in page.text
     _, q = connector_token(srv, alice)
     consent = alice.get("/oauth/authorize", params=q)
     assert consent.status_code == 200 and all(k in consent.text for k in

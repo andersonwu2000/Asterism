@@ -19,7 +19,6 @@ from pathlib import Path
 import httpx
 import pytest
 
-from test_helper_join import fake_command
 from test_m1b import (CLEAN, DESCRIPTIONS, ENV, INSTRUCTIONS, ROOT, SLUG, Channel, build_world, frame, mention, until)
 
 OFFLINE_S, REDELIVER_S = 3, 2
@@ -31,6 +30,20 @@ ENDING = ("This computer is set up. If you can see the Asterism tools of `asteri
           "reopen this conversation (close it and open the same conversation again; in a terminal, resume it; in a "
           "desktop app or an IDE, restart the app and come back to this conversation), then call `register` when you "
           "are back.")
+
+
+def fake_command(folder, name):
+    """A stand-in for an agent's command that records its arguments, laid out as on the platform we run on."""
+    folder.mkdir(parents=True, exist_ok=True)
+    log = folder / f"{name}_called.txt"
+    if sys.platform == "win32":
+        (folder / name).write_text(f'#!/bin/sh\necho "$@" >> "$(dirname "$0")/{name}_called.txt"\n', encoding="ascii")
+        (folder / f"{name}.cmd").write_text(f'@echo %* >> "%~dp0{name}_called.txt"\n', encoding="ascii")
+        (folder / f"{name}.ps1").write_text(f'$args -join " " | Add-Content "$PSScriptRoot\\{name}_called.txt"\n', encoding="ascii")
+    else:
+        (folder / name).write_text(f'#!/bin/sh\necho "$@" >> "$(dirname "$0")/{name}_called.txt"\n')
+        (folder / name).chmod(0o755)
+    return log
 
 
 @pytest.fixture(scope="session")
