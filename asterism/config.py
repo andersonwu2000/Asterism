@@ -25,7 +25,12 @@ class Settings:
     subscription_ttl_s: float       # longest lifetime of an event subscription
     schedule_min_every_s: float     # the shortest interval of a repeating schedule
     github_web_url: str            # no trailing slash; sign-in page and code exchange
-    github_api_url: str             # no trailing slash; "who is this"
+    github_api_url: str             # no trailing slash; "who is this", and the project's repository
+    github_app_id: str              # the GitHub app that reads private repositories; "" = none
+    github_app_key: str             # path of the app's private key (PEM); "" = DATA/github_app.pem when it exists
+    files_refresh_s: float          # the head of a repository's default branch is trusted this long
+    files_cache_mb: float           # DATA/cache/ never holds more than this after an answer
+    files_max_mb: float             # a larger file of the repository is not fetched
 
     @property
     def secure_cookies(self) -> bool:
@@ -71,7 +76,12 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     subscription_ttl_s=_env_s("ASTERISM_SUBSCRIPTION_TTL_S", 86400),
                     schedule_min_every_s=_env_s("ASTERISM_SCHEDULE_MIN_EVERY_S", 300),
                     github_web_url=_env_url("ASTERISM_GITHUB_WEB_URL", "https://github.com"),
-                    github_api_url=_env_url("ASTERISM_GITHUB_API_URL", "https://api.github.com"))
+                    github_api_url=_env_url("ASTERISM_GITHUB_API_URL", "https://api.github.com"),
+                    github_app_id=(os.environ.get("ASTERISM_GITHUB_APP_ID") or str(conf.get("github_app_id") or "")).strip(),
+                    github_app_key=os.environ.get("ASTERISM_GITHUB_APP_KEY") or str(conf.get("github_app_key") or ""),
+                    files_refresh_s=_env_s("ASTERISM_FILES_REFRESH_S", 30),
+                    files_cache_mb=_env_s("ASTERISM_FILES_CACHE_MB", 200),
+                    files_max_mb=_env_s("ASTERISM_FILES_MAX_MB", 25))
 
 
 def use(s: Settings) -> Settings:

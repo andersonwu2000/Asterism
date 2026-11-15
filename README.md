@@ -39,7 +39,20 @@ The GitHub OAuth app's callback URL is `<public_url>/login/callback`. Run the se
 Tuning by environment: `ASTERISM_OFFLINE_AFTER_S` (120), `ASTERISM_ACCESS_TTL_S` (3600),
 `ASTERISM_INVITE_TTL_S` (604800).
 `ASTERISM_GITHUB_WEB_URL` (`https://github.com`): GitHub's sign-in page and code exchange.
-`ASTERISM_GITHUB_API_URL` (`https://api.github.com`): GitHub's API, for "who signed in".
+`ASTERISM_GITHUB_API_URL` (`https://api.github.com`): GitHub's API, for "who signed in" and the project's
+repository.
+
+The project's repository (`https://github.com/{owner}/{name}`) is shown to its members, read-only. A public
+repository needs nothing. For a private one, a GitHub app with the repository permission "Contents: read-only"
+is installed on the repository; `config.json` names it with `"github_app_id"` and `"github_app_key"` (the path
+of its private key; default `DATA/github_app.pem` when that file exists), or the environment with
+`ASTERISM_GITHUB_APP_ID` and `ASTERISM_GITHUB_APP_KEY`. The app's token is signed with the Python package
+`cryptography`, which is needed only when an app is configured (the server also needs `starlette`, `uvicorn`
+and `httpx`).
+`ASTERISM_FILES_REFRESH_S` (30): how long the head of the default branch is trusted before GitHub is asked again.
+`ASTERISM_FILES_CACHE_MB` (200): the most `DATA/cache/` (folders and files fetched from GitHub) holds; what was
+used longest ago goes first. Deleting the folder is harmless.
+`ASTERISM_FILES_MAX_MB` (25): a larger file is not fetched; the page links to it on GitHub instead.
 
 ## Tests
 

@@ -19,12 +19,13 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
+                                 StreamingResponse)
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import (accounts, agents, computers, config, downloads, messaging, oauth, pages, pins, projects, schedules, tasks,
-               tools, upkeep, util)
+from . import (accounts, agents, computers, config, downloads, files, messaging, oauth, pages, pins, projects, schedules,
+               tasks, tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import Translator, pick_locale
 from .projects import Actor, Project
@@ -383,6 +384,42 @@ async def api_switches(request: Request) -> Any:
 async def api_revoke(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     return projects.revoke_credential(pj, actor, request.path_params["cred"])
+
+
+# --------------------------------------------------------------------------- the project's repository (session cookie; read-only)
+
+def reader(request: Request) -> tuple[Project, str]:
+    """The project and its repository address, for a member with `read`."""
+    pj, actor = member_actor(request, request.path_params["slug"])
+    projects.require(pj, actor, "read", files.NO_READ)
+    return pj, projects.info(pj)["repo"]
+
+
+async def api_files_list(request: Request) -> Any:
+    pj, repo = reader(request)
+    return await files.listing(pj.slug, repo, request.query_params.get("dir"))
+
+
+async def api_files_resolve(request: Request) -> Any:
+    pj, repo = reader(request)
+    return await files.resolve(pj.slug, repo, (await body_json(request)).get("paths"))
+
+
+async def api_files_raw(request: Request) -> Response:
+    """A file's bytes, typed from a fixed table and never as HTML; whatever it holds cannot act on this origin."""
+    try:
+        pj, repo = reader(request)
+        out = await files.raw(pj.slug, repo, request.path_params["path"], request.headers.get("if-none-match"))
+    except ApiError as e:
+        resp = error_json(e)
+        resp.headers.update(files.headers_for(""))
+        return resp
+    if isinstance(out, str):
+        return Response(status_code=304, headers=dict(files.headers_for(""), ETag=out))
+    headers = dict(files.headers_for(out.ctype), ETag=f'"{out.sha}"', **{"Content-Length": str(out.size)})
+    if out.attachment:
+        headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + urllib.parse.quote(out.name, safe="")
+    return StreamingResponse(files.stream(out.file, out.size), media_type=out.ctype, headers=headers)
 
 
 # --------------------------------------------------------------------------- agent API (per session)
@@ -932,6 +969,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/messages", api(api_messages), methods=["GET"]),
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),
+        Route("/{slug}/api/files/list", api(api_files_list), methods=["GET"]),
+        Route("/{slug}/api/files/raw/{path:path}", api_files_raw, methods=["GET"]),
+        Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),
         Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
         Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),
         Route("/{slug}/api/tasks/{tid:int}", api(api_task_change), methods=["POST"]),
@@ -961,4 +1001,5 @@ def build_app(s: Store) -> ASGIApp:
             yield
         finally:
             task.cancel()
+            await files.close()
     return Guard(Starlette(routes=routes, lifespan=lifespan))
