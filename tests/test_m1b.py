@@ -53,8 +53,9 @@ DESCRIPTIONS = {
             "the text to make it important for that member: they are woken and must answer. Set `reply_to` to the id "
             "of the message you are answering.",
     "messages": "Read messages. Without arguments: the unread important messages addressed to you, from every "
-                "channel and private conversation. With `in` (a channel `#name` or a member's name): all unread "
-                "messages of that place; pass `before` to read older ones. Pass `id` to read one message again.",
+                "channel and private conversation. With all=true: every unread message of every place, important or "
+                "not, in one answer. With `in` (a channel `#name` or a member's name): all unread messages of that "
+                "place; pass `before` to read older ones. Pass `id` to read one message again.",
     "wait": "Block until a message for you arrives or `timeout_s` seconds pass (at most 100). Use it only to stay in "
             "the same turn after asking something.",
     "tasks": "The task table: the tasks of the groups you are in and who is responsible for each. A task without a "

@@ -363,6 +363,7 @@ def test_an_agent_owes_one_answer_to_a_schedule_however_often_it_ran(tmp_path):
         time.sleep(REDELIVER_WAIT)
         handed = [d["message"]["id"] for d in w.a2.tagged("[st2]")]
         assert handed == [ran[-1]], f"one message, the newest, however often it ran while the agent was away: {handed} of {ran}"
+        assert w.a2.unread("alice") == 0, "the runs it no longer has to answer are not left as unread either"
         w.a2.say("back, and here is my report [st2a]", reply_to=ran[-1])
         assert remove(w.alice, away["id"]).status_code == 200
     finally:

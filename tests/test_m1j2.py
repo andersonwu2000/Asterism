@@ -684,3 +684,20 @@ def test_the_program_has_the_task_tools(exe, v, home):
         assert not bad and gone["removed"] == tid
     finally:
         m.kill()
+
+
+def test_the_program_reads_everything_unread_in_one_call(exe, v, home):
+    join(exe, home, v, "--client", "none")
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-al-1")
+    try:
+        assert m.tools["messages"]["inputSchema"]["properties"]["all"]["type"] == "boolean"
+        assert not m.tool("register", name="alma")[1]
+        v.alice.say("something alma was not asked about [al1]")
+        got, bad = m.tool("messages", all=True)
+        assert not bad and any("[al1]" in x["text"] for x in got["messages"]), got
+        got, bad = m.tool("messages", all=True)
+        assert not bad and got["messages"] == [], "read once, unread no more"
+        msg, bad = m.tool("messages", **{"all": True, "in": "#general"})
+        assert bad and isinstance(msg, str), "a refusal is the server's sentence"
+    finally:
+        m.kill()

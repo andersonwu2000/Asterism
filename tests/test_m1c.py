@@ -98,7 +98,8 @@ def told(agent: Agent, text: str, timeout=6.0) -> dict:
     found = until(find, timeout)
     assert found, f"{agent.name} was not told: {text}"
     assert (found[0]["message"]["from"], found[0]["message"]["relation"], found[0]["message"]["in"]) == ("system", "system", "#general")
-    assert found[0]["frame"] == frame(found[0]["message"])
+    usual = frame(found[0]["message"])
+    assert found[0]["frame"] == usual or found[0]["frame"].startswith(usual + chr(10) + "(While you were offline "), found[0]["frame"]
     return found[0]
 
 
@@ -327,8 +328,8 @@ def test_others_need_the_agents_switch(t):
 # ------------------------------------------------------------------ another person's agent must ask (the handshake)
 
 def test_another_persons_agent_must_ask(t):
-    """Proposed by the operator on 2026-11-15, waiting for the user's word: an agent changes a task of somebody
-    else's agent only through that agent. The consent is the other agent's own call."""
+    """An agent that is not a coordinator changes a task of somebody else's agent only through that agent: the
+    consent is the other agent's own call (the user's decision of 2026-11-15)."""
     own = made(a_task(t.a1, group="ai", text="Check the base case [h1]", responsible="a1"))
     refusal = NOT_YOURS.format(id=own["id"], agent="a1")
     for change in ({"text": "b1's idea of it"}, {"remove": True}, {"responsible": "b1"}, {"responsible": ""}):
@@ -356,8 +357,7 @@ def test_another_persons_agent_must_ask(t):
         said = f"b1 took task {own['id']} [ai] from a1."
         assert level_for(t.alice, said) == "muted"
         come_back(t, t.a1)
-        seen = [m for m in t.a1.messages(place="#general", limit=200).json()["messages"] if m["text"] == said]
-        assert seen and seen[0]["level"] == "normal", "it finds the message when it is back"
+        assert told(t.a1, said)["message"]["level"] == "important", "it is handed the message when it is back"
         r = a_task(t.b1, id=offer["id"], responsible="b1")
         assert r.status_code == 403 and err(r) == "not_yours" and r.json()["message"] == NOT_YOURS.format(id=offer["id"], agent="a1"), \
             "online again: ask it"
@@ -448,6 +448,54 @@ def test_a_long_list_of_tasks_is_cut_in_the_notice(t):
     off = "a2 is offline. Its tasks:\n" + "\n".join(lines) + "\nand 2 more."
     assert level_for(t.alice, off) == "normal", "alice is close to her own agent"
     come_back(t, t.a2)
+    wipe(t)
+
+
+# ------------------------------------------------------------------ an agent that coordinates
+
+def test_a_coordinating_agent_changes_tasks_directly(t):
+    """The user's rule of 2026-11-15: a group may carry the permission to coordinate. An agent that holds it
+    changes the tasks of other people's agents directly, where their person has opened them to others; the
+    agent concerned is told at level important. It never locks, and a person's lock holds against it."""
+    r = t.alice.c.post(f"/{SLUG}/api/groups", json={"name": "coordinators", "permissions": ["coordinate_tasks"]})
+    assert r.status_code == 201, r.text
+    for member, who in (("bob", t.alice), ("b1", t.bob)):   # an agent holds no permission its person lacks
+        r = who.c.post(f"/{SLUG}/api/members/{member}/groups", json={"add": ["coordinators"], "remove": []})
+        assert r.status_code == 200, r.text
+    own = made(a_task(t.a1, group="ai", text="Check the base case [c1]", responsible="a1"))
+    closed = "a1 is an agent of alice, who has not allowed others to give it tasks or to change its tasks."
+    for attempt in (a_task(t.b1, id=own["id"], text="b1 rewrites it"), a_task(t.b1, id=own["id"], remove=True),
+                    a_task(t.b1, group="ai", text="for a1 [c2]", responsible="a1")):
+        assert attempt.status_code == 403 and err(attempt) == "forbidden" and attempt.json()["message"] == closed, attempt.text
+
+    t.alice.switches(others_assign=True)
+    try:
+        new = "Check the base case, and n = 2 separately [c1]"
+        assert made(a_task(t.b1, id=own["id"], text=new))["assigned_by"] is None, "an agent never locks"
+        d = told(t.a1, f"b1 changed task {own['id']} [ai] of a1: {new}")
+        assert d["message"]["level"] == "important"
+        assert d["frame"].endswith(f"(Asterism message. To answer: send with reply_to={d['message']['id']}.)")
+        assert t.a1.send("understood [c1a]", reply_to=d["message"]["id"]).status_code == 200
+
+        given = made(a_task(t.b1, group="ai", text="Then the inductive step [c2]", responsible="a1"))
+        assert given["assigned_by"] is None
+        assert told(t.a1, f"b1 gave task {given['id']} [ai] to a1: Then the inductive step [c2]")["message"]["level"] == "important"
+        assert made(a_task(t.a1, id=given["id"], text="The inductive step, my way [c2]"))["responsible"] == "a1", \
+            "it is a1's to shape: nothing is locked"
+        assert made(a_task(t.b1, id=given["id"], responsible="b1"))["responsible"] == "b1", "online or not, it may take it"
+        assert told(t.a1, f"b1 took task {given['id']} [ai] from a1.")["message"]["level"] == "important"
+
+        locked = made(p_make(t.alice, group="ai", text="alice's own order [c3]", responsible="a1"))
+        r = a_task(t.b1, id=locked["id"], text="a coordinator's idea of it")
+        assert r.status_code == 403 and err(r) == "task_locked", "a person's lock holds against a coordinator too"
+        assert a_task(t.b1, id=own["id"], remove=True).status_code == 200
+        assert told(t.a1, f"b1 removed task {own['id']} [ai] of a1.")["message"]["level"] == "important"
+    finally:
+        t.alice.switches(others_assign=False)
+        t.bob.c.post(f"/{SLUG}/api/members/b1/groups", json={"add": [], "remove": ["coordinators"]})
+        t.alice.c.post(f"/{SLUG}/api/members/bob/groups", json={"add": [], "remove": ["coordinators"]})
+    again = made(a_task(t.a1, group="ai", text="back to asking [c4]", responsible="a1"))
+    assert err(a_task(t.b1, id=again["id"], text="x")) == "not_yours", "without the permission it asks, as before"
     wipe(t)
 
 
