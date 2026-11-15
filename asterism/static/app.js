@@ -6,7 +6,7 @@
 (function () {
   var A = window.Asterism;
   if (!A) return;
-  var MSG = A.MSG, make = A.make;
+  var MSG = A.MSG;
 
   function post(url, body) { return A.request(url, null, body); }
 
@@ -58,68 +58,8 @@
     if (out) out.textContent = res.ok ? (MSG["done.saved"] || "") : A.errorText(res.data.error);
   });
 
-  // "my agents": the button that makes an agent invitation link, and what it answers. Each click makes a
-  // new link and replaces what the previous one showed.
-  var copy = A.copy;
-
-  // A line with the text to copy and its copy button.
-  function copyLine(text) {
-    var line = make("div", "copy-line");
-    var code = make("code", null, text);
-    var button = A.button("btn", MSG["invite.copy"] || "", async function () {
-      // A blocker may refuse the write: then say so; the text beside stays selectable to copy by hand.
-      var ok = false;
-      try { ok = await copy(text); } catch (err) { ok = false; }
-      button.textContent = ok ? (MSG["invite.copied"] || "") : (MSG["invite.copy_failed"] || "");
-      setTimeout(function () { button.textContent = MSG["invite.copy"] || ""; }, ok ? 2000 : 5000);
-    });
-    button.setAttribute("aria-live", "polite");
-    line.append(code, button);
-    return line;
-  }
-
-  var SYSTEMS = ["macos-linux", "windows"], PRODUCTS = ["claude-code", "codex"];
-  var made = 0;
-
-  function showInvite(box, data) {
-    made += 1;
-    box.replaceChildren();
-    box.append(make("p", null, MSG["invite.say"] || ""), copyLine(data.say));
-    var until = new Date(Date.now() + data.expires_in * 1000);
-    var time = until.toLocaleTimeString(document.documentElement.lang || undefined, {hour: "2-digit", minute: "2-digit"});
-    box.append(make("p", "muted", (MSG["invite.expires"] || "{time}").replace("{time}", time)));
-    if (!data.program || !data.program.available) {
-      box.append(make("p", "muted", MSG["invite.unavailable"] || ""));
-      return;
-    }
-    box.append(make("p", null, MSG["invite.self"] || ""));
-    SYSTEMS.forEach(function (system) {
-      var group = make("fieldset");
-      group.append(make("legend", null, MSG["invite.system." + system] || system));
-      var choices = make("div"), lines = {};
-      PRODUCTS.forEach(function (product, i) {
-        var label = make("label");
-        var radio = document.createElement("input");
-        radio.type = "radio";
-        radio.name = "invite-product-" + system + "-" + made;
-        radio.value = product;
-        radio.checked = i === 0;
-        radio.addEventListener("change", function () {
-          PRODUCTS.forEach(function (p) { lines[p].hidden = p !== product; });
-        });
-        label.append(radio, " " + (MSG["invite.product." + product] || product));
-        choices.append(label);
-      });
-      group.append(choices);
-      PRODUCTS.forEach(function (product, i) {
-        lines[product] = copyLine(data.commands[system][product]);
-        lines[product].hidden = i !== 0;
-        group.append(lines[product]);
-      });
-      box.append(group);
-    });
-  }
-
+  // "my agents": the button that makes an agent invitation link, and what it answers (Asterism.showInvite). Each
+  // click makes a new link and replaces what the previous one showed.
   var inviteButton = document.getElementById("invite-agent");
   if (inviteButton) {
     inviteButton.addEventListener("click", async function () {
@@ -129,7 +69,7 @@
       try {
         var res = await post(inviteButton.dataset.api, {});
         if (out) out.textContent = res.ok ? "" : A.errorText(res.data.error);
-        if (res.ok) { showInvite(box, res.data); box.hidden = false; }
+        if (res.ok) { A.showInvite(box, res.data); box.hidden = false; }
       } finally {
         inviteButton.disabled = false;
       }

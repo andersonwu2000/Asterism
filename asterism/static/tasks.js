@@ -3,8 +3,8 @@
 // take one quiet line. Read from /api/tasks on the messages' rhythm; a refresh waits while the person is editing in
 // the panel or has an act armed. A person who may edit tasks (data-can-edit) adds, rewrites, reassigns, locks and
 // removes them with the acts on each task; a refusal shows the server's sentence at that task.
-// #task-toggle folds the panel away and brings it back, remembered per project; below 900 px it opens over the
-// messages and starts folded.
+// The panel is one of the right column's (right.js): #task-toggle shows or hides it; the toggle's name carries the
+// numbers. A member's name opens their profile card (people.js). Asterism.tasks.data is the last table read.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -13,11 +13,10 @@
   var t = A.t, make = A.make;
 
   var SLUG = root.dataset.slug, API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var EVERY_MS = 4000, OWN_SUFFIX = "-agents", FOLD_KEY = "asterism-tasks-folded:" + SLUG;
+  var EVERY_MS = 4000, OWN_SUFFIX = "-agents";
   var body = document.getElementById("task-body"), summary = document.getElementById("task-summary");
-  var toggle = document.getElementById("task-toggle"), closer = document.getElementById("task-close");
-  var tasks = {canEdit: !!panel.dataset.canEdit, last: "", data: null, adding: null, n: 0, open: 0};
-  var narrow = window.matchMedia("(max-width: 899.98px)");
+  var toggle = document.getElementById("task-toggle");
+  var tasks = A.tasks = {canEdit: !!panel.dataset.canEdit, last: "", data: null, adding: null, n: 0, open: 0};
 
   function groupLabel(g) {
     if (g.kind === "default" && A.MSG["group." + g.name]) return t("group." + g.name);
@@ -38,7 +37,7 @@
   function memberLine(m) {
     var line = make("div", "tmember");
     line.appendChild(A.side ? A.side.presence(m) : make("span"));
-    line.appendChild(make("span", "", m.name));
+    line.appendChild(A.people ? A.people.nameButton(m.name, "name-btn") : make("span", "", m.name));
     if (m.kind === "agent" && m.busy) line.appendChild(make("span", "word", t("task.busy")));
     return line;
   }
@@ -244,33 +243,14 @@
     draw(r.data, null);
   }
 
-  // ------------------------------------------------------------------ folding the panel
+  // ------------------------------------------------------------------ the toggle
 
-  function stored() {
-    try { return localStorage.getItem(FOLD_KEY) === "1"; } catch (err) { return false; }
-  }
   function label() {
-    var open = !panel.hidden;
-    toggle.setAttribute("aria-expanded", String(open));
-    toggle.textContent = open ? t("task.toggle_hide") : t("task.toggle_show", {n: tasks.n, open: tasks.open});
+    var name = t("bar.tasks") + " · " + t("task.summary", {n: tasks.n, open: tasks.open});
+    toggle.setAttribute("aria-label", name);
+    toggle.title = name;
   }
-  function setOpen(open, remember) {
-    panel.hidden = !open;
-    label();
-    if (remember && !narrow.matches) {
-      try { localStorage.setItem(FOLD_KEY, open ? "0" : "1"); } catch (err) { /* this page only */ }
-    }
-    if (open && narrow.matches) (closer || panel).focus();
-  }
-
-  toggle.addEventListener("click", function () { setOpen(panel.hidden, true); });
-  if (closer) closer.addEventListener("click", function () { setOpen(false, false); toggle.focus(); });
-  panel.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && narrow.matches && !ev.defaultPrevented) { setOpen(false, false); toggle.focus(); }
-  });
-  function fit() { setOpen(narrow.matches ? false : !stored(), false); }
-  if (narrow.addEventListener) narrow.addEventListener("change", fit);
-  fit();
+  label();
 
   setInterval(function () { load(false); }, EVERY_MS);
   load(true);

@@ -312,6 +312,33 @@
   //   items: [{label, run: function () {}} | {label, href} | {label, items: [...]} | {separator: true}]
 
   var menu = null;
+  var ITEMS = "[role^=menuitem]:not([aria-disabled=true])";
+
+  // The keys every menu shares: the arrows, Home and End move; a letter goes to the next item starting with it.
+  // True when the key was one of them.
+  A.menuKeys = function (box, ev) {
+    var items = Array.prototype.slice.call(box.querySelectorAll(ITEMS));
+    var i = items.indexOf(document.activeElement), n = items.length;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (n) items[i < 0 ? (ev.key === "ArrowDown" ? 0 : n - 1) : (i + (ev.key === "ArrowDown" ? 1 : n - 1)) % n].focus();
+      return true;
+    }
+    if (ev.key === "Home" || ev.key === "End") {
+      ev.preventDefault();
+      if (n) items[ev.key === "Home" ? 0 : n - 1].focus();
+      return true;
+    }
+    if (ev.key.length === 1 && /\S/.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      var k = ev.key.toLowerCase();
+      for (var j = 0; j < n; j++) {
+        var it = items[(i + 1 + j) % n];
+        if (it.textContent.trim().toLowerCase().indexOf(k) === 0) { it.focus(); break; }
+      }
+      return true;
+    }
+    return false;
+  };
 
   function menuBox() {
     if (menu) return menu;
@@ -322,16 +349,7 @@
     document.body.appendChild(box);
     menu = {box: box, open: false, opener: null, stack: []};
     box.addEventListener("keydown", function (ev) {
-      var items = Array.prototype.slice.call(box.querySelectorAll("[role=menuitem]:not([aria-disabled=true])"));
-      var i = items.indexOf(document.activeElement);
-      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
-        ev.preventDefault();
-        var n = items.length;
-        if (n) items[i < 0 ? (ev.key === "ArrowDown" ? 0 : n - 1) : (i + (ev.key === "ArrowDown" ? 1 : n - 1)) % n].focus();
-      } else if (ev.key === "Home" || ev.key === "End") {
-        ev.preventDefault();
-        if (items.length) items[ev.key === "Home" ? 0 : items.length - 1].focus();
-      } else if (ev.key === "Escape") {
+      if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopPropagation();
         if (menu.stack.length > 1) back(); else closeMenu(true);
@@ -343,12 +361,8 @@
         document.activeElement.click();
       } else if (ev.key === "Tab") {
         closeMenu(false);
-      } else if (ev.key.length === 1 && /\S/.test(ev.key)) {        // type a letter: the next item starting with it
-        var k = ev.key.toLowerCase(), from = i + 1;
-        for (var j = 0; j < items.length; j++) {
-          var it = items[(from + j) % items.length];
-          if (it.textContent.trim().toLowerCase().indexOf(k) === 0) { it.focus(); break; }
-        }
+      } else {
+        A.menuKeys(box, ev);
       }
     });
     document.addEventListener("pointerdown", function (ev) {
@@ -403,7 +417,9 @@
           if (run) run();
         });
       }
-      el.setAttribute("role", "menuitem");
+      // An item with `checked` (true or false) is a check box: choosing it runs its act, which turns it over.
+      el.setAttribute("role", it.checked === undefined ? "menuitem" : "menuitemcheckbox");
+      if (it.checked !== undefined) el.setAttribute("aria-checked", String(!!it.checked));
       el.tabIndex = -1;
       if (it.disabled) el.setAttribute("aria-disabled", "true");
       if (it.items) {
@@ -414,7 +430,7 @@
       if (it.mono) el.classList.add("mono");
       box.appendChild(el);
     });
-    var first = box.querySelector("[role=menuitem]:not([aria-disabled=true])");
+    var first = box.querySelector(ITEMS);
     (first || box).focus({preventScroll: true});
   }
 
@@ -474,6 +490,151 @@
       var again = box.querySelector('[data-key="' + key.replace(/["\\]/g, "\\$&") + '"]');
       if (again) again.focus({preventScroll: true});
     }
+  };
+
+  // ------------------------------------------------------------------ a box that floats by its control
+  //
+  // A popover (the project menu, the pins of a channel, a profile card): shown by its control, closed by Escape, a
+  // click outside, the focus leaving it or A.popup.close(); the focus goes into it and back to the control. One at a
+  // time. A menu or a dialog opened from inside it does not count as outside.
+  //   A.popup.open(box, anchor, {align: "start" | "end", at: {left, right, top, bottom}, focus: element, onClose})
+
+  var pop = null, popShut = null;
+
+  function inside(target) {
+    return !!(target && target.closest && (pop.box.contains(target) || target.closest(".menu") || target.closest("dialog")));
+  }
+
+  function popPlace() {
+    var box = pop.box, r = pop.at || pop.anchor.getBoundingClientRect();
+    var w = box.offsetWidth, h = box.offsetHeight, vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    var x = pop.align === "end" ? r.right - w : r.left, y = r.bottom + 4;
+    if (x + w > vw - 8) x = vw - 8 - w;
+    if (y + h > vh - 8) y = Math.max(8, r.top - 4 - h);
+    box.style.left = Math.max(8, x) + "px";
+    box.style.top = Math.max(8, y) + "px";
+  }
+
+  A.popup = {
+    open: function (box, anchor, opts) {
+      opts = opts || {};
+      if (popShut && popShut.by === anchor && Date.now() - popShut.at < 600) { popShut = null; return false; }
+      A.popup.close(false);
+      pop = {box: box, anchor: anchor, at: opts.at || null, align: opts.align, onClose: opts.onClose};
+      box.hidden = false;
+      box.classList.add("shown");
+      if (box.hasAttribute("popover")) {
+        try { box.showPopover(); } catch (err) { /* shown by the class */ }
+      }
+      if (anchor.hasAttribute && anchor.hasAttribute("aria-expanded")) anchor.setAttribute("aria-expanded", "true");
+      popPlace();
+      var first = opts.focus || box.querySelector("a[href], button:not([disabled]), input, select, textarea, [tabindex]");
+      (first || box).focus({preventScroll: true});
+      return true;
+    },
+    close: function (refocus) {
+      if (!pop) return;
+      var was = pop;
+      pop = null;
+      if (was.box.hasAttribute("popover")) {
+        try { was.box.hidePopover(); } catch (err) { /* already hidden */ }
+      }
+      was.box.classList.remove("shown");
+      was.box.hidden = true;
+      var a = was.anchor;
+      if (a.hasAttribute && a.hasAttribute("aria-expanded")) a.setAttribute("aria-expanded", "false");
+      var hadFocus = was.box.contains(document.activeElement) || document.activeElement === document.body;
+      if ((refocus || hadFocus) && a.isConnected) a.focus({preventScroll: true});
+      if (was.onClose) was.onClose();
+    },
+    isOpen: function (box) { return !!pop && (!box || pop.box === box); },
+    place: function () { if (pop) popPlace(); }
+  };
+
+  document.addEventListener("pointerdown", function (ev) {
+    if (!pop || inside(ev.target)) return;
+    // A press on the control that opened it closes it, and the click that follows does not open it again.
+    popShut = pop.anchor.contains && pop.anchor.contains(ev.target) ? {by: pop.anchor, at: Date.now()} : null;
+    A.popup.close(false);
+  }, true);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape" || !pop || ev.defaultPrevented || !pop.box.contains(document.activeElement)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    A.popup.close(true);
+  }, true);
+  document.addEventListener("focusout", function (ev) {
+    if (!pop || !pop.box.contains(ev.target)) return;
+    var next = ev.relatedTarget;
+    if (next && !inside(next)) A.popup.close(false);
+  });
+  window.addEventListener("resize", function () { if (pop) A.popup.close(false); });
+
+  // A line drawing of the page's glyph set (the server puts it in <template id="glyphs">), or an empty span.
+  A.glyph = function (name) {
+    var set = document.getElementById("glyphs");
+    var g = set && set.content.querySelector('[data-glyph="' + name + '"]');
+    return g ? g.cloneNode(true) : A.make("span");
+  };
+
+  // ------------------------------------------------------------------ invitations (the project menu, "my agents")
+
+  // A line with the text to copy and its copy button.
+  A.copyLine = function (text) {
+    var line = A.make("div", "copy-line");
+    var code = A.make("code", null, text);
+    var button = A.button("btn", A.t("invite.copy"), async function () {
+      // A blocker may refuse the write: then say so; the text beside stays selectable to copy by hand.
+      var ok = false;
+      try { ok = await A.copy(text); } catch (err) { ok = false; }
+      button.textContent = ok ? A.t("invite.copied") : A.t("invite.copy_failed");
+      setTimeout(function () { button.textContent = A.t("invite.copy"); }, ok ? 2000 : 5000);
+    });
+    button.setAttribute("aria-live", "polite");
+    line.append(code, button);
+    return line;
+  };
+
+  // What an agent invitation answers: the sentence for the agent, and the commands to set up a computer oneself.
+  var SYSTEMS = ["macos-linux", "windows"], PRODUCTS = ["claude-code", "codex"], invites = 0;
+  A.showInvite = function (box, data) {
+    var make = A.make, t = A.t;
+    invites += 1;
+    box.replaceChildren();
+    box.append(make("p", null, t("invite.say")), A.copyLine(data.say));
+    var until = new Date(Date.now() + data.expires_in * 1000);
+    var time = until.toLocaleTimeString(document.documentElement.lang || undefined, {hour: "2-digit", minute: "2-digit"});
+    box.append(make("p", "muted", t("invite.expires", {time: time})));
+    if (!data.program || !data.program.available) {
+      box.append(make("p", "muted", t("invite.unavailable")));
+      return;
+    }
+    box.append(make("p", null, t("invite.self")));
+    SYSTEMS.forEach(function (system) {
+      var group = make("fieldset");
+      group.append(make("legend", null, t("invite.system." + system)));
+      var choices = make("div"), lines = {};
+      PRODUCTS.forEach(function (product, i) {
+        var label = make("label");
+        var radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "invite-product-" + system + "-" + invites;
+        radio.value = product;
+        radio.checked = i === 0;
+        radio.addEventListener("change", function () {
+          PRODUCTS.forEach(function (p) { lines[p].hidden = p !== product; });
+        });
+        label.append(radio, " " + t("invite.product." + product));
+        choices.append(label);
+      });
+      group.append(choices);
+      PRODUCTS.forEach(function (product, i) {
+        lines[product] = A.copyLine(data.commands[system][product]);
+        lines[product].hidden = i !== 0;
+        group.append(lines[product]);
+      });
+      box.append(group);
+    });
   };
 
   // ------------------------------------------------------------------ the theme

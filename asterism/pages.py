@@ -64,21 +64,34 @@ GLYPHS = {
     "schedules": '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
     "members": '<circle cx="9" cy="9" r="3"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/><rect x="15.5" y="6" width="5" height="5" rx="1"/>',
     "my": '<rect x="4" y="5" width="16" height="11" rx="2"/><path d="M9 20h6M12 16v4"/>',
-    "admin": '<path d="M4 7h4M12 7h8M4 12h10M18 12h2M4 17h2M10 17h10"/><circle cx="10" cy="7" r="2"/>'
-             '<circle cx="16" cy="12" r="2"/><circle cx="8" cy="17" r="2"/>',
     "column": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/>',
     "rendered": '<path d="M6 3h8l4 4v14H6z"/><path d="M9 12h6M9 15h6M9 18h3"/>',
     "source": '<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>',
     "split": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15M6.5 9h3M6.5 12h3M14.5 9h3M14.5 12h3"/>',
     "github": '<path d="M13 4h7v7M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
     "save": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+    "chevron": '<path d="M7 10l5 5 5-5"/>',
+    "invite": '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 19.5c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5"/><path d="M19 7v6M16 10h6"/>',
+    "pin": '<path d="M9 4h6l-1 5.5 3 2.5v2H7v-2l3-2.5z"/><path d="M12 14v6"/>',
+    "tasks": '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17"/>',
+    "search": '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
+    "gear": '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1'
+            'M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>',
 }
 
+# The glyphs the page scripts draw (A.glyph clones them from this template).
+SCRIPT_GLYPHS = ("gear",)
 
-def glyph(name: str, size: int = 20) -> str:
+
+def glyph(name: str, size: int = 20, extra: str = "") -> str:
     return (f'<svg class="glyph" aria-hidden="true" focusable="false" width="{size}" height="{size}" viewBox="0 0 24 24" '
-            f'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+            f'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"{extra}>'
             f'{GLYPHS[name]}</svg>')
+
+
+def _glyph_set() -> str:
+    return ('<template id="glyphs">' + "".join(glyph(n, 16, f' data-glyph="{n}"') for n in SCRIPT_GLYPHS)
+            + '</template>')
 
 
 def fold_button(tr: Translator, mode: str, target: str, label_key: str, button_id: str) -> str:
@@ -97,7 +110,7 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     scripts load after base.js (and frame.js) and before app.js. `header`: the page's own header instead of its title."""
     msgs = e(json.dumps(tr.js_messages(), ensure_ascii=False))
     links = "".join(f'<link rel="stylesheet" href="/static/{e(x)}">' for x in styles)
-    shared = ["base.js"] + (["frame.js", "rail.js"] if frame else [])
+    shared = ["base.js"] + (["frame.js", "rail.js", "project.js"] if frame else [])
     tags = "".join(f'<script src="/static/{e(x)}"></script>' for x in [*shared, *scripts, "app.js"])
     if frame:
         head = header if header is not None else (
@@ -108,7 +121,7 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
         main = (f'<div class="shell mode-{mode}{" has-column" if column else ""}">'
                 f'<div id="nav" class="nav" aria-label="{e(tr("nav.label"))}">{_rail(tr, person, frame, here)}{column}</div>'
                 f'<div id="side-scrim" hidden></div>'
-                f'<main id="page" class="page {e(page_class)}">{head}{body}</main></div>')
+                f'<main id="page" class="page {e(page_class)}">{head}{body}</main></div>{_glyph_set()}')
         cls = "framed"
     else:
         who = ""
@@ -152,11 +165,21 @@ def _count(tr: Translator, unread: int, important: int, muted: bool) -> str:
     return ""
 
 
+def channel_settings_href(slug: str, name: str) -> str:
+    return f"/{q(slug)}/channels/{q(name)}/settings"
+
+
 def _place_link(tr: Translator, slug: str, place: str, inner: str, unread: int, important: int, muted: bool) -> str:
-    """One place of the navigation; frame.js redraws the lists with the same markup."""
+    """One place of the navigation; frame.js redraws the lists with the same markup. A channel's row also has a
+    gear to its settings (shown on hover and focus)."""
     cls = "place" + (" unread" if unread and not muted else "") + (" muted" if muted else "")
-    return (f'<li><a class="{cls}" href="/{e(q(slug))}#{e(q(place))}" data-place="{e(place)}">{inner}'
-            f'{_count(tr, unread, important, muted)}</a></li>')
+    gear = ""
+    if place.startswith("#"):
+        label = e(tr("chan.gear", place=place))
+        gear = (f'<a class="place-gear" href="{e(channel_settings_href(slug, place[1:]))}" aria-label="{label}" '
+                f'title="{label}">{glyph("gear", 16)}</a>')
+    return (f'<li class="place-row"><a class="{cls}" href="/{e(q(slug))}#{e(q(place))}" data-place="{e(place)}">{inner}'
+            f'{_count(tr, unread, important, muted)}</a>{gear}</li>')
 
 
 def presence_mark(tr: Translator, who: dict[str, Any] | None) -> str:
@@ -173,10 +196,41 @@ def _reveal(tr: Translator, target: str, label_key: str) -> str:
             f'aria-controls="{target}" aria-label="{e(tr(label_key))}"><span class="plus" aria-hidden="true"></span></button>')
 
 
-def _project_head(f: dict[str, Any], under: str) -> str:
-    """The project's name (display voice) on top of a second column, a mono line under it."""
+def _menu_item(tr: Translator, label_key: str, act: str = "", href: str = "") -> str:
+    """An item of a menu drawn here (the markup of base.js's menus): a destination, or an act for project.js."""
+    if href:
+        return f'<a class="menu-item" role="menuitem" tabindex="-1" href="{e(href)}">{e(tr(label_key))}</a>'
+    return (f'<button type="button" class="menu-item" role="menuitem" tabindex="-1" data-act="{act}">'
+            f'{e(tr(label_key))}</button>')
+
+
+def _project_head(tr: Translator, f: dict[str, Any], under: str) -> str:
+    """The top of a second column: the project's name (display voice) as the button of the project menu, a mono
+    line under it, and beside it the invitation of people for who may invite. The menu offers each item only to
+    who may use it; project.js opens it and does its acts."""
+    slug, mine = f["slug"], set(f["perms"])
+    items = []
+    if f["can_admin"]:
+        items.append(_menu_item(tr, "pm.invite_people", act="invite-people"))
+    if "manage_own_agents" in mine:
+        items.append(_menu_item(tr, "pm.invite_agent", act="invite-agent"))
+    if items:
+        items.append('<div class="menu-sep" role="separator"></div>')
+    items.append(_menu_item(tr, "pm.settings", href=f"/{q(slug)}/settings"))
+    if f["can_create"]:
+        items.append(_menu_item(tr, "pm.new_channel", act="new-channel"))
+    items.append(_menu_item(tr, "pm.my", href=f"/{q(slug)}/my"))
+    invite = ""
+    if f["can_admin"]:
+        label = e(tr("pm.invite_icon"))
+        invite = (f'<button type="button" id="invite-open" class="icon-btn small invite-open" data-act="invite-people" '
+                  f'aria-label="{label}" title="{label}">{glyph("invite", 18)}</button>')
     return (f'<div class="side-project"><div class="project-text">'
-            f'<a class="project-name" href="/{e(q(f["slug"]))}">{e(f["name"])}</a>{under}</div></div>')
+            f'<button type="button" id="project-menu-button" class="project-name" aria-haspopup="menu" '
+            f'aria-expanded="false" aria-controls="project-menu" title="{e(tr("pm.open"))}">'
+            f'<span class="project-name-text">{e(f["name"])}</span>{glyph("chevron", 16)}</button>{under}</div>{invite}'
+            f'<div id="project-menu" class="menu" role="menu" aria-label="{e(tr("pm.open"))}" tabindex="-1" popover="manual">'
+            f'{"".join(items)}</div></div>')
 
 
 def _repo_link(tr: Translator, repo: str) -> str:
@@ -184,10 +238,10 @@ def _repo_link(tr: Translator, repo: str) -> str:
             f'title="{e(tr("nav.repo"))}">{e(_repo_text(repo))}</a>')
 
 
-# The rail's buttons in their order: (page, glyph, word, full name).
+# The rail's buttons in their order: (page, glyph, word, full name). Members, groups and the project's settings are
+# reached from the project menu.
 RAIL = (("messages", "chat", "rail.chat", "nav.messages"), ("files", "files", "rail.files", "nav.files"),
-        ("schedules", "schedules", "rail.schedules", "nav.schedules"), ("members", "members", "rail.members", "nav.members"),
-        ("my", "my", "rail.my", "nav.my"), ("admin", "admin", "rail.admin", "nav.admin"))
+        ("schedules", "schedules", "rail.schedules", "nav.schedules"), ("my", "my", "rail.my", "nav.my"))
 
 
 def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
@@ -196,8 +250,6 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
     slug, me = f["slug"], (person["name"] if person else "")
     items = []
     for page, icon, word, full in RAIL:
-        if page == "admin" and not f["can_admin"]:
-            continue
         href = f"/{q(slug)}" if page == "messages" else f"/{q(slug)}/{page}"
         ident = {"messages": ' id="rail-chat"', "files": ' id="rail-files"'}.get(page, "")
         current = ' aria-current="page"' if page == here else ""
@@ -209,7 +261,7 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
                      f'<span class="vh">{e(tr("rail.important", k=k))}</span></span>')
         items.append(f'<li><a{ident} class="rail-btn" href="{e(href)}" title="{e(tr(full))}"{current}>'
                      f'<span class="rail-tile">{glyph(icon)}{count}</span><span class="rail-word">{e(tr(word))}</span></a></li>')
-    data = {"slug": slug, "me": me, "here": here, "directory": f["directory"], "repo": f["repo"]}
+    data = {"slug": slug, "me": me, "here": here, "directory": f["directory"], "repo": f["repo"], "perms": f["perms"]}
     initial = (me[:1] or "?").upper()
     reader = (f'<button type="button" id="rail-me" class="rail-me" popovertarget="me-menu" '
               f'aria-label="{e(tr("rail.me", name=me))}" title="{e(me)}"><span aria-hidden="true">{e(initial)}</span></button>'
@@ -241,14 +293,11 @@ def _side(tr: Translator, person: Any, f: dict[str, Any]) -> str:
         private.append(_place_link(tr, slug, p["with"],
                                    f'{presence_mark(tr, who)}<span class="place-name">{e(p["with"])}</span>{note}',
                                    p["unread"], p["important"], False))
-    new_channel = start = plus_channel = plus_private = ""
-    if f["can_create"]:
-        plus_channel = _reveal(tr, "new-channel", "nav.new_channel")
-        new_channel = (f'<form id="new-channel" class="side-form" hidden><input name="name" required maxlength="40" '
-                       f'placeholder="{e(tr("msg.channel_name"))}" aria-label="{e(tr("msg.channel_name"))}" autocomplete="off">'
-                       f'<div class="row"><button class="btn primary">{e(tr("msg.new_channel"))}</button>'
-                       f'<button type="button" class="btn" data-dismiss>{e(tr("nav.cancel"))}</button></div>'
-                       f'<span class="out" data-out></span></form>')
+    start = plus_channel = plus_private = ""
+    if f["can_create"]:            # the same floating form as the project menu's "create channel" (project.js)
+        label = e(tr("nav.new_channel"))
+        plus_channel = (f'<button type="button" class="icon-btn small" data-act="new-channel" aria-label="{label}" '
+                        f'title="{label}"><span class="plus" aria-hidden="true"></span></button>')
     options = "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in f["people"])
     options += "".join(f'<option value="{e(n)}">{e(tr("msg.my_agent", name=n))}</option>' for n in f["agents"])
     if options:
@@ -257,9 +306,9 @@ def _side(tr: Translator, person: Any, f: dict[str, Any]) -> str:
                  f'{options}</select><div class="row"><button class="btn primary">{e(tr("msg.start_private"))}</button>'
                  f'<button type="button" class="btn" data-dismiss>{e(tr("nav.cancel"))}</button></div></form>')
     return (f'<nav id="side" class="column" aria-label="{e(tr("nav.places"))}"><div class="side-inner">'
-            f'{_project_head(f, _repo_link(tr, f["repo"]))}'
+            f'{_project_head(tr, f, _repo_link(tr, f["repo"]))}'
             f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.channels"))}</h2>{plus_channel}</div>'
-            f'{new_channel}<ul id="side-channels" class="side-list">{channels}</ul></section>'
+            f'<ul id="side-channels" class="side-list">{channels}</ul></section>'
             f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.private"))}</h2>{plus_private}</div>'
             f'{start}<ul id="side-private" class="side-list">{"".join(private)}</ul></section>'
             f'</div></nav>')
@@ -284,7 +333,7 @@ def _explorer(tr: Translator, f: dict[str, Any]) -> str:
              f'<button type="button" id="local-forget" class="quiet-btn" hidden>{e(tr("local.forget"))}</button>'
              f'<p id="local-note" class="explorer-note" role="status"></p></div>')
     return (f'<aside id="explorer" class="column explorer" aria-label="{e(tr("files.explorer"))}"><div class="side-inner">'
-            f'{_project_head(f, ref)}'
+            f'{_project_head(tr, f, ref)}'
             f'<div id="source-switch" class="source-switch" role="group" aria-label="{e(tr("files.source"))}">{sources}</div>'
             f'{local}'
             f'<div class="explorer-filter"><input id="explorer-filter" type="search" placeholder="{label}" aria-label="{label}" '
@@ -374,21 +423,99 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
     return layout(tr, tr("join.title"), body, person)
 
 
-def members(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any],
-            permissions: list[str], management: Iterable[str]) -> tuple[str, int]:
-    """Members and groups. The list of groups (#groups) and the chosen entry (#group-detail, named by ?g= in the
-    address) are drawn by members.js from the members API, starting from the answer embedded here; the form to make
-    a group (#group-create) is here only for a person who may manage groups, offering only what they hold."""
+# The sections of the settings layer, under their small headings: (scope -> ((heading, (section, ...)), ...)).
+SETTINGS = {"project": (("set.group.project", ("overview",)), ("set.group.people", ("members", "groups", "invites"))),
+            "channel": (("set.group.channel", ("overview", "notifications", "pins")),)}
+
+
+def settings_sections(scope: str, can_invite: bool) -> list[str]:
+    """The sections a member may open: every member reads members and groups; invitations are for who may invite."""
+    return [x for _, xs in SETTINGS[scope] for x in xs if x != "invites" or can_invite]
+
+
+def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scope: str, section: str,
+             view: dict[str, Any], permissions: list[str], management: Iterable[str],
+             channel: dict[str, Any] | None = None) -> tuple[str, int]:
+    """Project settings (scope "project") and one channel's settings (scope "channel") as one full-page layer over
+    the frame: the list of sections (#settings-nav) on the left, the section on the right, the close control
+    (#settings-close, also Escape) at the top right. `section` "" is the bare address: the first section on a wide
+    screen, the list of sections on a narrow one. settings.js switches sections in place (each has its address),
+    draws members, groups, mutes and pins from the JSON API starting from `view` (/api/members), and closes the layer
+    back to the page it was opened from. Groups keep the elements of the former members page (#groups,
+    #group-detail, #group-create for who may create groups)."""
+    slug = frame["slug"]
     mine = view["me"]["permissions"]
+    sections = settings_sections(scope, frame["can_admin"])
+    base = f"/{q(slug)}/settings" if scope == "project" else channel_settings_href(slug, channel["name"])
+    current = section or sections[0]
+    nav = []
+    for heading, names in SETTINGS[scope]:
+        rows = []
+        for x in names:
+            if x in sections:
+                cur = ' aria-current="page"' if x == section else ""
+                rows.append(f'<li><a class="place" href="{e(base)}/{x}" data-section="{x}"{cur}>{e(tr("set." + x))}</a></li>')
+        nav.append(f'<h2 class="settings-heading">{e(tr(heading))}</h2><ul class="side-list">{"".join(rows)}</ul>')
+    what = frame["name"] if scope == "project" else "#" + channel["name"]
+    title = tr("set.project_title") if scope == "project" else tr("set.channel_title", name=channel["name"])
+    parts = {}
+    if scope == "project":
+        parts["overview"] = (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name">{e(frame["name"])}</dd>'
+                             f'<dt>{e(tr("set.repo"))}</dt><dd>{_repo_link(tr, frame["repo"])}</dd></dl>'
+                             f'<p class="dim">{e(tr("set.overview_readonly"))}</p>')
+        parts["members"] = (f'<p class="dim">{e(tr("mem.all_hint"))}</p>'
+                            f'<div class="set-filter"><input id="members-filter" type="search" placeholder="{e(tr("mem.filter_members"))}" '
+                            f'aria-label="{e(tr("mem.filter_members"))}" autocomplete="off" spellcheck="false"></div>'
+                            f'<div id="members-table"></div>')
+        parts["groups"] = _groups_section(tr, mine, permissions)
+        if "invites" in sections:
+            parts["invites"] = (f'<p class="dim">{e(tr("admin.invite_hint"))}</p>'
+                                f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
+                                f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login" autocomplete="off"></label>'
+                                f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
+                                f'<p><code class="out" data-out></code></p></form>')
+    else:
+        name = channel["name"]
+        parts["overview"] = (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name mono">#{e(name)}</dd></dl>'
+                             f'<p class="dim">{e(tr("set.channel_readonly"))}</p>')
+        boxes = [(tr("msg.mute_me"), "", channel["muted"])]
+        boxes += [(tr("msg.mute_agent", name=a), a, a in channel["agent_mutes"]) for a in frame["agents"]]
+        rows = "".join(f'<div class="perm-row"><input type="checkbox" id="mute-{i}" data-mute="{e(a)}"{" checked" if on else ""}>'
+                       f'<label class="perm-text" for="mute-{i}"><span class="perm-name">{e(label)}</span>'
+                       f'<span class="out" aria-live="polite"></span></label></div>'
+                       for i, (label, a, on) in enumerate(boxes))
+        parts["notifications"] = f'<p class="dim">{e(tr("set.notify_hint"))}</p><div class="perm-list">{rows}</div>'
+        parts["pins"] = (f'<p class="dim">{e(tr("set.pins_hint"))}</p>'
+                         f'<div id="set-pins" data-can-pin="{"1" if frame["can_create"] else ""}"></div>')
+    body_secs = "".join(
+        f'<section class="set-sec" data-section="{x}" aria-labelledby="set-h-{x}"{"" if x == current else " hidden"}>'
+        f'<h1 id="set-h-{x}" class="page-title set-title">{e(tr("set." + x))}</h1>{parts[x]}</section>' for x in sections)
+    close = e(tr("set.close"))
+    data = {"slug": slug, "scope": scope, "section": section, "base": base, "view": view, "catalogue": permissions,
+            "management": sorted(management), **({"channel": channel["name"]} if channel else {})}
+    body = (f'<div id="settings-layer" class="settings-layer{" at-list" if not section else ""}" {_attrs(data)}>'
+            f'<nav id="settings-nav" class="settings-nav" aria-label="{e(tr("set.sections"))}"><div class="settings-nav-inner">'
+            f'<p class="settings-for">{e(what)}</p>{"".join(nav)}</div></nav>'
+            f'<div class="settings-main"><div class="settings-bar">{open_button(tr)}'
+            f'<a id="settings-back" class="btn quiet settings-back" href="{e(base)}">{e(tr("set.back"))}</a>'
+            f'<span class="spacer"></span><div class="settings-close">'
+            f'<button type="button" id="settings-close" class="icon-btn" aria-label="{close}" title="{close}" '
+            f'aria-keyshortcuts="Escape"><span class="cross" aria-hidden="true"></span></button>'
+            f'<span class="esc" aria-hidden="true">{e(tr("set.esc"))}</span></div></div>'
+            f'<div class="settings-body">{body_secs}</div></div></div>')
+    return layout(tr, title, body, person, frame, "settings", header="", page_class="settings-page",
+                  scripts=["people.js", "settings.js"])
+
+
+def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:
+    """Groups, as a list with a filter and "new group" (#groups); a chosen group (?g= in the address) is drawn in
+    #group-detail, with the list as a middle column. The form to make a group (#group-create) is here only for a
+    person who may manage groups, offering only what they hold."""
     can_make = "manage_groups" in mine
-    data = {"slug": frame["slug"], "view": view, "catalogue": permissions, "management": sorted(management)}
-    plus = ""
+    plus = create = ""
     if can_make:
-        plus = (f'<button type="button" id="group-create-open" class="icon-btn small" aria-controls="group-create" '
-                f'aria-expanded="false" aria-label="{e(tr("mem.new_group"))}" title="{e(tr("mem.new_group"))}">'
-                f'<span class="plus" aria-hidden="true"></span></button>')
-    create = ""
-    if can_make:
+        plus = (f'<button type="button" id="group-create-open" class="btn" aria-controls="group-create" '
+                f'aria-expanded="false"><span class="plus" aria-hidden="true"></span>{e(tr("mem.new_group"))}</button>')
         boxes = "".join(
             f'<label class="perm-row"><input type="checkbox" name="perm" value="{e(p)}">'
             f'<span class="perm-text"><span class="perm-name">{e(tr("perm." + p))}</span>'
@@ -401,12 +528,13 @@ def members(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view:
                   f'<div class="row"><button class="btn primary">{e(tr("mem.create"))}</button>'
                   f'<button type="button" class="btn" data-dismiss>{e(tr("mem.cancel"))}</button>'
                   f'<span class="out" data-out aria-live="polite"></span></div></form>')
-    body = (f'<div id="members-root" class="groups-page" {_attrs(data)}>'
-            f'<nav id="groups" class="groups-list" aria-labelledby="groups-title"><div class="groups-head">'
-            f'<h2 id="groups-title">{e(tr("mem.list_label"))}</h2>{plus}</div><div id="groups-body"></div></nav>'
+    label = e(tr("mem.filter"))
+    return (f'<div id="groups-root" class="groups-page">'
+            f'<nav id="groups" class="groups-list" aria-label="{e(tr("mem.list_label"))}"><div class="groups-head">'
+            f'<input id="groups-filter" type="search" placeholder="{label}" aria-label="{label}" autocomplete="off" '
+            f'spellcheck="false">{plus}</div><div id="groups-body"></div></nav>'
             f'<div class="group-main">{create}<section id="group-detail" class="group-detail" tabindex="-1"></section></div>'
             f'</div>')
-    return layout(tr, tr("members.title"), body, person, frame, "members", scripts=["members.js"])
 
 
 def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], groups: dict[str, dict[str, Any]],
@@ -505,41 +633,55 @@ def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str,
     return layout(tr, tr("consent.title"), body, person)
 
 
-def admin(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tuple[str, int]:
-    """The project's settings: what belongs to neither a member nor a group (invitations). Members and groups are
-    managed on the members page."""
-    slug = frame["slug"]
-    body = (f'<section class="block"><h2>{e(tr("admin.invite"))}</h2><p class="muted">{e(tr("admin.invite_hint"))}</p>'
-            f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
-            f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login"></label>'
-            f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
-            f'<p><code class="out" data-out></code></p></form></section>'
-            f'<p class="muted block"><a href="/{e(q(slug))}/members">{e(tr("admin.members_moved"))}</a></p>')
-    return layout(tr, tr("admin.title"), f'<div class="prose">{body}</div>', person, frame, "admin")
-
-
 def _gone(tr: Translator, api: str, kind: str, name: str, label: str) -> str:
     """A button whose act cannot be undone: it opens the floating confirmation (base.js), where `name` is typed."""
     return (f'<form class="inline" data-api="{api}" data-gone="{e(kind)}" data-gone-name="{e(name)}">'
             f'<button class="btn">{e(label)}</button><span class="out" data-out></span></form>')
 
 
+def _tool(tr: Translator, ident: str, icon: str, label_key: str, attrs: str, inner: str = "") -> str:
+    """An icon button of the channel bar: its name for screen readers and as its tooltip."""
+    label = e(tr(label_key))
+    return (f'<button type="button" id="{ident}" class="icon-btn tool" aria-label="{label}" title="{label}" {attrs}>'
+            f'{glyph(icon)}{inner}</button>')
+
+
+def _right_head(tr: Translator, ident: str, title_key: str, close_key: str, close_cls: str) -> str:
+    return (f'<div class="task-head"><h2 id="{ident}-title">{e(tr(title_key))}</h2>'
+            f'<span id="{ident}-summary" class="dim small"></span><span class="spacer"></span>'
+            f'<button type="button" class="icon-btn {close_cls}" aria-label="{e(tr(close_key))}" title="{e(tr(close_key))}">'
+            f'<span class="cross" aria-hidden="true"></span></button></div>')
+
+
 def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:
-    """The messages page: the chosen place in the middle, the task table on the right. The navigation's lists are
-    the frame's (frame.js); the page scripts (messages.js, tasks.js) keep the rest current through the JSON API.
-    What the scripts need is in data- attributes."""
-    data = {"slug": frame["slug"], "me": person["name"], "agents": frame["agents"], "agent-mutes": view["agent_mutes"]}
+    """The messages page: the channel bar (the place's name, which opens its settings or the other member's card;
+    the pins, the task table, the member list and the search field), the chosen place in the middle, and the right
+    column showing one thing at a time (the task table, the member list, search results). The navigation's lists
+    are the frame's (frame.js); the page scripts keep the rest current through the JSON API (messages.js, tasks.js,
+    people.js, search.js; right.js decides what the right column shows). What the scripts need is in data-
+    attributes."""
+    data = {"slug": frame["slug"], "me": person["name"]}
+    search = e(tr("srch.label"))
+    tools = (_tool(tr, "pins-toggle", "pin", "bar.pins", 'aria-haspopup="dialog" aria-expanded="false" aria-controls="pins"',
+                   '<span id="pins-count" class="tool-count" hidden></span>')
+             + _tool(tr, "task-toggle", "tasks", "bar.tasks", 'aria-expanded="false" aria-controls="task-panel"')
+             + _tool(tr, "members-toggle", "members", "bar.members", 'aria-expanded="false" aria-controls="member-panel"')
+             + f'<div class="search-box" role="search">{glyph("search", 16)}'
+               f'<span id="search-chip" class="search-chip" hidden><span class="search-chip-text"></span>'
+               f'<button type="button" id="search-chip-x" class="chip-x"><span class="cross" aria-hidden="true"></span></button></span>'
+               f'<input id="search-input" type="search" placeholder="{e(tr("srch.placeholder"))}" aria-label="{search}" '
+               f'role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-suggest" '
+               f'autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="300">'
+               f'<ul id="search-suggest" class="search-suggest" role="listbox" aria-label="{e(tr("srch.suggest"))}" hidden></ul>'
+               f'</div>')
     header = (f'<header class="page-head room-head">{open_button(tr)}'
               f'{fold_button(tr, "chat", "side", "nav.places", "side-toggle")}'
-              f'<h1 id="place-title" class="page-title place-title"></h1>'
-              f'<span class="spacer"></span>'
-              f'<button type="button" id="settings-toggle" class="btn quiet" aria-expanded="false" aria-controls="settings">'
-              f'{e(tr("msg.settings"))}</button>'
-              f'<button type="button" id="task-toggle" class="btn quiet" aria-expanded="true" aria-controls="task-panel">'
-              f'{e(tr("task.toggle_hide"))}</button></header>')
+              f'<h1 id="place-title" class="page-title place-title"><button type="button" id="place-button" class="place-btn">'
+              f'</button></h1><span class="spacer"></span>'
+              f'<div class="room-tools" role="group" aria-label="{e(tr("bar.tools"))}">{tools}</div></header>')
     room = (f'<div id="chat" class="room" {_attrs(data)}>'
-            f'<div id="settings" class="settings" hidden></div>'
-            f'<div id="pins" class="pins" data-can-pin="{"1" if frame["can_create"] else ""}" hidden></div>'
+            f'<div id="pins" class="pins-pop" role="dialog" aria-label="{e(tr("pin.list_label"))}" tabindex="-1" '
+            f'data-can-pin="{"1" if frame["can_create"] else ""}" popover="manual" hidden></div>'
             f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
             f'{e(tr("msg.older"))}</button></div>'
             f'<ol id="messages" class="messages" aria-live="polite"></ol></div>'
@@ -549,15 +691,22 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
             f'placeholder="{e(tr("msg.input_hint"))}"></textarea>'
             f'<button class="btn primary send">{e(tr("msg.send"))}</button></div>'
             f'<div class="out composer-out" id="composer-out" aria-live="polite"></div></form></div>')
-    panel = (f'<aside id="task-panel" class="task-panel" aria-labelledby="task-title" '
+    tasks = (f'<aside id="task-panel" class="task-panel right-panel" aria-labelledby="task-title" hidden '
              f'data-can-edit="{"1" if view["can_edit_tasks"] else ""}">'
              f'<div class="task-head"><h2 id="task-title">{e(tr("task.title"))}</h2><span id="task-summary" class="dim small"></span>'
-             f'<span class="spacer"></span><button type="button" id="task-close" class="icon-btn" aria-label="{e(tr("task.close"))}">'
-             f'<span class="cross" aria-hidden="true"></span></button></div><div id="task-body" class="task-body"></div></aside>')
-    return layout(tr, tr("msg.title"), room + panel, person, frame, "messages", header=header, page_class="room-page",
-                  styles=["vendor/katex/katex.min.css"],
-                  scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js",
-                           "vendor/katex/katex.min.js", "render.js", "paths.js", "messages.js", "tasks.js"])
+             f'<span class="spacer"></span><button type="button" id="task-close" class="icon-btn right-close" '
+             f'aria-label="{e(tr("task.close"))}"><span class="cross" aria-hidden="true"></span></button></div>'
+             f'<div id="task-body" class="task-body"></div></aside>')
+    people = (f'<aside id="member-panel" class="task-panel right-panel" aria-labelledby="member-title" hidden>'
+              f'{_right_head(tr, "member", "people.title", "people.close", "right-close")}'
+              f'<div id="member-body" class="task-body member-body"></div></aside>')
+    found = (f'<aside id="search-results" class="task-panel right-panel" aria-labelledby="search-title" hidden>'
+             f'{_right_head(tr, "search", "srch.title", "srch.close", "search-close")}'
+             f'<div id="search-body" class="task-body search-body" aria-live="polite"></div></aside>')
+    return layout(tr, tr("msg.title"), room + tasks + people + found, person, frame, "messages", header=header,
+                  page_class="room-page", styles=["vendor/katex/katex.min.css"],
+                  scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
+                           "render.js", "paths.js", "right.js", "people.js", "messages.js", "tasks.js", "search.js"])
 
 
 VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), ("split", "files.view_split"))

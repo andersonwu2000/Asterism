@@ -1,7 +1,9 @@
 // The places of a project on every page of it (Asterism.side): /api/channels on the pages' rhythm (the rail counts
-// what is important from it; the messages page reads the places), the presence marks from /api/members, and in chat
-// the second column (#side) with its channels (#side-channels) and private conversations (#side-private), and the
-// forms to create a channel and to start a private conversation. The rail and the drawer are rail.js's.
+// what is important from it; the messages page reads the places), the members from /api/members (the presence marks,
+// the member list, the profile cards), and in chat the second column (#side) with its channels (#side-channels) and
+// private conversations (#side-private), the form to start a private conversation, and each channel's gear and menu
+// (right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its settings, create a
+// channel). The rail and the drawer are rail.js's; the project menu is project.js's.
 "use strict";
 (function () {
   var A = window.Asterism, rail = document.getElementById("rail"), side = document.getElementById("side");
@@ -15,10 +17,14 @@
   var S = A.side = {
     places: null,                     // what /api/channels answered last
     directory: A.parseJSON(rail.dataset.directory, {}),   // name -> {kind, online, owner}
+    members: null,                    // what /api/members answered last
     current: null,                    // the place open on the messages page
-    listeners: []
+    listeners: [], memberListeners: []
   };
+  var PERMS = A.parseJSON(rail.dataset.perms, []);
+  A.can = function (perm) { return PERMS.indexOf(perm) >= 0; };
   S.onChange = function (fn) { S.listeners.push(fn); if (S.places) fn(S.places); };
+  S.onMembers = function (fn) { S.memberListeners.push(fn); if (S.members) fn(S.members); };
   S.setCurrent = function (place) { S.current = place; draw(true); };
 
   // ------------------------------------------------------------------ the lists
@@ -55,8 +61,13 @@
     }
   }
 
+  function settingsHref(name) {
+    return "/" + encodeURIComponent(SLUG) + "/channels/" + encodeURIComponent(name) + "/settings";
+  }
+  S.settingsHref = settingsHref;
+
   function item(place, inner, unread, important, muted) {
-    var li = make("li"), a = make("a", "place" + (unread && !muted ? " unread" : "") + (muted ? " muted" : ""));
+    var li = make("li", "place-row"), a = make("a", "place" + (unread && !muted ? " unread" : "") + (muted ? " muted" : ""));
     a.href = hrefOf(place);
     a.dataset.place = place;
     a.dataset.key = "place:" + place;
@@ -64,6 +75,15 @@
     inner.forEach(function (n) { a.appendChild(n); });
     counts(a, unread, important, muted);
     li.appendChild(a);
+    if (place.charAt(0) === "#") {
+      var gear = make("a", "place-gear"), label = t("chan.gear", {place: place});
+      gear.href = settingsHref(place.slice(1));
+      gear.setAttribute("aria-label", label);
+      gear.title = label;
+      gear.dataset.key = "gear:" + place;
+      gear.appendChild(A.glyph("gear"));
+      li.appendChild(gear);
+    }
     return li;
   }
 
@@ -118,21 +138,29 @@
     return S.places;
   };
 
-  async function loadMembers() {
+  var membersRaw = "";
+  S.loadMembers = async function () {
     var r = await A.request(API + "members");
-    if (!r.ok) return;
+    if (!r.ok) return S.members;
+    var raw = JSON.stringify(r.data);
+    if (raw === membersRaw) return S.members;
+    membersRaw = raw;
     var d = {};
     (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person"}; });
     (r.data.agents || []).forEach(function (a) { d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy}; });
     S.directory = d;
+    S.members = r.data;
     draw(false);
-  }
+    S.memberListeners.forEach(function (fn) { fn(S.members); });
+    return S.members;
+  };
 
   setInterval(S.refresh, PLACES_EVERY_MS);
-  setInterval(loadMembers, MEMBERS_EVERY_MS);
+  setInterval(S.loadMembers, MEMBERS_EVERY_MS);
   S.refresh();
+  S.loadMembers();
 
-  // ------------------------------------------------------------------ creating a channel, starting a conversation
+  // ------------------------------------------------------------------ starting a private conversation
 
   function reveal(button, show) {
     var form = document.getElementById(button.getAttribute("aria-controls"));
@@ -161,21 +189,6 @@
     window.location.href = hrefOf(place);
   }
 
-  var newChannel = document.getElementById("new-channel");
-  if (newChannel) {
-    newChannel.addEventListener("submit", async function (ev) {
-      ev.preventDefault();
-      var input = newChannel.elements.name, out = newChannel.querySelector("[data-out]");
-      var r = await A.request(API + "channels", null, {name: input.value.trim().replace(/^#/, "")});
-      if (!r.ok) { out.textContent = A.errorText(r.data.error); return; }
-      out.textContent = "";
-      input.value = "";
-      newChannel.hidden = true;
-      side.querySelector('[aria-controls="new-channel"]').setAttribute("aria-expanded", "false");
-      await S.refresh();
-      go("#" + r.data.name);
-    });
-  }
   var newPrivate = document.getElementById("new-private");
   if (newPrivate) {
     newPrivate.addEventListener("submit", function (ev) {
@@ -186,4 +199,71 @@
     });
   }
 
+  // ------------------------------------------------------------------ a channel's menu
+  //
+  // The outcome of an act (copied, a refusal) is said on the row for a moment (DESIGN: interaction).
+
+  function channelOf(a) {
+    var p = S.places && S.places.channels.filter(function (c) { return "#" + c.name === a.dataset.place; })[0];
+    return p || null;
+  }
+
+  function sayOnRow(place, text) {
+    var a = side.querySelector('a.place[data-place="' + place.replace(/["\\]/g, "\\$&") + '"]');
+    if (!a) return;
+    var note = make("span", "note row-said", text);
+    note.setAttribute("role", "status");
+    a.appendChild(note);
+    setTimeout(function () { note.remove(); }, 2500);
+  }
+
+  async function markRead(name) {
+    var r = await A.request(API + "messages", {"in": "#" + name, limit: 1});
+    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.refused", r.data)); return; }
+    var msgs = r.data.messages || [], last = msgs.length ? msgs[msgs.length - 1].id : 0;
+    if (last) {
+      var done = await A.request(API + "read", null, {"in": "#" + name, upto: last});
+      if (!done.ok) { sayOnRow("#" + name, A.refusal("chan.refused", done.data)); return; }
+    }
+    await S.refresh();
+  }
+
+  async function mute(name, muted) {
+    var r = await A.request(API + "channels/" + encodeURIComponent(name) + "/mute", null, {muted: muted});
+    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.refused", r.data)); return; }
+    await S.refresh();
+  }
+
+  function channelMenu(a, where) {
+    var c = channelOf(a);
+    if (!c) return;
+    var name = c.name, place = "#" + name;
+    var items = [
+      {label: t("chan.mark_read"), disabled: !c.unread, run: function () { markRead(name); }},
+      {label: t(c.muted ? "chan.unmute" : "chan.mute"), run: function () { mute(name, !c.muted); }},
+      {label: t("chan.copy"), run: async function () {
+        var ok = await A.copy(window.location.origin + hrefOf(place));
+        sayOnRow(place, t(ok ? "chan.copied" : "chan.copy_failed"));
+      }},
+      {label: t("chan.settings"), href: settingsHref(name)}];
+    if (A.can("create_channel") && A.project) {
+      items.push({separator: true}, {label: t("chan.new"), run: function () { A.project.act("new-channel", a); }});
+    }
+    A.menu(Object.assign({label: t("chan.acts", {place: place})}, where), items, a);
+  }
+
+  if (side && lists.channels) {
+    lists.channels.addEventListener("contextmenu", function (ev) {
+      var a = ev.target.closest && ev.target.closest("a.place[data-place]");
+      if (!a) return;
+      ev.preventDefault();
+      channelMenu(a, {x: ev.clientX, y: ev.clientY});
+    });
+    lists.channels.addEventListener("keydown", function (ev) {
+      var a = ev.target.closest && ev.target.closest("a.place[data-place]");
+      if (!a || !(ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey))) return;
+      ev.preventDefault();
+      channelMenu(a, {anchor: a});
+    });
+  }
 })();

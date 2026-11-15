@@ -102,9 +102,21 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - Every page of a project has the same frame: the **rail**, a fixed narrow column on the far left, then the mode's
   **second column**, then the page.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, files, scheduled messages, members and groups, my agents, project settings (only for who may). No divider
-  between them. At its foot the theme switch and the reader (sign-out is reached from there). The current one is
-  the current place; hover washes the glyph's tile only, so the word never jumps.
+  chat, files, scheduled messages, my agents. No divider between them. At its foot the theme switch and the reader
+  (sign-out is reached from there). The current one is the current place; hover washes the glyph's tile only, so
+  the word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
+- **The project menu.** The project's name on top of the second column (both modes) is a button with a chevron; it
+  opens the project's menu under it: invite people, invite an agent of mine, project settings, create channel, my
+  agents, each only for who may use it. Beside the name, an icon for inviting people (for who may). What these acts
+  ask for (a login, a channel's name) is asked in one floating panel over the dimmed page, which Escape and a click
+  outside close; the answer (a link with its copy control) shows in that panel.
+- **Settings are one full-page layer** over the frame (the rail stays): the project's settings (overview; people:
+  members, groups, invitations) and one channel's (overview, notifications, pins) look the same. A list of sections
+  under small headings on the left, the section on the right, and at the top right a round close control with
+  "Esc" under it; Escape closes, back to the page it was opened from, else chat. Each section has its own address.
+  Groups are a list with a filter and "new group"; a chosen group shows the list as a middle column and the group in
+  tabs (name, permissions, members). Below 900 px the layer is the whole screen and its list of sections is a page
+  of its own, each section with a way back to it.
 - Chat and files are **modes**; the other pages are just pages. Outside chat, the chat button carries the count of
   messages important for the reader as the inverted pill; in chat it carries nothing, the second column says it.
 - The second column belongs to the mode: in chat the project, its channels and private conversations; in files the
@@ -116,9 +128,23 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
   formulas, pictures, a PDF) may use the whole area; the message list uses the room it has.
-- On the messages page the **task table** sits on the right and can be folded away.
+- **The channel bar** (the messages page's header): the button that folds the second column at the far left; the
+  place's name as a button (a channel's opens its settings, a private conversation's the other member's profile
+  card); then, at the right, icon buttons with names and tooltips in a fixed order: pins (with their count; they
+  open in a popover), task table, member list; then the search field at the far right. In a channel the search
+  starts limited to it, shown as a removable chip in the field. A channel's row in the second column shows a gear
+  for its settings on hover and focus.
+- **The right column shows one thing at a time**, or nothing: the task table, the member list (people, then agents
+  online and offline), or search results (newest first, the words marked by weight and a wash, never by hue). Its
+  buttons in the channel bar show or hide their panel; which one is open is remembered per project. Search results
+  take it while a search is shown and give back what was there.
+- **A profile card** is a small popover by the name it was opened from (in a message, the member list, the task
+  table): name, kind, presence, groups as chips (× and + for who may change them), an agent's tasks, and the acts
+  mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus goes
+  back to the name.
 - Below 900 px the rail and the mode's second column live together in a drawer opened from the page's header; the
-  fold buttons are gone there, and the task table opens over the messages. Nothing scrolls sideways at 360 px.
+  fold buttons are gone there, and the right column is a sheet over the messages that starts closed. Nothing
+  scrolls sideways at 360 px.
 - Lists that update (messages, tasks, schedules, the explorer) never move what the reader is looking at: new things
   arrive at the end, and an editor that is open survives a refresh.
 
@@ -157,10 +183,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   shown next to the control that was used, not in a banner.
 - What can be done to a message or a task appears on hover and on keyboard focus of its row; on a touch screen it is
   always there. Nothing is reachable by hover alone.
-- **Right click is never the only way.** The menu of an entry (a file or folder in the explorer, a tab) opens by right
-  click, by the context-menu key or Shift+F10 on the focused row, and by a small control on the row (on hover and
-  focus; always on a touch screen). It is one menu for the whole page: arrow keys move, Escape, Tab or a click
-  outside close it, and the focus goes back where it was. A list behind an item (the channels to pin to) opens in
+- **Right click is never the only way.** The menu of an entry (a file or folder in the explorer, a tab, a channel,
+  a member's name, a group) opens by right click, by the context-menu key or Shift+F10 on the focused row, and by a
+  control that does the same (the row's small control, the channel's gear and its settings, the member's card).
+  It is one menu for the whole page: arrow keys move, Escape, Tab or a click outside close it, and the focus goes
+  back where it was. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
+  box, not by hue. A list behind an item (the channels to pin to) opens in
   its place with a way back, not as a second floating box.
 - The outcome of a menu's act (copied, pinned, the server's refusal) is said on the row it acted on, for a moment.
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape

@@ -918,6 +918,56 @@ def person_messages(pj: Project, me: Member, where: Any, before: Any, after: Any
     return {"messages": views(pj, rows, me), "read": _read_position(pj, me, place)}
 
 
+SEARCH_DEFAULT, SEARCH_MAX = 25, 100
+
+
+def _fold(text: Any) -> Any:
+    """Text compared without regard to case (Unicode case folding, not only ASCII as SQLite's LIKE)."""
+    return text.casefold() if isinstance(text, str) else text
+
+
+def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any, limit: Any) -> dict[str, Any]:
+    """The messages `me` may read (every channel, and the private conversations `me` is part of) whose text holds
+    every word of `q` without regard to case, in the place `where` names (as resolve_place) and from the member
+    named `sender` (or 'system'), older than the message `before`; newest first, at most `limit` (1 to 100) and
+    whether there are more."""
+    words = [_fold(w) for w in q.split()] if isinstance(q, str) else []
+    where = where if isinstance(where, str) and where.strip() else None
+    sender = sender if isinstance(sender, str) and sender.strip() else None
+    if not words and where is None and sender is None:
+        raise bad_request("empty_search", "Give words to look for (q), a place (in) or a sender (from).")
+    n = _int(limit, "limit")
+    n = SEARCH_DEFAULT if n is None else n
+    if not 1 <= n <= SEARCH_MAX:
+        raise bad_request("bad_request", f"limit is 1 to {SEARCH_MAX}.")
+    older = _int(before, "before")
+    # A channel, or a private place whose two member keys include mine.
+    sql = ("SELECT * FROM messages WHERE (substr(place, 1, 1) = '#' OR "
+           "(substr(place, 1, 2) = 'p:' AND instr('|' || substr(place, 3) || '|', ?) > 0))")
+    args: list[Any] = [f"|{me.key}|"]
+    if where is not None:
+        place, _ = resolve_place(pj, me, where)
+        sql += " AND place = ?"
+        args.append(place)
+    if sender == "system":
+        sql += " AND sender_kind = 'system'"
+    elif sender is not None:
+        who = member_by_name(pj, sender)
+        if who is None:
+            raise not_found(f"There is no member '{sender}'.")
+        sql += " AND sender_kind = ? AND sender_id = ?"
+        args += [who.kind, who.id]
+    if older is not None:
+        sql += " AND id < ?"
+        args.append(older)
+    if words:
+        pj.db.create_function("asterism_fold", 1, _fold, deterministic=True)
+        sql += "".join(" AND instr(asterism_fold(text), ?) > 0" for _ in words)
+        args += words
+    rows = pj.db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, n + 1)).fetchall()
+    return {"results": views(pj, rows[:n], me), "more": len(rows) > n}
+
+
 def mark_read(pj: Project, me: Member, where: Any, upto: Any) -> dict[str, Any]:
     place, _ = resolve_place(pj, me, where)
     n = _int(upto, "upto", required=True)

@@ -1,7 +1,9 @@
-// The messages page, middle column: the chosen place's header, its pins, its messages and the composer.
-// It speaks only the project's JSON API (/api/messages, /api/read, mute, pins) and asks for news every few seconds;
-// the places (and their unread counts) come from the frame (frame.js, Asterism.side), the text rendering from
-// render.js, the task table on the right from tasks.js. All texts come from the page's message catalogue.
+// The messages page, middle column: the chosen place's name in the channel bar (a channel's opens its settings, a
+// private conversation's the other member's card), its pins (a popover from the bar), its messages and the composer.
+// It speaks only the project's JSON API (/api/messages, /api/read, pins) and asks for news every few seconds; the
+// places (and their unread counts) come from the frame (frame.js, Asterism.side), the text rendering from render.js,
+// the right column from right.js, tasks.js, people.js and search.js. Asterism.chat lets the others put a mention
+// into the composer and open a place at one message. All texts come from the page's message catalogue.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -10,21 +12,19 @@
   var t = A.t, make = A.make;
 
   var SLUG = root.dataset.slug;
-  var AGENTS = A.parseJSON(root.dataset.agents, []);
-  var AGENT_MUTES = A.parseJSON(root.dataset.agentMutes, {});
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000;
   var LANG = document.documentElement.lang || undefined;
   var DOT = " · ";
 
   var el = {
-    title: document.getElementById("place-title"), list: document.getElementById("messages"),
+    title: document.getElementById("place-button"), list: document.getElementById("messages"),
     scroll: document.getElementById("scroller"),
-    older: document.getElementById("older"), settings: document.getElementById("settings"),
-    settingsToggle: document.getElementById("settings-toggle"), form: document.getElementById("composer"),
+    older: document.getElementById("older"), form: document.getElementById("composer"),
     text: document.getElementById("text"), out: document.getElementById("composer-out"),
     reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel"),
-    pins: document.getElementById("pins")
+    pins: document.getElementById("pins"), pinsToggle: document.getElementById("pins-toggle"),
+    pinsCount: document.getElementById("pins-count")
   };
   var CAN_PIN = !!(el.pins && el.pins.dataset.canPin);
   var state = {place: null, first: 0, last: 0, replyTo: null, places: {channels: [], "private": []}, busy: false};
@@ -259,7 +259,8 @@
     }
 
     var meta = make("div", "meta");
-    meta.appendChild(make("span", "from", senderName(m)));
+    meta.appendChild(m.from_kind === "system" || !A.people ? make("span", "from", senderName(m))
+                                                           : A.people.nameButton(m.from, "from name-btn"));
     if (m.from_kind === "agent") meta.appendChild(make("span", "tag", agentTag(m.from)));
     if (m.scheduled) {
       var sch = make("span", "tag", t("msg.scheduled"));
@@ -363,10 +364,36 @@
     target.tabIndex = -1;
     target.focus({preventScroll: true});
     target.classList.add("flash");
-    setTimeout(function () { target.classList.remove("flash"); }, 1500);
+    clearTimeout(target._flash);
+    target._flash = setTimeout(function () { target.classList.remove("flash"); }, 1500);
   }
 
+  // The channel bar's name: a channel's opens its settings; a private conversation's the other member's card
+  // (people.js, by data-member).
+  function drawTitle(place) {
+    var b = el.title;
+    b.textContent = place;
+    if (isChannel(place)) {
+      delete b.dataset.member;
+      b.removeAttribute("aria-haspopup");
+      b.setAttribute("aria-label", t("bar.channel_settings", {place: place}));
+    } else {
+      b.dataset.member = place;
+      b.setAttribute("aria-haspopup", "dialog");
+      b.setAttribute("aria-label", t("bar.profile", {name: place}));
+    }
+    b.title = b.getAttribute("aria-label");
+  }
+  el.title.addEventListener("click", function () {
+    if (isChannel(state.place) && A.project) A.project.openSettings(A.side.settingsHref(state.place.slice(1)));
+  });
+
+  var target = null;                      // a message to open the next place at (Asterism.chat.openAt)
+  var opened = [];                        // what wants to know when a place is opened (Asterism.chat.onOpen)
+
   async function open(place) {
+    var at = target;
+    target = null;
     state.place = place;
     if (A.rail) A.store.set(A.rail.chatPlaceKey, place);
     state.first = 0;
@@ -375,20 +402,23 @@
     known.clear();
     el.list.textContent = "";
     el.out.textContent = "";
-    el.title.textContent = isChannel(place) ? place : t("msg.private_with", {name: place});
+    drawTitle(place);
+    opened.forEach(function (fn) { fn(place); });
+    document.title = place + DOT + (document.title.split(DOT).slice(-1)[0] || "");
     A.side.setCurrent(place);
-    drawSettings();
     drawPins();
     state.busy = true;
     try {
-      var r = await get("messages", {"in": place, limit: PAGE});
+      // At one message: the messages up to it and after it; otherwise the newest.
+      var r = await get("messages", at ? {"in": place, before: at + 1, limit: PAGE} : {"in": place, limit: PAGE});
+      var after = at && r.ok ? await get("messages", {"in": place, after: at, limit: PAGE}) : null;
       if (place !== state.place) return;
       if (!r.ok) { el.out.textContent = A.errorText(r.data.error); return; }
       var msgs = r.data.messages || [];
-      append(msgs);
+      append(msgs.concat(after && after.ok ? after.data.messages || [] : []));
       showEmpty();
       el.older.hidden = msgs.length < PAGE;
-      toBottom();
+      if (at) await jumpTo(at); else toBottom();
       takeMention();
       await markRead();
       await loadPlaces();
@@ -397,17 +427,34 @@
     }
   }
 
-  // Files mode's "mention in chat" leaves a path here: it goes into the composer, unsent.
-  function takeMention() {
-    if (!A.rail) return;
-    var text = A.store.take(A.rail.mentionKey);
-    if (typeof text !== "string" || !text) return;
+  // Text put into the composer, unsent, after what is there; the focus goes to its end.
+  function insert(text) {
     var v = el.text.value;
     el.text.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
     grow();
     el.text.focus();
     el.text.setSelectionRange(el.text.value.length, el.text.value.length);
   }
+
+  // Files mode's "mention in chat" leaves a path here: it goes into the composer, unsent.
+  function takeMention() {
+    if (!A.rail) return;
+    var text = A.store.take(A.rail.mentionKey);
+    if (typeof text === "string" && text) insert(text);
+  }
+
+  A.chat = {
+    place: function () { return state.place; },
+    onOpen: function (fn) { opened.push(fn); if (state.place) fn(state.place); },
+    // "@name " into the composer (the profile card's and the member menu's "mention").
+    mention: function (name) { insert("@" + name + " "); },
+    // Open `place` at the message `id` (a search result): scrolled to and marked for a moment.
+    openAt: function (place, id) {
+      if (place === state.place && document.getElementById("m-" + id)) { jumpTo(id); return; }
+      target = id;
+      if (placeFromHash() === place) open(place); else window.location.hash = encodeURIComponent(place);
+    }
+  };
 
   async function news() {
     if (!state.place || state.busy) return;
@@ -477,55 +524,14 @@
     toBottom();
   }
 
-  // ------------------------------------------------------------------ channel settings
-
-  function settingBox(label, checked, agent) {
-    var div = make("div", "check"), lab = make("label"), box = make("input"), out = make("span", "out");
-    box.type = "checkbox";
-    box.checked = !!checked;
-    lab.append(box, document.createTextNode(" " + label));
-    div.append(lab, document.createTextNode(" "), out);
-    box.addEventListener("change", async function () {
-      var name = state.place.slice(1), body = {muted: box.checked};
-      if (agent) body.agent = agent;
-      var r = await post("channels/" + encodeURIComponent(name) + "/mute", body);
-      if (!r.ok) { box.checked = !box.checked; out.textContent = A.errorText(r.data.error); return; }
-      out.textContent = t("msg.saved");
-      if (agent) {
-        var list = (AGENT_MUTES[name] || []).filter(function (a) { return a !== agent; });
-        if (box.checked) list.push(agent);
-        AGENT_MUTES[name] = list;
-      } else {
-        await loadPlaces();
-      }
-    });
-    return div;
-  }
-
-  function drawSettings() {
-    el.settings.textContent = "";
-    if (!isChannel(state.place)) {
-      el.settings.appendChild(make("p", "muted", t("msg.settings_private")));
-      return;
-    }
-    var name = state.place.slice(1);
-    var ch = state.places.channels.filter(function (c) { return c.name === name; })[0];
-    el.settings.setAttribute("aria-label", t("msg.place_settings", {place: state.place}));
-    el.settings.appendChild(settingBox(t("msg.mute_me"), ch && ch.muted, null));
-    AGENTS.forEach(function (a) {
-      el.settings.appendChild(settingBox(t("msg.mute_agent", {name: a}), (AGENT_MUTES[name] || []).indexOf(a) >= 0, a));
-    });
-  }
-
   // ------------------------------------------------------------------ pins
   //
-  // One line under the header: a channel's pins, oldest first, as /api/channels gives them, and "all" which opens
-  // the whole list under it. A file opens in files mode; a message jumps to that message (loading older
-  // ones when needed). A person who may pin (data-can-pin) pins a file by its path in the list and a message with
-  // the act on the message, and removes either. Redrawn only when it changed, and never while a path is typed.
-  // Private conversations have no pins.
+  // #pins-toggle in the channel bar carries the number of a channel's pins (as /api/channels gives them, oldest
+  // first) and opens them in a popover (#pins): a file opens in files mode, a message is scrolled to (loading older
+  // ones when needed). "Manage" leads to the channel settings' pins, where files are pinned and pins removed; a
+  // person who may pin (data-can-pin) pins a message with the act on the message. Private conversations have none.
 
-  var pinsShown = "", pinsOpen = false;
+  var pinsShown = "";
 
   function currentPins() {
     if (!isChannel(state.place)) return null;
@@ -536,123 +542,73 @@
 
   function pinText(p) { return "#" + p.message + " " + (p.from || "") + ": " + p.text; }
 
-  function pinLink(p, cls) {
+  function pinLink(p) {
     var link;
     if (p.kind === "file") {           // a file pin opens in files mode
-      link = make("a", cls ? cls + " file" : "", p.path);
+      link = make("a", "pin-link file", p.path);
       link.href = A.fileHref(SLUG, p.path);
       link.title = t("pin.file_hint");
     } else {
-      link = A.button(cls || "link-btn", null, function () { jumpTo(p.message); });
+      link = A.button("pin-link", null, function () { A.popup.close(false); jumpTo(p.message); });
       link.appendChild(make("span", "", pinText(p)));
       link.title = t("pin.message_hint");
     }
+    link.dataset.key = "pin:" + p.id;
     return link;
   }
 
-  function pinItem(p) {
-    var li = make("li");
-    li.appendChild(pinLink(p, ""));
-    li.appendChild(make("span", "pin-by", t("pin.by", {name: p.by})));
-    if (CAN_PIN) {
-      var x = A.button("icon-btn small", null, async function () {
-        var r = await post("channels/" + encodeURIComponent(state.place.slice(1)) + "/pins/" + p.id + "/remove", {});
-        if (!r.ok) { pinOut(r.data); return; }
-        await loadPlaces();
-      });
-      x.appendChild(make("span", "cross"));
-      x.firstChild.setAttribute("aria-hidden", "true");
-      x.title = t("pin.remove");
-      x.dataset.key = "unpin:" + p.id;
-      x.setAttribute("aria-label", t("pin.remove_label", {what: p.kind === "file" ? p.path : "#" + p.message}));
-      li.appendChild(x);
-    }
-    return li;
-  }
-
-  function pinOut(data, out) {
-    out = out || el.pins.querySelector(".pins-panel .out");
-    if (out) out.textContent = A.refusal("pin.refused", data);
-  }
-
-  function setPinsOpen(open, refocus) {
-    pinsOpen = open;
-    pinsShown = "";
-    drawPins();
-    var more = el.pins.querySelector(".pins-more");
-    if (refocus && more) more.focus();
-    if (open) {
-      var first = el.pins.querySelector(".pins-panel input, .pins-panel a, .pins-panel button");
-      if (first) first.focus();
-    }
-  }
-
   function drawPins() {
-    if (!el.pins) return;
-    var list = currentPins();
-    var input = el.pins.querySelector("input");
-    if (input && input.value && document.activeElement === input) return;
-    var key = JSON.stringify([state.place, list, pinsOpen]);
+    if (!el.pins || !el.pinsToggle) return;
+    var list = currentPins(), n = list ? list.length : 0;
+    el.pinsToggle.hidden = list === null;
+    el.pinsCount.hidden = !n;
+    el.pinsCount.textContent = String(n);
+    var label = n ? t("bar.pins_n", {n: n}) : t("bar.pins");
+    el.pinsToggle.setAttribute("aria-label", label);
+    el.pinsToggle.title = label;
+    if (list === null && A.popup.isOpen(el.pins)) A.popup.close(false);
+    var key = JSON.stringify([state.place, list]);
     if (key === pinsShown) return;
     pinsShown = key;
-    el.pins.hidden = list === null || (!list.length && !CAN_PIN);
-    if (el.pins.hidden) { el.pins.textContent = ""; return; }
+    if (list !== null) fillPins(list);
+  }
+
+  function fillPins(list) {
     A.keepFocus(el.pins, function () {
       el.pins.textContent = "";
-      var bar = make("div", "pins-bar"), chips = make("div", "pins-chips");
-      bar.appendChild(make("span", "pins-label", t("pin.title")));
+      el.pins.appendChild(make("h2", "pins-title", t("pin.list_label")));
+      if (!list.length) el.pins.appendChild(make("p", "pins-none", t("pin.none")));
+      var ul = make("ul", "pins-list");
       list.forEach(function (p) {
-        var chip = pinLink(p, "pin-chip");
-        chip.dataset.key = "pin:" + p.id;
-        chips.appendChild(chip);
+        var li = make("li");
+        li.append(pinLink(p), make("span", "pin-by", t("pin.by", {name: p.by})));
+        ul.appendChild(li);
       });
-      if (!list.length) chips.appendChild(make("span", "pins-none", t("pin.none")));
-      bar.appendChild(chips);
-      var more = A.button("btn quiet pins-more", list.length ? t("pin.all", {n: list.length}) : t("pin.manage"),
-                          function () { setPinsOpen(!pinsOpen, false); });
-      more.dataset.key = "pins-more";
-      more.setAttribute("aria-expanded", String(pinsOpen));
-      more.setAttribute("aria-controls", "pins-panel");
-      bar.appendChild(more);
-      el.pins.appendChild(bar);
-      if (!pinsOpen) return;
-      var panel = make("div", "pins-panel");
-      panel.id = "pins-panel";
-      panel.setAttribute("role", "region");
-      panel.setAttribute("aria-label", t("pin.list_label"));
-      var ul = make("ul");
-      list.forEach(function (p) { ul.appendChild(pinItem(p)); });
-      panel.appendChild(ul);
-      if (CAN_PIN) {
-        var form = make("form", "pin-add"), path = make("input"), out = make("span", "out");
-        path.name = "path";
-        path.maxLength = 300;
-        path.required = true;
-        path.placeholder = t("pin.path");
-        path.dataset.key = "pin-path";
-        path.setAttribute("aria-label", t("pin.path"));
-        var btn = make("button", "btn", t("pin.add_file"));
-        form.append(path, btn, out);
-        form.addEventListener("submit", function (ev) {
-          ev.preventDefault();
-          if (path.value.trim()) addPin({path: path.value}, out);
-        });
-        panel.appendChild(form);
-      }
-      panel.addEventListener("keydown", function (ev) {
-        if (ev.key === "Escape") { ev.stopPropagation(); setPinsOpen(false, true); }
-      });
-      el.pins.appendChild(panel);
+      if (list.length) el.pins.appendChild(ul);
+      var manage = make("a", "btn quiet pins-manage", t("bar.pins_manage"));
+      manage.href = A.side.settingsHref(state.place.slice(1)) + "/pins";
+      manage.dataset.key = "pins-manage";
+      el.pins.appendChild(manage);
+    });
+    if (A.popup.isOpen(el.pins)) A.popup.place();
+  }
+
+  if (el.pinsToggle) {
+    el.pinsToggle.addEventListener("click", function () {
+      if (A.popup.isOpen(el.pins)) { A.popup.close(true); return; }
+      var list = currentPins();
+      if (list === null) return;
+      fillPins(list);
+      A.popup.open(el.pins, el.pinsToggle, {align: "end"});
     });
   }
 
+  // A message pinned with its act; the outcome is said at the message.
   async function addPin(body, out) {
     if (!isChannel(state.place)) return;
     var r = await post("channels/" + encodeURIComponent(state.place.slice(1)) + "/pins", body);
-    if (!r.ok) { pinOut(r.data, out); return; }
+    if (!r.ok) { if (out) out.textContent = A.refusal("pin.refused", r.data); return; }
     if (out) out.textContent = "";
-    var input = el.pins.querySelector("input");
-    if (input) input.value = "";
     await loadPlaces();
   }
 
@@ -671,11 +627,6 @@
   el.form.addEventListener("submit", function (ev) { ev.preventDefault(); send(); });
   el.replyCancel.addEventListener("click", function () { setReply(null); el.text.focus(); });
   el.older.addEventListener("click", loadOlder);
-  el.settingsToggle.addEventListener("click", function () {
-    el.settings.hidden = !el.settings.hidden;
-    el.settingsToggle.setAttribute("aria-expanded", String(!el.settings.hidden));
-    if (!el.settings.hidden) drawSettings();
-  });
   window.addEventListener("hashchange", function () { open(placeFromHash()); });
   // Coming back to this tab from files mode with a mention waiting.
   window.addEventListener("focus", takeMention);

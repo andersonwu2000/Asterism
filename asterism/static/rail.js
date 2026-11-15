@@ -109,7 +109,10 @@
   if (closer) closer.addEventListener("click", function () { closeDrawer(true); });
   scrim.addEventListener("click", function () { closeDrawer(true); });
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && shown && !ev.defaultPrevented) closeDrawer(true);
+    if (ev.key === "Escape" && shown && !ev.defaultPrevented) {
+      ev.preventDefault();               // the Escape is spent: it does not also close what is under the drawer
+      closeDrawer(true);
+    }
   });
   // Choosing a place, a page or a file closes it.
   nav.addEventListener("click", function (ev) {

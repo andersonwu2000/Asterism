@@ -187,7 +187,7 @@ def page_error(request: Request, e: ApiError, person=None) -> Response:
 
 
 def can_admin(pj: Project, actor: Actor) -> bool:
-    """The settings page holds the invitations to the project; members and groups are on the members page."""
+    """Who may invite people: the project menu's invitation and the settings' invitations section."""
     return "manage_members" in projects.permissions(pj, actor)
 
 
@@ -626,6 +626,14 @@ async def api_messages(request: Request) -> Any:
     return messaging.person_messages(pj, me, q.get("in"), q.get("before"), q.get("after"), q.get("limit"))
 
 
+async def api_search(request: Request) -> Any:
+    """Search over the messages the person may read (people only; agents have no such tool)."""
+    pj, actor, me = member_self(request, request.path_params["slug"])
+    projects.require(pj, actor, "read", "Searching messages needs the read permission.")
+    q = request.query_params
+    return messaging.search(pj, me, q.get("q"), q.get("in"), q.get("from"), q.get("before"), q.get("limit"))
+
+
 async def api_post(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     b = await body_json(request)
@@ -851,6 +859,7 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
             "places": places,
             "important": sum(c["important"] for c in places["channels"]) + sum(p["important"] for p in places["private"]),
             "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
+            "perms": [p for p in projects.PERMISSIONS if p in mine],
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
                                                          (actor.person_id,))],
             "agents": [r["name"] for r in pj.db.execute("SELECT name FROM agents WHERE person_id = ? ORDER BY name",
@@ -870,8 +879,7 @@ async def messages_page(request: Request) -> Response:
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
-    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor),
-            "agent_mutes": messaging.agent_mutes(pj, actor.person_id)}
+    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view))
 
 
@@ -891,17 +899,49 @@ async def schedules_page(request: Request) -> Response:
     return html(pages.schedules(tr_for(request), person, _frame(pj, actor), view))
 
 
-async def members_page(request: Request) -> Response:
+def _settings(request: Request, scope: str, section: str, channel: str | None = None) -> Response:
+    """The settings layer (project or one channel) at `section` ("" for the bare address). Every member may open
+    it; the invitations are for who may invite, and an unknown section or channel is not found."""
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
+    frame = _frame(pj, actor)
     try:
         view = projects.members_view(pj, actor)
+        if section and section not in pages.settings_sections(scope, True):
+            raise ApiError(404, "not_found", "")
+        if section and section not in pages.settings_sections(scope, frame["can_admin"]):
+            raise ApiError(403, "forbidden", "")
+        here = None
+        if channel is not None:
+            here = next((c for c in frame["places"]["channels"] if c["name"] == channel), None)
+            if here is None:
+                raise ApiError(404, "not_found", "")
+            here = {"name": channel, "muted": here["muted"],
+                    "agent_mutes": messaging.agent_mutes(pj, actor.person_id).get(channel, [])}
     except ApiError as e:
         return page_error(request, e, person)
-    return html(pages.members(tr_for(request), person, _frame(pj, actor), view, projects.PERMISSIONS,
-                              projects.MANAGEMENT))
+    return html(pages.settings(tr_for(request), person, frame, scope, section, view, projects.PERMISSIONS,
+                               projects.MANAGEMENT, here))
+
+
+async def settings_page(request: Request) -> Response:
+    return _settings(request, "project", request.path_params.get("section", ""))
+
+
+async def channel_settings_page(request: Request) -> Response:
+    return _settings(request, "channel", request.path_params.get("section", ""), request.path_params["name"])
+
+
+async def members_page(request: Request) -> Response:
+    """The former members page: the settings layer at members, or at groups when the address names one (?g=)."""
+    return _settings(request, "project", "groups" if request.query_params.get("g") else "members")
+
+
+async def admin_page(request: Request) -> Response:
+    """The former settings page: the settings layer at the invitations."""
+    return _settings(request, "project", "invites")
 
 
 async def my_page(request: Request) -> Response:
@@ -929,16 +969,6 @@ async def files_page(request: Request) -> Response:
                             int(config.get().files_max_mb * 1024 * 1024)))
     page.headers["Content-Security-Policy"] = FILES_CSP
     return page
-
-
-async def admin_page(request: Request) -> Response:
-    ctx = _page_context(request, request.path_params["slug"])
-    if isinstance(ctx, Response):
-        return ctx
-    person, pj, actor = ctx
-    if not can_admin(pj, actor):
-        return page_error(request, ApiError(403, "forbidden", ""), person)
-    return html(pages.admin(tr_for(request), person, _frame(pj, actor)))
 
 
 # --------------------------------------------------------------------------- guard middleware
@@ -1036,6 +1066,10 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/members", members_page),
         Route("/{slug}/my", my_page),
         Route("/{slug}/admin", admin_page),
+        Route("/{slug}/settings", settings_page),
+        Route("/{slug}/settings/{section}", settings_page),
+        Route("/{slug}/channels/{name}/settings", channel_settings_page),
+        Route("/{slug}/channels/{name}/settings/{section}", channel_settings_page),
         Route("/{slug}/schedules", schedules_page),
         Route("/{slug}/files", files_page),
         Route("/{slug}/files/{path:path}", files_page),
@@ -1063,6 +1097,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/messages", api(api_messages), methods=["GET"]),
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),
+        Route("/{slug}/api/search", api(api_search), methods=["GET"]),
         Route("/{slug}/api/files/list", api(api_files_list), methods=["GET"]),
         Route("/{slug}/api/files/raw/{path:path}", api_files_raw, methods=["GET"]),
         Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),
