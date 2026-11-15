@@ -44,20 +44,32 @@ def without_token_blocks(css: str) -> str:
 
 
 def test_every_page_of_a_project_has_the_same_frame(f):
-    for path in PAGES:
+    """A fixed rail on the far left holds the top-level buttons (chat, files, then the other pages); the second
+    column belongs to the mode: channels and private conversations in chat, the explorer in files, none elsewhere."""
+    for path in PAGES + ("/files",):
         page = f.alice.c.get(f"/{SLUG}{path}")
         assert page.status_code == 200, path
         html = page.text
-        assert 'id="side"' in html and 'id="side-channels"' in html and 'id="side-private"' in html, path
-        assert 'id="theme-toggle"' in html and 'id="side-open"' in html, path
+        for needed in ('id="rail"', 'id="rail-chat"', 'id="rail-files"', 'id="theme-toggle"', 'id="side-open"'):
+            assert needed in html, f"{path}: {needed}"
         assert '/static/app.css' in html, path
         assert "<style" not in html, f"{path}: styles live in the stylesheet, not in the page"
         head = html.split("</head>")[0]
         assert "data-theme" in head and "localStorage" in head, f"{path}: the theme is chosen before the first paint"
         assert head.index("data-theme") < head.index("/static/app.css"), f"{path}: the theme script comes before the stylesheet"
+        in_chat, in_files = path == "", path == "/files"
+        assert ('id="side-channels"' in html and 'id="side-private"' in html) == in_chat, f"{path}: channels belong to chat"
+        assert ('id="explorer"' in html) == in_files, f"{path}: the explorer belongs to files"
     messages = f.alice.c.get(f"/{SLUG}").text
     assert 'id="task-panel"' in messages and 'id="task-toggle"' in messages and 'id="pins"' in messages
-    assert 'id="side"' not in httpx.get(f.srv.url + "/", follow_redirects=True).text, "no project, no project navigation"
+    files = f.alice.c.get(f"/{SLUG}/files").text
+    for needed in ('id="explorer"', 'id="explorer-toggle"', 'id="file-tabs"', 'id="file-view"', 'id="view-switch"'):
+        assert needed in files, needed
+    deep = f.alice.c.get(f"/{SLUG}/files/notes/deep/MAP.md")
+    assert deep.status_code == 200 and 'id="file-view"' in deep.text, "a file has an address of its own"
+    assert f.alice.c.get(f"/{SLUG}/files/..%2f..%2fetc").status_code in (200, 400, 404)
+    assert 'id="rail"' not in httpx.get(f.srv.url + "/", follow_redirects=True).text, "no project, no rail"
+    assert httpx.get(f"{f.srv.url}/{SLUG}/files", follow_redirects=False).status_code in (302, 303, 401), "members only"
 
 
 def test_colours_come_only_from_the_tokens():
