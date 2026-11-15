@@ -1,10 +1,17 @@
-// Rendering a message's text safely (Asterism.renderText), for the messages page.
+// Rendering text safely: a message's text (Asterism.renderText) and a Markdown file of the repository
+// (Asterism.renderDoc).
 //
-// Message text is hostile input. It is rendered as Markdown with these rules: raw HTML in a message is shown
-// as text, Markdown images become plain links, and the HTML that Markdown produces goes through DOMPurify
-// with a strict allow-list (no scripts, no event attributes, no iframes/objects/forms/images, only http(s)
-// and mailto links, which open with rel="noopener noreferrer"). Mathematics ($...$, $$...$$) is taken out
-// before Markdown sees it and drawn by KaTeX (trust off) into elements this script creates.
+// Both are hostile input. They are rendered as Markdown with these rules: raw HTML is shown as text, and the HTML
+// that Markdown produces goes through DOMPurify with a strict allow-list (no scripts, no event attributes, no
+// iframes/objects/forms, only http(s) and mailto links, which open with rel="noopener noreferrer"). Mathematics
+// ($...$, $$...$$) is taken out before Markdown sees it and drawn by KaTeX (trust off) into elements this script
+// creates.
+// - In a message, images become plain links and nothing is loaded.
+// - In a file, links and images may also be relative: while DOMPurify still holds the document in its own inert
+//   copy, `opts.link(href)` turns a relative link into {href, path} (a file of the repository: no new tab, data-path
+//   marks it) or null (the link is dropped, its text stays), and `opts.image(src)` gives the address to load a
+//   relative picture from (the raw endpoint) or null (the picture becomes its alternative text). Nothing that is not
+//   rewritten so is ever loaded.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -15,38 +22,88 @@
       return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
     });
   }
+  function rawHtml(html) {                         // raw HTML is shown, never interpreted
+    return escapeHtml(typeof html === "string" ? html : (html && (html.raw || html.text)) || "");
+  }
   var md = new window.marked.Marked();
   md.use({
     gfm: true, breaks: true,
     renderer: {
-      html: function (html) {                    // raw HTML in a message is shown, never interpreted
-        return escapeHtml(typeof html === "string" ? html : (html && (html.raw || html.text)) || "");
-      },
+      html: rawHtml,
       image: function (href, title, text) {      // never load an image: show it as a link
         if (href && typeof href === "object") { text = href.text; href = href.href; }
         return '<a href="' + escapeHtml(href || "") + '">' + escapeHtml(text || href || "") + "</a>";
       }
     }
   });
+  var doc = new window.marked.Marked();
+  doc.use({
+    gfm: true, breaks: false,
+    renderer: {
+      html: rawHtml,
+      image: function (href, title, text) {
+        if (href && typeof href === "object") { text = href.text; href = href.href; }
+        return '<img src="' + escapeHtml(href || "") + '" alt="' + escapeHtml(text || "") + '">';
+      }
+    }
+  });
+  var TAGS = ["p", "br", "hr", "em", "strong", "del", "s", "code", "pre", "blockquote", "ul", "ol", "li",
+              "h1", "h2", "h3", "h4", "h5", "h6", "a", "table", "thead", "tbody", "tr", "th", "td"];
   var PURIFY = {
-    ALLOWED_TAGS: ["p", "br", "hr", "em", "strong", "del", "s", "code", "pre", "blockquote", "ul", "ol", "li",
-                   "h1", "h2", "h3", "h4", "h5", "h6", "a", "table", "thead", "tbody", "tr", "th", "td"],
+    ALLOWED_TAGS: TAGS,
     ALLOWED_ATTR: ["href", "title", "start", "align"],
     ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
     ALLOW_DATA_ATTR: false,
     RETURN_DOM_FRAGMENT: true
   };
+  var PURIFY_DOC = {
+    ALLOWED_TAGS: TAGS.concat(["img"]),
+    ALLOWED_ATTR: ["href", "title", "start", "align", "src", "alt"],
+    // http(s), mailto, or no scheme at all (relative); the hook below decides what a relative one becomes.
+    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|(?![a-z][a-z0-9+.\-]*:))/i,
+    ALLOW_DATA_ATTR: false,
+    RETURN_DOM_FRAGMENT: true
+  };
+  function external(v) { return /^(?:https?:|mailto:)/i.test(v); }
+
+  var rewrite = null;                            // the file's rules while a file is rendered, else null
   window.DOMPurify.addHook("afterSanitizeAttributes", function (node) {
     if (node.tagName === "A" && node.hasAttribute("href")) {
+      var href = node.getAttribute("href");
+      if (rewrite && !external(href)) {
+        var to = href.charAt(0) === "#" ? {href: href} : rewrite.link(href);
+        if (!to) { node.removeAttribute("href"); return; }
+        node.setAttribute("href", to.href);
+        if (to.path) node.setAttribute("data-path", to.path);
+        return;
+      }
       node.setAttribute("target", "_blank");
       node.setAttribute("rel", "noopener noreferrer");
+    }
+    if (node.tagName === "IMG") {
+      var src = node.getAttribute("src") || "", at = rewrite && !external(src) ? rewrite.image(src) : null;
+      if (at) {
+        node.setAttribute("src", at);
+        node.setAttribute("loading", "lazy");
+      } else {
+        // Never loaded: a picture elsewhere becomes a link to it, anything else its alternative text.
+        var alt = node.getAttribute("alt") || src;
+        var stand = node.ownerDocument.createElement(/^https?:/i.test(src) ? "a" : "span");
+        stand.textContent = alt;
+        if (stand.tagName === "A") {
+          stand.setAttribute("href", src);
+          stand.setAttribute("target", "_blank");
+          stand.setAttribute("rel", "noopener noreferrer");
+        }
+        node.replaceWith(stand);
+      }
     }
   });
   // Code first, so that a $ inside code stays code; then display and inline mathematics.
   var MATH_RE = /(```[\s\S]*?```|`[^`\n]*`)|\$\$([\s\S]+?)\$\$|\$(?![\s$])([^$\n]*?[^\s$\\])\$/g;
   var MARK_OPEN = "", MARK_CLOSE = "";     // private-use characters: never in a message's own text
 
-  A.renderText = function (text) {
+  function render(text, parser, config, cls) {
     var maths = [];
     var src = String(text).replace(MATH_RE, function (all, code, display, inline) {
       if (code) return all;
@@ -54,10 +111,17 @@
       return MARK_OPEN + (maths.length - 1) + MARK_CLOSE;
     });
     var box = document.createElement("div");
-    box.className = "text";
-    box.appendChild(window.DOMPurify.sanitize(md.parse(src, {async: false}), PURIFY));
+    box.className = cls;
+    box.appendChild(window.DOMPurify.sanitize(parser.parse(src, {async: false}), config));
     if (maths.length) drawMaths(box, maths);
     return box;
+  }
+
+  A.renderText = function (text) { return render(text, md, PURIFY, "text"); };
+
+  A.renderDoc = function (text, opts) {
+    rewrite = opts;
+    try { return render(text, doc, PURIFY_DOC, "text doc"); } finally { rewrite = null; }
   };
 
   function drawMaths(box, maths) {

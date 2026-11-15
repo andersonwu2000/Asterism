@@ -60,20 +60,7 @@
 
   // "my agents": the button that makes an agent invitation link, and what it answers. Each click makes a
   // new link and replaces what the previous one showed.
-  async function copy(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      try { await navigator.clipboard.writeText(text); return true; } catch (err) { /* fall back below */ }
-    }
-    var area = make("textarea", null, text);
-    area.setAttribute("readonly", "");
-    area.style.position = "fixed"; area.style.opacity = "0";
-    document.body.appendChild(area);
-    area.select();
-    var ok = false;
-    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
-    area.remove();
-    return ok;
-  }
+  var copy = A.copy;
 
   // A line with the text to copy and its copy button.
   function copyLine(text) {

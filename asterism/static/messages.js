@@ -271,6 +271,7 @@
     body.appendChild(meta);
 
     var box = A.renderText(m.text);
+    if (A.paths) A.paths.scan(box);
     body.appendChild(box);
     body.appendChild(clampable(li, box, m.id));
 
@@ -367,6 +368,7 @@
 
   async function open(place) {
     state.place = place;
+    if (A.rail) A.store.set(A.rail.chatPlaceKey, place);
     state.first = 0;
     state.last = 0;
     setReply(null);
@@ -387,11 +389,24 @@
       showEmpty();
       el.older.hidden = msgs.length < PAGE;
       toBottom();
+      takeMention();
       await markRead();
       await loadPlaces();
     } finally {
       state.busy = false;
     }
+  }
+
+  // Files mode's "mention in chat" leaves a path here: it goes into the composer, unsent.
+  function takeMention() {
+    if (!A.rail) return;
+    var text = A.store.take(A.rail.mentionKey);
+    if (typeof text !== "string" || !text) return;
+    var v = el.text.value;
+    el.text.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
+    grow();
+    el.text.focus();
+    el.text.setSelectionRange(el.text.value.length, el.text.value.length);
   }
 
   async function news() {
@@ -505,7 +520,7 @@
   // ------------------------------------------------------------------ pins
   //
   // One line under the header: a channel's pins, oldest first, as /api/channels gives them, and "all" which opens
-  // the whole list under it. A file opens its address in a new tab; a message jumps to that message (loading older
+  // the whole list under it. A file opens in files mode; a message jumps to that message (loading older
   // ones when needed). A person who may pin (data-can-pin) pins a file by its path in the list and a message with
   // the act on the message, and removes either. Redrawn only when it changed, and never while a path is typed.
   // Private conversations have no pins.
@@ -523,11 +538,9 @@
 
   function pinLink(p, cls) {
     var link;
-    if (p.kind === "file") {
+    if (p.kind === "file") {           // a file pin opens in files mode
       link = make("a", cls ? cls + " file" : "", p.path);
-      link.href = p.url;
-      link.target = "_blank";
-      link.rel = "noopener";
+      link.href = A.fileHref(SLUG, p.path);
       link.title = t("pin.file_hint");
     } else {
       link = A.button(cls || "link-btn", null, function () { jumpTo(p.message); });
@@ -664,6 +677,8 @@
     if (!el.settings.hidden) drawSettings();
   });
   window.addEventListener("hashchange", function () { open(placeFromHash()); });
+  // Coming back to this tab from files mode with a mention waiting.
+  window.addEventListener("focus", takeMention);
   setInterval(news, NEWS_EVERY_MS);
   loadPlaces().then(function () { open(placeFromHash()); });
 })();

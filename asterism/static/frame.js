@@ -1,20 +1,20 @@
-// The project's frame on every page of a project: the navigation (#side) with its channels (#side-channels) and
-// private conversations (#side-private), kept current from /api/channels on the pages' rhythm and the presence
-// marks from /api/members; the forms to create a channel and to start a private conversation; and below 900 px
-// the drawer that #side-open opens. The messages page reads the places through Asterism.side.
+// The places of a project on every page of it (Asterism.side): /api/channels on the pages' rhythm (the rail counts
+// what is important from it; the messages page reads the places), the presence marks from /api/members, and in chat
+// the second column (#side) with its channels (#side-channels) and private conversations (#side-private), and the
+// forms to create a channel and to start a private conversation. The rail and the drawer are rail.js's.
 "use strict";
 (function () {
-  var A = window.Asterism, side = document.getElementById("side");
-  if (!A || !side) return;
+  var A = window.Asterism, rail = document.getElementById("rail"), side = document.getElementById("side");
+  if (!A || !rail) return;
   var t = A.t, make = A.make;
-  var SLUG = side.dataset.slug, ME = side.dataset.me;
+  var SLUG = rail.dataset.slug, ME = rail.dataset.me;
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PLACES_EVERY_MS = 4000, MEMBERS_EVERY_MS = 15000;
   var lists = {channels: document.getElementById("side-channels"), "private": document.getElementById("side-private")};
 
   var S = A.side = {
     places: null,                     // what /api/channels answered last
-    directory: A.parseJSON(side.dataset.directory, {}),   // name -> {kind, online, owner}
+    directory: A.parseJSON(rail.dataset.directory, {}),   // name -> {kind, online, owner}
     current: null,                    // the place open on the messages page
     listeners: []
   };
@@ -77,6 +77,7 @@
   var drawn = "";
   function draw(force) {
     var p = S.places;
+    if (!side) return;
     if (!p) {                                         // before the first answer: only the current mark
       Array.prototype.forEach.call(side.querySelectorAll("a.place[data-place]"), function (a) {
         if (a.dataset.place === S.current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
@@ -145,7 +146,7 @@
       button.focus();
     }
   }
-  Array.prototype.forEach.call(side.querySelectorAll("[data-reveal]"), function (b) {
+  Array.prototype.forEach.call(side ? side.querySelectorAll("[data-reveal]") : [], function (b) {
     var form = document.getElementById(b.getAttribute("aria-controls"));
     b.addEventListener("click", function () { reveal(b, form.hidden); });
     form.addEventListener("keydown", function (ev) {
@@ -156,7 +157,7 @@
   });
 
   function go(place) {
-    closeDrawer(false);
+    if (A.rail) A.rail.closeDrawer(false);
     window.location.href = hrefOf(place);
   }
 
@@ -185,52 +186,4 @@
     });
   }
 
-  // ------------------------------------------------------------------ the drawer (below 900 px)
-  //
-  // The navigation slides over the page; the page behind is inert. It closes on Escape, on a click outside, and
-  // when a place is chosen; focus goes into it when it opens and back to the opener when it closes.
-
-  var opener = document.getElementById("side-open"), closer = document.getElementById("side-close");
-  var scrim = document.getElementById("side-scrim"), page = document.getElementById("page");
-  var narrow = window.matchMedia("(max-width: 899.98px)");
-  var shown = false;
-
-  function openDrawer() {
-    if (!narrow.matches) return;
-    shown = true;
-    document.body.classList.add("side-shown");
-    scrim.hidden = false;
-    page.inert = true;
-    if (opener) opener.setAttribute("aria-expanded", "true");
-    side.setAttribute("role", "dialog");
-    side.setAttribute("aria-modal", "true");
-    (closer || side).focus();
-  }
-  function closeDrawer(refocus) {
-    if (!shown) return;
-    shown = false;
-    document.body.classList.remove("side-shown");
-    scrim.hidden = true;
-    page.inert = false;
-    side.removeAttribute("role");
-    side.removeAttribute("aria-modal");
-    if (opener) {
-      opener.setAttribute("aria-expanded", "false");
-      if (refocus) opener.focus();
-    }
-  }
-  S.closeDrawer = closeDrawer;
-
-  if (opener) opener.addEventListener("click", openDrawer);
-  if (closer) closer.addEventListener("click", function () { closeDrawer(true); });
-  scrim.addEventListener("click", function () { closeDrawer(true); });
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && shown && !ev.defaultPrevented) closeDrawer(true);
-  });
-  side.addEventListener("click", function (ev) {
-    var a = ev.target.closest && ev.target.closest("a.place");
-    if (a) closeDrawer(false);
-  });
-  var onWidth = function () { if (!narrow.matches) closeDrawer(false); };
-  if (narrow.addEventListener) narrow.addEventListener("change", onWidth);
 })();

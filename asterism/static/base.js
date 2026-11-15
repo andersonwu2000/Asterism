@@ -1,5 +1,6 @@
 // What every page's scripts share (window.Asterism): the message catalogue (body data-msg), a JSON call, a small
-// element maker, the two-step confirmation in place, the floating confirmation of what cannot be undone, and the
+// element maker, the two-step confirmation in place, the floating confirmation of what cannot be undone, what the
+// browser keeps (A.store), copying, the addresses of the repository's files, the one popup menu (A.menu), and the
 // theme switch (#theme-toggle). Loaded first on every page.
 // This file holds no interface text: all of it comes from the catalogue.
 "use strict";
@@ -186,6 +187,240 @@
     g.go.disabled = true;
     g.dialog.showModal();
     g.input.focus();
+  };
+
+  // ------------------------------------------------------------------ small shared things
+
+  // What the browser keeps for this reader (localStorage, as JSON). It may be refused or full: then nothing is kept
+  // and the page goes on.
+  A.store = {
+    get: function (key, fallback) {
+      try {
+        var raw = localStorage.getItem(key);
+        return raw === null ? fallback : A.parseJSON(raw, fallback);
+      } catch (err) { return fallback; }
+    },
+    set: function (key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { /* kept for this page only */ }
+    },
+    take: function (key) {
+      var v = A.store.get(key, null);
+      try { localStorage.removeItem(key); } catch (err) { /* nothing kept */ }
+      return v;
+    }
+  };
+
+  // Copy a text; true when it was copied. A blocker may refuse the write.
+  A.copy = async function (text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (err) { /* fall back below */ }
+    }
+    var area = A.make("textarea", null, text);
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed"; area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+    area.remove();
+    return ok;
+  };
+
+  // ------------------------------------------------------------------ paths of the repository
+  //
+  // A path is folder and file names joined by "/", without empty, "." or ".." names, backslashes or control
+  // characters (the server's rule). Addresses built from a path go through the URL API, one encoded name at a time.
+
+  A.splitPath = function (raw) {
+    if (typeof raw !== "string" || !raw || raw.length > 4096 || /[\\\u0000-\u001f\u007f-\u009f]/.test(raw)) return null;
+    var segs = raw.split("/");
+    for (var i = 0; i < segs.length; i++) if (segs[i] === "" || segs[i] === "." || segs[i] === "..") return null;
+    return segs;
+  };
+
+  function under(slug, base, path) {
+    var u = new URL("/", window.location.origin);
+    u.pathname = "/" + encodeURIComponent(slug) + base + (path ? path.split("/").map(encodeURIComponent).join("/") : "");
+    return u;
+  }
+  // The address of a file in files mode, and of its bytes.
+  A.fileHref = function (slug, path) { return under(slug, "/files/", path).pathname; };
+  A.rawUrl = function (slug, path) { return under(slug, "/api/files/raw/", path).pathname; };
+  // The file or folder on GitHub, or null when the project's address is not a GitHub repository.
+  A.githubUrl = function (repo, ref, path, folder) {
+    var u;
+    try { u = new URL(repo); } catch (err) { return null; }
+    if (u.protocol !== "https:" || u.hostname.toLowerCase() !== "github.com") return null;
+    var segs = u.pathname.replace(/\/+$/, "").replace(/\.git$/, "").split("/").filter(Boolean);
+    if (segs.length !== 2) return null;
+    var out = new URL("https://github.com/");
+    var rest = path ? [folder ? "tree" : "blob", ref || "HEAD"].concat(path.split("/")) : [];
+    out.pathname = "/" + segs.concat(rest).map(function (s, i) { return i < 2 ? s : encodeURIComponent(s); }).join("/");
+    return out.href;
+  };
+
+  // ------------------------------------------------------------------ a menu
+  //
+  // One popup menu for the page: a list of commands (buttons) and destinations (links) moved through with the arrow
+  // keys, Home and End. It opens at a point (a right click) or under an element (its control, or a focused row),
+  // closes on Escape, Tab, a click outside or a choice, and gives the focus back to what opened it. An item with
+  // `items` opens a second list in its place, with a way back (ArrowLeft or the first item).
+  //   A.menu({label, x, y} | {label, anchor}, items, opener)
+  //   items: [{label, run: function () {}} | {label, href} | {label, items: [...]} | {separator: true}]
+
+  var menu = null;
+
+  function menuBox() {
+    if (menu) return menu;
+    var box = A.make("div", "menu");
+    box.setAttribute("role", "menu");
+    box.tabIndex = -1;
+    if (typeof box.showPopover === "function") box.setAttribute("popover", "manual");
+    document.body.appendChild(box);
+    menu = {box: box, open: false, opener: null, stack: []};
+    box.addEventListener("keydown", function (ev) {
+      var items = Array.prototype.slice.call(box.querySelectorAll("[role=menuitem]:not([aria-disabled=true])"));
+      var i = items.indexOf(document.activeElement);
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        var n = items.length;
+        if (n) items[i < 0 ? (ev.key === "ArrowDown" ? 0 : n - 1) : (i + (ev.key === "ArrowDown" ? 1 : n - 1)) % n].focus();
+      } else if (ev.key === "Home" || ev.key === "End") {
+        ev.preventDefault();
+        if (items.length) items[ev.key === "Home" ? 0 : items.length - 1].focus();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (menu.stack.length > 1) back(); else closeMenu(true);
+      } else if (ev.key === "ArrowLeft" && menu.stack.length > 1) {
+        ev.preventDefault();
+        back();
+      } else if (ev.key === "ArrowRight" && document.activeElement && document.activeElement.getAttribute("aria-haspopup")) {
+        ev.preventDefault();
+        document.activeElement.click();
+      } else if (ev.key === "Tab") {
+        closeMenu(false);
+      } else if (ev.key.length === 1 && /\S/.test(ev.key)) {        // type a letter: the next item starting with it
+        var k = ev.key.toLowerCase(), from = i + 1;
+        for (var j = 0; j < items.length; j++) {
+          var it = items[(from + j) % items.length];
+          if (it.textContent.trim().toLowerCase().indexOf(k) === 0) { it.focus(); break; }
+        }
+      }
+    });
+    document.addEventListener("pointerdown", function (ev) {
+      if (!menu.open || box.contains(ev.target)) return;
+      // A press on the control that opened it closes it, and the click that follows does not open it again.
+      menu.shut = menu.opener && menu.opener.contains && menu.opener.contains(ev.target) ? {by: menu.opener, at: Date.now()} : null;
+      closeMenu(false);
+    }, true);
+    window.addEventListener("blur", function () { if (menu.open) closeMenu(false); });
+    window.addEventListener("resize", function () { if (menu.open) closeMenu(false); });
+    return menu;
+  }
+
+  function closeMenu(refocus) {
+    if (!menu || !menu.open) return;
+    menu.open = false;
+    var hadFocus = menu.box.contains(document.activeElement);
+    if (menu.box.hasAttribute("popover")) {
+      try { menu.box.hidePopover(); } catch (err) { /* already hidden */ }
+    }
+    menu.box.classList.remove("shown");
+    var opener = menu.opener;
+    if (opener && opener.setAttribute && opener.hasAttribute("aria-expanded")) opener.setAttribute("aria-expanded", "false");
+    menu.opener = null;
+    if ((refocus || hadFocus) && opener && opener.isConnected) opener.focus({preventScroll: true});
+  }
+  A.closeMenu = closeMenu;
+
+  function fill(list) {
+    var box = menu.box;
+    box.textContent = "";
+    list.forEach(function (it) {
+      if (it.separator) {
+        var sep = A.make("div", "menu-sep");
+        sep.setAttribute("role", "separator");
+        box.appendChild(sep);
+        return;
+      }
+      var el;
+      if (it.href) {
+        el = A.make("a", "menu-item", it.label);
+        el.href = it.href;
+        if (it.external) { el.target = "_blank"; el.rel = "noopener noreferrer"; }
+        el.addEventListener("click", function () { closeMenu(false); });
+      } else {
+        el = A.button("menu-item" + (it.back ? " menu-back" : ""), it.label, function () {
+          if (it.disabled) return;
+          if (it.back) { back(); return; }
+          if (it.items) { open(it.items, it.label); return; }
+          var run = it.run;
+          closeMenu(true);
+          if (run) run();
+        });
+      }
+      el.setAttribute("role", "menuitem");
+      el.tabIndex = -1;
+      if (it.disabled) el.setAttribute("aria-disabled", "true");
+      if (it.items) {
+        el.setAttribute("aria-haspopup", "menu");
+        el.appendChild(A.make("span", "menu-more"));
+        el.lastChild.setAttribute("aria-hidden", "true");
+      }
+      if (it.mono) el.classList.add("mono");
+      box.appendChild(el);
+    });
+    var first = box.querySelector("[role=menuitem]:not([aria-disabled=true])");
+    (first || box).focus({preventScroll: true});
+  }
+
+  function open(list, label) {
+    menu.stack.push(list);
+    fill([{label: A.t("files.back"), back: true}, {separator: true}].concat(list));
+    if (label) menu.box.setAttribute("aria-label", label);
+    place();
+  }
+  function back() {
+    menu.stack.pop();
+    menu.box.setAttribute("aria-label", menu.label);
+    fill(menu.stack[menu.stack.length - 1]);
+    place();
+  }
+
+  function place() {
+    var box = menu.box, at = menu.at, w = box.offsetWidth, h = box.offsetHeight;
+    var vw = document.documentElement.clientWidth, vh = window.innerHeight, x = at.x, y = at.y;
+    if (x + w > vw - 8) x = Math.max(8, (at.right !== undefined ? at.right : vw) - w);
+    if (y + h > vh - 8) y = Math.max(8, (at.top !== undefined ? at.top : y) - h);
+    box.style.left = Math.max(8, x) + "px";
+    box.style.top = Math.max(8, y) + "px";
+  }
+
+  A.menu = function (where, items, opener) {
+    var m = menuBox();
+    if (m.shut && m.shut.by === opener && Date.now() - m.shut.at < 600) { m.shut = null; return; }
+    if (m.open) closeMenu(false);
+    m.opener = opener || document.activeElement;
+    m.label = where.label || "";
+    m.box.setAttribute("aria-label", m.label);
+    if (where.anchor) {
+      var r = where.anchor.getBoundingClientRect();
+      m.at = {x: r.left, y: r.bottom + 2, right: r.right, top: r.top - 2};
+    } else {
+      m.at = {x: where.x, y: where.y};
+    }
+    m.stack = [items];
+    m.open = true;
+    m.box.style.left = "0px";
+    m.box.style.top = "0px";
+    m.box.classList.add("shown");
+    if (m.box.hasAttribute("popover")) {
+      try { m.box.showPopover(); } catch (err) { /* shown by the class */ }
+    }
+    if (m.opener && m.opener.hasAttribute && m.opener.hasAttribute("aria-expanded")) m.opener.setAttribute("aria-expanded", "true");
+    fill(items);
+    place();
   };
 
   // Put the focus back on the element of `box` with the same data-key after `box` was redrawn.

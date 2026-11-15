@@ -53,7 +53,8 @@
     var li = make("li", "task" + (task.assigned_by ? " locked" : ""));
     var line = make("div", "tline");
     line.appendChild(make("span", "tid", "#" + task.id));
-    line.appendChild(make("span", "ttext", task.text));
+    var text = line.appendChild(make("span", "ttext", task.text));
+    if (A.paths) A.paths.scan(text);
     if (task.assigned_by) line.appendChild(make("span", "tag", t("task.locked", {name: task.assigned_by})));
     li.appendChild(line);
     var out = make("div", "out");

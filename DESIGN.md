@@ -12,7 +12,9 @@ settled; where it is silent, choose the quieter option.
 - Identity and state are separate channels: identity is shape and size, state is brightness and fill. Never mix the
   two in one mark.
 - Two exceptions, and only these:
-  - **Code and mathematics** keep whatever colour their renderer gives them.
+  - **Code and mathematics** keep whatever colour their renderer gives them. Code is the one sanctioned use of
+    hue: the source view's tokenizers colour keywords, declared names, types, strings, numbers and attributes with
+    the six muted `--color-syn-*` tokens (defined for both ends like every token); comments are `--color-ink-dim`.
   - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. Nothing else is red:
     not errors, not warnings, not "remove" before it is armed.
 
@@ -44,6 +46,12 @@ The tokens (dark end first, then light):
 | `--color-ink-faint` | `#67696f` | `#85878e` | marks and rules only: too quiet for a sentence |
 | `--color-loud` | `#f4f5f8` | `#101014` | what asks for the reader: the ground of an inverted pill |
 | `--color-destruct` | `#a33a35` | `#a33a35` | the one red |
+| `--color-syn-keyword` | `#de8e9f` | `#a33e52` | code: keywords, TeX commands |
+| `--color-syn-name` | `#8ab6dd` | `#2f6392` | code: declared names |
+| `--color-syn-type` | `#82c0ae` | `#1f7a63` | code: types and sorts, TeX environments |
+| `--color-syn-string` | `#a6c18b` | `#4c7333` | code: strings, TeX labels and citations |
+| `--color-syn-number` | `#d5ac7c` | `#8a5b1f` | code: numbers |
+| `--color-syn-attr` | `#b3a0cf` | `#6a4fa3` | code: attributes, TeX math delimiters |
 
 Depth is stepped surface lightness, never a shadow.
 
@@ -91,14 +99,40 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ## Layout
 
-- Every page of a project has the same frame: the **navigation** on the left (the project, its channels, private
-  conversations, then the other pages, then the reader), the page in the middle, and on the messages page the
-  **task table** on the right, which the reader can fold away.
-- The middle column of a reading page is at most 880 px wide; the message list uses the room it has.
-- Below 900 px the navigation becomes a drawer opened from the page's header, and the task table opens over the
-  messages instead of beside them. Nothing scrolls sideways at 360 px.
-- Lists that update (messages, tasks, schedules) never move what the reader is looking at: new things arrive at the
-  end, and an editor that is open survives a refresh.
+- Every page of a project has the same frame: the **rail**, a fixed narrow column on the far left, then the mode's
+  **second column**, then the page.
+- The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
+  chat, files, scheduled messages, members and groups, my agents, project settings (only for who may). No divider
+  between them. At its foot the theme switch and the reader (sign-out is reached from there). The current one is
+  the current place; hover washes the glyph's tile only, so the word never jumps.
+- Chat and files are **modes**; the other pages are just pages. Outside chat, the chat button carries the count of
+  messages important for the reader as the inverted pill; in chat it carries nothing, the second column says it.
+- The second column belongs to the mode: in chat the project, its channels and private conversations; in files the
+  explorer; on the other pages there is none. A button at the start of the page's header folds it away on a wide
+  screen, remembered per mode, applied before the first paint. The control lives outside the column, so it is
+  always reachable.
+- Each mode remembers its place: the chat button returns to the place last open, files reopens its tabs.
+- **Files use the whole page.** Browsing, reading and (later) editing files never sit beside the chat; the rail
+  switches between them.
+- Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
+  formulas, pictures, a PDF) may use the whole area; the message list uses the room it has.
+- On the messages page the **task table** sits on the right and can be folded away.
+- Below 900 px the rail and the mode's second column live together in a drawer opened from the page's header; the
+  fold buttons are gone there, and the task table opens over the messages. Nothing scrolls sideways at 360 px.
+- Lists that update (messages, tasks, schedules, the explorer) never move what the reader is looking at: new things
+  arrive at the end, and an editor that is open survives a refresh.
+
+### Files mode
+
+- **The explorer chooses; the tab strip says what is open.** One tab per open file, its name with the full path as
+  its title. The strip scrolls sideways and never wraps: a second row would make the order and the current tab hard
+  to follow. The current tab is lifted to the document's surface and underlined, not told by brightness alone.
+- At the strip's far right, and nothing else there: the view switch (rendered, source, both side by side) and "open
+  on GitHub", as icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
+  hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
+  already say which file it is.
+- Source is in the mono voice with line numbers, not wrapped; a long line scrolls inside its block.
+- What the server cannot show (too large, not text) is one sentence and one link, where the document would be.
 
 ## Interaction
 
@@ -106,6 +140,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   shown next to the control that was used, not in a banner.
 - What can be done to a message or a task appears on hover and on keyboard focus of its row; on a touch screen it is
   always there. Nothing is reachable by hover alone.
+- **Right click is never the only way.** The menu of an entry (a file or folder in the explorer, a tab) opens by right
+  click, by the context-menu key or Shift+F10 on the focused row, and by a small control on the row (on hover and
+  focus; always on a touch screen). It is one menu for the whole page: arrow keys move, Escape, Tab or a click
+  outside close it, and the focus goes back where it was. A list behind an item (the channels to pin to) opens in
+  its place with a way back, not as a second floating box.
+- The outcome of a menu's act (copied, pinned, the server's refusal) is said on the row it acted on, for a moment.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
   ("移除任務 12") and a second press does it; moving away disarms it. No browser dialogs.
 - **A destruction that cannot be undone floats**: a centred panel over a dimmed page, its button armed only when the

@@ -4,8 +4,9 @@ Forms marked data-api are sent as JSON by /static/app.js to the same JSON API th
 page does nothing the API does not; the OAuth consent form is a plain form because it ends in a redirect.
 
 The look is DESIGN.md's: one stylesheet (/static/app.css) and no styles in the page. A page of a project sits in
-the project's frame (the navigation #side, drawn here and kept current by /static/frame.js); the other pages are a
-simple centred column.
+the project's frame: the rail (#rail, rail.js) on the far left, then the mode's second column (the channels #side in
+chat, kept current by frame.js; the explorer #explorer in files), then the page; the other pages are a simple centred
+column.
 """
 from __future__ import annotations
 
@@ -28,11 +29,13 @@ def q(v: str) -> str:
     return urllib.parse.quote(v, safe="")
 
 
-# Chooses the theme before the first paint: the stored choice, else the system's. The Content-Security-Policy allows
-# exactly this script by its hash (THEME_CSP), so the hash is taken from this text.
-THEME_SCRIPT = ('(function(){var t=null;try{t=localStorage.getItem("asterism-theme")}catch(e){}'
+# Chooses the theme before the first paint (the stored choice, else the system's) and which second columns the reader
+# folded away (DESIGN: layout), so neither flashes. The Content-Security-Policy allows exactly this script by its hash
+# (THEME_CSP), so the hash is taken from this text.
+THEME_SCRIPT = ('(function(){var d=document.documentElement,t=null,f=null;try{t=localStorage.getItem("asterism-theme");'
+                'f=localStorage.getItem("asterism-folded")}catch(e){}'
                 'if(t!=="dark"&&t!=="light"){t=window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches'
-                '?"light":"dark"}document.documentElement.setAttribute("data-theme",t)})();')
+                '?"light":"dark"}d.setAttribute("data-theme",t);if(f)d.setAttribute("data-folded",f)})();')
 THEME_CSP = "'sha256-" + base64.b64encode(hashlib.sha256(THEME_SCRIPT.encode()).digest()).decode() + "'"
 
 
@@ -49,9 +52,39 @@ def _theme_button(tr: Translator) -> str:
 
 
 def open_button(tr: Translator) -> str:
-    """Opens the navigation drawer below 900 px (frame.js); not shown on wider screens."""
-    return (f'<button type="button" id="side-open" class="icon-btn side-open" aria-controls="side" aria-expanded="false" '
+    """Opens the navigation drawer below 900 px (rail.js); not shown on wider screens."""
+    return (f'<button type="button" id="side-open" class="icon-btn side-open" aria-controls="nav" aria-expanded="false" '
             f'aria-label="{e(tr("nav.open"))}"><span class="burger" aria-hidden="true"></span></button>')
+
+
+# Line drawings on a 24-unit grid, stroked in currentColor; always decorative (the word or the label says it).
+GLYPHS = {
+    "chat": '<path d="M4 5h16v11H9l-5 4z"/>',
+    "files": '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+    "schedules": '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+    "members": '<circle cx="9" cy="9" r="3"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/><rect x="15.5" y="6" width="5" height="5" rx="1"/>',
+    "my": '<rect x="4" y="5" width="16" height="11" rx="2"/><path d="M9 20h6M12 16v4"/>',
+    "admin": '<path d="M4 7h4M12 7h8M4 12h10M18 12h2M4 17h2M10 17h10"/><circle cx="10" cy="7" r="2"/>'
+             '<circle cx="16" cy="12" r="2"/><circle cx="8" cy="17" r="2"/>',
+    "column": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/>',
+    "rendered": '<path d="M6 3h8l4 4v14H6z"/><path d="M9 12h6M9 15h6M9 18h3"/>',
+    "source": '<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>',
+    "split": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15M6.5 9h3M6.5 12h3M14.5 9h3M14.5 12h3"/>',
+    "github": '<path d="M13 4h7v7M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+}
+
+
+def glyph(name: str, size: int = 20) -> str:
+    return (f'<svg class="glyph" aria-hidden="true" focusable="false" width="{size}" height="{size}" viewBox="0 0 24 24" '
+            f'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+            f'{GLYPHS[name]}</svg>')
+
+
+def fold_button(tr: Translator, mode: str, target: str, label_key: str, button_id: str) -> str:
+    """Folds the mode's second column away on a wide screen and brings it back (rail.js); remembered per mode."""
+    label = e(tr(label_key))
+    return (f'<button type="button" id="{button_id}" class="icon-btn fold-btn" data-fold="{mode}" aria-controls="{target}" '
+            f'aria-expanded="true" aria-label="{label}" title="{label}">{glyph("column")}</button>')
 
 
 def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None = None,
@@ -63,12 +96,17 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     scripts load after base.js (and frame.js) and before app.js. `header`: the page's own header instead of its title."""
     msgs = e(json.dumps(tr.js_messages(), ensure_ascii=False))
     links = "".join(f'<link rel="stylesheet" href="/static/{e(x)}">' for x in styles)
-    shared = ["base.js"] + (["frame.js"] if frame else [])
+    shared = ["base.js"] + (["frame.js", "rail.js"] if frame else [])
     tags = "".join(f'<script src="/static/{e(x)}"></script>' for x in [*shared, *scripts, "app.js"])
     if frame:
         head = header if header is not None else (
             f'<header class="page-head">{open_button(tr)}<h1 class="page-title">{e(title)}</h1></header>')
-        main = (f'<div class="shell">{_side(tr, person, frame, here)}<div id="side-scrim" hidden></div>'
+        # The second column belongs to the mode: the channels in chat, the explorer in files, none elsewhere.
+        column = (_side(tr, person, frame) if here == "messages" else _explorer(tr, frame) if here == "files" else "")
+        mode = {"messages": "chat", "files": "files"}.get(here, "page")
+        main = (f'<div class="shell mode-{mode}{" has-column" if column else ""}">'
+                f'<div id="nav" class="nav" aria-label="{e(tr("nav.label"))}">{_rail(tr, person, frame, here)}{column}</div>'
+                f'<div id="side-scrim" hidden></div>'
                 f'<main id="page" class="page {e(page_class)}">{head}{body}</main></div>')
         cls = "framed"
     else:
@@ -134,7 +172,58 @@ def _reveal(tr: Translator, target: str, label_key: str) -> str:
             f'aria-controls="{target}" aria-label="{e(tr(label_key))}"><span class="plus" aria-hidden="true"></span></button>')
 
 
-def _side(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
+def _project_head(f: dict[str, Any], under: str) -> str:
+    """The project's name (display voice) on top of a second column, a mono line under it."""
+    return (f'<div class="side-project"><div class="project-text">'
+            f'<a class="project-name" href="/{e(q(f["slug"]))}">{e(f["name"])}</a>{under}</div></div>')
+
+
+def _repo_link(tr: Translator, repo: str) -> str:
+    return (f'<a class="project-repo" href="{e(repo)}" target="_blank" rel="noopener noreferrer" '
+            f'title="{e(tr("nav.repo"))}">{e(_repo_text(repo))}</a>')
+
+
+# The rail's buttons in their order: (page, glyph, word, full name).
+RAIL = (("messages", "chat", "rail.chat", "nav.messages"), ("files", "files", "rail.files", "nav.files"),
+        ("schedules", "schedules", "rail.schedules", "nav.schedules"), ("members", "members", "rail.members", "nav.members"),
+        ("my", "my", "rail.my", "nav.my"), ("admin", "admin", "rail.admin", "nav.admin"))
+
+
+def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
+    """The fixed rail on the far left of every page of a project: the top-level buttons, then the theme switch and
+    the reader. rail.js keeps the count of important messages on the chat button and where each mode last was."""
+    slug, me = f["slug"], (person["name"] if person else "")
+    items = []
+    for page, icon, word, full in RAIL:
+        if page == "admin" and not f["can_admin"]:
+            continue
+        href = f"/{q(slug)}" if page == "messages" else f"/{q(slug)}/{page}"
+        ident = {"messages": ' id="rail-chat"', "files": ' id="rail-files"'}.get(page, "")
+        current = ' aria-current="page"' if page == here else ""
+        count = ""
+        if page == "messages":
+            k = f["important"] if here != "messages" else 0
+            count = (f'<span id="rail-count" class="rail-count"{"" if k else " hidden"}>'
+                     f'<span class="pill" aria-hidden="true">{e(k)}</span>'
+                     f'<span class="vh">{e(tr("rail.important", k=k))}</span></span>')
+        items.append(f'<li><a{ident} class="rail-btn" href="{e(href)}" title="{e(tr(full))}"{current}>'
+                     f'<span class="rail-tile">{glyph(icon)}{count}</span><span class="rail-word">{e(tr(word))}</span></a></li>')
+    data = {"slug": slug, "me": me, "here": here, "directory": f["directory"], "repo": f["repo"]}
+    initial = (me[:1] or "?").upper()
+    reader = (f'<button type="button" id="rail-me" class="rail-me" popovertarget="me-menu" '
+              f'aria-label="{e(tr("rail.me", name=me))}" title="{e(me)}"><span aria-hidden="true">{e(initial)}</span></button>'
+              f'<div id="me-menu" class="me-menu" popover><p class="me-name">{e(me)}</p>'
+              f'<a class="me-row" href="/">{e(tr("rail.home"))}</a>'
+              f'<form method="post" action="/logout"><button class="me-row">{e(tr("nav.logout"))}</button></form></div>')
+    return (f'<nav id="rail" class="rail" aria-label="{e(tr("rail.label"))}" {_attrs(data)}>'
+            f'<button type="button" id="side-close" class="icon-btn nav-close" aria-label="{e(tr("nav.close"))}">'
+            f'<span class="cross" aria-hidden="true"></span></button>'
+            f'<ul class="rail-list">{"".join(items)}</ul>'
+            f'<div class="rail-foot">{_theme_button(tr)}{reader}</div></nav>')
+
+
+def _side(tr: Translator, person: Any, f: dict[str, Any]) -> str:
+    """Chat's second column: the project, its channels and the private conversations (frame.js keeps them current)."""
     slug, me = f["slug"], (person["name"] if person else "")
     places, directory = f["places"], f["directory"]
     channels = "".join(
@@ -166,27 +255,27 @@ def _side(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
         start = (f'<form id="new-private" class="side-form" hidden><select name="with" aria-label="{e(tr("msg.choose_member"))}">'
                  f'{options}</select><div class="row"><button class="btn primary">{e(tr("msg.start_private"))}</button>'
                  f'<button type="button" class="btn" data-dismiss>{e(tr("nav.cancel"))}</button></div></form>')
-    pages = [("schedules", "nav.schedules"), ("members", "nav.members"), ("my", "nav.my")]
-    if f["can_admin"]:
-        pages.append(("admin", "nav.admin"))
-    current = ' aria-current="page"'
-    links = "".join(f'<li><a class="place" href="/{e(q(slug))}/{p}"{current if p == here else ""}>{e(tr(k))}</a></li>'
-                    for p, k in pages)
-    data = {"slug": slug, "me": me, "here": here, "directory": directory}
-    return (f'<nav id="side" aria-label="{e(tr("nav.label"))}" {_attrs(data)}><div class="side-inner">'
-            f'<div class="side-project"><div class="project-text"><a class="project-name" href="/{e(q(slug))}">{e(f["name"])}</a>'
-            f'<a class="project-repo" href="{e(f["repo"])}" target="_blank" rel="noopener noreferrer" '
-            f'title="{e(tr("nav.repo"))}">{e(_repo_text(f["repo"]))}</a></div>'
-            f'<button type="button" id="side-close" class="icon-btn" aria-label="{e(tr("nav.close"))}">'
-            f'<span class="cross" aria-hidden="true"></span></button></div>'
+    return (f'<nav id="side" class="column" aria-label="{e(tr("nav.places"))}"><div class="side-inner">'
+            f'{_project_head(f, _repo_link(tr, f["repo"]))}'
             f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.channels"))}</h2>{plus_channel}</div>'
             f'{new_channel}<ul id="side-channels" class="side-list">{channels}</ul></section>'
             f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.private"))}</h2>{plus_private}</div>'
             f'{start}<ul id="side-private" class="side-list">{"".join(private)}</ul></section>'
-            f'<section class="side-sec side-pages"><h2 class="vh">{e(tr("nav.pages"))}</h2><ul class="side-list">{links}</ul></section>'
-            f'<div class="side-foot"><a class="me" href="/" title="{e(tr("nav.home"))}">{e(me)}</a><span class="spacer"></span>'
-            f'{_theme_button(tr)}<form method="post" action="/logout"><button class="quiet-btn">{e(tr("nav.logout"))}</button></form>'
-            f'</div></div></nav>')
+            f'</div></nav>')
+
+
+def _explorer(tr: Translator, f: dict[str, Any]) -> str:
+    """Files' second column: the repository and its branch, a filter, the tree (explorer.js draws it)."""
+    ref = f'<span id="explorer-ref" class="project-repo">{e(_repo_text(f["repo"]))}</span>'
+    label = e(tr("files.filter"))
+    return (f'<aside id="explorer" class="column explorer" aria-label="{e(tr("files.explorer"))}"><div class="side-inner">'
+            f'{_project_head(f, ref)}'
+            f'<div class="explorer-filter"><input id="explorer-filter" type="search" placeholder="{label}" aria-label="{label}" '
+            f'autocomplete="off" spellcheck="false" autocapitalize="off"></div>'
+            f'<p id="explorer-note" class="explorer-note" hidden></p>'
+            f'<ul id="explorer-tree" class="tree" role="tree" aria-label="{e(tr("files.tree"))}"></ul>'
+            f'<p id="explorer-status" class="vh" role="status"></p>'
+            f'</div></aside>')
 
 
 # --------------------------------------------------------------------------- small parts
@@ -423,7 +512,9 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
     the frame's (frame.js); the page scripts (messages.js, tasks.js) keep the rest current through the JSON API.
     What the scripts need is in data- attributes."""
     data = {"slug": frame["slug"], "me": person["name"], "agents": frame["agents"], "agent-mutes": view["agent_mutes"]}
-    header = (f'<header class="page-head room-head">{open_button(tr)}<h1 id="place-title" class="page-title place-title"></h1>'
+    header = (f'<header class="page-head room-head">{open_button(tr)}'
+              f'{fold_button(tr, "chat", "side", "nav.places", "side-toggle")}'
+              f'<h1 id="place-title" class="page-title place-title"></h1>'
               f'<span class="spacer"></span>'
               f'<button type="button" id="settings-toggle" class="btn quiet" aria-expanded="false" aria-controls="settings">'
               f'{e(tr("msg.settings"))}</button>'
@@ -449,7 +540,36 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
     return layout(tr, tr("msg.title"), room + panel, person, frame, "messages", header=header, page_class="room-page",
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js",
-                           "vendor/katex/katex.min.js", "render.js", "messages.js", "tasks.js"])
+                           "vendor/katex/katex.min.js", "render.js", "paths.js", "messages.js", "tasks.js"])
+
+
+VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), ("split", "files.view_split"))
+
+
+def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: str, max_bytes: int) -> tuple[str, int]:
+    """Files mode: the repository's files using the whole page. A shell: the explorer (the frame's second column),
+    the tab strip and the document are drawn by explorer.js and viewer.js from the files API. `path` is the file the
+    address names ("" for none); `max_bytes`: a larger file is not shown here (the server does not fetch it)."""
+    data = {"slug": frame["slug"], "path": path, "repo": frame["repo"], "can-pin": "1" if frame["can_create"] else "",
+            "can-manage": "1" if frame["can_admin"] else "", "max-bytes": str(max_bytes)}
+    views = "".join(f'<button type="button" class="icon-btn" data-view="{v}" aria-pressed="false" aria-label="{e(tr(k))}" '
+                    f'title="{e(tr(k))}">{glyph(v)}</button>' for v, k in VIEWS)
+    github = e(tr("files.github"))
+    header = (f'<header class="page-head files-head">{open_button(tr)}'
+              f'{fold_button(tr, "files", "explorer", "files.explorer", "explorer-toggle")}'
+              f'<h1 class="vh">{e(tr("files.title"))}</h1>'
+              f'<div id="file-tabs" class="file-tabs" role="tablist" aria-label="{e(tr("files.tabs"))}"></div>'
+              f'<div class="file-tools" role="group" aria-label="{e(tr("files.tools"))}">'
+              f'<div id="view-switch" class="view-switch" role="group" aria-label="{e(tr("files.view"))}">{views}</div>'
+              f'<a id="file-github" class="icon-btn" aria-label="{github}" title="{github}" target="_blank" '
+              f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a></div></header>')
+    body = (f'<section id="files" class="files" {_attrs(data)}>'
+            f'<div id="file-view" class="file-view" role="tabpanel" tabindex="-1" aria-label="{e(tr("files.title"))}"></div>'
+            f'</section>')
+    return layout(tr, tr("files.title"), body, person, frame, "files", header=header, page_class="files-page",
+                  styles=["vendor/katex/katex.min.css"],
+                  scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
+                           "render.js", "paths.js", "highlight.js", "explorer.js", "viewer.js"])
 
 
 def schedules(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:

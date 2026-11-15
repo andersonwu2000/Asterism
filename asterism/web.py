@@ -770,9 +770,10 @@ def _page_context(request: Request, slug: str):
 
 
 def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
-    """What the project's frame (the navigation on every page of a project) shows: the places with their unread
-    counts, the members to start a private conversation with, who may create a channel or see the settings, and
-    each member's kind, presence and owner for the presence marks."""
+    """What the project's frame (the rail and the second column on every page of a project) shows: the places with
+    their unread counts and the number of messages important for the reader, the members to start a private
+    conversation with, who may create a channel (and pin) or see the settings, and each member's kind, presence and
+    owner for the presence marks."""
     me = messaging.person_member(pj, actor.person_id)
     mine = projects.permissions(pj, actor)
     pa = projects.people_and_agents(pj)
@@ -780,8 +781,10 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
+    places = messaging.channels_view(pj, me)
     return {"slug": pj.slug, "name": info["name"], "repo": info["repo"],
-            "places": messaging.channels_view(pj, me),
+            "places": places,
+            "important": sum(c["important"] for c in places["channels"]) + sum(p["important"] for p in places["private"]),
             "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
                                                          (actor.person_id,))],
@@ -845,6 +848,22 @@ async def my_page(request: Request) -> Response:
                          projects.groups_assignable(pj, actor)))
 
 
+async def files_page(request: Request) -> Response:
+    """Files mode, for a member with `read`: a shell that reads the repository through the files API. The address
+    may name a file (/{slug}/files/{path}); a path that cannot be one is not found."""
+    ctx = _page_context(request, request.path_params["slug"])
+    if isinstance(ctx, Response):
+        return ctx
+    person, pj, actor = ctx
+    if "read" not in projects.permissions(pj, actor):
+        return page_error(request, ApiError(403, "forbidden", ""), person)
+    path = request.path_params.get("path", "")
+    if path and files.split_path(path) is None:
+        return page_error(request, ApiError(404, "not_found", ""), person)
+    return html(pages.files(tr_for(request), person, _frame(pj, actor), path,
+                            int(config.get().files_max_mb * 1024 * 1024)))
+
+
 async def admin_page(request: Request) -> Response:
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
@@ -862,7 +881,9 @@ async def admin_page(request: Request) -> Response:
 COOKIELESS_SUFFIXES = ("/mcp", "/redeem")
 COOKIELESS_PREFIXES = ("/oauth/token", "/oauth/register")
 COOKIELESS_PARTS = ("/api/agent/", "/api/computer/")
-CSP = f"default-src 'self'; script-src 'self' {pages.THEME_CSP}; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+# frame-src: files mode shows a PDF of the repository in a frame of this origin (the raw endpoint allows only that).
+CSP = (f"default-src 'self'; script-src 'self' {pages.THEME_CSP}; style-src 'self' 'unsafe-inline'; img-src 'self'; "
+       "frame-src 'self'; frame-ancestors 'none'; base-uri 'none'")
 
 
 class Guard:
@@ -945,6 +966,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/my", my_page),
         Route("/{slug}/admin", admin_page),
         Route("/{slug}/schedules", schedules_page),
+        Route("/{slug}/files", files_page),
+        Route("/{slug}/files/{path:path}", files_page),
         Route("/{slug}/mcp", mcp, methods=["GET", "POST", "DELETE"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
