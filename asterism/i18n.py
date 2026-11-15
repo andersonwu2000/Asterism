@@ -17,7 +17,26 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "nav.members": "成員",
         "nav.schedules": "排程訊息",
         "nav.my": "我的 agent",
-        "nav.admin": "管理",
+        "nav.admin": "專案設定",
+        "nav.label": "專案導覽",
+        "nav.open": "開啟導覽",
+        "nav.close": "關閉導覽",
+        "nav.pages": "頁面",
+        "nav.repo": "在 GitHub 上開啟 repository（新分頁）",
+        "nav.unread": "{n} 則未讀",
+        "nav.important": "{n} 則未讀，{k} 則重要",
+        "nav.muted": "已靜音",
+        "nav.my_agent": "我的 agent",
+        "nav.new_channel": "建立頻道",
+        "nav.start_private": "開始私訊",
+        "nav.cancel": "取消",
+        "theme.to_light": "淺色",
+        "theme.to_dark": "深色",
+        "theme.to_light_label": "切換到淺色",
+        "theme.to_dark_label": "切換到深色",
+        "presence.online": "在線",
+        "presence.offline": "離線",
+        "presence.person": "人",
         "nav.logout": "登出",
         "nav.signed_in_as": "{name}",
 
@@ -150,7 +169,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "consent.untrusted": "這個連接器沒有在這裡註冊，或它要回到的位址不是它註冊過的。請在 ChatGPT 裡從頭新增連接器。",
         "consent.bad_resource": "這個請求沒有指明是哪一個專案。請在 ChatGPT 裡從頭新增連接器。",
 
-        "admin.title": "管理",
+        "admin.title": "專案設定",
         "admin.invite": "產生邀請連結",
         "admin.invite_login": "指定對方的 GitHub 登入名（可留空）",
         "admin.invite_button": "產生",
@@ -162,8 +181,8 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "admin.remove_group": "移出 {group}",
         "admin.agent_of": "{owner} 的 agent",
 
-        "confirm.remove": "確定要移除 {name} 嗎？",
-        "confirm.revoke": "確定要撤銷這份憑證嗎？用它的 agent 會立刻失效。",
+        "confirm.remove": "移除 {name}",
+        "confirm.revoke": "撤銷：用它的 agent 立刻失效",
 
         "msg.title": "訊息",
         "msg.channels": "頻道",
@@ -203,6 +222,11 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "msg.scheduled": "排程",
         "msg.scheduled_hint": "這則訊息是排程在設定的時間以 {name} 的名義發出的。",
         "msg.pin": "釘選",
+        "msg.reply_line": "回覆 {name}：{text}",
+        "msg.acts": "對這則訊息",
+        "msg.agent_of": "{owner} 的 agent",
+        "msg.place_settings": "{place} 的設定",
+        "msg.jump_hint": "跳到 #{id}",
 
         "pin.title": "釘選",
         "pin.path": "repo 裡的檔案路徑，例如 notes/MAP.md",
@@ -213,6 +237,10 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "pin.file_hint": "在 GitHub 上開啟（新分頁）",
         "pin.message_hint": "跳到這則訊息",
         "pin.refused": "沒有完成：{message}",
+        "pin.all": "全部 {n}",
+        "pin.manage": "管理釘選",
+        "pin.none": "還沒有釘選。",
+        "pin.list_label": "這個頻道的釘選",
 
         "task.title": "任務表",
         "task.hide": "收合",
@@ -232,7 +260,13 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "task.save": "儲存",
         "task.cancel": "取消",
         "task.remove": "移除",
-        "task.confirm_remove": "確定要移除任務 {id} 嗎？",
+        "task.confirm_remove": "移除任務 {id}",
+        "task.toggle_hide": "收起任務表",
+        "task.toggle_show": "任務表：{n} 項，{open} 項沒人負責",
+        "task.close": "關閉任務表",
+        "task.unlock": "解鎖",
+        "task.acts": "對任務 #{id}",
+        "task.quiet": "沒有任務",
         "task.add": "新增任務",
         "task.add_to": "新增任務到 {group}",
         "task.text_label": "任務內容（最多 2,000 字）",
@@ -281,7 +315,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "sch.save": "儲存",
         "sch.cancel": "取消",
         "sch.remove": "移除",
-        "sch.confirm_remove": "確定要移除排程 {id} 嗎？",
+        "sch.confirm_remove": "移除排程 {id}",
         "sch.no_time": "請填第一次發出的時間。",
         "sch.refused": "沒有完成：{message}",
 
@@ -327,7 +361,8 @@ class Translator:
 
     def js_messages(self) -> dict[str, str]:
         """The texts the page script needs, sent along with each page."""
-        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg.", "invite.", "task.", "group.", "pin.", "sch."))]
+        keys = [k for k in CATALOGUE[DEFAULT_LOCALE] if k.startswith(("error.", "done.", "confirm.", "msg.", "invite.", "task.", "group.", "pin.", "sch.",
+                                                                  "nav.", "theme.", "presence."))]
         return {k: self(k) for k in keys}
 
 

@@ -5,3 +5,11 @@ marked     12.0.2   Markdown to HTML        marked/marked.min.js                
 DOMPurify  3.4.17   HTML sanitiser          dompurify/purify.min.js               Apache-2.0 or MPL-2.0 (dompurify/LICENSE, LICENSE-MPL)
 KaTeX      0.16.47  TeX mathematics         katex/katex.min.js, katex.min.css,    MIT (katex/LICENSE)
                                             katex/fonts/
+
+Fonts of the pages (Latin subsets, woff2), taken unmodified from their npm packages:
+
+Inter           @fontsource/inter 5.2.8               fonts/inter-latin-{400,500,600}-normal.woff2    OFL-1.1 (fonts/LICENSE-inter)
+JetBrains Mono  @fontsource/jetbrains-mono 5.2.8      fonts/jetbrains-mono-latin-{400,500}-normal.woff2  OFL-1.1 (fonts/LICENSE-jetbrains-mono)
+Fraunces        @fontsource-variable/fraunces 5.2.9   fonts/fraunces-latin-wght-normal.woff2          OFL-1.1 (fonts/LICENSE-fraunces)
+
+Chinese text uses the reader's system fonts; no CJK font is shipped.

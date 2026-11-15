@@ -720,6 +720,26 @@ def _page_context(request: Request, slug: str):
     return person, pj, actor
 
 
+def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
+    """What the project's frame (the navigation on every page of a project) shows: the places with their unread
+    counts, the members to start a private conversation with, who may create a channel or see the settings, and
+    each member's kind, presence and owner for the presence marks."""
+    me = messaging.person_member(pj, actor.person_id)
+    mine = projects.permissions(pj, actor)
+    pa = projects.people_and_agents(pj)
+    directory = {x["name"]: {"kind": "person"} for x in pa["people"]}
+    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"]} for a in pa["agents"]})
+    info = projects.info(pj)
+    return {"slug": pj.slug, "name": info["name"], "repo": info["repo"],
+            "places": messaging.channels_view(pj, me),
+            "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
+            "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
+                                                         (actor.person_id,))],
+            "agents": [r["name"] for r in pj.db.execute("SELECT name FROM agents WHERE person_id = ? ORDER BY name",
+                                                         (actor.person_id,))],
+            "directory": directory}
+
+
 async def messages_page(request: Request) -> Response:
     """The project's address: channels and private conversations, served with the page script that talks to
     the JSON API."""
@@ -732,16 +752,9 @@ async def messages_page(request: Request) -> Response:
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
-    me = messaging.person_member(pj, actor.person_id)
-    view = {"places": messaging.channels_view(pj, me),
-            "can_create": "create_channel" in projects.permissions(pj, actor),
-            "can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor),
-            "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
-                                                         (actor.person_id,))],
-            "agents": [r["name"] for r in pj.db.execute("SELECT name FROM agents WHERE person_id = ? ORDER BY name",
-                                                         (actor.person_id,))],
+    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor),
             "agent_mutes": messaging.agent_mutes(pj, actor.person_id)}
-    return html(pages.messages(tr_for(request), person, pj.slug, view, can_admin(pj, actor)))
+    return html(pages.messages(tr_for(request), person, _frame(pj, actor), view))
 
 
 async def schedules_page(request: Request) -> Response:
@@ -757,7 +770,7 @@ async def schedules_page(request: Request) -> Response:
                            "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
                        "agents": [r["name"] for r in pj.db.execute(
                            "SELECT name FROM agents WHERE person_id = ? ORDER BY name", (actor.person_id,))]}}
-    return html(pages.schedules(tr_for(request), person, pj.slug, view, can_admin(pj, actor)))
+    return html(pages.schedules(tr_for(request), person, _frame(pj, actor), view))
 
 
 async def members_page(request: Request) -> Response:
@@ -769,7 +782,7 @@ async def members_page(request: Request) -> Response:
         view = projects.members_view(pj, actor)
     except ApiError as e:
         return page_error(request, e, person)
-    return html(pages.members(tr_for(request), person, view, can_admin(pj, actor)))
+    return html(pages.members(tr_for(request), person, _frame(pj, actor), view))
 
 
 async def my_page(request: Request) -> Response:
@@ -777,8 +790,8 @@ async def my_page(request: Request) -> Response:
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
-    return html(pages.my(tr_for(request), person, pj.slug, projects.my_view(pj, actor), projects.group_list(pj),
-                         projects.groups_assignable(pj, actor), can_admin(pj, actor)))
+    return html(pages.my(tr_for(request), person, _frame(pj, actor), projects.my_view(pj, actor), projects.group_list(pj),
+                         projects.groups_assignable(pj, actor)))
 
 
 async def admin_page(request: Request) -> Response:
@@ -789,7 +802,7 @@ async def admin_page(request: Request) -> Response:
     if not can_admin(pj, actor):
         return page_error(request, ApiError(403, "forbidden", ""), person)
     view = {"project": projects.info(pj), **projects.people_and_agents(pj), "groups": projects.group_list(pj)}
-    return html(pages.admin(tr_for(request), person, pj.slug, view, projects.permissions(pj, actor)))
+    return html(pages.admin(tr_for(request), person, _frame(pj, actor), view, projects.permissions(pj, actor)))
 
 
 # --------------------------------------------------------------------------- guard middleware
@@ -799,7 +812,7 @@ async def admin_page(request: Request) -> Response:
 COOKIELESS_SUFFIXES = ("/mcp", "/redeem")
 COOKIELESS_PREFIXES = ("/oauth/token", "/oauth/register")
 COOKIELESS_PARTS = ("/api/agent/", "/api/computer/")
-CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+CSP = f"default-src 'self'; script-src 'self' {pages.THEME_CSP}; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 
 class Guard:

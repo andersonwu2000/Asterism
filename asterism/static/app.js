@@ -1,21 +1,13 @@
-// Sends forms marked data-api to the JSON API and saves switches marked data-toggle as they change.
+// Sends forms marked data-api to the JSON API and saves switches marked data-toggle as they change. A form with
+// data-confirm confirms in place, in two steps: the first press arms its button, which then says what will happen.
 // All texts come from the page's message catalogue (body data-msg); this file holds none.
 "use strict";
 (function () {
-  var MSG = {};
-  try { MSG = JSON.parse(document.body.dataset.msg || "{}"); } catch (err) { MSG = {}; }
+  var A = window.Asterism;
+  if (!A) return;
+  var MSG = A.MSG, make = A.make;
 
-  function errorText(code) {
-    return MSG["error." + code] || (MSG["error.generic"] || "{code}").replace("{code}", code || "?");
-  }
-
-  async function post(url, body) {
-    var r = await fetch(url, {method: "POST", credentials: "same-origin",
-                              headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    var data = {};
-    try { data = await r.json(); } catch (err) { data = {}; }
-    return {ok: r.ok, data: data};
-  }
+  function post(url, body) { return A.request(url, null, body); }
 
   function collect(form, submitter) {
     var body = {};
@@ -36,11 +28,11 @@
     var form = ev.target;
     if (!form.hasAttribute("data-api")) return;
     ev.preventDefault();
-    if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) return;
-    var submitter = ev.submitter || null;
+    var submitter = ev.submitter || form.querySelector("button:not([type=button])");
+    if (form.dataset.confirm && submitter && !A.twoStep(submitter, form.dataset.confirm)) return;
     var out = form.querySelector("[data-out]");
     var res = await post(form.dataset.api, collect(form, submitter));
-    if (!res.ok) { if (out) out.textContent = errorText(res.data.error); return; }
+    if (!res.ok) { if (out) out.textContent = A.errorText(res.data.error); return; }
     if (form.dataset.show && out) out.textContent = res.data[form.dataset.show] || "";
     else if (form.dataset.next) window.location.href = form.dataset.next;
     else window.location.reload();
@@ -54,23 +46,16 @@
     var res = await post(box.getAttribute("data-toggle"), body);
     var out = box.closest("div") && box.closest("div").querySelector("[data-out]");
     if (!res.ok) box.checked = !box.checked;
-    if (out) out.textContent = res.ok ? (MSG["done.saved"] || "") : errorText(res.data.error);
+    if (out) out.textContent = res.ok ? (MSG["done.saved"] || "") : A.errorText(res.data.error);
   });
 
   // "my agents": the button that makes an agent invitation link, and what it answers. Each click makes a
   // new link and replaces what the previous one showed.
-  function el(tag, text, cls) {
-    var x = document.createElement(tag);
-    if (text != null) x.textContent = text;
-    if (cls) x.className = cls;
-    return x;
-  }
-
   async function copy(text) {
     if (navigator.clipboard && window.isSecureContext) {
       try { await navigator.clipboard.writeText(text); return true; } catch (err) { /* fall back below */ }
     }
-    var area = el("textarea", text);
+    var area = make("textarea", null, text);
     area.setAttribute("readonly", "");
     area.style.position = "fixed"; area.style.opacity = "0";
     document.body.appendChild(area);
@@ -83,18 +68,17 @@
 
   // A line with the text to copy and its copy button.
   function copyLine(text) {
-    var line = el("div", null, "copy-line");
-    var code = el("code", text);
-    var button = el("button", MSG["invite.copy"] || "");
-    button.type = "button";
-    button.addEventListener("click", async function () {
+    var line = make("div", "copy-line");
+    var code = make("code", null, text);
+    var button = A.button("btn", MSG["invite.copy"] || "", async function () {
       // A blocker may refuse the write: then say so; the text beside stays selectable to copy by hand.
       var ok = false;
       try { ok = await copy(text); } catch (err) { ok = false; }
       button.textContent = ok ? (MSG["invite.copied"] || "") : (MSG["invite.copy_failed"] || "");
       setTimeout(function () { button.textContent = MSG["invite.copy"] || ""; }, ok ? 2000 : 5000);
     });
-    line.append(code, " ", button);
+    button.setAttribute("aria-live", "polite");
+    line.append(code, button);
     return line;
   }
 
@@ -104,21 +88,21 @@
   function showInvite(box, data) {
     made += 1;
     box.replaceChildren();
-    box.append(el("p", MSG["invite.say"] || ""), copyLine(data.say));
+    box.append(make("p", null, MSG["invite.say"] || ""), copyLine(data.say));
     var until = new Date(Date.now() + data.expires_in * 1000);
     var time = until.toLocaleTimeString(document.documentElement.lang || undefined, {hour: "2-digit", minute: "2-digit"});
-    box.append(el("p", (MSG["invite.expires"] || "{time}").replace("{time}", time), "muted"));
+    box.append(make("p", "muted", (MSG["invite.expires"] || "{time}").replace("{time}", time)));
     if (!data.program || !data.program.available) {
-      box.append(el("p", MSG["invite.unavailable"] || "", "muted"));
+      box.append(make("p", "muted", MSG["invite.unavailable"] || ""));
       return;
     }
-    box.append(el("p", MSG["invite.self"] || ""));
+    box.append(make("p", null, MSG["invite.self"] || ""));
     SYSTEMS.forEach(function (system) {
-      var group = el("fieldset");
-      group.append(el("legend", MSG["invite.system." + system] || system));
-      var lines = {};
+      var group = make("fieldset");
+      group.append(make("legend", null, MSG["invite.system." + system] || system));
+      var choices = make("div"), lines = {};
       PRODUCTS.forEach(function (product, i) {
-        var label = el("label");
+        var label = make("label");
         var radio = document.createElement("input");
         radio.type = "radio";
         radio.name = "invite-product-" + system + "-" + made;
@@ -127,9 +111,10 @@
         radio.addEventListener("change", function () {
           PRODUCTS.forEach(function (p) { lines[p].hidden = p !== product; });
         });
-        label.append(radio, " " + (MSG["invite.product." + product] || product) + " ");
-        group.append(label);
+        label.append(radio, " " + (MSG["invite.product." + product] || product));
+        choices.append(label);
       });
+      group.append(choices);
       PRODUCTS.forEach(function (product, i) {
         lines[product] = copyLine(data.commands[system][product]);
         lines[product].hidden = i !== 0;
@@ -147,7 +132,7 @@
       inviteButton.disabled = true;
       try {
         var res = await post(inviteButton.dataset.api, {});
-        if (out) out.textContent = res.ok ? "" : errorText(res.data.error);
+        if (out) out.textContent = res.ok ? "" : A.errorText(res.data.error);
         if (res.ok) { showInvite(box, res.data); box.hidden = false; }
       } finally {
         inviteButton.disabled = false;

@@ -1,24 +1,14 @@
 // The schedules page: every schedule of the project (#schedules) and, for a person who may make one, the form
 // (#schedule-form). It speaks only the JSON API (/api/schedules) and reads the list again every few seconds,
 // except while the person is editing. Times are shown and entered in the browser's local time; the API gets ISO
-// times. A refusal shows the server's sentence. All texts come from the page's message catalogue (body data-msg).
+// times. A refusal shows the server's sentence at the schedule. Removing confirms in place, in two steps.
+// All texts come from the page's message catalogue (body data-msg); the shared helpers from base.js.
 "use strict";
 (function () {
+  var A = window.Asterism;
   var root = document.getElementById("schedules");
-  if (!root) return;
-
-  function parseJSON(raw, fallback) {
-    try { return JSON.parse(raw); } catch (err) { return fallback; }
-  }
-  var MSG = parseJSON(document.body.dataset.msg || "{}", {});
-  function t(key, vars) {
-    var s = MSG[key] || key;
-    Object.keys(vars || {}).forEach(function (k) { s = s.split("{" + k + "}").join(String(vars[k])); });
-    return s;
-  }
-  function errorText(code) {
-    return MSG["error." + code] || (MSG["error.generic"] || "{code}").replace("{code}", code || "?");
-  }
+  if (!root || !A) return;
+  var t = A.t, make = A.make, parseJSON = A.parseJSON;
 
   var SLUG = root.dataset.slug, ME = root.dataset.me, CAN_MANAGE = !!root.dataset.canManage;
   var PLACES = parseJSON(root.dataset.places, {channels: [], people: [], agents: []});
@@ -28,30 +18,9 @@
   var LANG = document.documentElement.lang || undefined;
   var shown = "";
 
-  async function call(path, body) {
-    var opts = {method: body === undefined ? "GET" : "POST", credentials: "same-origin",
-                headers: {"Accept": "application/json"}};
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    try {
-      var r = await fetch(API + path, opts);
-      return {ok: r.ok, data: (await r.json()) || {}};
-    } catch (err) {
-      return {ok: false, data: {error: "network"}};
-    }
-  }
+  function call(path, body) { return A.request(API + path, null, body); }
 
-  function make(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text !== undefined) n.textContent = text;
-    return n;
-  }
-  function refused(out, data) {
-    out.textContent = data.message ? t("sch.refused", {message: data.message}) : errorText(data.error);
-  }
+  function refused(out, data) { out.textContent = A.refusal("sch.refused", data); }
 
   // ------------------------------------------------------------------ times
 
@@ -76,8 +45,8 @@
 
   // ------------------------------------------------------------------ the fields (new schedule and editing)
 
-  function field(label, input) {
-    var lab = make("label", "sch-field");
+  function field(label, input, wide) {
+    var lab = make("label", "sch-field" + (wide ? " wide" : ""));
     lab.appendChild(make("span", "sch-label", label));
     lab.appendChild(input);
     return lab;
@@ -160,15 +129,14 @@
     sync();
     var how = make("span", "sch-repeat");
     how.appendChild(repeat);
-    how.appendChild(document.createTextNode(" "));
     how.appendChild(n);
-    var hint = make("small", "muted", " " + (MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
+    var hint = make("small", "muted", (MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
                                                              : t("sch.min_seconds", {n: MIN_EVERY})));
     how.appendChild(hint);
 
     box.appendChild(field(t("sch.to"), to));
-    box.appendChild(field(t("sch.text"), text));
     box.appendChild(field(t("sch.level"), level));
+    box.appendChild(field(t("sch.text"), text, true));
     box.appendChild(field(t("sch.start"), start));
     box.appendChild(field(t("sch.repeat"), how));
 
@@ -199,39 +167,34 @@
     var head = make("div", "sch-head");
     head.appendChild(make("span", "tid", "#" + s.id));
     head.appendChild(make("strong", "", s.to));
-    head.appendChild(make("span", "tag" + (s.level === "important" ? " important" : ""), t("sch.level_short." + s.level)));
-    head.appendChild(make("span", "muted", t("sch.by", {name: s.by})));
+    head.appendChild(make("span", "tag", t("sch.level_short." + s.level)));
+    head.appendChild(make("span", "muted small", t("sch.by", {name: s.by})));
+    if (s.paused) head.appendChild(make("span", "tag", t("sch.paused")));
     li.appendChild(head);
     li.appendChild(make("div", "sch-text", s.text));
     var when = make("div", "sch-when muted");
     var parts = [s.every_s ? everyText(s.every_s) : t("sch.runs_once")];
     if (!s.paused) parts.push(s.next_at ? t("sch.next", {time: showTime(s.next_at)}) : t("sch.no_next"));
     if (s.last_message) parts.push(t("sch.last", {id: s.last_message}));
-    when.textContent = parts.join(" · ");
+    when.textContent = parts.join(" \u00b7 ");
     li.appendChild(when);
-    if (s.paused) {
-      li.appendChild(make("div", "sch-paused", s.paused_because ? t("sch.paused." + s.paused_because) : t("sch.paused")));
-    }
+    if (s.paused && s.paused_because) li.appendChild(make("div", "sch-paused", t("sch.paused." + s.paused_because)));
     var tools = make("div", "sch-tools"), out = make("span", "out");
-    if (canControl(s)) {
-      var pause = make("button", "", t(s.paused ? "sch.resume" : "sch.pause"));
-      pause.type = "button";
-      pause.addEventListener("click", function () { act("schedules/" + s.id, {paused: !s.paused}, out); });
-      tools.appendChild(pause);
-    }
-    if (s.by === ME) {
-      var edit = make("button", "", t("sch.edit"));
-      edit.type = "button";
-      edit.addEventListener("click", function () { editor(li, s); });
-      tools.appendChild(edit);
+    function tool(label, key, onClick) {
+      var b = A.button("btn", label, onClick);
+      b.dataset.key = key + ":" + s.id;
+      tools.appendChild(b);
     }
     if (canControl(s)) {
-      var rm = make("button", "", t("sch.remove"));
-      rm.type = "button";
-      rm.addEventListener("click", function () {
-        if (window.confirm(t("sch.confirm_remove", {id: s.id}))) act("schedules/" + s.id + "/remove", {}, out);
+      tool(t(s.paused ? "sch.resume" : "sch.pause"), "pause", function () {
+        act("schedules/" + s.id, {paused: !s.paused}, out);
       });
-      tools.appendChild(rm);
+    }
+    if (s.by === ME) tool(t("sch.edit"), "edit", function () { editor(li, s); });
+    if (canControl(s)) {
+      tool(t("sch.remove"), "rm", function () {
+        if (A.twoStep(this, t("sch.confirm_remove", {id: s.id}))) act("schedules/" + s.id + "/remove", {}, out);
+      });
     }
     tools.appendChild(out);
     if (tools.children.length > 1) li.appendChild(tools);
@@ -240,9 +203,8 @@
 
   function editor(li, s) {
     var form = make("form", "sch-form sch-edit"), f = fields(s), out = make("span", "out");
-    var save = make("button", "", t("sch.save")), cancel = make("button", "", t("sch.cancel"));
-    cancel.type = "button";
-    cancel.addEventListener("click", function () { shown = ""; load(true); });
+    var save = make("button", "btn primary", t("sch.save"));
+    var cancel = A.button("btn", t("sch.cancel"), function () { shown = ""; load(true); });
     form.appendChild(f.box);
     var row = make("div", "sch-tools");
     row.appendChild(save);
@@ -269,14 +231,16 @@
   }
 
   function draw(list) {
-    root.textContent = "";
-    if (!list.length) { root.appendChild(make("p", "muted", t("sch.empty"))); return; }
-    var ul = make("ul", "sch-list");
-    list.forEach(function (s) { ul.appendChild(item(s)); });
-    root.appendChild(ul);
+    A.keepFocus(root, function () {
+      root.textContent = "";
+      if (!list.length) { root.appendChild(make("p", "muted", t("sch.empty"))); return; }
+      var ul = make("ul", "sch-list");
+      list.forEach(function (s) { ul.appendChild(item(s)); });
+      root.appendChild(ul);
+    });
   }
 
-  function editing() { return !!root.querySelector("form.sch-edit"); }
+  function editing() { return !!root.querySelector("form.sch-edit") || A.isArmed(root); }
 
   async function load(force) {
     if (!force && editing()) return;
@@ -292,7 +256,7 @@
 
   var form = document.getElementById("schedule-form");
   if (form) {
-    var f = fields(null), out = make("span", "out"), btn = make("button", "", t("sch.create"));
+    var f = fields(null), out = make("span", "out"), btn = make("button", "btn primary", t("sch.create"));
     form.appendChild(f.box);
     var row = make("div", "sch-tools");
     row.appendChild(btn);

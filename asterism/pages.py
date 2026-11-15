@@ -2,9 +2,15 @@
 
 Forms marked data-api are sent as JSON by /static/app.js to the same JSON API that scripts use, so a
 page does nothing the API does not; the OAuth consent form is a plain form because it ends in a redirect.
+
+The look is DESIGN.md's: one stylesheet (/static/app.css) and no styles in the page. A page of a project sits in
+the project's frame (the navigation #side, drawn here and kept current by /static/frame.js); the other pages are a
+simple centred column.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import urllib.parse
 from html import escape
@@ -12,7 +18,6 @@ from typing import Any, Iterable
 
 from .i18n import Translator
 from .projects import SWITCHES
-
 
 
 def e(v: Any) -> str:
@@ -23,35 +28,64 @@ def q(v: str) -> str:
     return urllib.parse.quote(v, safe="")
 
 
-STYLE = """body{font-family:system-ui,sans-serif;max-width:60rem;margin:1rem auto;padding:0 1rem;line-height:1.5}
-nav a,nav form{margin-right:1rem}nav form{display:inline}table{border-collapse:collapse;margin:.5rem 0}
-td,th{border:1px solid #ccc;padding:.25rem .5rem;text-align:left;vertical-align:top}form.inline{display:inline}
-.muted{color:#666}.out{color:#a40}code{word-break:break-all}body.wide{max-width:none}"""
+# Chooses the theme before the first paint: the stored choice, else the system's. The Content-Security-Policy allows
+# exactly this script by its hash (THEME_CSP), so the hash is taken from this text.
+THEME_SCRIPT = ('(function(){var t=null;try{t=localStorage.getItem("asterism-theme")}catch(e){}'
+                'if(t!=="dark"&&t!=="light"){t=window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches'
+                '?"light":"dark"}document.documentElement.setAttribute("data-theme",t)})();')
+THEME_CSP = "'sha256-" + base64.b64encode(hashlib.sha256(THEME_SCRIPT.encode()).digest()).decode() + "'"
+
+
+def _attrs(data: dict[str, Any]) -> str:
+    """data- attributes: strings as they are, anything else as JSON."""
+    return " ".join(f'data-{k}="{e(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))}"'
+                    for k, v in data.items())
+
+
+def _theme_button(tr: Translator) -> str:
+    """The theme switch; base.js keeps its label naming the end it switches to."""
+    return (f'<button type="button" id="theme-toggle" class="quiet-btn" aria-label="{e(tr("theme.to_light_label"))}">'
+            f'{e(tr("theme.to_light"))}</button>')
+
+
+def open_button(tr: Translator) -> str:
+    """Opens the navigation drawer below 900 px (frame.js); not shown on wider screens."""
+    return (f'<button type="button" id="side-open" class="icon-btn side-open" aria-controls="side" aria-expanded="false" '
+            f'aria-label="{e(tr("nav.open"))}"><span class="burger" aria-hidden="true"></span></button>')
 
 
 def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None = None,
-           slug: str | None = None, can_admin: bool = False, status: int = 200,
-           styles: Iterable[str] = (), scripts: Iterable[str] = (), wide: bool = False) -> tuple[str, int]:
-    """`styles` and `scripts`: further files under /static, loaded before the page's own app.js."""
-    nav = [f'<a href="/">{e(tr("nav.home"))}</a>']
-    if person and slug:
-        nav.append(f'<a href="/{q(slug)}">{e(tr("nav.messages"))}</a>')
-        nav.append(f'<a href="/{q(slug)}/schedules">{e(tr("nav.schedules"))}</a>')
-        nav.append(f'<a href="/{q(slug)}/members">{e(tr("nav.members"))}</a>')
-        nav.append(f'<a href="/{q(slug)}/my">{e(tr("nav.my"))}</a>')
-        if can_admin:
-            nav.append(f'<a href="/{q(slug)}/admin">{e(tr("nav.admin"))}</a>')
-    if person:
-        nav.append(f'<span class="muted">{e(tr("nav.signed_in_as", name=person["name"]))}</span>')
-        nav.append(f'<form method="post" action="/logout"><button>{e(tr("nav.logout"))}</button></form>')
+           frame: dict[str, Any] | None = None, here: str = "", status: int = 200,
+           styles: Iterable[str] = (), scripts: Iterable[str] = (), header: str | None = None,
+           page_class: str = "") -> tuple[str, int]:
+    """A page. With `frame` (a page of a project) it sits in the project's frame, `here` naming the current page of
+    the navigation; without, in a simple centred column. `styles` and `scripts`: further files under /static; the
+    scripts load after base.js (and frame.js) and before app.js. `header`: the page's own header instead of its title."""
     msgs = e(json.dumps(tr.js_messages(), ensure_ascii=False))
     links = "".join(f'<link rel="stylesheet" href="/static/{e(x)}">' for x in styles)
-    tags = "".join(f'<script src="/static/{e(x)}"></script>' for x in scripts)
+    shared = ["base.js"] + (["frame.js"] if frame else [])
+    tags = "".join(f'<script src="/static/{e(x)}"></script>' for x in [*shared, *scripts, "app.js"])
+    if frame:
+        head = header if header is not None else (
+            f'<header class="page-head">{open_button(tr)}<h1 class="page-title">{e(title)}</h1></header>')
+        main = (f'<div class="shell">{_side(tr, person, frame, here)}<div id="side-scrim" hidden></div>'
+                f'<main id="page" class="page {e(page_class)}">{head}{body}</main></div>')
+        cls = "framed"
+    else:
+        who = ""
+        if person:
+            who = (f'<span class="me">{e(tr("nav.signed_in_as", name=person["name"]))}</span>'
+                   f'<form method="post" action="/logout"><button class="quiet-btn">{e(tr("nav.logout"))}</button></form>')
+        main = (f'<header class="plain-head"><a class="brand" href="/">{e(tr("app.name"))}</a>'
+                f'<span class="spacer"></span>{who}{_theme_button(tr)}</header>'
+                f'<main id="page" class="column"><h1 class="page-title">{e(title)}</h1>{body}</main>')
+        cls = "plain"
     html = (f'<!doctype html><html lang="{e(tr.locale)}"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<title>{e(tr("page.title", title=title, app=tr("app.name")))}</title><style>{STYLE}</style>{links}</head>'
-            f'<body data-msg="{msgs}"{' class="wide"' if wide else ""}><nav>{"".join(nav)}</nav>'
-            f'<main><h1>{e(title)}</h1>{body}</main>{tags}<script src="/static/app.js"></script></body></html>')
+            f'<script>{THEME_SCRIPT}</script>'
+            f'<link rel="stylesheet" href="/static/app.css">{links}'
+            f'<title>{e(tr("page.title", title=title, app=tr("app.name")))}</title></head>'
+            f'<body class="{cls}" data-msg="{msgs}">{main}{tags}</body></html>')
     return html, status
 
 
@@ -59,11 +93,104 @@ def message(tr: Translator, title_key: str, text: str, status: int, **ctx: Any) 
     return layout(tr, tr(title_key), f"<p>{e(text)}</p>", status=status, **ctx)
 
 
+# --------------------------------------------------------------------------- the project's frame
+
+def _repo_text(repo: str) -> str:
+    return repo.split("://", 1)[-1].rstrip("/")
+
+
+def _count(tr: Translator, unread: int, important: int, muted: bool) -> str:
+    """Important unread: an inverted pill with that count. Other unread: the plain count, none when muted."""
+    if important:
+        return (f'<span class="pill" aria-hidden="true">{e(important)}</span>'
+                f'<span class="vh">{e(tr("nav.important", n=unread, k=important))}</span>')
+    if unread and not muted:
+        return (f'<span class="count" aria-hidden="true">{e(unread)}</span>'
+                f'<span class="vh">{e(tr("nav.unread", n=unread))}</span>')
+    return ""
+
+
+def _place_link(tr: Translator, slug: str, place: str, inner: str, unread: int, important: int, muted: bool) -> str:
+    """One place of the navigation; frame.js redraws the lists with the same markup."""
+    cls = "place" + (" unread" if unread and not muted else "") + (" muted" if muted else "")
+    return (f'<li><a class="{cls}" href="/{e(q(slug))}#{e(q(place))}" data-place="{e(place)}">{inner}'
+            f'{_count(tr, unread, important, muted)}</a></li>')
+
+
+def presence_mark(tr: Translator, who: dict[str, Any] | None) -> str:
+    """Shape says who, fill says state: a square for a person, a disc for an agent, filled when it is online."""
+    if not who or who.get("kind") != "agent":
+        return f'<span class="presence person" role="img" aria-label="{e(tr("presence.person"))}"></span>'
+    on = bool(who.get("online"))
+    return (f'<span class="presence agent{" on" if on else ""}" role="img" '
+            f'aria-label="{e(tr("presence.online" if on else "presence.offline"))}"></span>')
+
+
+def _reveal(tr: Translator, target: str, label_key: str) -> str:
+    return (f'<button type="button" class="icon-btn small" data-reveal="{target}" aria-expanded="false" '
+            f'aria-controls="{target}" aria-label="{e(tr(label_key))}"><span class="plus" aria-hidden="true"></span></button>')
+
+
+def _side(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
+    slug, me = f["slug"], (person["name"] if person else "")
+    places, directory = f["places"], f["directory"]
+    channels = "".join(
+        _place_link(tr, slug, "#" + c["name"], f'<span class="place-name">#{e(c["name"])}</span>'
+                    + (f'<span class="note">{e(tr("nav.muted"))}</span>' if c["muted"] else ""),
+                    c["unread"], c["important"], c["muted"]) for c in places["channels"])
+    private = []
+    for p in places["private"]:
+        who = directory.get(p["with"])
+        note = (f'<span class="note">{e(tr("nav.my_agent"))}</span>'
+                if who and who.get("kind") == "agent" and who.get("owner") == me else "")
+        private.append(_place_link(tr, slug, p["with"],
+                                   f'{presence_mark(tr, who)}<span class="place-name">{e(p["with"])}</span>{note}',
+                                   p["unread"], p["important"], False))
+    new_channel = start = plus_channel = plus_private = ""
+    if f["can_create"]:
+        plus_channel = _reveal(tr, "new-channel", "nav.new_channel")
+        new_channel = (f'<form id="new-channel" class="side-form" hidden><input name="name" required maxlength="40" '
+                       f'placeholder="{e(tr("msg.channel_name"))}" aria-label="{e(tr("msg.channel_name"))}" autocomplete="off">'
+                       f'<div class="row"><button class="btn primary">{e(tr("msg.new_channel"))}</button>'
+                       f'<button type="button" class="btn" data-dismiss>{e(tr("nav.cancel"))}</button></div>'
+                       f'<span class="out" data-out></span></form>')
+    options = "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in f["people"])
+    options += "".join(f'<option value="{e(n)}">{e(tr("msg.my_agent", name=n))}</option>' for n in f["agents"])
+    if options:
+        plus_private = _reveal(tr, "new-private", "nav.start_private")
+        start = (f'<form id="new-private" class="side-form" hidden><select name="with" aria-label="{e(tr("msg.choose_member"))}">'
+                 f'{options}</select><div class="row"><button class="btn primary">{e(tr("msg.start_private"))}</button>'
+                 f'<button type="button" class="btn" data-dismiss>{e(tr("nav.cancel"))}</button></div></form>')
+    pages = [("schedules", "nav.schedules"), ("members", "nav.members"), ("my", "nav.my")]
+    if f["can_admin"]:
+        pages.append(("admin", "nav.admin"))
+    current = ' aria-current="page"'
+    links = "".join(f'<li><a class="place" href="/{e(q(slug))}/{p}"{current if p == here else ""}>{e(tr(k))}</a></li>'
+                    for p, k in pages)
+    data = {"slug": slug, "me": me, "here": here, "directory": directory}
+    return (f'<nav id="side" aria-label="{e(tr("nav.label"))}" {_attrs(data)}><div class="side-inner">'
+            f'<div class="side-project"><div class="project-text"><a class="project-name" href="/{e(q(slug))}">{e(f["name"])}</a>'
+            f'<a class="project-repo" href="{e(f["repo"])}" target="_blank" rel="noopener noreferrer" '
+            f'title="{e(tr("nav.repo"))}">{e(_repo_text(f["repo"]))}</a></div>'
+            f'<button type="button" id="side-close" class="icon-btn" aria-label="{e(tr("nav.close"))}">'
+            f'<span class="cross" aria-hidden="true"></span></button></div>'
+            f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.channels"))}</h2>{plus_channel}</div>'
+            f'{new_channel}<ul id="side-channels" class="side-list">{channels}</ul></section>'
+            f'<section class="side-sec"><div class="side-head"><h2>{e(tr("msg.private"))}</h2>{plus_private}</div>'
+            f'{start}<ul id="side-private" class="side-list">{"".join(private)}</ul></section>'
+            f'<section class="side-sec side-pages"><h2 class="vh">{e(tr("nav.pages"))}</h2><ul class="side-list">{links}</ul></section>'
+            f'<div class="side-foot"><a class="me" href="/" title="{e(tr("nav.home"))}">{e(me)}</a><span class="spacer"></span>'
+            f'{_theme_button(tr)}<form method="post" action="/logout"><button class="quiet-btn">{e(tr("nav.logout"))}</button></form>'
+            f'</div></div></nav>')
+
+
+# --------------------------------------------------------------------------- small parts
+
 def _table(head: Iterable[str], rows: Iterable[Iterable[str]]) -> str:
-    """Cells are HTML already escaped by the caller."""
+    """Cells are HTML already escaped by the caller. The table scrolls inside its box on a narrow screen."""
     h = "".join(f"<th>{c}</th>" for c in head)
     r = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
-    return f"<table><thead><tr>{h}</tr></thead><tbody>{r}</tbody></table>"
+    return f'<div class="table-wrap"><table><thead><tr>{h}</tr></thead><tbody>{r}</tbody></table></div>'
 
 
 def _status(tr: Translator, a: dict[str, Any]) -> str:
@@ -91,11 +218,12 @@ def _group_label(tr: Translator, groups: dict[str, dict[str, Any]], name: str) -
 def home(tr: Translator, person: dict[str, Any] | None, projects: list[dict[str, str]]) -> tuple[str, int]:
     if not person:
         body = (f'<p>{e(tr("home.sign_in_hint"))}</p>'
-                f'<p><a href="/login?next=/">{e(tr("login.github"))}</a></p>')
+                f'<p><a class="btn primary" href="/login?next=/">{e(tr("login.github"))}</a></p>')
         return layout(tr, tr("home.title"), body)
     if projects:
-        items = "".join(f'<li><a href="/{q(p["slug"])}">{e(p["name"])}</a></li>' for p in projects)
-        body = f'<h2>{e(tr("home.projects"))}</h2><ul>{items}</ul>'
+        items = "".join(f'<li><a class="card-link" href="/{q(p["slug"])}"><span class="card-title">{e(p["name"])}</span>'
+                        f'<span class="mono dim">{e(_repo_text(p["repo"]))}</span></a></li>' for p in projects)
+        body = f'<h2>{e(tr("home.projects"))}</h2><ul class="cards">{items}</ul>'
     else:
         body = f'<p>{e(tr("home.no_projects"))}</p>'
     return layout(tr, tr("home.title"), body, person)
@@ -110,16 +238,16 @@ def landing(tr: Translator, slug: str) -> tuple[str, int]:
     """The project's address without a session: a sign-in link for people, one sentence for agents, and
     nothing of the project beyond its slug."""
     login = "/login?" + urllib.parse.urlencode({"next": f"/{slug}"})
-    body = (f'<p>{e(tr("landing.people"))}</p><p><a href="{e(login)}">{e(tr("login.github"))}</a></p>'
-            f'<p lang="en">{e(AGENT_LINE)}</p>')
+    body = (f'<p>{e(tr("landing.people"))}</p><p><a class="btn primary" href="{e(login)}">{e(tr("login.github"))}</a></p>'
+            f'<p lang="en" class="dim">{e(AGENT_LINE)}</p>')
     return layout(tr, tr("landing.title", slug=slug), body)
 
 
 def test_login(tr: Translator, next_path: str) -> tuple[str, int]:
     body = (f'<h2>{e(tr("login.test_heading"))}</h2><p>{e(tr("login.test_hint"))}</p>'
-            f'<form data-api="/test/login" data-next="{e(next_path)}">'
-            f'<label>{e(tr("login.test_field"))} <input name="github_login" required autofocus></label> '
-            f'<button>{e(tr("login.submit"))}</button> <span class="out" data-out></span></form>')
+            f'<form class="stack" data-api="/test/login" data-next="{e(next_path)}">'
+            f'<label class="field"><span>{e(tr("login.test_field"))}</span><input name="github_login" required autofocus></label>'
+            f'<div class="row"><button class="btn primary">{e(tr("login.submit"))}</button> <span class="out" data-out></span></div></form>')
     return layout(tr, tr("login.title"), body)
 
 
@@ -131,33 +259,35 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
     if preview["github_login"]:
         body += f'<p class="muted">{e(tr("join.for_login", login=preview["github_login"]))}</p>'
     body += (f'<form data-api="/join/{q(code)}" data-next="/{q(p["slug"])}/members">'
-             f'<button>{e(tr("join.button"))}</button> <span class="out" data-out></span></form>')
+             f'<button class="btn primary">{e(tr("join.button"))}</button> <span class="out" data-out></span></form>')
     return layout(tr, tr("join.title"), body, person)
 
 
-def members(tr: Translator, person: dict[str, Any], view: dict[str, Any], can_admin: bool) -> tuple[str, int]:
+def members(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:
     p = view["project"]
     groups = {g["name"]: g for g in view["groups"]}
     order = [g for g in view["groups"] if g["kind"] != "ownership"] + [g for g in view["groups"] if g["kind"] == "ownership"]
-    parts = [f'<p>{e(tr("project.line", name=p["name"], repo=p["repo"]))}</p>']
+    parts = [f'<div class="prose"><p class="muted">{e(tr("project.line", name=p["name"], repo=p["repo"]))}</p>']
     for g in order:
         people = [x for x in view["people"] if g["name"] in x["groups"]]
         agents = [a for a in view["agents"] if g["name"] in a["groups"]]
         perms = ", ".join(tr(f"perm.{x}") for x in g["permissions"])
-        parts.append(f'<section><h2>{e(_group_label(tr, groups, g["name"]))} <small class="muted">{e(g["name"])}</small></h2>')
+        parts.append(f'<section class="block"><h2>{e(_group_label(tr, groups, g["name"]))} <small class="mono dim">{e(g["name"])}</small></h2>')
         if perms:
             parts.append(f'<p class="muted">{e(tr("members.permissions", list=perms))}</p>')
         if not people and not agents:
             parts.append(f'<p class="muted">{e(tr("members.empty"))}</p>')
         if people:
-            parts.append(f'<h3>{e(tr("members.people"))}</h3><ul>' + "".join(
+            parts.append(f'<h3>{e(tr("members.people"))}</h3><ul class="plain-list">' + "".join(
                 f'<li>{e(x["name"])} <span class="muted">{e(tr("members.github", login=x["github_login"]))}</span></li>' for x in people) + "</ul>")
         if agents:
             parts.append(f'<h3>{e(tr("members.agents"))}</h3>' + _table(
                 [e(tr("col.name")), e(tr("col.owner")), e(tr("col.kind")), e(tr("col.status")), e(tr("col.last_active"))],
-                [[e(a["name"]), e(a["owner"]), _kind(tr, a["kind"]), _status(tr, a), _when(tr, a["last_active"])] for a in agents]))
+                [[f'<span class="mono">{e(a["name"])}</span>', e(a["owner"]), _kind(tr, a["kind"]), _status(tr, a),
+                  _when(tr, a["last_active"])] for a in agents]))
         parts.append("</section>")
-    return layout(tr, tr("members.title"), "".join(parts), person, p["slug"], can_admin)
+    parts.append("</div>")
+    return layout(tr, tr("members.title"), "".join(parts), person, frame, "members")
 
 
 def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], groups: dict[str, dict[str, Any]],
@@ -167,25 +297,25 @@ def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], g
     out = []
     for g in current:
         if groups.get(g, {}).get("kind") == "ownership":
-            out.append(f'<span class="muted">{e(_group_label(tr, groups, g))}</span>')
+            out.append(f'<span class="tag">{e(_group_label(tr, groups, g))}</span>')
             continue
         out.append(f'<form class="inline" data-api="{api}"><input type="hidden" name="remove" data-list value="{e(g)}">'
-                   f'<button title="{e(tr(remove_key, group=g))}">{e(tr("group.remove_button", group=_group_label(tr, groups, g)))}</button></form>')
+                   f'<button class="chip-btn" title="{e(tr(remove_key, group=g))}">{e(tr("group.remove_button", group=_group_label(tr, groups, g)))}</button></form>')
     choices = [g for g in addable if g not in current]
     if choices:
         opts = "".join(f'<option value="{e(g)}">{e(_group_label(tr, groups, g))}</option>' for g in choices)
-        out.append(f'<form class="inline" data-api="{api}"><select name="add" data-list>{opts}</select>'
-                   f'<button>{e(tr(add_key))}</button><span class="out" data-out></span></form>')
-    return " ".join(out)
+        out.append(f'<form class="inline" data-api="{api}"><select name="add" data-list aria-label="{e(tr(add_key))}">{opts}</select>'
+                   f'<button class="btn">{e(tr(add_key))}</button><span class="out" data-out></span></form>')
+    return f'<div class="wrap-row">{"".join(out)}</div>'
 
 
 def _invite(tr: Translator, slug: str) -> str:
     """The button that makes an agent invitation link; app.js shows what the API answers in #invite-result."""
-    return (f'<h2>{e(tr("invite.title"))}</h2><p class="muted">{e(tr("invite.skip"))}</p>'
-            f'<p><button type="button" id="invite-agent" data-api="/{q(slug)}/api/my/agent-invites">'
+    return (f'<section class="block"><h2>{e(tr("invite.title"))}</h2><p class="muted">{e(tr("invite.skip"))}</p>'
+            f'<p class="row"><button type="button" class="btn primary" id="invite-agent" data-api="/{q(slug)}/api/my/agent-invites">'
             f'{e(tr("invite.button"))}</button> <span class="out" data-out></span></p>'
             f'<p class="muted" id="invite-consent">{e(tr("invite.consent"))}</p>'
-            f'<div id="invite-result" hidden></div>')
+            f'<div id="invite-result" class="card invite-result" hidden></div></section>')
 
 
 def _connection(tr: Translator, c: dict[str, Any]) -> str:
@@ -194,26 +324,33 @@ def _connection(tr: Translator, c: dict[str, Any]) -> str:
     return e(tr("my.connected.yes" if c["connected"] else "my.connected.no"))
 
 
-def my(tr: Translator, person: dict[str, Any], slug: str, mine: dict[str, Any], groups: list[dict[str, Any]],
-       assignable: list[str], can_admin: bool) -> tuple[str, int]:
+def _confirmed(tr: Translator, api: str, confirm: str, label: str) -> str:
+    """A button whose act confirms in place, in two steps (app.js): data-confirm is what the armed button says."""
+    return (f'<form class="inline" data-api="{api}" data-confirm="{e(confirm)}"><button class="btn">{e(label)}</button>'
+            f'<span class="out" data-out></span></form>')
+
+
+def my(tr: Translator, person: dict[str, Any], frame: dict[str, Any], mine: dict[str, Any], groups: list[dict[str, Any]],
+       assignable: list[str]) -> tuple[str, int]:
+    slug = frame["slug"]
     gmap = {g["name"]: g for g in groups}
-    parts = [f'<h2>{e(tr("my.agents"))}</h2>']
+    parts = [f'<section class="block"><h2>{e(tr("my.agents"))}</h2>']
     if mine["agents"]:
         rows = []
         for a in mine["agents"]:
-            remove = (f'<form class="inline" data-api="/{q(slug)}/api/members/{q(a["name"])}/remove" '
-                      f'data-confirm="{e(tr("confirm.remove", name=a["name"]))}"><button>{e(tr("my.remove_agent"))}</button>'
-                      f'<span class="out" data-out></span></form>')
-            rows.append([e(a["name"]), _kind(tr, a["kind"]), _status(tr, a), _when(tr, a["last_active"]),
-                         e(a["generation"]),
+            remove = _confirmed(tr, f"/{q(slug)}/api/members/{q(a['name'])}/remove", tr("confirm.remove", name=a["name"]),
+                                tr("my.remove_agent"))
+            rows.append([f'<span class="mono">{e(a["name"])}</span>', _kind(tr, a["kind"]), _status(tr, a),
+                         _when(tr, a["last_active"]), e(a["generation"]),
                          _group_buttons(tr, slug, a["name"], a["groups"], gmap, assignable, "my.remove_group", "my.add"),
                          remove])
         parts.append(_table([e(tr("col.name")), e(tr("col.kind")), e(tr("col.status")), e(tr("col.last_active")),
                              e(tr("col.generation")), e(tr("col.groups")), e(tr("col.actions"))], rows))
     else:
         parts.append(f'<p class="muted">{e(tr("my.no_agents"))}</p>')
+    parts.append("</section>")
     parts.append(_invite(tr, slug))
-    parts.append(f'<h2>{e(tr("my.credentials"))}</h2>')
+    parts.append(f'<section class="block"><h2>{e(tr("my.credentials"))}</h2>')
     if mine["credentials"]:
         parts.append(_table(
             [e(tr("col.label")), e(tr("col.kind")), e(tr("col.via")), e(tr("col.connection")), e(tr("col.last_used")),
@@ -221,14 +358,15 @@ def my(tr: Translator, person: dict[str, Any], slug: str, mine: dict[str, Any], 
             [[e(c["label"]), e(tr(f"cred.{c['kind']}")),
               e(tr(f"my.via.{c['via']}") if tr.has(f"my.via.{c['via']}") else c["via"]), _connection(tr, c),
               _when(tr, c["last_used"]),
-              f'<form class="inline" data-api="/{q(slug)}/api/my/credentials/{e(c["id"])}/revoke" '
-              f'data-confirm="{e(tr("confirm.revoke"))}"><button>{e(tr("my.revoke"))}</button>'
-              f'<span class="out" data-out></span></form>'] for c in mine["credentials"]]))
+              _confirmed(tr, f"/{q(slug)}/api/my/credentials/{e(c['id'])}/revoke", tr("confirm.revoke"), tr("my.revoke"))]
+             for c in mine["credentials"]]))
     else:
         parts.append(f'<p class="muted">{e(tr("my.no_credentials"))}</p>')
-    parts.append(f'<h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>')
+    parts.append("</section>")
+    parts.append(f'<section class="block"><h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>')
     parts.append(switch_boxes(tr, mine["switches"], toggle=f"/{q(slug)}/api/my/switches"))
-    return layout(tr, tr("my.title"), "".join(parts), person, slug, can_admin)
+    parts.append("</section>")
+    return layout(tr, tr("my.title"), f'<div class="prose">{"".join(parts)}</div>', person, frame, "my")
 
 
 def switch_boxes(tr: Translator, values: dict[str, bool], toggle: str | None = None) -> str:
@@ -237,7 +375,7 @@ def switch_boxes(tr: Translator, values: dict[str, bool], toggle: str | None = N
     for k in SWITCHES:
         checked = " checked" if values.get(k) else ""
         attrs = f'data-toggle="{e(toggle)}"' if toggle else 'value="1"'
-        out.append(f'<div><label><input type="checkbox" name="{k}" {attrs}{checked}> {e(tr("switch." + k))}</label>'
+        out.append(f'<div class="check"><label><input type="checkbox" name="{k}" {attrs}{checked}> {e(tr("switch." + k))}</label>'
                    f' <span class="out" data-out></span></div>')
     return "".join(out)
 
@@ -250,21 +388,23 @@ def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str,
             f'<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="switches" value="1">'
             f'<h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>'
             f'{switch_boxes(tr, switches)}'
-            f'<p><button name="decision" value="approve">{e(tr("consent.approve"))}</button> '
-            f'<button name="decision" value="deny">{e(tr("consent.deny"))}</button></p></form>')
+            f'<p class="row"><button class="btn primary" name="decision" value="approve">{e(tr("consent.approve"))}</button> '
+            f'<button class="btn" name="decision" value="deny">{e(tr("consent.deny"))}</button></p></form>')
     return layout(tr, tr("consent.title"), body, person)
 
 
-def admin(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, Any], mine: set[str]) -> tuple[str, int]:
+def admin(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any], mine: set[str]) -> tuple[str, int]:
+    slug = frame["slug"]
     gmap = {g["name"]: g for g in view["groups"]}
     editable = [g["name"] for g in view["groups"] if g["kind"] != "ownership"]
     parts = []
     if "manage_members" in mine:
-        parts.append(f'<h2>{e(tr("admin.invite"))}</h2><p class="muted">{e(tr("admin.invite_hint"))}</p>'
-                     f'<form data-api="/{q(slug)}/api/invites" data-show="url"><label>{e(tr("admin.invite_login"))} '
-                     f'<input name="github_login"></label> <button>{e(tr("admin.invite_button"))}</button>'
-                     f'<p><code class="out" data-out></code></p></form>')
-    parts.append(f'<h2>{e(tr("admin.members"))}</h2>')
+        parts.append(f'<section class="block"><h2>{e(tr("admin.invite"))}</h2><p class="muted">{e(tr("admin.invite_hint"))}</p>'
+                     f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
+                     f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login"></label>'
+                     f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
+                     f'<p><code class="out" data-out></code></p></form></section>')
+    parts.append(f'<section class="block"><h2>{e(tr("admin.members"))}</h2>')
     rows = []
     for x in view["people"]:
         groups = _group_buttons(tr, slug, x["name"], x["groups"], gmap, editable, "admin.remove_group", "admin.add") \
@@ -273,84 +413,61 @@ def admin(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, Any
     for a in view["agents"]:
         groups = _group_buttons(tr, slug, a["name"], a["groups"], gmap, editable, "admin.remove_group", "admin.add") \
             if "manage_groups" in mine else e(", ".join(_group_label(tr, gmap, g) for g in a["groups"]))
-        rows.append([e(a["name"]), e(tr("admin.agent_of", owner=a["owner"])), groups,
+        rows.append([f'<span class="mono">{e(a["name"])}</span>', e(tr("admin.agent_of", owner=a["owner"])), groups,
                      _remove(tr, slug, a["name"]) if "manage_members" in mine else ""])
     parts.append(_table([e(tr("col.name")), e(tr("col.github")), e(tr("col.groups")), e(tr("col.actions"))], rows))
-    return layout(tr, tr("admin.title"), "".join(parts), person, slug, True)
+    parts.append("</section>")
+    return layout(tr, tr("admin.title"), f'<div class="prose">{"".join(parts)}</div>', person, frame, "admin")
 
 
 def _remove(tr: Translator, slug: str, name: str) -> str:
-    return (f'<form class="inline" data-api="/{q(slug)}/api/members/{q(name)}/remove" '
-            f'data-confirm="{e(tr("confirm.remove", name=name))}"><button>{e(tr("admin.remove"))}</button>'
-            f'<span class="out" data-out></span></form>')
+    return _confirmed(tr, f"/{q(slug)}/api/members/{q(name)}/remove", tr("confirm.remove", name=name), tr("admin.remove"))
 
 
-def _place_item(tr: Translator, place: str, label: str, unread: int, important: int) -> str:
-    """One entry of the places list; the page script redraws the list with the same markup."""
-    badge = ""
-    if unread:
-        badge = f' <span class="count{" important" if important else ""}">{e(unread)}</span>'
-    return f'<li><a href="#{e(q(place))}" data-place="{e(place)}">{e(label)}</a>{badge}</li>'
-
-
-def messages(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, Any], can_admin: bool) -> tuple[str, int]:
-    """The messages page. The list of places is rendered here; the page script (messages.js) keeps it and
-    the chosen place up to date through the JSON API. What the script needs is in data- attributes."""
-    places = view["places"]
-    channels = "".join(_place_item(tr, "#" + c["name"], "#" + c["name"], c["unread"], c["important"])
-                       for c in places["channels"])
-    private = "".join(_place_item(tr, p["with"], p["with"], p["unread"], p["important"]) for p in places["private"])
-    options = "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in view["people"])
-    options += "".join(f'<option value="{e(n)}">{e(tr("msg.my_agent", name=n))}</option>' for n in view["agents"])
-    new_channel = ""
-    if view["can_create"]:
-        new_channel = (f'<form id="new-channel" class="side-form"><input name="name" required maxlength="40" '
-                       f'placeholder="{e(tr("msg.channel_name"))}" '
-                       f'aria-label="{e(tr("msg.channel_name"))}"> <button>{e(tr("msg.new_channel"))}</button>'
-                       f'<span class="out" data-out></span></form>')
-    start = ""
-    if options:
-        start = (f'<form id="new-private" class="side-form"><select name="with" aria-label="{e(tr("msg.choose_member"))}">'
-                 f'{options}</select> <button>{e(tr("msg.start_private"))}</button></form>')
-    data = {"slug": slug, "me": person["name"], "agents": view["agents"], "agent-mutes": view["agent_mutes"]}
-    attrs = " ".join(f'data-{k}="{e(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))}"'
-                     for k, v in data.items())
-    # The task table above the channels; messages.js fills it from /api/tasks and keeps it current.
-    panel = (f'<section id="task-panel" data-can-edit="{"1" if view["can_edit_tasks"] else ""}">'
-             f'<div class="task-head"><h2>{e(tr("task.title"))}</h2> <span id="task-summary" class="muted"></span> '
-             f'<button type="button" id="task-fold" aria-expanded="true" aria-controls="task-body">'
-             f'{e(tr("task.hide"))}</button></div><div id="task-body"></div></section>')
-    body = (f'{panel}<div id="chat" {attrs}>'
-            f'<aside class="places"><h2>{e(tr("msg.channels"))}</h2><ul id="channels">{channels}</ul>{new_channel}'
-            f'<h2>{e(tr("msg.private"))}</h2><ul id="privates">{private}</ul>{start}</aside>'
-            f'<section class="room"><header class="room-head"><h2 id="place-title"></h2>'
-            f'<button type="button" id="settings-toggle" aria-expanded="false">{e(tr("msg.settings"))}</button></header>'
-            f'<div id="settings" hidden></div>'
-            f'<div id="pins" data-can-pin="{"1" if view["can_create"] else ""}" hidden></div>'
-            f'<button type="button" id="older" hidden>{e(tr("msg.older"))}</button>'
-            f'<ol id="messages" aria-live="polite"></ol>'
-            f'<form id="composer"><div id="reply-target" hidden><span></span> '
-            f'<button type="button" id="reply-cancel">{e(tr("msg.reply_cancel"))}</button></div>'
-            f'<textarea id="text" rows="3" maxlength="4000" aria-label="{e(tr("msg.input_label"))}" '
+def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:
+    """The messages page: the chosen place in the middle, the task table on the right. The navigation's lists are
+    the frame's (frame.js); the page scripts (messages.js, tasks.js) keep the rest current through the JSON API.
+    What the scripts need is in data- attributes."""
+    data = {"slug": frame["slug"], "me": person["name"], "agents": frame["agents"], "agent-mutes": view["agent_mutes"]}
+    header = (f'<header class="page-head room-head">{open_button(tr)}<h1 id="place-title" class="page-title place-title"></h1>'
+              f'<span class="spacer"></span>'
+              f'<button type="button" id="settings-toggle" class="btn quiet" aria-expanded="false" aria-controls="settings">'
+              f'{e(tr("msg.settings"))}</button>'
+              f'<button type="button" id="task-toggle" class="btn quiet" aria-expanded="true" aria-controls="task-panel">'
+              f'{e(tr("task.toggle_hide"))}</button></header>')
+    room = (f'<div id="chat" class="room" {_attrs(data)}>'
+            f'<div id="settings" class="settings" hidden></div>'
+            f'<div id="pins" class="pins" data-can-pin="{"1" if frame["can_create"] else ""}" hidden></div>'
+            f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
+            f'{e(tr("msg.older"))}</button></div>'
+            f'<ol id="messages" class="messages" aria-live="polite"></ol></div>'
+            f'<form id="composer" class="composer"><div id="reply-target" class="reply-target" hidden><span></span>'
+            f'<button type="button" id="reply-cancel" class="quiet-btn">{e(tr("msg.reply_cancel"))}</button></div>'
+            f'<div class="composer-box"><textarea id="text" rows="1" maxlength="4000" aria-label="{e(tr("msg.input_label"))}" '
             f'placeholder="{e(tr("msg.input_hint"))}"></textarea>'
-            f'<div><button>{e(tr("msg.send"))}</button> <span class="out" id="composer-out"></span></div></form>'
-            f'</section></div>')
-    return layout(tr, tr("msg.title"), body, person, slug, can_admin, wide=True,
-                  styles=["vendor/katex/katex.min.css", "messages.css"],
+            f'<button class="btn primary send">{e(tr("msg.send"))}</button></div>'
+            f'<div class="out composer-out" id="composer-out" aria-live="polite"></div></form></div>')
+    panel = (f'<aside id="task-panel" class="task-panel" aria-labelledby="task-title" '
+             f'data-can-edit="{"1" if view["can_edit_tasks"] else ""}">'
+             f'<div class="task-head"><h2 id="task-title">{e(tr("task.title"))}</h2><span id="task-summary" class="dim small"></span>'
+             f'<span class="spacer"></span><button type="button" id="task-close" class="icon-btn" aria-label="{e(tr("task.close"))}">'
+             f'<span class="cross" aria-hidden="true"></span></button></div><div id="task-body" class="task-body"></div></aside>')
+    return layout(tr, tr("msg.title"), room + panel, person, frame, "messages", header=header, page_class="room-page",
+                  styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js",
-                           "vendor/katex/katex.min.js", "messages.js"])
+                           "vendor/katex/katex.min.js", "render.js", "messages.js", "tasks.js"])
 
 
-def schedules(tr: Translator, person: dict[str, Any], slug: str, view: dict[str, Any], can_admin: bool) -> tuple[str, int]:
+def schedules(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:
     """The scheduled messages. The list (#schedules) is drawn by schedules.js from the JSON API; the form to make
     one (#schedule-form) is here only for a person who may create, with the places they can post to."""
-    data = {"slug": slug, "me": person["name"], "can-manage": "1" if view["can_manage"] else "",
+    data = {"slug": frame["slug"], "me": person["name"], "can-manage": "1" if view["can_manage"] else "",
             "places": view["places"], "min-every": view["min_every_s"]}
-    attrs = " ".join(f'data-{k}="{e(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))}"'
-                     for k, v in data.items())
-    parts = [f'<p class="muted">{e(tr("sch.intro"))}</p>']
+    header = (f'<header class="page-head">{open_button(tr)}<div class="head-text"><h1 class="page-title">{e(tr("sch.title"))}</h1>'
+              f'<p class="dim">{e(tr("sch.intro"))}</p></div></header>')
+    parts = []
     if view["can_create"]:
-        parts.append(f'<h2>{e(tr("sch.new"))}</h2><form id="schedule-form" class="sch-form"></form>')
-    parts.append(f'<h2>{e(tr("sch.list"))}</h2><div id="schedules" {attrs}></div>')
-    return layout(tr, tr("sch.title"), "".join(parts), person, slug, can_admin,
-                  styles=["messages.css"], scripts=["schedules.js"])
+        parts.append(f'<section class="card sch-new"><h2>{e(tr("sch.new"))}</h2><form id="schedule-form" class="sch-form"></form></section>')
+    parts.append(f'<section class="block"><h2>{e(tr("sch.list"))}</h2><div id="schedules" {_attrs(data)}></div></section>')
+    return layout(tr, tr("sch.title"), f'<div class="prose">{"".join(parts)}</div>', person, frame, "schedules",
+                  header=header, scripts=["schedules.js"])
