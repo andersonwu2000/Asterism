@@ -1,40 +1,52 @@
-// Files mode, the explorer (#explorer, Asterism.explorer): the repository's name and branch, a filter over the names
-// already loaded, and the tree. Folders are listed on demand (GET /api/files/list, one call per folder, kept for the
-// session) and listed again when the head commit changes; the root is looked at again every few seconds to notice a
-// push. Files open in a tab (viewer.js). Entries of type "other" recede and cannot be opened.
+// Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (#source-switch), the project's
+// repository (repo.js) and a folder of the reader's own computer (local.js), a filter over the names already listed,
+// and the tree of the source shown. Both sources answer the same small interface (see repo.js), so the tree, the
+// filter, the keyboard and the entry menu are one for both. Files open in a tab (viewer.js).
+// The local source shows, in its bar (#local-bar): one control to open a folder (#local-open), or one to restore
+// access to the folder kept from an earlier visit (#local-restore), or the folder's name with its menu and the
+// control that forgets it (#local-forget); in a browser without the File System Access API, one sentence and no
+// control. A new file, a new folder and a rename ask for the name in the tree itself, and a refusal is said there.
 // The tree is one roving tab stop: arrows move, Right and Left open and close a folder, Enter opens, a letter jumps.
 // Every entry has the one menu (A.menu): by right click, by the context-menu key or Shift+F10, and by the small
 // control on its row.
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("files"), box = document.getElementById("explorer");
-  if (!A || !root || !box) return;
+  var S = A && A.sources;
+  if (!A || !root || !box || !S || !S.repo || !S.local) return;
   var t = A.t, make = A.make;
-  var SLUG = root.dataset.slug, REPO = root.dataset.repo, CAN_PIN = !!root.dataset.canPin;
-  var API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var HEAD_EVERY_MS = 10000, NOTE_MS = 3000;
-  var OPEN_KEY = "asterism-files-open:" + SLUG;
+  var SLUG = root.dataset.slug;
+  var NOTE_MS = 3000, LOCAL_EVERY_MS = 5000;
+  var SOURCE_KEY = "asterism-files-source:" + SLUG;
+  var OPEN_KEYS = {repo: "asterism-files-open:" + SLUG, local: "asterism-files-open-local:" + SLUG};
+  var R = S.repo, L = S.local;
 
   var el = {tree: document.getElementById("explorer-tree"), filter: document.getElementById("explorer-filter"),
             note: document.getElementById("explorer-note"), ref: document.getElementById("explorer-ref"),
-            status: document.getElementById("explorer-status")};
+            status: document.getElementById("explorer-status"), sw: document.getElementById("source-switch"),
+            bar: document.getElementById("local-bar"), unsupported: document.getElementById("local-unsupported"),
+            open: document.getElementById("local-open"), restore: document.getElementById("local-restore"),
+            folder: document.getElementById("local-folder"), name: document.getElementById("local-name"),
+            acts: document.getElementById("local-acts"), forget: document.getElementById("local-forget"),
+            said: document.getElementById("local-note")};
 
   var E = A.explorer = {
-    ref: null, commit: null, stale: false,
-    state: "loading",            // loading | ok | not_connected | away (nothing could be listed)
-    message: "",                 // the server's sentence for not_connected / away
-    current: null                // the file shown (marked in the tree)
+    shown: S[A.store.get(SOURCE_KEY, "repo")] ? A.store.get(SOURCE_KEY, "repo") : "repo",
+    current: null                // {source, path} of the file shown (marked in the tree of its source)
   };
-  var listings = new Map();      // folder ("" is the root) -> its entries, as the server ordered them
-  var asking = new Map();        // folder -> the pending answer
-  var open = new Set((A.store.get(OPEN_KEY, []) || []).filter(function (p) { return typeof p === "string"; }));
-  var notes = new Map();         // path -> a short note shown on its row for a moment
-  var failed = new Set();        // folders GitHub could not list this time
+  var opens = {};                // source -> the folders open in its tree
+  Object.keys(OPEN_KEYS).forEach(function (id) {
+    opens[id] = new Set((A.store.get(OPEN_KEYS[id], []) || []).filter(function (p) { return typeof p === "string"; }));
+  });
+  var notes = new Map();         // path -> a short note shown on its row for a moment (the source shown)
+  var asked = null;              // a name asked for in the tree: {folder | rename, kind, run, refusal, busy}
+  var askInput = null, drawing = false;
   var focusPath = null, query = "";
-  var listeners = {commit: [], state: []};
+  var listeners = {source: []};
   E.on = function (what, fn) { listeners[what].push(fn); };
-  function emit(what) { listeners[what].forEach(function (fn) { fn(); }); }
 
+  function src() { return S[E.shown]; }
+  function open() { return opens[E.shown]; }
   function parentOf(path) { var i = path.lastIndexOf("/"); return i < 0 ? "" : path.slice(0, i); }
   function nameOf(path) { return path.slice(path.lastIndexOf("/") + 1); }
   function ancestors(path) {
@@ -42,141 +54,175 @@
     while (p) { out.unshift(p); p = parentOf(p); }
     return out;
   }
-  function saveOpen() { A.store.set(OPEN_KEY, Array.from(open)); }
+  function saveOpen(id) { A.store.set(OPEN_KEYS[id], Array.from(opens[id])); }
 
-  E.githubUrl = function (path, folder) { return A.githubUrl(REPO, E.ref, path, folder); };
-
-  // ------------------------------------------------------------------ listing
-
-  function setState(state, message) {
-    if (E.state === state && E.message === (message || "")) return;
-    E.state = state;
-    E.message = message || "";
-    emit("state");
-  }
+  // ------------------------------------------------------------------ the two sources
 
   function showHead() {
-    el.ref.textContent = A.githubUrl(REPO, null, "") ? REPO.replace(/^https:\/\/github\.com\//i, "").replace(/\/+$/, "")
-      .replace(/\.git$/, "") + (E.ref ? " · " + E.ref : "") : REPO;
-    el.note.hidden = !E.stale;
-    el.note.textContent = E.stale ? t("files.stale") : "";
+    var repo = E.shown === "repo";
+    el.ref.textContent = R.headText();
+    el.note.hidden = !(repo && R.stale);
+    el.note.textContent = repo && R.stale ? t("files.stale") : "";
+    Array.prototype.forEach.call(el.sw.querySelectorAll("[data-source]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.source === E.shown));
+    });
+    el.bar.hidden = repo;
+    var st = L.state;
+    el.unsupported.hidden = st !== "unsupported";
+    el.open.hidden = st !== "none";
+    el.restore.hidden = st !== "closed";
+    var name = L.name || t("files.source_local");
+    if (st === "closed") el.restore.textContent = t("local.restore", {name: name});
+    el.folder.hidden = st !== "ok";
+    el.name.textContent = st === "ok" ? name : "";
+    el.forget.hidden = st !== "ok" && st !== "closed";
   }
 
-  // The listing of a folder: kept for the session; `fresh` asks again (the head, or after a push).
-  E.list = function (folder, fresh) {
-    if (!fresh && listings.has(folder)) return Promise.resolve(listings.get(folder));
-    if (asking.has(folder)) return asking.get(folder);
-    var p = (async function () {
-      var r = await A.request(API + "files/list", {dir: folder});
-      asking.delete(folder);
-      if (r.ok) failed.delete(folder);
-      else if (r.status !== 404 && r.data.error !== "not_connected") failed.add(folder);
-      if (r.ok) {
-        var d = r.data;
-        E.ref = d.ref;
-        E.stale = !!d.stale;
-        setState("ok");
-        if (E.commit && d.commit !== E.commit) {          // a push: everything listed may have changed
-          E.commit = d.commit;
-          listings.clear();
-          listings.set(folder, d.entries || []);
-          showHead();
-          await relistOpen();
-          emit("commit");
-          return listings.get(folder);
-        }
-        E.commit = d.commit;
-        listings.set(folder, d.entries || []);
-        showHead();
-        draw();
-        return listings.get(folder);
-      }
-      if (r.data.error === "not_connected") {
-        listings.clear();
-        setState("not_connected", r.data.message);
-      } else if (r.status === 404) {                     // the folder is gone
-        listings.delete(folder);
-        open.delete(folder);
-        saveOpen();
-      } else if (r.data.error === "github_unavailable" || !r.ok) {
-        E.stale = true;
-        if (!listings.size) setState("away", r.data.message);
-      }
-      showHead();
-      draw();
-      return null;
-    })();
-    asking.set(folder, p);
+  E.show = async function (id) {
+    if (!S[id]) return;
+    if (E.shown !== id) {
+      E.shown = id;
+      A.store.set(SOURCE_KEY, id);
+      notes.clear();
+      asked = null;
+      focusPath = null;
+      listeners.source.forEach(function (fn) { fn(); });
+    }
+    showHead();
     draw();
-    return p;
+    if (src().state === "ok" || id === "repo") await relistOpen(id, false);
   };
 
-  async function relistOpen() {
-    var folders = [""].concat(Array.from(open).sort());
+  el.sw.addEventListener("click", function (ev) {
+    var b = ev.target.closest("[data-source]");
+    if (b) E.show(b.dataset.source);
+  });
+
+  function say(text) {
+    el.said.textContent = text || "";
+  }
+  el.open.addEventListener("click", async function () {
+    say("");
+    var res = await L.open();
+    if (!res.ok) say(res.message);
+  });
+  el.restore.addEventListener("click", async function () {
+    say("");
+    var res = await L.restore();
+    if (!res.ok) say(res.message);
+  });
+  el.forget.addEventListener("click", async function () {
+    if (!A.twoStep(el.forget, t("local.forget_armed", {name: L.name || t("files.source_local")}))) return;
+    say("");
+    await L.forget();
+    opens.local.clear();
+    saveOpen("local");
+  });
+  el.acts.addEventListener("click", function () {
+    A.menu({anchor: el.acts, label: t("files.acts", {name: L.name || t("files.source_local")})},
+           L.menuItems({path: "", name: L.name, type: "dir"}, ui), el.acts);
+  });
+
+  R.on("listing", function () { if (E.shown === "repo") { showHead(); draw(); } });
+  R.on("state", function () { showHead(); draw(); });
+  R.on("changed", function () { relistOpen("repo", false); });
+  L.on("listing", function () { if (E.shown === "local") draw(); });
+  L.on("state", function () {
+    showHead();
+    if (L.state === "ok") relistOpen("local", false); else draw();
+  });
+
+  // The folders open in a source's tree, listed (again, when `fresh`); a folder that is gone closes.
+  async function relistOpen(id, fresh) {
+    var s = S[id], folders = [""].concat(Array.from(opens[id]).sort());
     for (var i = 0; i < folders.length; i++) {
-      if (folders[i] && !listings.has(parentOf(folders[i]))) continue;
-      if (!listings.has(folders[i])) await E.list(folders[i], true);
+      var f = folders[i];
+      if (f && !s.listed(parentOf(f))) continue;
+      if (fresh || !s.listed(f)) {
+        var got = await s.list(f, fresh);
+        if (!got && f && s.state === "ok" && !s.failed(f)) { opens[id].delete(f); saveOpen(id); }
+      }
     }
-    draw();
+    if (id === E.shown) draw();
   }
 
-  // Show a path in the tree: its folders open (listed when needed) and, when asked, the row focused.
-  E.reveal = async function (path, focus) {
-    var chain = ancestors(path);
+  // An agent on the same computer may change the folder: what is open in the tree is listed again when the reader
+  // comes back to the page and every few seconds while the local tree shows.
+  function relistLocal() {
+    if (E.shown === "local" && L.state === "ok" && !document.hidden && !asked) relistOpen("local", true);
+  }
+  setInterval(relistLocal, LOCAL_EVERY_MS);
+  window.addEventListener("focus", relistLocal);
+
+  // ------------------------------------------------------------------ revealing
+
+  // Show a path in the tree of its source: its folders open (listed when needed) and, when asked, the row focused.
+  E.reveal = async function (id, path, focus) {
+    var s = S[id], chain = ancestors(path);
     for (var i = 0; i < chain.length; i++) {
-      open.add(chain[i]);
-      await E.list(chain[i]);
+      opens[id].add(chain[i]);
+      await s.list(chain[i]);
     }
-    saveOpen();
+    saveOpen(id);
+    if (id !== E.shown) return;
     draw();
     if (focus) focusRow(path);
     var row = rowOf(path);
     if (row) row.scrollIntoView({block: "nearest"});
   };
-  E.setCurrent = function (path) {
-    E.current = path;
-    if (path) E.reveal(path, false); else draw();
+  // `follow`: the explorer turns to the file's source (the reader chose the file's tab).
+  E.setCurrent = function (id, path, follow) {
+    E.current = path ? {source: id, path: path} : null;
+    if (path && follow && id !== E.shown) E.show(id);
+    if (path) E.reveal(id, path, false); else draw();
   };
   // A folder opened from elsewhere (a link in a document).
-  E.openFolder = async function (path) {
+  E.openFolder = async function (id, path) {
+    if (id !== E.shown) await E.show(id);
     var chain = ancestors(path).concat([path]);
     for (var i = 0; i < chain.length; i++) {
-      open.add(chain[i]);
-      await E.list(chain[i]);
+      opens[id].add(chain[i]);
+      await S[id].list(chain[i]);
     }
-    saveOpen();
+    saveOpen(id);
     draw();
     focusRow(path);
   };
 
   // ------------------------------------------------------------------ the tree
 
-  // The rows in tree order: {entry, level, setsize, posinset} or {placeholder, level}.
+  // The rows in tree order: {entry, level, setsize, posinset}, {placeholder, level} or {ask, level}.
   function rows() {
-    var out = [], filter = query.toLowerCase(), keep = null;
+    var s = src(), out = [], filter = query.toLowerCase(), keep = null;
     if (filter) {
       keep = new Set();
-      listings.forEach(function (entries) {
-        entries.forEach(function (e) {
-          if (e.name.toLowerCase().indexOf(filter) < 0) return;
-          keep.add(e.path);
-          ancestors(e.path).forEach(function (a) { keep.add(a); });
+      (function gather(folder) {
+        (s.listed(folder) || []).forEach(function (e) {
+          if (e.name.toLowerCase().indexOf(filter) >= 0) {
+            keep.add(e.path);
+            ancestors(e.path).forEach(function (a) { keep.add(a); });
+          }
+          if (e.type === "dir") gather(e.path);
         });
-      });
+      })("");
     }
     (function walk(folder, level) {
-      var entries = listings.get(folder);
+      var entries = s.listed(folder);
       if (!entries) {
         if (folder && !keep) {
-          out.push({placeholder: asking.has(folder) ? "files.loading" : failed.has(folder) ? "files.unlisted" : null, level: level});
+          out.push({placeholder: s.pending(folder) ? "files.loading" : s.failed(folder) ? "files.unlisted" : null, level: level});
         }
         return;
       }
+      if (asked && asked.folder === folder && !keep) out.push({ask: true, level: level});
       var shown = keep ? entries.filter(function (e) { return keep.has(e.path); }) : entries;
-      if (!shown.length && folder && !keep) out.push({placeholder: "files.empty_folder", level: level});
+      if (!shown.length && !keep && !(asked && asked.folder === folder)) {
+        if (folder) out.push({placeholder: "files.empty_folder", level: level});
+        else if (s.id === "local") out.push({placeholder: "local.empty", level: level});
+      }
       shown.forEach(function (e, i) {
         out.push({entry: e, level: level, setsize: shown.length, posinset: i + 1});
-        if (e.type === "dir" && (keep ? keep.has(e.path) && listings.has(e.path) : open.has(e.path))) walk(e.path, level + 1);
+        if (e.type === "dir" && (keep ? keep.has(e.path) && s.listed(e.path) : open().has(e.path))) walk(e.path, level + 1);
       });
     })("", 1);
     return out;
@@ -185,19 +231,24 @@
   function rowOf(path) {
     return el.tree.querySelector('[data-path="' + path.replace(/["\\]/g, "\\$&") + '"]');
   }
+  function currentPath() { return E.current && E.current.source === E.shown ? E.current.path : null; }
 
   var drawn = "";
   function draw() {
     var list = rows();
-    var key = JSON.stringify([list.map(function (r) { return r.entry ? r.entry.path + r.entry.type : r.placeholder; }),
-                              Array.from(open), E.current, focusPath, query, Array.from(notes.entries())]);
+    var key = JSON.stringify([E.shown, list.map(function (r) { return r.entry ? r.entry.path + r.entry.type : r.ask ? "?" : r.placeholder; }),
+                              Array.from(open()), currentPath(), focusPath, query, Array.from(notes.entries()),
+                              asked && [asked.folder, asked.rename, asked.refusal, asked.busy]]);
     if (key === drawn) return;
     drawn = key;
     var hadFocus = el.tree.contains(document.activeElement);
+    var typing = askInput && document.activeElement === askInput;
+    var range = typing ? [askInput.selectionStart, askInput.selectionEnd] : null;
     var paths = list.filter(function (r) { return r.entry; }).map(function (r) { return r.entry.path; });
-    if (paths.indexOf(focusPath) < 0) focusPath = paths.indexOf(E.current) >= 0 ? E.current : paths[0] || null;
+    if (paths.indexOf(focusPath) < 0) focusPath = paths.indexOf(currentPath()) >= 0 ? currentPath() : paths[0] || null;
     var frag = document.createDocumentFragment();
     list.forEach(function (r) {
+      if (r.ask) { frag.appendChild(askRow(r.level)); return; }
       if (!r.entry) {
         var li = make("li", "tree-row placeholder", r.placeholder ? t(r.placeholder) : "");
         li.setAttribute("role", "none");
@@ -207,6 +258,7 @@
       }
       frag.appendChild(row(r));
     });
+    drawing = true;
     el.tree.textContent = "";
     el.tree.appendChild(frag);
     if (query && !paths.length) {
@@ -214,7 +266,11 @@
       none.setAttribute("role", "none");
       el.tree.appendChild(none);
     }
-    if (hadFocus && focusPath) focusRow(focusPath);
+    if (typing && askInput.isConnected) {
+      askInput.focus({preventScroll: true});
+      askInput.setSelectionRange(range[0], range[1]);
+    } else if (hadFocus && focusPath && !(asked && askInput && askInput.isConnected)) focusRow(focusPath);
+    drawing = false;
   }
 
   function row(r) {
@@ -228,20 +284,23 @@
     li.tabIndex = e.path === focusPath ? 0 : -1;
     li.title = e.path;
     if (e.type === "dir") {
-      var expanded = query ? listings.has(e.path) : open.has(e.path);
+      var expanded = query ? !!src().listed(e.path) : open().has(e.path);
       li.setAttribute("aria-expanded", String(expanded));
       li.appendChild(make("span", "twisty" + (expanded ? " open" : "")));
-      li.firstChild.setAttribute("aria-hidden", "true");
     } else {
       li.appendChild(make("span", "twisty none"));
-      li.firstChild.setAttribute("aria-hidden", "true");
     }
-    if (e.type === "file") li.setAttribute("aria-selected", String(e.path === E.current));
+    li.firstChild.setAttribute("aria-hidden", "true");
+    if (e.type === "file") li.setAttribute("aria-selected", String(e.path === currentPath()));
     if (e.type === "other") li.setAttribute("aria-disabled", "true");
-    li.appendChild(make("span", "tree-name", e.name));
-    var note = notes.get(e.path);
+    if (asked && asked.rename === e.path) {
+      li.appendChild(askField());
+    } else {
+      li.appendChild(make("span", "tree-name", e.name));
+    }
+    var note = asked && asked.rename === e.path ? asked.refusal : notes.get(e.path);
     if (note) li.appendChild(make("span", "row-note", note));
-    if (e.type !== "other") {
+    if (e.type !== "other" && !(asked && asked.rename === e.path)) {
       // For the pointer and touch; the keyboard has the context-menu key and Shift+F10.
       var acts = A.button("row-acts", null, function (ev) {
         ev.stopPropagation();
@@ -265,23 +324,23 @@
   }
 
   function entryOf(path) {
-    var entries = listings.get(parentOf(path)) || [];
+    var entries = src().listed(parentOf(path)) || [];
     for (var i = 0; i < entries.length; i++) if (entries[i].path === path) return entries[i];
     return null;
   }
 
   async function toggle(path, want) {
-    var on = want === undefined ? !open.has(path) : want;
-    if (on) open.add(path); else open.delete(path);
-    saveOpen();
+    var on = want === undefined ? !open().has(path) : want, id = E.shown;
+    if (on) opens[id].add(path); else opens[id].delete(path);
+    saveOpen(id);
     draw();
-    if (on) await E.list(path);
+    if (on) await S[id].list(path);
   }
 
   function activate(e) {
     if (e.type === "dir") { toggle(e.path); return; }
     if (e.type !== "file") return;
-    if (A.viewer) A.viewer.open(e.path);
+    if (A.viewer) A.viewer.open(E.shown, e.path);
     el.status.textContent = t("files.opened", {name: e.name});
     if (A.rail && A.rail.isDrawer()) {                 // below 900 px: the file is what the reader wanted to see
       A.rail.closeDrawer(false);
@@ -290,6 +349,7 @@
   }
 
   el.tree.addEventListener("click", function (ev) {
+    if (ev.target.closest(".ask-field")) return;
     var li = ev.target.closest("[role=treeitem]");
     if (!li) return;
     var e = entryOf(li.dataset.path);
@@ -297,6 +357,7 @@
     if (e) activate(e);
   });
   el.tree.addEventListener("contextmenu", function (ev) {
+    if (ev.target.closest(".ask-field")) return;
     var li = ev.target.closest("[role=treeitem]");
     if (!li) return;
     var e = entryOf(li.dataset.path);
@@ -306,6 +367,7 @@
     menuFor(e, ev.clientX || ev.clientY ? {x: ev.clientX, y: ev.clientY} : {anchor: li}, li);
   });
   el.tree.addEventListener("keydown", function (ev) {
+    if (ev.target.closest(".ask-field")) return;
     var li = ev.target.closest("[role=treeitem]");
     if (!li) return;
     var items = Array.prototype.slice.call(el.tree.querySelectorAll("[role=treeitem]"));
@@ -349,6 +411,94 @@
     else if (ev.key === "ArrowDown" && focusPath) { ev.preventDefault(); focusRow(focusPath); }
   });
 
+  // ------------------------------------------------------------------ a name asked for in the tree
+
+  // opts: {folder, kind: "file" | "dir", run(name) -> Promise of {ok, path, message}} for a new entry in `folder`, or
+  // {rename: path, run} for a new name. Enter does it, Escape or leaving the field gives up; a refusal stays on the row.
+  function ask(opts) {
+    if (E.shown !== "local") return;
+    el.filter.value = "";
+    query = "";
+    asked = {folder: opts.folder, rename: opts.rename, kind: opts.kind, run: opts.run, refusal: "", busy: false};
+    askInput = make("input", "ask-input");
+    askInput.type = "text";
+    askInput.autocomplete = "off";
+    askInput.spellcheck = false;
+    askInput.setAttribute("autocapitalize", "off");
+    askInput.setAttribute("aria-label", opts.rename ? t("local.rename_label", {name: nameOf(opts.rename)})
+      : t(opts.kind === "dir" ? "local.new_folder_label" : "local.new_file_label"));
+    if (opts.rename) askInput.value = nameOf(opts.rename);
+    askInput.addEventListener("keydown", function (ev) {
+      ev.stopPropagation();
+      if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); giveUp(true); }
+    });
+    askInput.addEventListener("blur", function () {
+      if (!drawing && asked && !asked.busy) setTimeout(function () { if (asked && document.activeElement !== askInput && !asked.busy) giveUp(false); }, 0);
+    });
+    var ready = opts.folder !== undefined && opts.folder !== "" ? toggle(opts.folder, true) : Promise.resolve();
+    ready.then(function () {
+      draw();
+      askInput.focus();
+      var dot = askInput.value.lastIndexOf(".");
+      askInput.setSelectionRange(0, dot > 0 ? dot : askInput.value.length);
+    });
+  }
+
+  function askField() {
+    var wrap = make("span", "ask-field");
+    wrap.appendChild(askInput);
+    return wrap;
+  }
+  function askRow(level) {
+    var li = make("li", "tree-row asking " + (asked.kind === "dir" ? "dir" : "file"));
+    li.setAttribute("role", "none");
+    li.style.setProperty("--level", level);
+    li.appendChild(make("span", "twisty" + (asked.kind === "dir" ? "" : " none")));
+    li.firstChild.setAttribute("aria-hidden", "true");
+    li.appendChild(askField());
+    if (asked.refusal) li.appendChild(make("span", "row-note", asked.refusal));
+    return li;
+  }
+
+  function giveUp(refocus) {
+    var was = asked;
+    asked = null;
+    askInput = null;
+    draw();
+    if (refocus && was) focusRow(was.rename || was.folder || focusPath || "");
+  }
+
+  async function commit() {
+    if (!asked || asked.busy) return;
+    var name = askInput.value.trim(), was = asked;
+    if (L.badName(name)) {
+      was.refusal = t("local.bad_name");
+      el.status.textContent = was.refusal;
+      draw();
+      return;
+    }
+    was.busy = true;
+    was.refusal = "";
+    draw();
+    var res = await was.run(name);
+    was.busy = false;
+    if (asked !== was) return;
+    if (!res.ok) {
+      was.refusal = res.message;
+      el.status.textContent = res.message;
+      draw();
+      if (askInput) askInput.focus();
+      return;
+    }
+    asked = null;
+    askInput = null;
+    draw();
+    focusRow(res.path);
+    if (!was.rename && was.kind === "file" && A.viewer) A.viewer.open("local", res.path);
+    note(res.path, t(was.rename ? "local.renamed" : "local.created"));
+  }
+
   // ------------------------------------------------------------------ the menu of an entry
 
   function note(path, text) {
@@ -358,58 +508,50 @@
     setTimeout(function () { if (notes.get(path) === text) { notes.delete(path); draw(); } }, NOTE_MS);
   }
 
-  function channels() {
-    var places = A.side && A.side.places;
-    return places ? places.channels.map(function (c) { return c.name; }) : [];
-  }
-
-  async function pin(path, channel) {
-    var r = await A.request(API + "channels/" + encodeURIComponent(channel) + "/pins", null, {path: path});
-    note(path, r.ok ? t("files.pinned", {name: channel}) : A.refusal("files.pin_refused", r.data));
-    if (r.ok && A.side) A.side.refresh();
-  }
-
-  // The acts on a file or a folder. Shared with the tab strip (viewer.js).
-  E.menuItems = function (path, folder) {
-    var items = [{label: t("files.copy"), run: async function () {
-      var ok = false;
-      try { ok = await A.copy(path); } catch (err) { ok = false; }
-      note(path, t(ok ? "files.copied" : "files.copy_failed"));
-    }}];
-    if (!folder && CAN_PIN) {
-      var names = channels();
-      items.push({label: t("files.pin"), disabled: !names.length, items: names.map(function (n) {
-        return {label: t("files.pin_to", {name: n}), run: function () { pin(path, n); }};
-      })});
-    }
-    if (!folder) {
-      items.push({label: t("files.mention"), run: function () {
+  // What the explorer lends to a source's menu.
+  var ui = {
+    say: note,
+    ask: ask,
+    // After an entry is gone: its folder's row (redrawn meanwhile), or the folder's own menu control for the top.
+    focus: function (path) {
+      if (path && rowOf(path)) focusRow(path);
+      else if (!path && !el.folder.hidden) el.acts.focus();
+      else if (focusPath) focusRow(focusPath);
+    },
+    opener: function (path) { return (path && rowOf(path)) || (path ? null : el.acts) || el.tree; },
+    copyItem: function (path) {
+      return {label: t("files.copy"), run: async function () {
+        var ok = false;
+        try { ok = await A.copy(path); } catch (err) { ok = false; }
+        note(path, t(ok ? "files.copied" : "files.copy_failed"));
+      }};
+    },
+    mentionItem: function (path) {
+      // The path goes into the chat's composer, unsent: only the reader's own press sends it.
+      return {label: t("files.mention"), run: function () {
         A.store.set(A.rail.mentionKey, "`" + path + "`");
         window.location.href = A.rail.chatHref();
-      }});
+      }};
     }
-    var gh = E.githubUrl(path, folder);
-    if (gh) items.push({separator: true}, {label: t("files.open_github"), href: gh, external: true});
-    return items;
+  };
+
+  // The acts on a file or a folder of a source. Shared with the tab strip (viewer.js).
+  E.menuItems = function (id, path, folder) {
+    return S[id].menuItems({path: path, name: nameOf(path), type: folder ? "dir" : "file"}, ui);
   };
 
   function menuFor(e, where, opener) {
     where.label = t("files.acts", {name: e.name});
-    A.menu(where, E.menuItems(e.path, e.type === "dir"), opener);
+    A.menu(where, src().menuItems(e, ui), opener);
   }
 
   // ------------------------------------------------------------------ starting
 
   E.start = async function () {
     showHead();
-    await E.list("");
-    if (E.state !== "ok") return;
-    var chain = Array.from(open).sort();
-    for (var i = 0; i < chain.length; i++) {
-      if (listings.has(parentOf(chain[i]))) await E.list(chain[i]);
-    }
+    var both = [relistOpen("repo", false), L.start()];
+    await Promise.all(both);
+    showHead();
     draw();
   };
-  // A push shows up: the root is asked again on the page's rhythm (the server keeps the head for its refresh time).
-  setInterval(function () { if (!document.hidden) E.list("", true); }, HEAD_EVERY_MS);
 })();

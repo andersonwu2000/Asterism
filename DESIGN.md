@@ -13,7 +13,7 @@ settled; where it is silent, choose the quieter option.
   two in one mark.
 - Two exceptions, and only these:
   - **Code and mathematics** keep whatever colour their renderer gives them. Code is the one sanctioned use of
-    hue: the source view's tokenizers colour keywords, declared names, types, strings, numbers and attributes with
+    hue: the editor's highlighting colours keywords, declared names, types, strings, numbers and attributes with
     the six muted `--color-syn-*` tokens (defined for both ends like every token); comments are `--color-ink-dim`.
   - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. Nothing else is red:
     not errors, not warnings, not "remove" before it is armed.
@@ -112,8 +112,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   screen, remembered per mode, applied before the first paint. The control lives outside the column, so it is
   always reachable.
 - Each mode remembers its place: the chat button returns to the place last open, files reopens its tabs.
-- **Files use the whole page.** Browsing, reading and (later) editing files never sit beside the chat; the rail
-  switches between them.
+- **Files use the whole page.** Browsing, reading and editing files never sit beside the chat; the rail switches
+  between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
   formulas, pictures, a PDF) may use the whole area; the message list uses the room it has.
 - On the messages page the **task table** sits on the right and can be folded away.
@@ -124,15 +124,32 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ### Files mode
 
+- **Two sources, one explorer.** A switch at the top of the explorer chooses between the project's repository and a
+  folder of the reader's own computer. Both have the same tree, filter, keyboard and entry menu. With no folder open
+  the local source is one control; a folder kept from an earlier visit is one control that restores access; in a
+  browser that cannot open folders it is one sentence and no control. **Nothing of a local file reaches the server**:
+  not its content, not its name, and a local tab has no address of its own.
 - **The explorer chooses; the tab strip says what is open.** One tab per open file, its name with the full path as
-  its title. The strip scrolls sideways and never wraps: a second row would make the order and the current tab hard
-  to follow. The current tab is lifted to the document's surface and underlined, not told by brightness alone.
-- At the strip's far right, and nothing else there: the view switch (rendered, source, both side by side) and "open
-  on GitHub", as icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
+  its title; tabs are per source, and a local tab carries a small mark before its name. The strip scrolls sideways
+  and never wraps: a second row would make the order and the current tab hard to follow. The current tab is lifted
+  to the document's surface and underlined, not told by brightness alone.
+- At the strip's far right, and nothing else there: the view switch (rendered, source, both side by side) and one
+  more control in the same place: "open on GitHub" for a file of the repository, **save** for a local file (also
+  Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
   hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
   already say which file it is.
-- Source is in the mono voice with line numbers, not wrapped; a long line scrolls inside its block.
-- What the server cannot show (too large, not text) is one sentence and one link, where the document would be.
+- **The source view is the editor, for both sources**: read only for the repository, editable for a local text file.
+  The mono voice with line numbers; prose (`.md`, `.tex`, `.txt`) wraps, code does not and scrolls sideways inside
+  the editor. Its colours are the tokens, so it switches ends with the page. Beside it, the rendering of a Markdown
+  file follows what is typed after a short pause, without taking the focus or moving its scroll.
+- **Unsaved** is shape: a filled disc after the tab's name (and the word in its accessible name), never a colour.
+  Closing that tab confirms in two steps; leaving the page asks through the browser's own question.
+- **A file is never overwritten silently.** A local file that is open and unchanged follows the disk by itself. With
+  unsaved changes, saving first compares the disk with what was loaded; when they differ nothing is written, and one
+  sentence over the document offers both ways, each in two steps: load the disk's version (the changes are lost) or
+  write over it. A save that is refused says why in the same place.
+- What cannot be shown or edited (too large, not text, not UTF-8) is one sentence where the document would be, with
+  one link, or over the read-only editor.
 
 ## Interaction
 
@@ -146,6 +163,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   outside close it, and the focus goes back where it was. A list behind an item (the channels to pin to) opens in
   its place with a way back, not as a second floating box.
 - The outcome of a menu's act (copied, pinned, the server's refusal) is said on the row it acted on, for a moment.
+- A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape
+  gives up, and a refused name is said under the field, which stays.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
   ("移除任務 12") and a second press does it; moving away disarms it. No browser dialogs.
 - **A destruction that cannot be undone floats**: a centred panel over a dimmed page, its button armed only when the

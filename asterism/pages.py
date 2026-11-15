@@ -71,6 +71,7 @@ GLYPHS = {
     "source": '<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>',
     "split": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15M6.5 9h3M6.5 12h3M14.5 9h3M14.5 12h3"/>',
     "github": '<path d="M13 4h7v7M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    "save": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
 }
 
 
@@ -265,11 +266,27 @@ def _side(tr: Translator, person: Any, f: dict[str, Any]) -> str:
 
 
 def _explorer(tr: Translator, f: dict[str, Any]) -> str:
-    """Files' second column: the repository and its branch, a filter, the tree (explorer.js draws it)."""
+    """Files' second column: the repository and its branch, the two sources (the repository, a local folder), the
+    local folder's controls, a filter, the tree (explorer.js draws it, local.js reads the folder). Nothing of a local
+    folder is ever known here: its name is filled in by the page script."""
     ref = f'<span id="explorer-ref" class="project-repo">{e(_repo_text(f["repo"]))}</span>'
     label = e(tr("files.filter"))
+    sources = "".join(f'<button type="button" class="source-btn" data-source="{s}" aria-pressed="{"true" if s == "repo" else "false"}">'
+                      f'{e(tr(k))}</button>' for s, k in (("repo", "files.source_repo"), ("local", "files.source_local")))
+    acts = e(tr("local.folder_acts"))
+    local = (f'<div id="local-bar" class="local-bar" hidden>'
+             f'<p id="local-unsupported" class="explorer-note" hidden>{e(tr("local.unsupported"))}</p>'
+             f'<button type="button" id="local-open" class="btn">{e(tr("local.open"))}</button>'
+             f'<button type="button" id="local-restore" class="btn" hidden></button>'
+             f'<div id="local-folder" class="local-folder" hidden><span id="local-name" class="local-name"></span>'
+             f'<button type="button" id="local-acts" class="row-acts shown" aria-label="{acts}" title="{acts}">'
+             f'<span class="dots" aria-hidden="true"></span></button></div>'
+             f'<button type="button" id="local-forget" class="quiet-btn" hidden>{e(tr("local.forget"))}</button>'
+             f'<p id="local-note" class="explorer-note" role="status"></p></div>')
     return (f'<aside id="explorer" class="column explorer" aria-label="{e(tr("files.explorer"))}"><div class="side-inner">'
             f'{_project_head(f, ref)}'
+            f'<div id="source-switch" class="source-switch" role="group" aria-label="{e(tr("files.source"))}">{sources}</div>'
+            f'{local}'
             f'<div class="explorer-filter"><input id="explorer-filter" type="search" placeholder="{label}" aria-label="{label}" '
             f'autocomplete="off" spellcheck="false" autocapitalize="off"></div>'
             f'<p id="explorer-note" class="explorer-note" hidden></p>'
@@ -547,14 +564,15 @@ VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), (
 
 
 def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: str, max_bytes: int) -> tuple[str, int]:
-    """Files mode: the repository's files using the whole page. A shell: the explorer (the frame's second column),
-    the tab strip and the document are drawn by explorer.js and viewer.js from the files API. `path` is the file the
+    """Files mode: the repository's files and a local folder's, using the whole page. A shell: the explorer (the
+    frame's second column), the tab strip and the document are drawn by explorer.js and viewer.js, from the files API
+    (repo.js) and from the reader's own folder in the browser (local.js; nothing of it reaches the server). `path` is the file the
     address names ("" for none); `max_bytes`: a larger file is not shown here (the server does not fetch it)."""
     data = {"slug": frame["slug"], "path": path, "repo": frame["repo"], "can-pin": "1" if frame["can_create"] else "",
             "can-manage": "1" if frame["can_admin"] else "", "max-bytes": str(max_bytes)}
     views = "".join(f'<button type="button" class="icon-btn" data-view="{v}" aria-pressed="false" aria-label="{e(tr(k))}" '
                     f'title="{e(tr(k))}">{glyph(v)}</button>' for v, k in VIEWS)
-    github = e(tr("files.github"))
+    github, save = e(tr("files.github")), e(tr("files.save"))
     header = (f'<header class="page-head files-head">{open_button(tr)}'
               f'{fold_button(tr, "files", "explorer", "files.explorer", "explorer-toggle")}'
               f'<h1 class="vh">{e(tr("files.title"))}</h1>'
@@ -562,14 +580,17 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
               f'<div class="file-tools" role="group" aria-label="{e(tr("files.tools"))}">'
               f'<div id="view-switch" class="view-switch" role="group" aria-label="{e(tr("files.view"))}">{views}</div>'
               f'<a id="file-github" class="icon-btn" aria-label="{github}" title="{github}" target="_blank" '
-              f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a></div></header>')
+              f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a>'
+              f'<button type="button" id="file-save" class="icon-btn" aria-label="{save}" title="{save}" '
+              f'aria-keyshortcuts="Control+S Meta+S" aria-disabled="true" hidden>{glyph("save")}</button></div></header>')
     body = (f'<section id="files" class="files" {_attrs(data)}>'
             f'<div id="file-view" class="file-view" role="tabpanel" tabindex="-1" aria-label="{e(tr("files.title"))}"></div>'
             f'</section>')
     return layout(tr, tr("files.title"), body, person, frame, "files", header=header, page_class="files-page",
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                           "render.js", "paths.js", "highlight.js", "explorer.js", "viewer.js"])
+                           "vendor/codemirror/codemirror.min.js", "render.js", "paths.js", "highlight.js", "editor.js",
+                           "repo.js", "local.js", "explorer.js", "viewer.js"])
 
 
 def schedules(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:

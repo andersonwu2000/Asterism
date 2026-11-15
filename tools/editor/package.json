@@ -1,0 +1,22 @@
+{
+  "name": "asterism-editor",
+  "private": true,
+  "description": "Builds the code editor of files mode (CodeMirror 6) into one file under asterism/static/vendor/codemirror/.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "codemirror": "6.0.2",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@lezer/highlight": "1.2.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

@@ -860,8 +860,10 @@ async def files_page(request: Request) -> Response:
     path = request.path_params.get("path", "")
     if path and files.split_path(path) is None:
         return page_error(request, ApiError(404, "not_found", ""), person)
-    return html(pages.files(tr_for(request), person, _frame(pj, actor), path,
+    page = html(pages.files(tr_for(request), person, _frame(pj, actor), path,
                             int(config.get().files_max_mb * 1024 * 1024)))
+    page.headers["Content-Security-Policy"] = FILES_CSP
+    return page
 
 
 async def admin_page(request: Request) -> Response:
@@ -884,6 +886,10 @@ COOKIELESS_PARTS = ("/api/agent/", "/api/computer/")
 # frame-src: files mode shows a PDF of the repository in a frame of this origin (the raw endpoint allows only that).
 CSP = (f"default-src 'self'; script-src 'self' {pages.THEME_CSP}; style-src 'self' 'unsafe-inline'; img-src 'self'; "
        "frame-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+# The files page alone also shows a picture or a PDF of the reader's local folder, through an object URL made in the
+# browser (blob:): for pictures and frames, and nowhere else. The Guard keeps a page's own policy.
+FILES_CSP = CSP.replace("img-src 'self';", "img-src 'self' blob:;").replace("frame-src 'self';", "frame-src 'self' blob:;")
+assert FILES_CSP.count("blob:") == 2
 
 
 class Guard:

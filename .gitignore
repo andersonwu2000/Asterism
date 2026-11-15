@@ -7,3 +7,6 @@ __pycache__/
 
 # Rust build output
 /program/target/
+
+# What tools/editor downloads to build the editor (the recipe and its lock file are committed)
+/tools/editor/node_modules/

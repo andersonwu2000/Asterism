@@ -6,6 +6,15 @@ DOMPurify  3.4.17   HTML sanitiser          dompurify/purify.min.js             
 KaTeX      0.16.47  TeX mathematics         katex/katex.min.js, katex.min.css,    MIT (katex/LICENSE)
                                             katex/fonts/
 
+The code editor of files mode, served from this server like the others. It is not one file of one package: it is
+built once from npm packages by the recipe in tools/editor/ (exact versions, a lock file with every package's
+integrity hash, the entry file and the command) into one minified file with one global, CodeMirror.
+
+CodeMirror 6  codemirror 6.0.2, @codemirror/lang-markdown 6.5.2   code editor   codemirror/codemirror.min.js   MIT (codemirror/LICENSE)
+              and what they depend on (@codemirror/state 6.7.6, view 6.43.15, language 6.13.1, commands 6.11.1,
+              search 6.7.2, @lezer/markdown 1.8.1 and others); codemirror/LICENSE lists every package in the bundle
+              with its version and licence text. Bundled by esbuild 0.28.2.
+
 Fonts of the pages (Latin subsets, woff2), taken unmodified from their npm packages:
 
 Inter           @fontsource/inter 5.2.8               fonts/inter-latin-{400,500,600}-normal.woff2    OFL-1.1 (fonts/LICENSE-inter)

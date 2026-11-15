@@ -1,5 +1,5 @@
-// Rendering text safely: a message's text (Asterism.renderText) and a Markdown file of the repository
-// (Asterism.renderDoc).
+// Rendering text safely: a message's text (Asterism.renderText) and a Markdown file of the repository or of a local
+// folder (Asterism.renderDoc).
 //
 // Both are hostile input. They are rendered as Markdown with these rules: raw HTML is shown as text, and the HTML
 // that Markdown produces goes through DOMPurify with a strict allow-list (no scripts, no event attributes, no
@@ -11,7 +11,8 @@
 //   copy, `opts.link(href)` turns a relative link into {href, path} (a file of the repository: no new tab, data-path
 //   marks it) or null (the link is dropped, its text stays), and `opts.image(src)` gives the address to load a
 //   relative picture from (the raw endpoint) or null (the picture becomes its alternative text). Nothing that is not
-//   rewritten so is ever loaded.
+//   rewritten so is ever loaded. For a file of a local folder, `opts.image(src)` answers {local: path} instead: the
+//   picture is left without an address and marked data-local for the caller, and `opts.link` gives "#" addresses.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -22,8 +23,10 @@
       return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
     });
   }
-  function rawHtml(html) {                         // raw HTML is shown, never interpreted
-    return escapeHtml(typeof html === "string" ? html : (html && (html.raw || html.text)) || "");
+  function rawHtml(html, block) {                  // raw HTML is shown, never interpreted
+    var text = escapeHtml(typeof html === "string" ? html : (html && (html.raw || html.text)) || "");
+    // A block of it is a paragraph of its own, not loose text between the document's blocks.
+    return (html && typeof html === "object" ? html.block : block) ? "<p>" + text + "</p>" : text;
   }
   var md = new window.marked.Marked();
   md.use({
@@ -82,7 +85,11 @@
     }
     if (node.tagName === "IMG") {
       var src = node.getAttribute("src") || "", at = rewrite && !external(src) ? rewrite.image(src) : null;
-      if (at) {
+      if (at && typeof at === "object") {
+        // A picture of a local folder: the caller loads it itself (data-local names it) and nothing is loaded here.
+        node.removeAttribute("src");
+        node.setAttribute("data-local", at.local);
+      } else if (at) {
         node.setAttribute("src", at);
         node.setAttribute("loading", "lazy");
       } else {
@@ -114,6 +121,7 @@
     box.className = cls;
     box.appendChild(window.DOMPurify.sanitize(parser.parse(src, {async: false}), config));
     if (maths.length) drawMaths(box, maths);
+    markPictures(box);
     return box;
   }
 
@@ -123,6 +131,15 @@
     rewrite = opts;
     try { return render(text, doc, PURIFY_DOC, "text doc"); } finally { rewrite = null; }
   };
+
+  // A paragraph that is one picture and nothing else may leave the reading column (app.css: p.picture); a picture
+  // inside a sentence stays with its text.
+  function markPictures(box) {
+    Array.prototype.forEach.call(box.querySelectorAll(":scope > p"), function (p) {
+      var img = p.children.length === 1 && p.firstElementChild.tagName === "IMG";
+      if (img && !p.textContent.trim()) p.classList.add("picture");
+    });
+  }
 
   function drawMaths(box, maths) {
     var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT), nodes = [], n;

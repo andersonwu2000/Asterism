@@ -758,6 +758,30 @@ a.path-link > code { text-decoration: inherit; }
 }
 .row-acts:hover { background: var(--color-wash-2); color: var(--color-ink); }
 .tree-row:hover .row-acts, .tree-row:focus-visible .row-acts, .tree-row:focus-within .row-acts { opacity: 1; pointer-events: auto; }
+/* The two sources, side by side; the one shown is the current place. */
+.source-switch { display: flex; gap: 2px; padding: 2px; margin: 0 6px; border: 1px solid var(--color-edge);
+                 border-radius: var(--r-control); }
+.source-btn {
+  flex: 1 1 0; min-width: 0; min-height: 28px; padding: 0 8px; border: 0; border-radius: var(--r-micro);
+  background: transparent; color: var(--color-ink-dim); font: 500 13px/1.2 var(--font-ui); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.source-btn:hover { background: var(--color-wash-2); color: var(--color-ink); }
+.source-btn[aria-pressed="true"] { background: var(--color-wash-3); color: var(--color-ink); }
+/* The local folder: one control to open or restore it, or its name with its menu and the control that forgets it. */
+.local-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 6px; }
+.local-bar .explorer-note { padding: 0 2px; }
+.local-bar .explorer-note:empty { display: none; }
+.local-folder { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 28px; padding-left: 2px; }
+.local-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+              font: 500 13px/1.4 var(--font-mono); color: var(--color-ink); }
+.row-acts.shown { opacity: 1; pointer-events: auto; }
+/* A name asked for in the tree (a new entry, a rename): a field in the row's place, its refusal beside it. */
+.tree-row.asking, .tree-row:has(> .ask-field) { flex-shrink: 0; cursor: default; flex-wrap: wrap; }
+.tree-row.asking:hover { background: transparent; }
+.ask-field { flex: 1; min-width: 0; display: flex; }
+.ask-input { width: 100%; min-height: 26px; padding: 0 6px; font: 400 13px/1.4 var(--font-mono); }
+.tree-row .ask-field ~ .row-note { flex-basis: 100%; white-space: normal; padding: 2px 0 4px 20px; font-size: 13px; line-height: 1.4; }
 .dots { position: relative; display: block; width: 3px; height: 3px; margin: auto; border-radius: 50%; background: currentColor;
         box-shadow: -5px 0 0 currentColor, 5px 0 0 currentColor; }
 
@@ -790,6 +814,11 @@ a.path-link > code { text-decoration: inherit; }
   content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; border-bottom: 2px solid var(--color-ink);
 }
 .tab.gone .tab-name { font-style: italic; }
+/* A local tab says so by a small mark before its name; unsaved changes are a filled disc after it (shape, not hue). */
+.tab-btn { display: inline-flex; align-items: center; gap: 6px; }
+.tab-source { flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8;
+              stroke-linecap: round; stroke-linejoin: round; }
+.tab-dirty { flex: none; width: 8px; height: 8px; border-radius: var(--r-full); background: currentColor; }
 .tab-close {
   flex: none; width: 24px; height: 24px; min-height: 24px; margin-right: 6px; padding: 0; border: 0;
   border-radius: var(--r-micro); background: transparent; color: var(--color-ink-dim);
@@ -807,13 +836,13 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 /* The document: the whole area. Prose keeps to the reading column; tables, code, formulas and pictures may widen. */
 .file-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface-2); }
 .file-view:focus { outline: none; }
-.doc-scroll, .code-scroll, .pic-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.doc-scroll, .pic-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .doc {
   display: grid; grid-template-columns: minmax(var(--gutter), 1fr) minmax(0, var(--reading-w)) minmax(var(--gutter), 1fr);
   padding: 36px 0 72px; font-size: 15px; line-height: 1.7;
 }
 .doc > * { grid-column: 2; }
-.doc > table, .doc > pre, .doc > .katex-display, .doc > p:has(> img:only-child) {
+.doc > table, .doc > pre, .doc > .katex-display, .doc > p.picture {
   grid-column: 1 / -1; justify-self: center; max-width: calc(100% - 2 * var(--gutter));
 }
 .doc > p:has(> span > .katex-display) { grid-column: 1 / -1; justify-self: center; max-width: calc(100% - 2 * var(--gutter)); }
@@ -832,23 +861,17 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 .doc blockquote { margin: 6px 0 14px; }
 .doc a:not([href]) { text-decoration: none; color: inherit; }
 
-/* Source: line numbers beside the text, no wrapping; the block scrolls sideways inside itself. */
-.code { display: flex; min-width: max-content; min-height: 100%; font: 400 13px/1.6 var(--font-mono); }
-.code pre { margin: 0; padding-top: 16px; padding-bottom: 48px; font: inherit; tab-size: 4; }
-.code-nums {
-  position: sticky; left: 0; z-index: 1; flex: none; min-width: 3.5em; padding-left: 12px; padding-right: 14px;
-  text-align: right; color: var(--color-ink-dim); background: var(--color-surface-2); border-right: 1px solid var(--color-edge);
-  user-select: none;
+/* Source: the editor (editor.js; its own colours come from the tokens there). It fills the area; code scrolls
+   sideways inside it, prose wraps. */
+.editor-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.editor { flex: 1; min-height: 0; min-width: 0; }
+/* One sentence over the document: the file changed on disk, a save that was refused, why it is read only. */
+.doc-note {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px var(--gutter);
+  border-bottom: 1px solid var(--color-edge); background: var(--color-surface); font-size: 13px;
 }
-.code-text { flex: 1; padding-left: 16px; padding-right: 24px; white-space: pre; }
-.code-text:focus-visible { outline-offset: -2px; }
-.syn-comment { color: var(--color-ink-dim); font-style: italic; }
-.syn-keyword { color: var(--color-syn-keyword); }
-.syn-name { color: var(--color-syn-name); }
-.syn-type { color: var(--color-syn-type); }
-.syn-string { color: var(--color-syn-string); }
-.syn-number { color: var(--color-syn-number); }
-.syn-attr { color: var(--color-syn-attr); }
+.doc-note p { margin: 0; max-width: 70ch; overflow-wrap: anywhere; }
+.doc-note .row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Source on the left, the rendering on the right, each scrolling by itself. */
 .split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
