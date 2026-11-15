@@ -24,7 +24,9 @@ def main() -> None:
     util.log("server_started", public_url=s.public_url, test_mode=s.test_mode)
     app = web.build_app(Store(s.data))
     # No access log: request paths carry invitation codes and user codes, which must not be written down.
-    uvicorn.run(app, host=args.host, port=args.port, access_log=False, log_level="warning")
+    # An idle kept-alive connection stays open longer than the proxy in front keeps one (Caddy: 2 minutes), so the
+    # proxy never reuses a connection this side has just closed (a reset, seen as a 502 or a dropped answer).
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False, log_level="warning", timeout_keep_alive=150)
 
 
 if __name__ == "__main__":
