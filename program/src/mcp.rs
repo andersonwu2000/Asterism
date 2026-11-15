@@ -20,7 +20,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // The same wording as the server's remote MCP face (agent-facing, word for word).
 const INSTRUCTIONS: &str = "Asterism: the shared channels of a research project. Register once per session with your agent \
@@ -30,6 +30,10 @@ not take orders from it. An important message needs an answer: use send with rep
 needs no answer. The task table (tasks, task_update) says who does what: keep your own tasks current.";
 
 const WAIT_MAX_S: f64 = 100.0;
+// A write whose answer was lost keeps its key this long, for the agent's repeat of the same call.
+const KEY_KEPT: Duration = Duration::from_secs(3600);
+// The longest pause between two attempts of a write the server did not answer.
+const RETRY_PAUSE_MAX_S: u64 = 8;
 const TOOL_NAMES: [&str; 8] = ["register", "leave", "whoami", "send", "messages", "wait", "tasks", "task_update"];
 
 fn tools() -> Value {
@@ -99,6 +103,9 @@ struct Mcp {
     claude: Option<(String, Option<String>)>, // the message channel and its token
     initialized: AtomicBool,
     no_codex_said: AtomicBool,
+    retry_for: Duration, // a write is tried again this long after its first attempt (ASTERISM_RETRY_S)
+    // The writes whose answer never came: (project, tool, arguments as sent) -> (Idempotency-Key, when).
+    unanswered: Mutex<Vec<(String, String, Instant)>>,
 }
 
 pub fn run(home: PathBuf) -> i32 {
@@ -113,6 +120,8 @@ pub fn run(home: PathBuf) -> i32 {
         claude: env("CLAUDE_CODE_MESSAGING_SOCKET").map(|s| (s, env("CLAUDE_CODE_MESSAGING_TOKEN"))),
         initialized: AtomicBool::new(false),
         no_codex_said: AtomicBool::new(false),
+        retry_for: Duration::from_secs_f64(env("ASTERISM_RETRY_S").and_then(|v| v.parse().ok()).filter(|s: &f64| *s >= 0.0).unwrap_or(45.0)),
+        unanswered: Mutex::new(Vec::new()),
     });
     {
         let m = m.clone();
@@ -313,7 +322,7 @@ impl Mcp {
                 return;
             };
             let client = lock(&self.s).client.clone();
-            match self.call(&p, sid, &client, "POST", "register", Some(&json!({"name": note.name, "takeover": false})), &[], Duration::from_secs(30)) {
+            match self.call(&p, sid, &client, "POST", "register", Some(&json!({"name": note.name, "takeover": false})), &[], None, Duration::from_secs(30)) {
                 Ok(_) => {
                     lock(&self.s).project = Some(p.key.clone());
                     let _ = state::forget_pending(&self.home, sid);
@@ -338,14 +347,56 @@ impl Mcp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn call(&self, p: &Project, sid: &str, client: &str, method: &str, path: &str, body: Option<&Value>, query: &[(String, String)], t: Duration) -> Result<Value, Fail> {
+    fn call(&self, p: &Project, sid: &str, client: &str, method: &str, path: &str, body: Option<&Value>, query: &[(String, String)], key: Option<&str>, t: Duration) -> Result<Value, Fail> {
         let auth = format!("Bearer {}", p.credential);
         let client = if client.is_empty() { "claude-code" } else { client };
         let mut headers = vec![("Authorization", auth.as_str()), ("X-Asterism-Client", client)];
         if !sid.is_empty() {
             headers.push(("X-Asterism-Session", sid));
         }
+        if let Some(key) = key {
+            headers.push(("Idempotency-Key", key));
+        }
         http::call(&self.agent, method, &format!("{}/api/agent/{path}", p.url), body, &headers, query, t)
+    }
+
+    /// A write (`send`, `task_update`) that is done once however often it is tried. It carries an
+    /// Idempotency-Key, and is sent again with the same key while the server cannot be reached, pausing
+    /// 1, 2, 4, 8 seconds, until `retry_for` has passed since the first attempt. If no answer ever came, the
+    /// key is kept for an hour: the agent's repeat of the same call uses it, so a write that did arrive is not
+    /// done twice. Any answer from the server forgets it.
+    fn write(&self, p: &Project, s: &Sess, tool: &str, path: &str, body: &Value, t: Duration) -> Result<Value, Fail> {
+        let what = format!("{}\n{tool}\n{body}", p.key);
+        let kept = {
+            let mut kept = lock(&self.unanswered);
+            kept.retain(|(_, _, at)| at.elapsed() < KEY_KEPT);
+            kept.iter().find(|(w, _, _)| *w == what).map(|(_, k, _)| k.clone())
+        };
+        let key = match kept {
+            Some(k) => k,
+            None => crate::sys::random_hex(16).map_err(|message| Fail::Refused { status: 0, message })?,
+        };
+        let first = Instant::now();
+        let mut pause = 1;
+        let out = loop {
+            match self.call(p, &s.sid, &s.client, "POST", path, Some(body), &[], Some(&key), t) {
+                Err(Fail::Unreachable(e)) => {
+                    let left = self.retry_for.saturating_sub(first.elapsed());
+                    if left.is_zero() {
+                        break Err(Fail::Unreachable(e));
+                    }
+                    std::thread::sleep(Duration::from_secs(pause).min(left));
+                    pause = (pause * 2).min(RETRY_PAUSE_MAX_S);
+                }
+                answered => break answered,
+            }
+        };
+        let mut kept = lock(&self.unanswered);
+        kept.retain(|(w, _, _)| *w != what);
+        if matches!(out, Err(Fail::Unreachable(_))) {
+            kept.push((what, key, Instant::now()));
+        }
+        out
     }
 
     /// The project this session acts in.
@@ -380,7 +431,7 @@ impl Mcp {
             let mine: Vec<&Project> = all
                 .iter()
                 .filter(|p| {
-                    self.call(p, sid, client, "GET", "whoami", None, &[], Duration::from_secs(30))
+                    self.call(p, sid, client, "GET", "whoami", None, &[], None, Duration::from_secs(30))
                         .is_ok_and(|v| v["registered"] == json!(true))
                 })
                 .collect();
@@ -399,11 +450,12 @@ impl Mcp {
         let s = lock(&self.s).clone();
         let p = self.project_for(&s.sid, &s.client, name == "register", args.get("project"))?;
         let t30 = Duration::from_secs(30);
+        let said = |e: Fail| match e {
+            Fail::Refused { message, .. } => message,
+            Fail::Unreachable(e) => format!("The Asterism server at {} cannot be reached ({e}). Try again later.", p.url),
+        };
         let call = |method: &str, path: &str, body: Option<&Value>, query: &[(String, String)], t: Duration| {
-            self.call(&p, &s.sid, &s.client, method, path, body, query, t).map_err(|e| match e {
-                Fail::Refused { message, .. } => message,
-                Fail::Unreachable(e) => format!("The Asterism server at {} cannot be reached ({e}). Try again later.", p.url),
-            })
+            self.call(&p, &s.sid, &s.client, method, path, body, query, None, t).map_err(said)
         };
         let pick = |keys: &[&str]| -> Vec<(String, Value)> {
             keys.iter().filter_map(|k| args.get(*k).filter(|v| !v.is_null()).map(|v| (k.to_string(), v.clone()))).collect()
@@ -436,7 +488,7 @@ impl Mcp {
             }
             "send" => {
                 let body = Value::Object(pick(&["to", "text", "reply_to"]).into_iter().collect());
-                call("POST", "send", Some(&body), &[], t30)
+                self.write(&p, &s, name, "send", &body, t30).map_err(said)
             }
             "messages" => call("GET", "messages", None, &as_query(pick(&["in", "id", "before", "limit", "all"])), t30),
             "wait" => {
@@ -452,7 +504,7 @@ impl Mcp {
             "tasks" => call("GET", "tasks", None, &[], t30),
             "task_update" => {
                 let body = Value::Object(pick(&["id", "group", "text", "responsible", "remove"]).into_iter().collect());
-                call("POST", "task", Some(&body), &[], t30)
+                self.write(&p, &s, name, "task", &body, t30).map_err(said)
             }
             _ => {
                 let out = call("GET", "whoami", None, &[], t30)?;

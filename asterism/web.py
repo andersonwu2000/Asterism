@@ -12,6 +12,7 @@ import contextlib
 import hmac
 import json
 import re
+import sqlite3
 import time
 import urllib.parse
 from pathlib import Path
@@ -24,8 +25,8 @@ from starlette.responses import (FileResponse, HTMLResponse, JSONResponse, Plain
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import (accounts, agents, computers, config, downloads, files, messaging, oauth, pages, pins, projects, schedules,
-               tasks, tools, upkeep, util)
+from . import (accounts, agents, computers, config, downloads, files, messaging, oauth, pages, pins, projects, replays,
+               schedules, tasks, tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import Translator, pick_locale
 from .projects import Actor, Project
@@ -104,13 +105,77 @@ def html(page: tuple[str, int]) -> HTMLResponse:
 
 
 def api(fn: Callable[[Request], Awaitable[Any]], status: int = 200) -> Callable[[Request], Awaitable[Response]]:
-    """A JSON endpoint: the handler returns data or raises ApiError."""
-    async def endpoint(request: Request) -> Response:
+    """A JSON endpoint: the handler returns data or raises ApiError. A POST of a project's API with an
+    Idempotency-Key is done once however often it is sent (see `idempotent`)."""
+    async def answer(request: Request) -> Response:
         try:
             return JSONResponse(await fn(request), status_code=status, headers={"Cache-Control": "no-store"})
         except ApiError as e:
             return error_json(e)
+
+    async def endpoint(request: Request) -> Response:
+        raw_key, slug = request.headers.get("idempotency-key"), request.path_params.get("slug")
+        if raw_key is None or request.method != "POST" or not isinstance(slug, str) \
+                or not request.url.path.startswith(f"/{slug}/api/"):
+            return await answer(request)
+        return await idempotent(request, slug, raw_key, answer)
     return endpoint
+
+
+# The requests with a key being done right now: (project, caller, key) -> set when the request is over.
+_running: dict[tuple[str, str, str], asyncio.Event] = {}
+
+
+def replay_scope(request: Request, db: sqlite3.Connection) -> str | None:
+    """Whose keys a request's key is among: an agent's credential with its session header (the computer's
+    connection: the credential alone), or a person's account. None for a caller who is nobody here."""
+    if any(p in request.url.path for p in COOKIELESS_PARTS):
+        cred = bearer(request)
+        row = cred and db.execute("SELECT id FROM credentials WHERE digest = ? AND revoked IS NULL",
+                                  (util.digest(cred),)).fetchone()
+        if not row:
+            return None
+        return util.digest(f"credential:{row['id']}:{request.headers.get('x-asterism-session', '')}")
+    person = signed_in(request)
+    return None if person is None else util.digest(f"person:{person['id']}")
+
+
+async def idempotent(request: Request, slug: str, raw_key: str,
+                     answer: Callable[[Request], Awaitable[Response]]) -> Response:
+    """The first request with a key is done and its answer (below 500) kept with the key, its path and body; the
+    same request again gets that answer back, also while the first is still being done (it waits for it). The
+    check, the work and keeping the answer have no await between them other than the work's own, and a second
+    request with the key waits for the first, so the work is never done twice."""
+    try:
+        key = replays.check_key(raw_key)
+    except ApiError as e:
+        return error_json(e)
+    body = replays.body_digest(await request.body())
+    db = store().project(slug)
+    scope = replay_scope(request, db) if db is not None else None
+    if db is None or scope is None:
+        return await answer(request)          # refused by the endpoint itself: nobody to keep an answer for
+    name = (slug, scope, key)
+    while True:
+        kept = replays.find(db, scope, key, util.now())
+        if kept is not None:
+            if (kept["path"], kept["body"]) != (request.url.path, body):
+                return error_json(replays.key_reused())
+            return Response(kept["answer"], status_code=kept["status"], media_type="application/json",
+                            headers={"Cache-Control": "no-store", "Idempotent-Replayed": "true"})
+        running = _running.get(name)
+        if running is None:
+            break
+        await running.wait()                  # then its kept answer, or (a failure, not kept) our own turn
+    done = _running[name] = asyncio.Event()
+    try:
+        resp = await answer(request)
+        if resp.status_code < 500:
+            replays.keep(db, scope, key, request.url.path, body, resp.status_code, bytes(resp.body))
+    finally:
+        del _running[name]
+        done.set()
+    return resp
 
 
 def page_error(request: Request, e: ApiError, person=None) -> Response:

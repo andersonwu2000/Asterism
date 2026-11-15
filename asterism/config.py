@@ -31,6 +31,7 @@ class Settings:
     files_refresh_s: float          # the head of a repository's default branch is trusted this long
     files_cache_mb: float           # DATA/cache/ never holds more than this after an answer
     files_max_mb: float             # a larger file of the repository is not fetched
+    replay_keep_s: float            # the answer to a request with an Idempotency-Key is kept this long
 
     @property
     def secure_cookies(self) -> bool:
@@ -81,7 +82,8 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     github_app_key=os.environ.get("ASTERISM_GITHUB_APP_KEY") or str(conf.get("github_app_key") or ""),
                     files_refresh_s=_env_s("ASTERISM_FILES_REFRESH_S", 30),
                     files_cache_mb=_env_s("ASTERISM_FILES_CACHE_MB", 200),
-                    files_max_mb=_env_s("ASTERISM_FILES_MAX_MB", 25))
+                    files_max_mb=_env_s("ASTERISM_FILES_MAX_MB", 25),
+                    replay_keep_s=_env_s("ASTERISM_REPLAY_KEEP_S", 86400))
 
 
 def use(s: Settings) -> Settings:

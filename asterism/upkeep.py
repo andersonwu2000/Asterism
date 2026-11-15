@@ -8,7 +8,9 @@
 - the presence notices, including the change the 1a window makes (no poll for ASTERISM_OFFLINE_AFTER_S);
 - the log lines of a computer's connection going away (no computer poll for ASTERISM_OFFLINE_AFTER_S);
 - the runs of scheduled messages (schedules.py), before the reminders, so that a reminder names a schedule's
-  newest message.
+  newest message;
+- the answers kept under an Idempotency-Key whose keeping time is over (replays.py). They count as gone from
+  then on whether or not they are deleted yet, so they never wake the task.
 
 It runs one sweep over all projects, then sleeps until the earliest time something falls due or until it is
 kicked (presence.kick: a message was sent, a poll ended, a binding changed, an event attempt finished). A
@@ -20,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from . import config, events, messaging, notices, presence, schedules, util
+from . import config, events, messaging, notices, presence, replays, schedules, util
 from .projects import Project
 from .store import Store
 
@@ -121,6 +123,7 @@ def sweep(store: Store) -> float | None:
             continue
         pj = Project(store, slug, db)
         _guard(pj, "expire", lambda: events.expire(pj, t))
+        _guard(pj, "replays", lambda: replays.expire(pj.db, t))
         _guard(pj, "unanswered", lambda: _unanswered(pj, t))
         for sid in schedules.due(pj, t):
             _guard(pj, "schedule", lambda sid=sid: schedules.run(pj, sid, t))

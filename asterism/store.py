@@ -277,6 +277,17 @@ CREATE TABLE IF NOT EXISTS chain_reminders (
     reply_to INTEGER NOT NULL,
     PRIMARY KEY (agent_id, reply_to)
 );
+CREATE TABLE IF NOT EXISTS replays (
+    scope TEXT NOT NULL,           -- digest of the caller: a person, or a credential with its session header
+    key TEXT NOT NULL,             -- the request's Idempotency-Key
+    path TEXT NOT NULL,
+    body TEXT NOT NULL,            -- digest of the request's body, its JSON compared after parsing (replays.py)
+    status INTEGER NOT NULL,       -- the answer given, kept to be given again (below 500 only)
+    answer BLOB NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (scope, key)
+);
+CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
 """
 
 

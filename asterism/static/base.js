@@ -40,23 +40,66 @@
 
   // GET when body is undefined, else POST with a JSON body. Answers {ok, status, data}; a network failure is
   // {ok: false, data: {error: "network"}}.
+  //
+  // A POST is done once however often it is sent: it carries an Idempotency-Key, and while the server cannot be
+  // reached (a network failure, or a proxy's 502/503/504 without the server's error) it is sent again with the same
+  // key, pausing 1, 2, 4 ... seconds, for at most RETRY_MS. If no answer came, the key is kept with the address and
+  // body for KEY_KEPT_MS, so that repeating the same act uses it; any answer from the server forgets it.
+  var RETRY_MS = 20000, KEY_KEPT_MS = 3600000;
+  var unanswered = {};          // address + body -> {key, at}
+
+  function newKey() {
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) { return (b < 16 ? "0" : "") + b.toString(16); }).join("");
+  }
+
+  function keyFor(what) {
+    var now = Date.now();
+    Object.keys(unanswered).forEach(function (w) { if (now - unanswered[w].at >= KEY_KEPT_MS) delete unanswered[w]; });
+    return unanswered[what] ? unanswered[what].key : newKey();
+  }
+
+  function sleep(ms) {
+    return new Promise(function (done) { setTimeout(done, ms); });
+  }
+
+  async function attempt(u, opts) {
+    var r, data = {};
+    try {
+      r = await fetch(u, opts);
+    } catch (err) {
+      return {ok: false, status: 0, data: {error: "network"}, lost: true};
+    }
+    try { data = (await r.json()) || {}; } catch (err) { data = {}; }
+    var proxy = (r.status === 502 || r.status === 503 || r.status === 504) && !data.error;
+    return {ok: r.ok, status: r.status, data: data, lost: proxy};
+  }
+
   A.request = async function (url, params, body) {
     var u = new URL(url, window.location.origin);
     Object.keys(params || {}).forEach(function (k) { u.searchParams.set(k, params[k]); });
     var opts = {method: body === undefined ? "GET" : "POST", credentials: "same-origin",
                 headers: {"Accept": "application/json"}};
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
+    if (body === undefined) {
+      var got = await attempt(u, opts);
+      return {ok: got.ok, status: got.status, data: got.data};
     }
-    var r, data = {};
-    try {
-      r = await fetch(u, opts);
-    } catch (err) {
-      return {ok: false, status: 0, data: {error: "network"}};
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+    var what = u.href + "\n" + opts.body;
+    var key = opts.headers["Idempotency-Key"] = keyFor(what);
+    var first = Date.now(), pause = 1000, out;
+    for (;;) {
+      out = await attempt(u, opts);
+      var left = RETRY_MS - (Date.now() - first);
+      if (!out.lost || left <= 0) break;
+      await sleep(Math.min(pause, left));
+      pause *= 2;
     }
-    try { data = (await r.json()) || {}; } catch (err) { data = {}; }
-    return {ok: r.ok, status: r.status, data: data};
+    if (out.lost) unanswered[what] = {key: key, at: Date.now()};
+    else delete unanswered[what];
+    return {ok: out.ok, status: out.status, data: out.data};
   };
 
   // ------------------------------------------------------------------ two steps, in place
