@@ -121,7 +121,8 @@ def page_error(request: Request, e: ApiError, person=None) -> Response:
 
 
 def can_admin(pj: Project, actor: Actor) -> bool:
-    return bool({"manage_members", "manage_groups"} & projects.permissions(pj, actor))
+    """The settings page holds the invitations to the project; members and groups are on the members page."""
+    return "manage_members" in projects.permissions(pj, actor)
 
 
 # --------------------------------------------------------------------------- sign-in
@@ -205,7 +206,8 @@ async def me(request: Request) -> Any:
 # --------------------------------------------------------------------------- static
 
 STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
-                ".woff": "font/woff", ".ttf": "font/ttf"}
+                ".woff": "font/woff", ".ttf": "font/ttf",
+                ".svg": "image/svg+xml"}
 
 
 async def static_file(request: Request) -> Response:
@@ -325,6 +327,16 @@ async def api_groups(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     b = await body_json(request)
     return projects.create_group(pj, actor, b.get("name"), b.get("permissions"))
+
+
+async def api_group_change(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.change_group(pj, actor, request.path_params["name"], (await body_json(request)).get("permissions"))
+
+
+async def api_group_remove(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.remove_group(pj, actor, request.path_params["name"])
 
 
 async def api_member_groups(request: Request) -> Any:
@@ -728,7 +740,8 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     mine = projects.permissions(pj, actor)
     pa = projects.people_and_agents(pj)
     directory = {x["name"]: {"kind": "person"} for x in pa["people"]}
-    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"]} for a in pa["agents"]})
+    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"]}
+                      for a in pa["agents"]})
     info = projects.info(pj)
     return {"slug": pj.slug, "name": info["name"], "repo": info["repo"],
             "places": messaging.channels_view(pj, me),
@@ -782,7 +795,8 @@ async def members_page(request: Request) -> Response:
         view = projects.members_view(pj, actor)
     except ApiError as e:
         return page_error(request, e, person)
-    return html(pages.members(tr_for(request), person, _frame(pj, actor), view))
+    return html(pages.members(tr_for(request), person, _frame(pj, actor), view, projects.PERMISSIONS,
+                              projects.MANAGEMENT))
 
 
 async def my_page(request: Request) -> Response:
@@ -801,8 +815,7 @@ async def admin_page(request: Request) -> Response:
     person, pj, actor = ctx
     if not can_admin(pj, actor):
         return page_error(request, ApiError(403, "forbidden", ""), person)
-    view = {"project": projects.info(pj), **projects.people_and_agents(pj), "groups": projects.group_list(pj)}
-    return html(pages.admin(tr_for(request), person, _frame(pj, actor), view, projects.permissions(pj, actor)))
+    return html(pages.admin(tr_for(request), person, _frame(pj, actor)))
 
 
 # --------------------------------------------------------------------------- guard middleware
@@ -899,6 +912,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
         Route("/{slug}/api/groups", api(api_groups, 201), methods=["POST"]),
+        Route("/{slug}/api/groups/{name}", api(api_group_change), methods=["POST"]),
+        Route("/{slug}/api/groups/{name}/remove", api(api_group_remove), methods=["POST"]),
         Route("/{slug}/api/members/{name}/groups", api(api_member_groups), methods=["POST"]),
         Route("/{slug}/api/members/{name}/remove", api(api_member_remove), methods=["POST"]),
         Route("/{slug}/api/my", api(api_my)),

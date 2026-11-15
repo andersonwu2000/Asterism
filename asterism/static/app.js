@@ -1,5 +1,6 @@
 // Sends forms marked data-api to the JSON API and saves switches marked data-toggle as they change. A form with
 // data-confirm confirms in place, in two steps: the first press arms its button, which then says what will happen.
+// A form with data-gone (an act that cannot be undone) opens the floating confirmation, where data-gone-name is typed.
 // All texts come from the page's message catalogue (body data-msg); this file holds none.
 "use strict";
 (function () {
@@ -29,6 +30,14 @@
     if (!form.hasAttribute("data-api")) return;
     ev.preventDefault();
     var submitter = ev.submitter || form.querySelector("button:not([type=button])");
+    if (form.dataset.gone) {            // cannot be undone: the floating confirmation, the name typed
+      var kind = form.dataset.gone, name = form.dataset.goneName;
+      A.gone({title: A.t("gone." + kind + ".title", {name: name}), text: A.t("gone." + kind + ".text", {name: name}),
+              name: name, button: A.t("gone." + (kind === "revoke" ? "revoke" : "member") + ".button"), opener: submitter,
+              run: function () { return post(form.dataset.api, {}); },
+              done: function () { window.location.reload(); }});
+      return;
+    }
     if (form.dataset.confirm && submitter && !A.twoStep(submitter, form.dataset.confirm)) return;
     var out = form.querySelector("[data-out]");
     var res = await post(form.dataset.api, collect(form, submitter));

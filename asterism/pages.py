@@ -83,6 +83,7 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     html = (f'<!doctype html><html lang="{e(tr.locale)}"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<script>{THEME_SCRIPT}</script>'
+            f'<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
             f'<link rel="stylesheet" href="/static/app.css">{links}'
             f'<title>{e(tr("page.title", title=title, app=tr("app.name")))}</title></head>'
             f'<body class="{cls}" data-msg="{msgs}">{main}{tags}</body></html>')
@@ -100,10 +101,12 @@ def _repo_text(repo: str) -> str:
 
 
 def _count(tr: Translator, unread: int, important: int, muted: bool) -> str:
-    """Important unread: an inverted pill with that count. Other unread: the plain count, none when muted."""
+    """Important unread: an inverted pill with that count, muted or not (muting silences a place's talk, not a
+    message that names the reader). Other unread: the plain count, none in a muted place (DESIGN: muted)."""
     if important:
+        said = tr("nav.important_muted", k=important) if muted else tr("nav.important", n=unread, k=important)
         return (f'<span class="pill" aria-hidden="true">{e(important)}</span>'
-                f'<span class="vh">{e(tr("nav.important", n=unread, k=important))}</span>')
+                f'<span class="vh">{e(said)}</span>')
     if unread and not muted:
         return (f'<span class="count" aria-hidden="true">{e(unread)}</span>'
                 f'<span class="vh">{e(tr("nav.unread", n=unread))}</span>')
@@ -141,8 +144,10 @@ def _side(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
     private = []
     for p in places["private"]:
         who = directory.get(p["with"])
-        note = (f'<span class="note">{e(tr("nav.my_agent"))}</span>'
-                if who and who.get("kind") == "agent" and who.get("owner") == me else "")
+        agent = bool(who and who.get("kind") == "agent")
+        note = (f'<span class="note">{e(tr("nav.my_agent"))}</span>' if agent and who.get("owner") == me else "")
+        if agent and who.get("busy"):
+            note += f'<span class="note">{e(tr("nav.busy"))}</span>'
         private.append(_place_link(tr, slug, p["with"],
                                    f'{presence_mark(tr, who)}<span class="place-name">{e(p["with"])}</span>{note}',
                                    p["unread"], p["important"], False))
@@ -263,31 +268,39 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
     return layout(tr, tr("join.title"), body, person)
 
 
-def members(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:
-    p = view["project"]
-    groups = {g["name"]: g for g in view["groups"]}
-    order = [g for g in view["groups"] if g["kind"] != "ownership"] + [g for g in view["groups"] if g["kind"] == "ownership"]
-    parts = [f'<div class="prose"><p class="muted">{e(tr("project.line", name=p["name"], repo=p["repo"]))}</p>']
-    for g in order:
-        people = [x for x in view["people"] if g["name"] in x["groups"]]
-        agents = [a for a in view["agents"] if g["name"] in a["groups"]]
-        perms = ", ".join(tr(f"perm.{x}") for x in g["permissions"])
-        parts.append(f'<section class="block"><h2>{e(_group_label(tr, groups, g["name"]))} <small class="mono dim">{e(g["name"])}</small></h2>')
-        if perms:
-            parts.append(f'<p class="muted">{e(tr("members.permissions", list=perms))}</p>')
-        if not people and not agents:
-            parts.append(f'<p class="muted">{e(tr("members.empty"))}</p>')
-        if people:
-            parts.append(f'<h3>{e(tr("members.people"))}</h3><ul class="plain-list">' + "".join(
-                f'<li>{e(x["name"])} <span class="muted">{e(tr("members.github", login=x["github_login"]))}</span></li>' for x in people) + "</ul>")
-        if agents:
-            parts.append(f'<h3>{e(tr("members.agents"))}</h3>' + _table(
-                [e(tr("col.name")), e(tr("col.owner")), e(tr("col.kind")), e(tr("col.status")), e(tr("col.last_active"))],
-                [[f'<span class="mono">{e(a["name"])}</span>', e(a["owner"]), _kind(tr, a["kind"]), _status(tr, a),
-                  _when(tr, a["last_active"])] for a in agents]))
-        parts.append("</section>")
-    parts.append("</div>")
-    return layout(tr, tr("members.title"), "".join(parts), person, frame, "members")
+def members(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any],
+            permissions: list[str], management: Iterable[str]) -> tuple[str, int]:
+    """Members and groups. The list of groups (#groups) and the chosen entry (#group-detail, named by ?g= in the
+    address) are drawn by members.js from the members API, starting from the answer embedded here; the form to make
+    a group (#group-create) is here only for a person who may manage groups, offering only what they hold."""
+    mine = view["me"]["permissions"]
+    can_make = "manage_groups" in mine
+    data = {"slug": frame["slug"], "view": view, "catalogue": permissions, "management": sorted(management)}
+    plus = ""
+    if can_make:
+        plus = (f'<button type="button" id="group-create-open" class="icon-btn small" aria-controls="group-create" '
+                f'aria-expanded="false" aria-label="{e(tr("mem.new_group"))}" title="{e(tr("mem.new_group"))}">'
+                f'<span class="plus" aria-hidden="true"></span></button>')
+    create = ""
+    if can_make:
+        boxes = "".join(
+            f'<label class="perm-row"><input type="checkbox" name="perm" value="{e(p)}">'
+            f'<span class="perm-text"><span class="perm-name">{e(tr("perm." + p))}</span>'
+            f'<span class="perm-hint">{e(tr("perm_hint." + p))}</span></span></label>'
+            for p in permissions if p in mine)
+        create = (f'<form id="group-create" class="card group-create" hidden><h2>{e(tr("mem.new_group"))}</h2>'
+                  f'<label class="field"><span>{e(tr("mem.create_name"))}</span><input name="name" required maxlength="40" '
+                  f'autocomplete="off" spellcheck="false" autocapitalize="off"></label>'
+                  f'<fieldset class="perm-set"><legend>{e(tr("mem.create_perms"))}</legend>{boxes}</fieldset>'
+                  f'<div class="row"><button class="btn primary">{e(tr("mem.create"))}</button>'
+                  f'<button type="button" class="btn" data-dismiss>{e(tr("mem.cancel"))}</button>'
+                  f'<span class="out" data-out aria-live="polite"></span></div></form>')
+    body = (f'<div id="members-root" class="groups-page" {_attrs(data)}>'
+            f'<nav id="groups" class="groups-list" aria-labelledby="groups-title"><div class="groups-head">'
+            f'<h2 id="groups-title">{e(tr("mem.list_label"))}</h2>{plus}</div><div id="groups-body"></div></nav>'
+            f'<div class="group-main">{create}<section id="group-detail" class="group-detail" tabindex="-1"></section></div>'
+            f'</div>')
+    return layout(tr, tr("members.title"), body, person, frame, "members", scripts=["members.js"])
 
 
 def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], groups: dict[str, dict[str, Any]],
@@ -300,7 +313,7 @@ def _group_buttons(tr: Translator, slug: str, member: str, current: list[str], g
             out.append(f'<span class="tag">{e(_group_label(tr, groups, g))}</span>')
             continue
         out.append(f'<form class="inline" data-api="{api}"><input type="hidden" name="remove" data-list value="{e(g)}">'
-                   f'<button class="chip-btn" title="{e(tr(remove_key, group=g))}">{e(tr("group.remove_button", group=_group_label(tr, groups, g)))}</button></form>')
+                   f'<button class="chip-btn" title="{e(tr(remove_key, group=g))}">{e(_group_label(tr, groups, g))}<span class="cross" aria-hidden="true"></span></button></form>')
     choices = [g for g in addable if g not in current]
     if choices:
         opts = "".join(f'<option value="{e(g)}">{e(_group_label(tr, groups, g))}</option>' for g in choices)
@@ -324,12 +337,6 @@ def _connection(tr: Translator, c: dict[str, Any]) -> str:
     return e(tr("my.connected.yes" if c["connected"] else "my.connected.no"))
 
 
-def _confirmed(tr: Translator, api: str, confirm: str, label: str) -> str:
-    """A button whose act confirms in place, in two steps (app.js): data-confirm is what the armed button says."""
-    return (f'<form class="inline" data-api="{api}" data-confirm="{e(confirm)}"><button class="btn">{e(label)}</button>'
-            f'<span class="out" data-out></span></form>')
-
-
 def my(tr: Translator, person: dict[str, Any], frame: dict[str, Any], mine: dict[str, Any], groups: list[dict[str, Any]],
        assignable: list[str]) -> tuple[str, int]:
     slug = frame["slug"]
@@ -338,8 +345,7 @@ def my(tr: Translator, person: dict[str, Any], frame: dict[str, Any], mine: dict
     if mine["agents"]:
         rows = []
         for a in mine["agents"]:
-            remove = _confirmed(tr, f"/{q(slug)}/api/members/{q(a['name'])}/remove", tr("confirm.remove", name=a["name"]),
-                                tr("my.remove_agent"))
+            remove = _gone(tr, f"/{q(slug)}/api/members/{q(a['name'])}/remove", "agent", a["name"], tr("my.remove_agent"))
             rows.append([f'<span class="mono">{e(a["name"])}</span>', _kind(tr, a["kind"]), _status(tr, a),
                          _when(tr, a["last_active"]), e(a["generation"]),
                          _group_buttons(tr, slug, a["name"], a["groups"], gmap, assignable, "my.remove_group", "my.add"),
@@ -358,7 +364,7 @@ def my(tr: Translator, person: dict[str, Any], frame: dict[str, Any], mine: dict
             [[e(c["label"]), e(tr(f"cred.{c['kind']}")),
               e(tr(f"my.via.{c['via']}") if tr.has(f"my.via.{c['via']}") else c["via"]), _connection(tr, c),
               _when(tr, c["last_used"]),
-              _confirmed(tr, f"/{q(slug)}/api/my/credentials/{e(c['id'])}/revoke", tr("confirm.revoke"), tr("my.revoke"))]
+              _gone(tr, f"/{q(slug)}/api/my/credentials/{e(c['id'])}/revoke", "revoke", c["label"], tr("my.revoke"))]
              for c in mine["credentials"]]))
     else:
         parts.append(f'<p class="muted">{e(tr("my.no_credentials"))}</p>')
@@ -393,35 +399,23 @@ def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str,
     return layout(tr, tr("consent.title"), body, person)
 
 
-def admin(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any], mine: set[str]) -> tuple[str, int]:
+def admin(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tuple[str, int]:
+    """The project's settings: what belongs to neither a member nor a group (invitations). Members and groups are
+    managed on the members page."""
     slug = frame["slug"]
-    gmap = {g["name"]: g for g in view["groups"]}
-    editable = [g["name"] for g in view["groups"] if g["kind"] != "ownership"]
-    parts = []
-    if "manage_members" in mine:
-        parts.append(f'<section class="block"><h2>{e(tr("admin.invite"))}</h2><p class="muted">{e(tr("admin.invite_hint"))}</p>'
-                     f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
-                     f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login"></label>'
-                     f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
-                     f'<p><code class="out" data-out></code></p></form></section>')
-    parts.append(f'<section class="block"><h2>{e(tr("admin.members"))}</h2>')
-    rows = []
-    for x in view["people"]:
-        groups = _group_buttons(tr, slug, x["name"], x["groups"], gmap, editable, "admin.remove_group", "admin.add") \
-            if "manage_groups" in mine else e(", ".join(_group_label(tr, gmap, g) for g in x["groups"]))
-        rows.append([e(x["name"]), e(x["github_login"]), groups, _remove(tr, slug, x["name"]) if "manage_members" in mine else ""])
-    for a in view["agents"]:
-        groups = _group_buttons(tr, slug, a["name"], a["groups"], gmap, editable, "admin.remove_group", "admin.add") \
-            if "manage_groups" in mine else e(", ".join(_group_label(tr, gmap, g) for g in a["groups"]))
-        rows.append([f'<span class="mono">{e(a["name"])}</span>', e(tr("admin.agent_of", owner=a["owner"])), groups,
-                     _remove(tr, slug, a["name"]) if "manage_members" in mine else ""])
-    parts.append(_table([e(tr("col.name")), e(tr("col.github")), e(tr("col.groups")), e(tr("col.actions"))], rows))
-    parts.append("</section>")
-    return layout(tr, tr("admin.title"), f'<div class="prose">{"".join(parts)}</div>', person, frame, "admin")
+    body = (f'<section class="block"><h2>{e(tr("admin.invite"))}</h2><p class="muted">{e(tr("admin.invite_hint"))}</p>'
+            f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
+            f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login"></label>'
+            f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
+            f'<p><code class="out" data-out></code></p></form></section>'
+            f'<p class="muted block"><a href="/{e(q(slug))}/members">{e(tr("admin.members_moved"))}</a></p>')
+    return layout(tr, tr("admin.title"), f'<div class="prose">{body}</div>', person, frame, "admin")
 
 
-def _remove(tr: Translator, slug: str, name: str) -> str:
-    return _confirmed(tr, f"/{q(slug)}/api/members/{q(name)}/remove", tr("confirm.remove", name=name), tr("admin.remove"))
+def _gone(tr: Translator, api: str, kind: str, name: str, label: str) -> str:
+    """A button whose act cannot be undone: it opens the floating confirmation (base.js), where `name` is typed."""
+    return (f'<form class="inline" data-api="{api}" data-gone="{e(kind)}" data-gone-name="{e(name)}">'
+            f'<button class="btn">{e(label)}</button><span class="out" data-out></span></form>')
 
 
 def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any]) -> tuple[str, int]:

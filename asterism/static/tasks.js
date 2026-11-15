@@ -54,7 +54,7 @@
     var line = make("div", "tline");
     line.appendChild(make("span", "tid", "#" + task.id));
     line.appendChild(make("span", "ttext", task.text));
-    if (task.assigned_by) line.appendChild(make("span", "pill", t("task.locked", {name: task.assigned_by})));
+    if (task.assigned_by) line.appendChild(make("span", "tag", t("task.locked", {name: task.assigned_by})));
     li.appendChild(line);
     var out = make("div", "out");
     out.setAttribute("aria-live", "polite");

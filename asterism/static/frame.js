@@ -40,11 +40,14 @@
   }
   S.presence = presence;
 
+  // Important unread: the inverted pill, muted or not (muting silences a place's talk, not a message that names the
+  // reader). Other unread: the plain count, none in a muted place.
   function counts(a, unread, important, muted) {
     if (important) {
       var pill = make("span", "pill", String(important));
       pill.setAttribute("aria-hidden", "true");
-      a.append(pill, make("span", "vh", t("nav.important", {n: unread, k: important})));
+      a.append(pill, make("span", "vh", muted ? t("nav.important_muted", {k: important})
+                                              : t("nav.important", {n: unread, k: important})));
     } else if (unread && !muted) {
       var c = make("span", "count", String(unread));
       c.setAttribute("aria-hidden", "true");
@@ -67,6 +70,7 @@
   function privateItem(name, unread, important) {
     var who = S.directory[name], inner = [presence(who), make("span", "place-name", name)];
     if (who && who.kind === "agent" && who.owner === ME) inner.push(make("span", "note", t("nav.my_agent")));
+    if (who && who.kind === "agent" && who.busy) inner.push(make("span", "note", t("nav.busy")));
     return item(name, inner, unread, important, false);
   }
 

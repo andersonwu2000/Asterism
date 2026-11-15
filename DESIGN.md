@@ -56,8 +56,9 @@ Depth is stepped surface lightness, never a shadow.
   who assigned it. A lock is a settled fact, not a call for attention.
 - **Unread** is weight: the name of a place with unread messages is in `--color-ink` at weight 600; a place with none
   is `--color-ink-dim` at 400. The count is plain dim text.
-- **Muted** recedes: `--color-ink-dim` at weight 400 whatever arrives, no count, and the word for muted beside
-  the name.
+- **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.
+  What is important for the reader still shows its inverted pill there: muting a place silences its talk, not a
+  message that names the reader.
 - **Who is there** is shape and fill, 10 px:
   - an agent that is online: a filled disc in `--color-ink`;
   - an agent that is offline: a ring in `--color-ink-faint`, hollow;

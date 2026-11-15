@@ -1,5 +1,6 @@
 // What every page's scripts share (window.Asterism): the message catalogue (body data-msg), a JSON call, a small
-// element maker, the two-step confirmation in place, and the theme switch (#theme-toggle). Loaded first on every page.
+// element maker, the two-step confirmation in place, the floating confirmation of what cannot be undone, and the
+// theme switch (#theme-toggle). Loaded first on every page.
 // This file holds no interface text: all of it comes from the catalogue.
 "use strict";
 (function () {
@@ -92,6 +93,100 @@
     return false;
   };
   A.isArmed = function (box) { return !!(box && box.querySelector(".armed")); };
+
+  // ------------------------------------------------------------------ a destruction that cannot be undone floats
+  //
+  // A centred panel over the dimmed page (a modal <dialog>): one or two sentences on what will be gone, a field
+  // where the thing's name is typed, and the one red button, armed only while the name matches. Escape and a click
+  // outside close it; focus goes in on open and back to the opener on close; the server's refusal shows inside.
+  //   A.gone({title, text, name, button, opener, run: async () => A.request(...), done: function (res) {}})
+
+  var gone = null;
+
+  function goneDialog() {
+    if (gone) return gone;
+    var d = A.make("dialog", "gone");
+    d.setAttribute("closedby", "any");
+    d.setAttribute("aria-labelledby", "gone-title");
+    d.setAttribute("aria-describedby", "gone-text");
+    var form = A.make("form", "gone-form");
+    var title = A.make("h2", "gone-title"), text = A.make("p", "gone-text");
+    title.id = "gone-title";
+    text.id = "gone-text";
+    var field = A.make("label", "field"), ask = A.make("span"), input = A.make("input");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "off");
+    field.append(ask, input);
+    var out = A.make("p", "out gone-out");
+    out.setAttribute("role", "alert");
+    var row = A.make("div", "row gone-row");
+    var cancel = A.button("btn", "", function () { d.close(); });
+    var go = A.make("button", "btn destruct");
+    go.type = "submit";
+    row.append(cancel, go);
+    form.append(title, text, field, out, row);
+    d.appendChild(form);
+    document.body.appendChild(d);
+    gone = {dialog: d, title: title, text: text, ask: ask, input: input, out: out, cancel: cancel, go: go, opts: null};
+
+    function armed() { return !!gone.opts && input.value === gone.opts.name; }
+    input.addEventListener("input", function () { go.disabled = !armed() || gone.running; });
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      if (!armed() || gone.running) return;
+      var opts = gone.opts;
+      gone.running = true;
+      go.disabled = true;
+      out.textContent = "";
+      var res;
+      try { res = await opts.run(); } finally { gone.running = false; }
+      if (res && res.ok) {
+        gone.succeeded = true;
+        d.close();
+        if (opts.done) opts.done(res);
+        return;
+      }
+      out.textContent = A.refusal("gone.refused", res && res.data);
+      go.disabled = !armed();
+      input.focus();
+    });
+    // Browsers without closedby: a click on the dialog itself (not its panel) is a click outside.
+    if (!("closedBy" in HTMLDialogElement.prototype)) {
+      d.addEventListener("click", function (ev) {
+        if (ev.target !== d) return;
+        var r = d.getBoundingClientRect();
+        var inside = r.top <= ev.clientY && ev.clientY <= r.bottom && r.left <= ev.clientX && ev.clientX <= r.right;
+        if (!inside) d.close();
+      });
+    }
+    d.addEventListener("close", function () {
+      var opts = gone.opts;
+      gone.opts = null;
+      if (!opts) return;
+      var back = opts.opener && opts.opener.isConnected ? opts.opener : null;
+      if (gone.succeeded && opts.after && opts.after.isConnected) back = opts.after;
+      if (back) back.focus();
+    });
+    return gone;
+  }
+
+  A.gone = function (opts) {
+    var g = goneDialog();
+    g.opts = opts;
+    g.succeeded = false;
+    g.running = false;
+    g.title.textContent = opts.title;
+    g.text.textContent = opts.text;
+    g.ask.textContent = A.t("gone.type", {name: opts.name});
+    g.input.value = "";
+    g.out.textContent = "";
+    g.cancel.textContent = A.t("gone.cancel");
+    g.go.textContent = opts.button;
+    g.go.disabled = true;
+    g.dialog.showModal();
+    g.input.focus();
+  };
 
   // Put the focus back on the element of `box` with the same data-key after `box` was redrawn.
   A.keepFocus = function (box, redraw) {

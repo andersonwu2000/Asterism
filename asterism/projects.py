@@ -189,19 +189,74 @@ def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, 
     check_name(name)
     if name.lower().endswith(OWNERSHIP_SUFFIX):
         raise conflict(f"Names ending in '{OWNERSHIP_SUFFIX}' are kept for each person's own group. Choose another name.")
-    if not isinstance(perms, list) or not all(isinstance(p, str) and p in PERMISSIONS for p in perms):
-        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS))
+    perms = _check_permissions(perms)
     if not set(perms) <= permissions(pj, actor):
         raise forbidden("A group can only carry permissions you hold yourself.")
     holder = name_holder(pj, name)
     if holder:
         raise conflict(describe_holder(pj, holder) + ". Choose another name.")
-    perms = [p for p in PERMISSIONS if p in perms]
     with pj.db:
         pj.db.execute("INSERT INTO groups (name, kind, permissions, created) VALUES (?, 'custom', ?, ?)",
                       (name, json.dumps(perms), util.now()))
     util.log("group_created", project=pj.slug, group=name, by=actor.person_id)
     return {"name": name, "kind": "custom", "permissions": perms}
+
+
+def _check_permissions(perms: Any) -> list[str]:
+    """A list of permission names from the catalogue, returned in the catalogue's order."""
+    if not isinstance(perms, list) or not all(isinstance(p, str) and p in PERMISSIONS for p in perms):
+        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS))
+    return [p for p in PERMISSIONS if p in perms]
+
+
+def _custom_group(pj: Project, actor: Actor, name: str, need: str) -> sqlite3.Row:
+    """The custom group `name`, for a person with manage_groups; default and ownership groups are fixed."""
+    _person_only(actor)
+    require(pj, actor, "manage_groups", need)
+    g = group_by_name(pj, name)
+    if not g:
+        raise not_found(f"There is no group '{name}'.")
+    if g["kind"] == "default":
+        raise conflict(f"'{name}' is one of the project's default groups; its permissions are fixed and it stays.")
+    if g["kind"] == "ownership":
+        raise conflict(f"'{name}' holds the agents of one person and follows ownership; it cannot be changed or removed.")
+    return g
+
+
+def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, Any]:
+    """Set the permissions of a custom group. Takes effect at once: permissions are read from the groups on
+    every request. Nobody gives or takes away a permission they do not hold themselves."""
+    g = _custom_group(pj, actor, name, "Changing groups needs the manage_groups permission.")
+    perms = _check_permissions(perms)
+    touched, mine = set(json.loads(g["permissions"])) | set(perms), permissions(pj, actor)
+    missing = [p for p in PERMISSIONS if p in touched and p not in mine]
+    if missing:
+        raise forbidden(f"'{name}' carries or would carry permissions you do not hold ({', '.join(missing)}), "
+                        f"so you cannot change it.")
+    with pj.db:
+        pj.db.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), g["id"]))
+    util.log("group_changed", project=pj.slug, group=name, permissions=perms, by=actor.person_id)
+    return {"name": name, "kind": "custom", "permissions": perms}
+
+
+def remove_group(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
+    """Remove a custom group that holds no task. Its members are simply no longer in it; its name is free again."""
+    g = _custom_group(pj, actor, name, "Removing groups needs the manage_groups permission.")
+    mine = permissions(pj, actor)
+    missing = [p for p in json.loads(g["permissions"]) if p not in mine]
+    if missing:
+        raise forbidden(f"'{name}' carries permissions you do not hold ({', '.join(missing)}), so you cannot remove it.")
+    n = pj.db.execute("SELECT count(*) FROM tasks WHERE group_id = ?", (g["id"],)).fetchone()[0]
+    if n:
+        raise conflict(f"'{name}' still has {n} task{'s' if n != 1 else ''}. Remove {'them' if n != 1 else 'it'} "
+                       f"from the task table first (a task cannot move to another group; make it again there to "
+                       f"keep it).")
+    with pj.db:
+        pj.db.execute("DELETE FROM group_members WHERE group_id = ?", (g["id"],))
+        pj.db.execute("DELETE FROM groups WHERE id = ?", (g["id"],))
+    util.log("group_removed", project=pj.slug, group=name, by=actor.person_id)
+    _members_changed(pj, actor)
+    return {"removed": name}
 
 
 def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any) -> dict[str, Any]:
@@ -397,13 +452,18 @@ def group_list(pj: Project) -> list[dict[str, Any]]:
         item: dict[str, Any] = {"name": g["name"], "kind": g["kind"], "permissions": json.loads(g["permissions"])}
         if g["kind"] == "ownership":
             item["owner"] = owners.get(g["owner_person"], "")
+            item["switches"] = {k: bool(g[k]) for k in SWITCHES}     # what others may do with that person's agents
         out.append(item)
     return out
 
 
 def members_view(pj: Project, actor: Actor) -> dict[str, Any]:
+    """Everyone with their groups, the groups, and who is asking with what they hold (the page offers only what
+    the requester may do)."""
     require(pj, actor, "read", "Reading the project needs the read permission.")
-    return {"project": info(pj), **people_and_agents(pj), "groups": group_list(pj)}
+    mine = permissions(pj, actor)
+    return {"project": info(pj), **people_and_agents(pj), "groups": group_list(pj),
+            "me": {"name": person_name(pj, actor.person_id), "permissions": [p for p in PERMISSIONS if p in mine]}}
 
 
 def switches(pj: Project, person_id: int) -> dict[str, bool]:

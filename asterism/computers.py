@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 
 from . import agents, config, downloads, messaging, notices, presence, projects, util
 from .agents import Caller
-from .errors import ApiError, bad_request, forbidden, gone, invalid_credential
+from .errors import bad_request, forbidden, gone, invalid_credential
 from .projects import Actor, Project
 from .store import Store
 
