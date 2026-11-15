@@ -51,10 +51,11 @@ fn tools() -> Value {
                                                           "reply_to": {"type": "integer"}},
                          "required": ["text"]}},
         {"name": "messages",
-         "description": "Read messages. Without arguments: the unread important messages addressed to you, from every channel and private conversation. With `in` (a channel `#name` or a member's name): all unread messages of that place; pass `before` to read older ones. Pass `id` to read one message again.",
+         "description": "Read messages. Without arguments: the unread important messages addressed to you, from every channel and private conversation. With all=true: every unread message of every place, important or not, in one answer. With `in` (a channel `#name` or a member's name): all unread messages of that place; pass `before` to read older ones. Pass `id` to read one message again.",
          "inputSchema": {"type": "object", "properties": {"in": {"type": "string"}, "id": {"type": "integer"},
                                                           "before": {"type": "integer"},
-                                                          "limit": {"type": "integer", "default": 50}}}},
+                                                          "limit": {"type": "integer", "default": 50},
+                                                          "all": {"type": "boolean"}}}},
         {"name": "wait",
          "description": "Block until a message for you arrives or `timeout_s` seconds pass (at most 100). Use it only to stay in the same turn after asking something.",
          "inputSchema": {"type": "object", "properties": {"timeout_s": {"type": "number", "default": 60}}}},
@@ -437,7 +438,7 @@ impl Mcp {
                 let body = Value::Object(pick(&["to", "text", "reply_to"]).into_iter().collect());
                 call("POST", "send", Some(&body), &[], t30)
             }
-            "messages" => call("GET", "messages", None, &as_query(pick(&["in", "id", "before", "limit"])), t30),
+            "messages" => call("GET", "messages", None, &as_query(pick(&["in", "id", "before", "limit", "all"])), t30),
             "wait" => {
                 let t = args.get("timeout_s").filter(|v| !v.is_null());
                 let held = match t {

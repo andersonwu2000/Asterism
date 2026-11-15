@@ -48,11 +48,13 @@ TOOLS: list[dict[str, Any]] = [
                      "required": ["text"]}},
     {"name": "messages",
      "description": ("Read messages. Without arguments: the unread important messages addressed to you, from every "
-                     "channel and private conversation. With `in` (a channel `#name` or a member's name): all unread "
-                     "messages of that place; pass `before` to read older ones. Pass `id` to read one message again."),
+                     "channel and private conversation. With all=true: every unread message of every place, important "
+                     "or not, in one answer. With `in` (a channel `#name` or a member's name): all unread messages of "
+                     "that place; pass `before` to read older ones. Pass `id` to read one message again."),
      "inputSchema": {"type": "object", "properties": {"in": {"type": "string"}, "id": {"type": "integer"},
                                                       "before": {"type": "integer"},
-                                                      "limit": {"type": "integer", "default": 50}}}},
+                                                      "limit": {"type": "integer", "default": 50},
+                                                      "all": {"type": "boolean"}}}},
     {"name": "wait",
      "description": ("Block until a message for you arrives or `timeout_s` seconds pass (at most 100). Use it only to "
                      "stay in the same turn after asking something."),
@@ -93,7 +95,8 @@ async def call(caller: Caller, name: str, args: dict[str, Any],
     elif name == "send":
         out = agents.send(caller, args.get("to"), args.get("text"), args.get("reply_to"))
     elif name == "messages":
-        out = agents.messages(caller, args.get("in"), args.get("id"), args.get("before"), args.get("limit"))
+        out = agents.messages(caller, args.get("in"), args.get("id"), args.get("before"), args.get("limit"),
+                              args.get("all"))
     elif name == "wait":
         out = await agents.wait(caller, args.get("timeout_s"), disconnected)
     elif name == "tasks":

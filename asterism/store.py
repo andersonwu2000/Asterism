@@ -183,7 +183,8 @@ CREATE TABLE IF NOT EXISTS levels (
     reader_kind TEXT NOT NULL,     -- person, agent
     reader_id INTEGER NOT NULL,
     level TEXT NOT NULL,           -- important, normal, muted
-    seen REAL,                     -- an agent was handed the whole message by `messages`
+    seen REAL,                     -- an agent was handed the whole message by `messages`, or no longer needs it
+                                   -- (a run of a schedule superseded for it)
     PRIMARY KEY (reader_kind, reader_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -297,7 +298,7 @@ ADDED_INDEXES = {
 
 # Permissions a default group gained after it shipped: a database made by an earlier version gives them to that
 # group when opened (custom groups are never touched).
-ADDED_PERMISSIONS = {"human": ["edit_tasks"]}
+ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks"]}
 
 
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened.

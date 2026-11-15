@@ -92,6 +92,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "perm.assign_tasks": "指定任務",
         "perm.manage_own_agents": "管理自己的 agent",
         "perm.edit_tasks": "編輯任務",
+        "perm.coordinate_tasks": "協調任務",
         "perm.manage_members": "管理成員",
         "perm.manage_groups": "管理身份組",
         "perm.project_settings": "專案設定",

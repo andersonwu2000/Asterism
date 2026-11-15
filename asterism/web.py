@@ -434,7 +434,7 @@ async def agent_send(request: Request, c: agents.Caller) -> Any:
 
 async def agent_messages(request: Request, c: agents.Caller) -> Any:
     q = request.query_params
-    return agents.messages(c, q.get("in"), q.get("id"), q.get("before"), q.get("limit"))
+    return agents.messages(c, q.get("in"), q.get("id"), q.get("before"), q.get("limit"), q.get("all"))
 
 
 async def agent_wait(request: Request, c: agents.Caller) -> Any:

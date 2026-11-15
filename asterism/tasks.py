@@ -8,7 +8,9 @@ The rules, for every entrance:
   agents always may; others need the agent's `others_assign` switch (and, a person, `assign_tasks`);
 - a locked task is changed only by the person who locked it and the agent's person;
 - another person's agent changes nothing of an agent's task: it asks that agent, which changes it itself. Only
-  when that agent is offline and its switch is on may it take the task over.
+  when that agent is offline and its switch is on may it take the task over;
+- an agent that coordinates (`coordinate_tasks`) changes, removes, takes and gives the tasks of another person's
+  agent directly, whenever that agent's switch is on; it never locks, and a lock holds against it too.
 
 When a change is made by somebody other than the agent it concerns, the system tells that agent in #general.
 Being responsible for a task is what makes an agent busy (presence.busy).
@@ -38,6 +40,8 @@ TAKE_OVER_ONLY = ("Task {id} is {agent}'s, and {agent} is offline. You may take 
                   "name); change it after that.")
 ASK_FIRST = ("{agent} is another collaborator's agent, so you cannot put a task in its name. Leave the task without a "
              "responsible member and ask {agent} to claim it.")
+# What a person, or an agent that coordinates, is told when the agent's person keeps its tasks to their own side.
+CLOSED = "{agent} is an agent of {person}, who has not allowed others to give it tasks or to change its tasks."
 TOLD = {
     "removed": "{actor} removed task {id} [{group}] of {agent}.",
     "assigned": "{actor} assigned task {id} [{group}] to {agent}: {text}",
@@ -193,8 +197,7 @@ def _person_may_direct(pj: Project, actor: Actor, agent: Member) -> None:
         return
     owner = projects.person_name(pj, agent.person_id)
     if not _others_assign(pj, agent):
-        raise forbidden(f"{agent.name} is an agent of {owner}, who has not allowed others to give it tasks or to change "
-                        f"its tasks.")
+        raise forbidden(CLOSED.format(agent=agent.name, person=owner))
     projects.require(pj, actor, "assign_tasks", f"{agent.name} is an agent of {owner}; giving it tasks or changing its "
                                                 f"tasks needs the assign_tasks permission.")
 
@@ -280,7 +283,9 @@ def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str,
     """task_update. The order of the checks: the task exists; the agent is in its group; the lock; whose task
     it is; the new responsible member is in the group; then whether the agent may put the task in its name."""
     me = messaging.agent_member(a)
-    _edit(pj, Actor(a["person_id"], a["id"]))
+    actor = Actor(a["person_id"], a["id"])
+    _edit(pj, actor)
+    coordinates = "coordinate_tasks" in projects.permissions(pj, actor)
     mine = [g["name"] for g in projects.groups_of(pj, "agent", a["id"])]
     if body.get("id") is None:
         gname = body.get("group")
@@ -292,7 +297,7 @@ def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str,
         text = _text(body.get("text"))
         now = _who(pj, body.get("responsible"))
         _check_in_group(pj, g["id"], now)
-        _may_name(me, now)
+        _may_name(pj, me, now, coordinates)
         return {"task": _write(pj, me, g["id"], None, None, State(text, now, None))}
 
     row = _task(pj, body.get("id"))
@@ -309,7 +314,10 @@ def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str,
         person = projects.person_name(pj, before.assigned_by)
         raise ApiError(403, "task_locked", LOCKED.format(id=tid, person=person))
     r = before.responsible
-    if r is not None and r.kind == "agent" and r.person_id != me.person_id:
+    if r is not None and r.kind == "agent" and r.person_id != me.person_id and coordinates:
+        if not _others_assign(pj, r):
+            raise forbidden(CLOSED.format(agent=r.name, person=projects.person_name(pj, r.person_id)))
+    elif r is not None and r.kind == "agent" and r.person_id != me.person_id:
         if presence.is_online(pj.slug, _agent_row(pj, r), pj.db):
             raise ApiError(403, "not_yours", NOT_YOURS.format(id=tid, agent=r.name))
         if not _others_assign(pj, r):
@@ -322,14 +330,19 @@ def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str,
     now = _who(pj, body["responsible"]) if "responsible" in body else before.responsible
     if now != before.responsible:
         _check_in_group(pj, row["group_id"], now)
-        _may_name(me, now)
+        _may_name(pj, me, now, coordinates)
     return {"task": _write(pj, me, row["group_id"], tid, before, State(text, now, None))}
 
 
-def _may_name(me: Member, now: Member | None) -> None:
-    """An agent puts a task in the name of itself, an agent of its own person, a person, or nobody."""
-    if now is not None and now.kind == "agent" and now.person_id != me.person_id:
+def _may_name(pj: Project, me: Member, now: Member | None, coordinates: bool) -> None:
+    """An agent puts a task in the name of itself, an agent of its own person, a person, or nobody; an agent
+    that coordinates also in the name of another person's agent whose switch is on."""
+    if now is None or now.kind != "agent" or now.person_id == me.person_id:
+        return
+    if not coordinates:
         raise ApiError(403, "ask_first", ASK_FIRST.format(agent=now.name))
+    if not _others_assign(pj, now):
+        raise forbidden(CLOSED.format(agent=now.name, person=projects.person_name(pj, now.person_id)))
 
 
 # --------------------------------------------------------------------------- writing, and telling the agents
@@ -359,7 +372,8 @@ def _remove(pj: Project, actor: Member, row: sqlite3.Row, before: State) -> dict
 
 def _tell(pj: Project, actor: Member, tid: int, group: str, before: State | None, after: State | None) -> None:
     """The message from the system to the agents a change concerns: the responsible agent before and after it,
-    except the one who made it. Important when a person made the change, normal when an agent did."""
+    except the one who made it. For each of them: normal when an agent of its own person made the change,
+    important when a person or another person's agent did."""
     def agent(s: State | None) -> Member | None:
         return s.responsible if s is not None and s.responsible is not None and s.responsible.kind == "agent" else None
     x, y = agent(before), agent(after)
@@ -383,8 +397,8 @@ def _tell(pj: Project, actor: Member, tid: int, group: str, before: State | None
         text = TOLD["released"].format(agent=y.name, **fill)
     else:
         return
-    level = "important" if actor.kind == "person" else "normal"
-    messaging.post_from_system(pj, text, {aid: level for aid in concerned})
+    messaging.post_from_system(pj, text, {aid: "normal" if actor.kind == "agent" and actor.person_id == m.person_id
+                                          else "important" for aid, m in concerned.items()})
 
 
 # --------------------------------------------------------------------------- members that leave

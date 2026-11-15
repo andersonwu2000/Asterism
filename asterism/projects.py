@@ -15,7 +15,7 @@ from .errors import bad_request, conflict, forbidden, gone, not_found
 from .store import Store
 
 PERMISSIONS = ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents",
-               "edit_tasks", "manage_members", "manage_groups", "project_settings"]
+               "edit_tasks", "coordinate_tasks", "manage_members", "manage_groups", "project_settings"]
 MANAGEMENT = {"manage_members", "manage_groups", "project_settings"}
 DEFAULT_GROUPS = [
     ("owner", PERMISSIONS),

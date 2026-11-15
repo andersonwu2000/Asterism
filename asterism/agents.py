@@ -324,8 +324,8 @@ def send(c: Caller, to: Any, text: Any, reply_to: Any) -> dict[str, Any]:
     return messaging.send(c.pj, messaging.agent_member(_agent(c)), to, text, reply_to)
 
 
-def messages(c: Caller, where: Any, mid: Any, before: Any, limit: Any) -> dict[str, Any]:
-    return messaging.agent_messages(c.pj, messaging.agent_member(_agent(c)), where, mid, before, limit)
+def messages(c: Caller, where: Any, mid: Any, before: Any, limit: Any, every: Any = None) -> dict[str, Any]:
+    return messaging.agent_messages(c.pj, messaging.agent_member(_agent(c)), where, mid, before, limit, every)
 
 
 def ack(c: Caller, ids: Any) -> dict[str, Any]:

@@ -38,6 +38,8 @@ NO_ANSWER = "(Asterism message. No answer needed.)"
 # The last line of a notice that reaches an agent at level normal: it may move the work around.
 RECOORDINATE = ("(Asterism notice. No answer needed. If this changes who should do which task, settle it with the agents "
                 "you work with and update the task table.)")
+# The last line of the last message handed over to an agent that is back, when more is unread than it was handed.
+MISSED = "(While you were offline other messages arrived: {n} unread. messages with all=true reads them in one call.)"
 
 
 # --------------------------------------------------------------------------- members and places
@@ -374,8 +376,9 @@ def _post(pj: Project, sender: Member, place: str, text: str, orig: sqlite3.Row 
 def _unstack(pj: Project, schedule_id: int, mid: int, t: float) -> None:
     """One schedule never stacks answers owed (inside the caller's transaction). For each agent the new message
     `mid` is important for, an earlier message of the same schedule that was important for it and that it has
-    not answered becomes muted for it; its waiting delivery is dropped, and its follow-up (and a reminder about
-    it not handed over yet) moves to the new message with its clock as it stands."""
+    not answered becomes muted for it and counts as handed over (`seen`: it is no longer unread); its waiting
+    delivery is dropped, and its follow-up (and a reminder about it not handed over yet) moves to the new
+    message with its clock as it stands."""
     agents = [r[0] for r in pj.db.execute("SELECT reader_id FROM levels WHERE message_id = ? AND reader_kind = 'agent' "
                                           "AND level = 'important'", (mid,))]
     for aid in agents:
@@ -385,8 +388,8 @@ def _unstack(pj: Project, schedule_id: int, mid: int, t: float) -> None:
             "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.sender_kind = 'agent' AND r.sender_id = ? "
             "AND r.reply_to = m.id) ORDER BY m.id", (aid, schedule_id, mid, aid))]
         for e in earlier:
-            pj.db.execute("UPDATE levels SET level = 'muted' WHERE message_id = ? AND reader_kind = 'agent' "
-                          "AND reader_id = ?", (e, aid))
+            pj.db.execute("UPDATE levels SET level = 'muted', seen = coalesce(seen, ?) WHERE message_id = ? "
+                          "AND reader_kind = 'agent' AND reader_id = ?", (t, e, aid))
             pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND message_id = ? "
                           "AND kind = 'message' AND state IN ('pending', 'out')", (t, aid, e))
             pj.db.execute("UPDATE deliveries SET message_id = ? WHERE agent_id = ? AND message_id = ? "
@@ -661,9 +664,10 @@ def delivery_view(pj: Project, d: sqlite3.Row, me: Member) -> dict[str, Any]:
 
 
 def hand_out(pj: Project, me: Member) -> list[dict[str, Any]]:
-    """What a poll hands out now: new deliveries, and those handed out once and not acknowledged in time
-    (same id). They stay open until acknowledged. One handed out twice is left to the background task,
-    which makes the agent offline (`unanswered`)."""
+    """What a poll (its session's or its computer's) hands out now: new deliveries, and those handed out once
+    and not acknowledged in time (same id). They stay open until acknowledged. One handed out twice is left to
+    the background task, which makes the agent offline (`unanswered`). When it holds messages kept while the
+    agent was offline (`how` return) and more is unread than it carries, the last of them says how much."""
     t = util.now()
     rows = pj.db.execute("SELECT * FROM deliveries WHERE agent_id = ? AND (state = 'pending' OR "
                          "(state = 'out' AND attempts < 2 AND handed_out <= ?)) ORDER BY id",
@@ -673,7 +677,14 @@ def hand_out(pj: Project, me: Member) -> list[dict[str, Any]]:
     with pj.db:
         pj.db.executemany("UPDATE deliveries SET state = 'out', handed_out = ?, attempts = attempts + 1 WHERE id = ?",
                           [(t, d["id"]) for d in rows])
-    return [delivery_view(pj, d, me) for d in rows]
+    out = [delivery_view(pj, d, me) for d in rows]
+    back = [i for i, d in enumerate(rows) if d["kind"] == "message" and d["how"] == "return"]
+    if back:
+        # What this hand-out carries is handed out now, so it no longer counts as unread.
+        n = sum(k for k, _ in _counts(pj, me).values())
+        if n:
+            out[back[-1]]["frame"] += "\n" + MISSED.format(n=n)
+    return out
 
 
 def next_due(pj: Project, me: Member) -> float | None:
@@ -744,7 +755,7 @@ def take_for_wait(pj: Project, me: Member) -> list[dict[str, Any]]:
 
 
 def _handed_by_reading(pj: Project, me: Member, mids: list[int]) -> None:
-    """An agent read these messages in full with `messages`."""
+    """An agent read these messages in full with `messages` (marked `seen`)."""
     if not mids:
         return
     marks = ",".join("?" * len(mids))
@@ -760,8 +771,9 @@ def _handed_by_reading(pj: Project, me: Member, mids: list[int]) -> None:
 
 # --------------------------------------------------------------------------- reading and unread
 
-# An agent's message is unread while it is after the read position and was not handed over in full: not read
-# with `messages`, and no delivery of it was handed out (a handed-out one is acknowledged or handed out again).
+# An agent's message is unread while it is after the read position and was not handed over in full: not `seen`
+# (read with `messages`, or a run of a schedule superseded for it), and no delivery of it was handed out (a
+# handed-out one is acknowledged or handed out again).
 _NOT_HANDED = ("l.seen IS NULL AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.agent_id = l.reader_id "
                "AND d.message_id = l.message_id AND d.state IN ('out', 'done'))")
 
@@ -818,11 +830,35 @@ def _read_position(pj: Project, me: Member, place: str) -> int:
     return r["upto"] if r else 0
 
 
-def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, limit: Any) -> dict[str, Any]:
-    """`id`: one message again. `before`: older ones. No place: the unread important messages of every place,
-    and no read position moves (the normal ones between them stay unread). Otherwise the unread messages of the
-    place, and the read position moves to the last one returned. Whatever is returned counts as handed over in
-    full."""
+def _flag(v: Any, name: str) -> bool:
+    """A boolean from JSON or a query string."""
+    if v is None or v is False or v in ("", "false"):
+        return False
+    if v is True or v == "true":
+        return True
+    raise bad_request("bad_request", f"{name} must be true or false.")
+
+
+def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, limit: Any,
+                   every: Any = None) -> dict[str, Any]:
+    """`id`: one message again. `before`: older ones. `every` (all=true, alone): the unread messages of every
+    place and level, oldest first, and the read position of each place moves to the last one returned from it.
+    No place: the unread important messages of every place, and no read position moves (the normal ones between
+    them stay unread). Otherwise the unread messages of the place, and the read position moves to the last one
+    returned. Whatever is returned counts as handed over in full."""
+    if _flag(every, "all"):
+        if any(v is not None and v != "" for v in (where, mid, before)):
+            raise bad_request("bad_request", "all goes alone: leave out `in`, `id` and `before` to read every unread "
+                                             "message, or leave out `all`.")
+        rows = _unread_rows(pj, me, None, _limit(limit))
+        last: dict[str, int] = {}
+        for r in rows:
+            last[r["place"]] = r["id"]
+        for place, upto in last.items():
+            _move_read(pj, me, place, upto)
+        out = views(pj, rows, me)
+        _handed_by_reading(pj, me, [r["id"] for r in rows])
+        return {"messages": out}
     one = _int(mid, "id")
     older = _int(before, "before")
     n = _limit(limit)
