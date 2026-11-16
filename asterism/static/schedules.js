@@ -52,33 +52,16 @@
     return lab;
   }
 
+  // Where a schedule posts: the one dropdown, the channels, people and my agents under their headings.
   function placeSelect(value) {
-    var sel = make("select");
-    sel.name = "to";
-    function group(label, items, text) {
-      if (!items.length) return;
-      var g = make("optgroup");
-      g.label = label;
-      items.forEach(function (v) {
-        var o = make("option", "", text(v));
-        o.value = v.value;
-        g.appendChild(o);
-      });
-      sel.appendChild(g);
+    var options = [];
+    PLACES.channels.forEach(function (n) { options.push({value: "#" + n, label: "#" + n, group: t("sch.channels")}); });
+    PLACES.people.forEach(function (n) { options.push({value: n, label: n, group: t("sch.people")}); });
+    PLACES.agents.forEach(function (n) { options.push({value: n, label: t("msg.my_agent", {name: n}), group: t("sch.agents")}); });
+    if (value && !options.some(function (o) { return o.value === value; })) {
+      options.unshift({value: value, label: value});       // a place no longer offered: kept so it shows
     }
-    group(t("sch.channels"), PLACES.channels.map(function (n) { return {value: "#" + n}; }), function (v) { return v.value; });
-    group(t("sch.people"), PLACES.people.map(function (n) { return {value: n}; }), function (v) { return v.value; });
-    group(t("sch.agents"), PLACES.agents.map(function (n) { return {value: n}; }),
-          function (v) { return t("msg.my_agent", {name: v.value}); });
-    if (value) {
-      if (!Array.prototype.some.call(sel.options, function (o) { return o.value === value; })) {
-        var keep = make("option", "", value);              // a place no longer offered: kept so it shows
-        keep.value = value;
-        sel.insertBefore(keep, sel.firstChild);
-      }
-      sel.value = value;
-    }
-    return sel;
+    return A.dropdown({label: t("sch.to"), options: options, value: value || undefined, name: "to"});
   }
 
   // The fields of a schedule; `s` fills them for editing. Returns {box, read()} where read() gives the body
@@ -92,50 +75,40 @@
     text.maxLength = 4000;
     text.required = true;
     if (s) text.value = s.text;
-    var level = make("select");
-    level.name = "level";
-    LEVELS.forEach(function (l) {
-      var o = make("option", "", t("sch.level." + l));
-      o.value = l;
-      level.appendChild(o);
-    });
-    level.value = s ? s.level : "normal";
+    var level = A.dropdown({label: t("sch.level"), name: "level", value: s ? s.level : "normal",
+                            options: LEVELS.map(function (l) { return {value: l, label: t("sch.level." + l)}; })});
     var start = make("input");
     start.type = "datetime-local";
     start.name = "start_at";
     start.required = true;
     if (s) start.value = localInput(s.start_at);
-    var repeat = make("select"), n = make("input");
-    repeat.name = "repeat";
-    [["once", "sch.once"], ["minutes", "sch.minutes"], ["hours", "sch.hours"]].forEach(function (x) {
-      var o = make("option", "", t(x[1]));
-      o.value = x[0];
-      repeat.appendChild(o);
-    });
+    var n = make("input"), every = null;
+    if (s && s.every_s) every = s.every_s % 3600 === 0 ? "hours" : "minutes";
+    var repeat = A.dropdown({label: t("sch.repeat"), name: "repeat", value: every || "once", onChange: function () { sync(); },
+                             options: [["once", "sch.once"], ["minutes", "sch.minutes"], ["hours", "sch.hours"]].map(function (x) {
+                               return {value: x[0], label: t(x[1])};
+                             })});
     n.type = "number";
     n.min = "1";
     n.step = "1";
     n.name = "every_n";
     n.setAttribute("aria-label", t("sch.every_n"));
     if (s && s.every_s) {
-      repeat.value = s.every_s % 3600 === 0 ? "hours" : "minutes";
       n.value = String(s.every_s % 3600 === 0 ? s.every_s / 3600 : Math.max(1, Math.round(s.every_s / 60)));
     } else {
-      repeat.value = "once";
       n.value = String(Math.max(1, Math.ceil(MIN_EVERY / 60)));
     }
     function sync() { n.hidden = repeat.value === "once"; }
-    repeat.addEventListener("change", sync);
     sync();
     var how = make("span", "sch-repeat");
-    how.appendChild(repeat);
+    how.appendChild(repeat.el);
     how.appendChild(n);
     var hint = make("small", "muted", (MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
                                                              : t("sch.min_seconds", {n: MIN_EVERY})));
     how.appendChild(hint);
 
-    box.appendChild(field(t("sch.to"), to));
-    box.appendChild(field(t("sch.level"), level));
+    box.appendChild(field(t("sch.to"), to.el));
+    box.appendChild(field(t("sch.level"), level.el));
     box.appendChild(field(t("sch.text"), text, true));
     box.appendChild(field(t("sch.start"), start));
     box.appendChild(field(t("sch.repeat"), how));

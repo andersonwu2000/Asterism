@@ -1,10 +1,12 @@
 // The rail on the far left of every page of a project (#rail) and what goes with it (Asterism.rail):
-// - outside chat, the chat button (#rail-chat) shows how many messages are important for the reader (an inverted
-//   pill), from the places frame.js reads on the pages' rhythm; in chat it shows nothing extra;
+// - outside chat, the chat button (#rail-chat) shows how many messages in channels are important for the reader (an
+//   inverted pill), and outside private messages the private-messages button (#rail-dm) the same for private
+//   conversations, from the places frame.js reads on the pages' rhythm;
 // - each mode remembers its place: the chat button goes to the place the reader was last in (messages.js keeps it),
 //   the files page reopens its own tabs (viewer.js);
-// - the mode's second column folds away on a wide screen ([data-fold] buttons in the page's header), remembered per
-//   mode in localStorage and applied before the first paint by the head script (data-folded on <html>);
+// - on a wide screen, pressing the button of the mode one is in (chat, private messages, files: [data-fold]) folds
+//   that mode's second column away or brings it back, remembered per mode in localStorage and applied before the
+//   first paint by the head script (data-folded on <html>);
 // - below 900 px the rail and the second column live in the drawer (#nav) that #side-open opens.
 "use strict";
 (function () {
@@ -18,7 +20,8 @@
 
   // ------------------------------------------------------------------ the chat button
 
-  var chat = document.getElementById("rail-chat"), count = document.getElementById("rail-count");
+  var chat = document.getElementById("rail-chat");
+  var counts = {chat: document.getElementById("rail-chat-count"), dm: document.getElementById("rail-dm-count")};
 
   // Where the chat button goes: the place last open in chat, else the project's address (#general).
   R.chatHref = function () {
@@ -28,14 +31,18 @@
   };
   if (chat && HERE !== "messages") chat.href = R.chatHref();
 
-  function showCount(places) {
-    if (!count || HERE === "messages") return;
-    var k = 0;
-    (places.channels || []).forEach(function (c) { k += c.important || 0; });
-    (places["private"] || []).forEach(function (p) { k += p.important || 0; });
+  function showOne(count, k) {
+    if (!count) return;
     count.hidden = !k;
     count.firstChild.textContent = String(k);
     count.lastChild.textContent = t("rail.important", {k: k});
+  }
+  function showCount(places) {
+    var inChannels = 0, inPrivate = 0;
+    (places.channels || []).forEach(function (c) { inChannels += c.important || 0; });
+    (places["private"] || []).forEach(function (p) { inPrivate += p.important || 0; });
+    if (HERE !== "messages") showOne(counts.chat, inChannels);
+    if (HERE !== "dm") showOne(counts.dm, inPrivate);
   }
   if (A.side) A.side.onChange(showCount);
 
@@ -57,8 +64,14 @@
       b.setAttribute("aria-expanded", String(folded().indexOf(b.dataset.fold) < 0));
     });
   }
+  var narrowNow = window.matchMedia("(max-width: 899.98px)");
   Array.prototype.forEach.call(document.querySelectorAll("[data-fold]"), function (b) {
-    b.addEventListener("click", function () { setFolded(b.dataset.fold, folded().indexOf(b.dataset.fold) < 0); });
+    b.addEventListener("click", function (ev) {
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;   // a new tab still opens
+      ev.preventDefault();
+      if (narrowNow.matches) { closeDrawer(true); return; }          // in the drawer the column is always there
+      setFolded(b.dataset.fold, folded().indexOf(b.dataset.fold) < 0);
+    });
   });
   label();
   window.addEventListener("storage", function (ev) {

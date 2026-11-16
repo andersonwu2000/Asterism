@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS project (
 CREATE TABLE IF NOT EXISTS people (
     person_id INTEGER PRIMARY KEY, -- id in the accounts database
     name TEXT NOT NULL UNIQUE,
-    joined REAL NOT NULL
+    joined REAL NOT NULL,
+    last_beat REAL                 -- the latest beat of an open page of the project (presence); NULL never
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -83,7 +84,9 @@ CREATE TABLE IF NOT EXISTS groups (
     others_channel INTEGER NOT NULL DEFAULT 0,
     others_assign INTEGER NOT NULL DEFAULT 0,
     others_regroup INTEGER NOT NULL DEFAULT 0,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    position INTEGER,              -- the order of the non-default groups (lower is higher); NULL for default groups
+    separate INTEGER NOT NULL DEFAULT 0   -- 1: its online members are a section of their own in the member list
 );
 CREATE TABLE IF NOT EXISTS group_members (
     group_id INTEGER NOT NULL,
@@ -299,6 +302,11 @@ ADDED_COLUMNS = {
                     ("last_poll", "REAL"), ("connected", "INTEGER")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER")],
+    # The groups that existed before groups had an order keep the order of their ids; default groups have none.
+    "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
+                                       "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
+               ("separate", "INTEGER NOT NULL DEFAULT 0")],
+    "people": [("last_beat", "REAL")],
 }
 
 # Indexes on such added columns: made after the columns, since the schema script runs before them.

@@ -121,10 +121,10 @@ def table(pj: Project, actor: Actor) -> dict[str, Any]:
     and its tasks by id."""
     projects.require(pj, actor, "read", "Reading the project needs the read permission.")
     out = []
-    for g in pj.db.execute("SELECT * FROM groups ORDER BY id").fetchall():
+    for g in projects.ordered_groups(pj):
         members: list[dict[str, Any]] = [
-            {"name": r["name"], "kind": "person", "online": False}     # people's presence comes in a later slice
-            for r in pj.db.execute("SELECT p.name FROM people p JOIN group_members m ON m.member_id = p.person_id "
+            {"name": r["name"], "kind": "person", "online": projects.person_online(r)}
+            for r in pj.db.execute("SELECT p.* FROM people p JOIN group_members m ON m.member_id = p.person_id "
                                    "AND m.member_kind = 'person' WHERE m.group_id = ? ORDER BY p.joined, p.person_id",
                                    (g["id"],))]
         for a in pj.db.execute("SELECT a.* FROM agents a JOIN group_members m ON m.member_id = a.id "

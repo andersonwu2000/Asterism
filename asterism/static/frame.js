@@ -1,9 +1,11 @@
 // The places of a project on every page of it (Asterism.side): /api/channels on the pages' rhythm (the rail counts
-// what is important from it; the messages page reads the places), the members from /api/members (the presence marks,
-// the member list, the profile cards), and in chat the second column (#side) with its channels (#side-channels) and
-// private conversations (#side-private), the form to start a private conversation, and each channel's gear and menu
-// (right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its settings, create a
-// channel). The rail and the drawer are rail.js's; the project menu is project.js's.
+// what is important from it; the messages pages read the places), the members from /api/members (the presence marks,
+// the member list, the profile cards), and the second column of chat (#side-channels: the channels, each with its
+// settings mark and menu: right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its
+// settings, create a channel) and of private messages (#dm-list: the conversations, newest first, and #dm-new, a
+// menu of the members one may write to privately). Every page of the project also tells the server it is open
+// (POST /api/presence at once and every few seconds, data-beat on the rail): that is a person's presence.
+// The rail and the drawer are rail.js's; the project menu is project.js's.
 "use strict";
 (function () {
   var A = window.Asterism, rail = document.getElementById("rail"), side = document.getElementById("side");
@@ -12,7 +14,8 @@
   var SLUG = rail.dataset.slug, ME = rail.dataset.me;
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PLACES_EVERY_MS = 4000, MEMBERS_EVERY_MS = 15000;
-  var lists = {channels: document.getElementById("side-channels"), "private": document.getElementById("side-private")};
+  var lists = {channels: document.getElementById("side-channels"), "private": document.getElementById("dm-list")};
+  var dmNone = document.getElementById("dm-none");
 
   var S = A.side = {
     places: null,                     // what /api/channels answered last
@@ -29,19 +32,18 @@
 
   // ------------------------------------------------------------------ the lists
 
-  function hashOf(place) { return "#" + encodeURIComponent(place); }
-  function hrefOf(place) { return "/" + encodeURIComponent(SLUG) + hashOf(place); }
+  // A channel is chat's (/slug#%23name); a private conversation has a page of its own (/slug/dm/name).
+  function hrefOf(place) {
+    var base = "/" + encodeURIComponent(SLUG);
+    return place.charAt(0) === "#" ? base + "#" + encodeURIComponent(place) : base + "/dm/" + encodeURIComponent(place);
+  }
+  S.hrefOf = hrefOf;
 
+  // Shape says who (a square for a person, a disc for an agent), fill says state (filled while online).
   function presence(who) {
-    var mark = make("span", "presence");
+    var mark = make("span", "presence " + (who && who.kind === "agent" ? "agent" : "person") + (who && who.online ? " on" : ""));
     mark.setAttribute("role", "img");
-    if (who && who.kind === "agent") {
-      mark.className += " agent" + (who.online ? " on" : "");
-      mark.setAttribute("aria-label", t(who.online ? "presence.online" : "presence.offline"));
-    } else {
-      mark.className += " person";
-      mark.setAttribute("aria-label", t("presence.person"));
-    }
+    mark.setAttribute("aria-label", t(who && who.online ? "presence.online" : "presence.offline"));
     return mark;
   }
   S.presence = presence;
@@ -81,7 +83,7 @@
       gear.setAttribute("aria-label", label);
       gear.title = label;
       gear.dataset.key = "gear:" + place;
-      gear.appendChild(A.glyph("gear"));
+      gear.appendChild(A.glyph("sliders"));
       li.appendChild(gear);
     }
     return li;
@@ -108,20 +110,25 @@
     if (key === drawn && !force) return;
     drawn = key;
     A.keepFocus(side, function () {
-      lists.channels.textContent = "";
-      p.channels.forEach(function (c) {
-        var inner = [make("span", "place-name", "#" + c.name)];
-        if (c.muted) inner.push(make("span", "note", t("nav.muted")));
-        lists.channels.appendChild(item("#" + c.name, inner, c.unread, c.important, c.muted));
-      });
-      lists["private"].textContent = "";
-      var seen = false;
-      p["private"].forEach(function (c) {
-        if (c["with"] === S.current) seen = true;
-        lists["private"].appendChild(privateItem(c["with"], c.unread, c.important));
-      });
-      if (S.current && S.current.charAt(0) !== "#" && !seen) {     // a conversation not started yet
-        lists["private"].insertBefore(privateItem(S.current, 0, 0), lists["private"].firstChild);
+      if (lists.channels) {
+        lists.channels.textContent = "";
+        p.channels.forEach(function (c) {
+          var inner = [make("span", "place-name", "#" + c.name)];
+          if (c.muted) inner.push(make("span", "note", t("nav.muted")));
+          lists.channels.appendChild(item("#" + c.name, inner, c.unread, c.important, c.muted));
+        });
+      }
+      if (lists["private"]) {
+        lists["private"].textContent = "";
+        var seen = false;
+        p["private"].forEach(function (c) {
+          if (c["with"] === S.current) seen = true;
+          lists["private"].appendChild(privateItem(c["with"], c.unread, c.important));
+        });
+        if (S.current && S.current.charAt(0) !== "#" && !seen) {     // a conversation not started yet
+          lists["private"].insertBefore(privateItem(S.current, 0, 0), lists["private"].firstChild);
+        }
+        if (dmNone) dmNone.hidden = !!lists["private"].children.length;
       }
     });
   }
@@ -146,7 +153,7 @@
     if (raw === membersRaw) return S.members;
     membersRaw = raw;
     var d = {};
-    (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person"}; });
+    (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person", online: !!x.online}; });
     (r.data.agents || []).forEach(function (a) { d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy}; });
     S.directory = d;
     S.members = r.data;
@@ -158,44 +165,36 @@
   setInterval(S.refresh, PLACES_EVERY_MS);
   setInterval(S.loadMembers, MEMBERS_EVERY_MS);
   S.refresh();
-  S.loadMembers();
+
+  // ------------------------------------------------------------------ presence: this page is open
+
+  // A plain POST without an Idempotency-Key: a beat is the same however often it arrives, and nothing is kept of it.
+  // It goes on while the page is hidden too (the person still has the project open).
+  var BEAT_MS = Math.max(5, Number(rail.dataset.beat) || 20) * 1000;
+  function beat() {
+    return fetch(API + "presence", {method: "POST", credentials: "same-origin", body: "{}",
+                                    headers: {"Content-Type": "application/json", "Accept": "application/json"}})
+      .catch(function () { /* the next beat tries again */ });
+  }
+  // The first beat before the first reading of the members, so that the reader is online in it.
+  beat().then(S.loadMembers);
+  setInterval(beat, BEAT_MS);
 
   // ------------------------------------------------------------------ starting a private conversation
-
-  function reveal(button, show) {
-    var form = document.getElementById(button.getAttribute("aria-controls"));
-    if (!form) return;
-    form.hidden = !show;
-    button.setAttribute("aria-expanded", String(show));
-    if (show) {
-      var field = form.querySelector("input, select");
-      if (field) field.focus();
-    } else {
-      button.focus();
-    }
-  }
-  Array.prototype.forEach.call(side ? side.querySelectorAll("[data-reveal]") : [], function (b) {
-    var form = document.getElementById(b.getAttribute("aria-controls"));
-    b.addEventListener("click", function () { reveal(b, form.hidden); });
-    form.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape") { ev.stopPropagation(); reveal(b, false); }
-    });
-    var cancel = form.querySelector("[data-dismiss]");
-    if (cancel) cancel.addEventListener("click", function () { reveal(b, false); });
-  });
 
   function go(place) {
     if (A.rail) A.rail.closeDrawer(false);
     window.location.href = hrefOf(place);
   }
 
-  var newPrivate = document.getElementById("new-private");
-  if (newPrivate) {
-    newPrivate.addEventListener("submit", function (ev) {
-      ev.preventDefault();
-      newPrivate.hidden = true;
-      side.querySelector('[aria-controls="new-private"]').setAttribute("aria-expanded", "false");
-      go(newPrivate.elements["with"].value);
+  // #dm-new: the members one may write to privately (two people; a person and their own agent), as a menu.
+  var dmNew = document.getElementById("dm-new");
+  if (dmNew) {
+    dmNew.addEventListener("click", function () {
+      var choices = A.parseJSON(dmNew.dataset.choices, []) || [];
+      A.menu({label: t("nav.start_private"), anchor: dmNew}, choices.map(function (c) {
+        return {label: c.agent ? t("msg.my_agent", {name: c.name}) : c.name, run: function () { go(c.name); }};
+      }), dmNew);
     });
   }
 

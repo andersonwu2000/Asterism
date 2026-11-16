@@ -1,9 +1,13 @@
-// The messages page, middle column: the chosen place's name in the channel bar (a channel's opens its settings, a
-// private conversation's the other member's card), its pins (a popover from the bar), its messages and the composer.
-// It speaks only the project's JSON API (/api/messages, /api/read, pins) and asks for news every few seconds; the
-// places (and their unread counts) come from the frame (frame.js, Asterism.side), the text rendering from render.js,
-// the right column from right.js, tasks.js, people.js and search.js. Asterism.chat lets the others put a mention
-// into the composer and open a place at one message. All texts come from the page's message catalogue.
+// The messages pages, middle column: chat (#chat data-mode="chat": a channel, named by the address's hash) and
+// private messages (data-mode="dm": the conversation the address names, /slug/dm/name; the bare /slug/dm opens the
+// newest one). The place's name is in the top bar (a channel's opens its settings, a private conversation's the other
+// member's card); then its messages and the composer. A message shows no number: its id stays in the page's data
+// (the row's id) for replies and jumps. An address with ?m=<id> opens its place at that message. It speaks only the
+// project's JSON API (/api/messages, /api/read) and asks for news every few seconds; the places (and their unread
+// counts) come from the frame (frame.js, Asterism.side), the text rendering from render.js, the right column from
+// right.js, tasks.js, people.js and search.js. Asterism.chat lets the others put a mention into the composer and
+// open a place at one message (in the other mode's page when the place is there). All texts come from the page's
+// message catalogue.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -11,7 +15,7 @@
   if (!root || !A || !A.renderText || !A.side) return;
   var t = A.t, make = A.make;
 
-  var SLUG = root.dataset.slug;
+  var SLUG = root.dataset.slug, MODE = root.dataset.mode === "dm" ? "dm" : "chat";
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000;
   var LANG = document.documentElement.lang || undefined;
@@ -22,11 +26,8 @@
     scroll: document.getElementById("scroller"),
     older: document.getElementById("older"), form: document.getElementById("composer"),
     text: document.getElementById("text"), out: document.getElementById("composer-out"),
-    reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel"),
-    pins: document.getElementById("pins"), pinsToggle: document.getElementById("pins-toggle"),
-    pinsCount: document.getElementById("pins-count")
+    reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel")
   };
-  var CAN_PIN = !!(el.pins && el.pins.dataset.canPin);
   var state = {place: null, first: 0, last: 0, replyTo: null, places: {channels: [], "private": []}, busy: false};
 
   function get(path, params) { return A.request(API + path, params); }
@@ -34,17 +35,23 @@
 
   // ------------------------------------------------------------------ places
 
+  // Chat: the channel the hash names (#general by default). Private messages: the conversation the address names.
   function placeFromHash() {
+    if (MODE === "dm") return root.dataset.place || "";
     var raw = window.location.hash.slice(1);
     try { raw = decodeURIComponent(raw); } catch (err) { raw = ""; }
     return raw || "#general";
   }
   function isChannel(place) { return !!place && place.charAt(0) === "#"; }
+  function inThisMode(place) { return MODE === "dm" ? !!place && !isChannel(place) : isChannel(place); }
+  // The address of `place`, opened at the message `id` (when given): chat's for a channel, private messages' else.
+  function addressOf(place, id) {
+    var base = "/" + encodeURIComponent(SLUG), at = id ? "?m=" + encodeURIComponent(id) : "";
+    return isChannel(place) ? base + at + "#" + encodeURIComponent(place)
+                            : base + "/dm/" + encodeURIComponent(place) + at;
+  }
 
-  A.side.onChange(function (places) {
-    state.places = places;
-    drawPins();
-  });
+  A.side.onChange(function (places) { state.places = places; });
   function loadPlaces() { return A.side.refresh(); }
 
   // ------------------------------------------------------------------ folding
@@ -228,17 +235,6 @@
     return who && who.owner ? t("msg.agent_of", {owner: who.owner}) : t("msg.kind_agent");
   }
 
-  // A refusal or a note at a message: under its text, where the act was.
-  function messageOut(li) {
-    var out = li.querySelector(".body > .out");
-    if (!out) {
-      out = make("div", "out");
-      out.setAttribute("aria-live", "polite");
-      li.querySelector(".body").appendChild(out);
-    }
-    return out;
-  }
-
   function messageItem(m) {
     known.set(m.id, m);
     var li = make("li", "msg" + (m.from_kind === "system" ? " system" : "") + (m.level === "important" ? " important" : ""));
@@ -246,14 +242,14 @@
     var gutter = make("div", "gutter"), body = make("div", "body");
     var when = make("time", "", clock(m.sent_at));
     when.dateTime = m.sent_at;
-    when.title = new Date(m.sent_at).toLocaleString(LANG) + DOT + "#" + m.id;
+    when.title = new Date(m.sent_at).toLocaleString(LANG);
     gutter.appendChild(when);
 
     if (m.reply_to) {
       var line = make("div", "reply-line");
       var jump = A.button("link-btn", replyLabel(m.reply_to), function () { jumpTo(m.reply_to); });
       jump.dataset.reply = String(m.reply_to);
-      jump.title = t("msg.jump_hint", {id: m.reply_to});
+      jump.title = t("msg.jump_hint");
       line.appendChild(jump);
       body.appendChild(line);
     }
@@ -268,7 +264,6 @@
       meta.appendChild(sch);
     }
     if (m.level === "important") meta.appendChild(make("span", "pill", t("msg.important")));
-    meta.appendChild(make("span", "mid", "#" + m.id));
     body.appendChild(meta);
 
     var box = A.renderText(m.text);
@@ -278,17 +273,9 @@
 
     var acts = make("div", "acts");
     acts.setAttribute("role", "group");
-    acts.setAttribute("aria-label", t("msg.acts") + " #" + m.id);
+    acts.setAttribute("aria-label", t("msg.acts"));
     if (m.from_kind !== "system") {
       acts.appendChild(A.button("", t("msg.reply"), function () { setReply(m.id); el.text.focus(); }));
-    }
-    if (CAN_PIN && isChannel(m["in"])) {
-      acts.appendChild(A.button("", t("msg.pin"), function () { addPin({message: m.id}, messageOut(li)); }));
-    }
-    if (acts.children.length) {
-      var mid = make("span", "mid", "#" + m.id);
-      mid.setAttribute("aria-hidden", "true");
-      acts.appendChild(mid);
       body.appendChild(acts);
     }
     li.append(gutter, body);
@@ -355,7 +342,7 @@
       if (!(await loadOlder())) break;
       target = document.getElementById("m-" + id);
     }
-    if (!target) { el.out.textContent = t("msg.not_here", {id: id}); return; }
+    if (!target) { el.out.textContent = t("msg.not_here"); return; }
     if (target.hidden && target.dataset.run) {          // inside a folded run: open it first
       var row = el.list.querySelector('li.fold[data-first="' + target.dataset.run + '"]');
       if (row) setRun(row._ids, true);
@@ -388,6 +375,22 @@
     if (isChannel(state.place) && A.project) A.project.openSettings(A.side.settingsHref(state.place.slice(1)));
   });
 
+  // Private messages with no conversation chosen: the newest one, else a sentence and no composer.
+  function nothingChosen() {
+    var newest = state.places["private"][0];
+    if (newest) {
+      root.dataset.place = newest["with"];
+      history.replaceState(null, "", addressOf(newest["with"]));
+      open(newest["with"]);
+      return;
+    }
+    el.title.textContent = "";
+    el.title.hidden = true;
+    el.form.hidden = true;
+    el.list.textContent = "";
+    el.list.appendChild(make("li", "empty", t("msg.private_none")));
+  }
+
   var target = null;                      // a message to open the next place at (Asterism.chat.openAt)
   var opened = [];                        // what wants to know when a place is opened (Asterism.chat.onOpen)
 
@@ -395,7 +398,9 @@
     var at = target;
     target = null;
     state.place = place;
-    if (A.rail) A.store.set(A.rail.chatPlaceKey, place);
+    el.title.hidden = false;
+    el.form.hidden = false;
+    if (A.rail && MODE === "chat") A.store.set(A.rail.chatPlaceKey, place);
     state.first = 0;
     state.last = 0;
     setReply(null);
@@ -406,7 +411,6 @@
     opened.forEach(function (fn) { fn(place); });
     document.title = place + DOT + (document.title.split(DOT).slice(-1)[0] || "");
     A.side.setCurrent(place);
-    drawPins();
     state.busy = true;
     try {
       // At one message: the messages up to it and after it; otherwise the newest.
@@ -448,9 +452,11 @@
     onOpen: function (fn) { opened.push(fn); if (state.place) fn(state.place); },
     // "@name " into the composer (the profile card's and the member menu's "mention").
     mention: function (name) { insert("@" + name + " "); },
-    // Open `place` at the message `id` (a search result): scrolled to and marked for a moment.
+    // Open `place` at the message `id` (a search result): scrolled to and marked for a moment. A place of the other
+    // mode opens in its own page.
     openAt: function (place, id) {
       if (place === state.place && document.getElementById("m-" + id)) { jumpTo(id); return; }
+      if (!inThisMode(place) || MODE === "dm") { window.location.href = addressOf(place, id); return; }
       target = id;
       if (placeFromHash() === place) open(place); else window.location.hash = encodeURIComponent(place);
     }
@@ -480,7 +486,7 @@
     state.replyTo = id;
     el.reply.hidden = !id;
     var m = id ? known.get(id) : null;
-    el.reply.firstChild.textContent = id ? t("msg.replying_to", {id: id}) + (m ? DOT + senderName(m) + ": " + snippet(m.text) : "") : "";
+    el.reply.firstChild.textContent = id ? t("msg.replying_to") + (m ? DOT + senderName(m) + ": " + snippet(m.text) : "") : "";
   }
 
   function outcome(mentions) {
@@ -524,94 +530,6 @@
     toBottom();
   }
 
-  // ------------------------------------------------------------------ pins
-  //
-  // #pins-toggle in the channel bar carries the number of a channel's pins (as /api/channels gives them, oldest
-  // first) and opens them in a popover (#pins): a file opens in files mode, a message is scrolled to (loading older
-  // ones when needed). "Manage" leads to the channel settings' pins, where files are pinned and pins removed; a
-  // person who may pin (data-can-pin) pins a message with the act on the message. Private conversations have none.
-
-  var pinsShown = "";
-
-  function currentPins() {
-    if (!isChannel(state.place)) return null;
-    var name = state.place.slice(1);
-    var ch = state.places.channels.filter(function (c) { return c.name === name; })[0];
-    return ch ? (ch.pins || []) : [];
-  }
-
-  function pinText(p) { return "#" + p.message + " " + (p.from || "") + ": " + p.text; }
-
-  function pinLink(p) {
-    var link;
-    if (p.kind === "file") {           // a file pin opens in files mode
-      link = make("a", "pin-link file", p.path);
-      link.href = A.fileHref(SLUG, p.path);
-      link.title = t("pin.file_hint");
-    } else {
-      link = A.button("pin-link", null, function () { A.popup.close(false); jumpTo(p.message); });
-      link.appendChild(make("span", "", pinText(p)));
-      link.title = t("pin.message_hint");
-    }
-    link.dataset.key = "pin:" + p.id;
-    return link;
-  }
-
-  function drawPins() {
-    if (!el.pins || !el.pinsToggle) return;
-    var list = currentPins(), n = list ? list.length : 0;
-    el.pinsToggle.hidden = list === null;
-    el.pinsCount.hidden = !n;
-    el.pinsCount.textContent = String(n);
-    var label = n ? t("bar.pins_n", {n: n}) : t("bar.pins");
-    el.pinsToggle.setAttribute("aria-label", label);
-    el.pinsToggle.title = label;
-    if (list === null && A.popup.isOpen(el.pins)) A.popup.close(false);
-    var key = JSON.stringify([state.place, list]);
-    if (key === pinsShown) return;
-    pinsShown = key;
-    if (list !== null) fillPins(list);
-  }
-
-  function fillPins(list) {
-    A.keepFocus(el.pins, function () {
-      el.pins.textContent = "";
-      el.pins.appendChild(make("h2", "pins-title", t("pin.list_label")));
-      if (!list.length) el.pins.appendChild(make("p", "pins-none", t("pin.none")));
-      var ul = make("ul", "pins-list");
-      list.forEach(function (p) {
-        var li = make("li");
-        li.append(pinLink(p), make("span", "pin-by", t("pin.by", {name: p.by})));
-        ul.appendChild(li);
-      });
-      if (list.length) el.pins.appendChild(ul);
-      var manage = make("a", "btn quiet pins-manage", t("bar.pins_manage"));
-      manage.href = A.side.settingsHref(state.place.slice(1)) + "/pins";
-      manage.dataset.key = "pins-manage";
-      el.pins.appendChild(manage);
-    });
-    if (A.popup.isOpen(el.pins)) A.popup.place();
-  }
-
-  if (el.pinsToggle) {
-    el.pinsToggle.addEventListener("click", function () {
-      if (A.popup.isOpen(el.pins)) { A.popup.close(true); return; }
-      var list = currentPins();
-      if (list === null) return;
-      fillPins(list);
-      A.popup.open(el.pins, el.pinsToggle, {align: "end"});
-    });
-  }
-
-  // A message pinned with its act; the outcome is said at the message.
-  async function addPin(body, out) {
-    if (!isChannel(state.place)) return;
-    var r = await post("channels/" + encodeURIComponent(state.place.slice(1)) + "/pins", body);
-    if (!r.ok) { if (out) out.textContent = A.refusal("pin.refused", r.data); return; }
-    if (out) out.textContent = "";
-    await loadPlaces();
-  }
-
   // ------------------------------------------------------------------ wiring
 
   el.text.addEventListener("keydown", function (ev) {
@@ -627,9 +545,22 @@
   el.form.addEventListener("submit", function (ev) { ev.preventDefault(); send(); });
   el.replyCancel.addEventListener("click", function () { setReply(null); el.text.focus(); });
   el.older.addEventListener("click", loadOlder);
-  window.addEventListener("hashchange", function () { open(placeFromHash()); });
+  // Chat's places are its hash; a private conversation named there (an older address) has its own page now.
+  function start() {
+    var place = placeFromHash();
+    if (MODE === "chat" && !isChannel(place)) { window.location.replace(addressOf(place)); return; }
+    if (!place) { nothingChosen(); return; }
+    open(place);
+  }
+  if (MODE === "chat") window.addEventListener("hashchange", function () { start(); });
   // Coming back to this tab from files mode with a mention waiting.
   window.addEventListener("focus", takeMention);
   setInterval(news, NEWS_EVERY_MS);
-  loadPlaces().then(function () { open(placeFromHash()); });
+  // ?m=<id>: open the place at that message (a search result from the other mode's page); then a plain address.
+  var asked = new URLSearchParams(window.location.search).get("m");
+  if (asked && /^\d{1,18}$/.test(asked)) {
+    target = Number(asked);
+    history.replaceState(null, "", window.location.pathname + window.location.hash);
+  }
+  loadPlaces().then(start);
 })();

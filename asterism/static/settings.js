@@ -4,13 +4,17 @@
 //   is the list itself, and a section has a way back to it.
 // - The close control (#settings-close) and Escape go back to the page the layer was opened from (project.js keeps
 //   it), else to chat.
-// - Project: members (one table of people and agents: groups as chips, x to take one away and + to give one, removal
-//   from the project), groups (a list with a filter and "new group"; a chosen group, ?g= in the address, in tabs:
-//   name, permissions, members; a person's agents: members and that person's switches), invitations (app.js).
-// - Channel: notifications (my mute and my agents'), pins (the list; files pinned and pins removed by who may pin).
-// The data is /api/members (embedded at first, then read again every 15 s while nobody is mid-act) and
-// /api/channels. Only what the reader may do is offered (Asterism.people's rules); a refusal shows the server's
-// sentence where the act was. Taking out of a group confirms in place; removing a group or a member floats.
+// - Project: members (one table of people and agents: the non-default groups as chips, x to take one away; the
+//   default ones as a quiet line; + gives or takes any group, the default ones too, as check boxes; removal from the
+//   project), groups (the default groups as one card at the top, "default permissions", leading to their
+//   permissions; under it the other groups in their order, the highest first, with a filter and "new group": who may
+//   manage groups drags a row to move it, or moves it with "move up" / "move down" in the row's menu; a chosen group,
+//   ?g= in the address, in tabs: display (its name and "show separately in the member list"), permissions, members;
+//   a person's agents: display, members and that person's switches), invitations (app.js).
+// - Channel: notifications (my mute and my agents').
+// The data is /api/members (embedded at first, then read again every 15 s while nobody is mid-act). Only what the
+// reader may do is offered (Asterism.people's rules); a refusal shows the server's sentence where the act was.
+// Taking out of a group confirms in place; removing a group or a member floats.
 "use strict";
 (function () {
   var A = window.Asterism, layer = document.getElementById("settings-layer");
@@ -102,7 +106,7 @@
 
   function busy() {
     var a = document.activeElement;
-    return A.isArmed(layer) || !!document.querySelector("dialog.gone[open]") || A.popup.isOpen() ||
+    return A.isArmed(layer) || !!dragging || !!document.querySelector("dialog.gone[open]") || A.popup.isOpen() ||
            !!document.querySelector(".menu.shown") ||
            !!(a && layer.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== "checkbox" && a.type !== "search");
   }
@@ -123,7 +127,6 @@
   function draw(section) {
     if (section === "members") drawMembers();
     else if (section === "groups") drawGroups();
-    else if (section === "pins") loadPins();
   }
 
   function outOf(box) {
@@ -159,11 +162,15 @@
                                           t(who.online ? "presence.online" : "presence.offline") : t("mem.kind_person"));
     var groups = make("td"), chips = make("div", "mtags");
     var after = function (r) { done(out)(r); };
-    if (!who.groups.length) chips.appendChild(make("span", "dim small", t("mem.no_groups")));
-    who.groups.forEach(function (n) { chips.appendChild(P.chip(rules, who, isAgent, n, after)); });
-    var plus = P.plus(function () { return rules; }, who, isAgent, after);
+    var plain = rules.plainOf(who), defaults = rules.defaultsOf(who);
+    if (!plain.length) chips.appendChild(make("span", "dim small", t("mem.no_groups")));
+    plain.forEach(function (g) { chips.appendChild(P.chip(rules, who, isAgent, g.name, after)); });
+    var plus = P.plus(function () { return rules; }, who, isAgent, after, true);
     if (plus) chips.appendChild(plus);
     groups.appendChild(chips);
+    if (defaults.length) {
+      groups.appendChild(make("p", "mdefaults", t("mem.default_line", {names: defaults.map(rules.label).join("・")})));
+    }
     var acts = make("td", "mcell-acts");
     if (rules.mayRemove(who, isAgent)) {
       var b = A.button("btn", t("mem.remove_member"));
@@ -234,15 +241,80 @@
     else if (!name) { var row = list.querySelector("a.place"); if (row) row.focus(); }
   }
 
+  var DEFAULTS = "@default";              // the address (?g=) of the default groups' card
+
+  function plainGroups() { return view.groups.filter(function (g) { return !rules.isDefault(g); }); }
+  function mayOrder() { return rules.mine("manage_groups"); }
+
+  // A new order of the non-default groups: `name` moved to `to` (an index in the list).
+  async function reorder(name, to, out) {
+    var names = plainGroups().map(function (g) { return g.name; }), from = names.indexOf(name);
+    if (from < 0 || to < 0 || to >= names.length || to === from) return;
+    names.splice(from, 1);
+    names.splice(to, 0, name);
+    var r = await A.request(API + "groups/order", null, {names: names});
+    if (!r.ok) { if (out) out.textContent = A.refusal("mem.refused", r.data); return; }
+    if (out) out.textContent = t("mem.moved");
+    await load(true);
+    var again = list.querySelector('[data-key="gm:' + name.replace(/["\\]/g, "\\$&") + '"]');
+    if (again) again.focus();
+  }
+
   function groupMenu(g, b) {
     var items = [{label: t("mem.open_group"), run: function () { goGroup(g.name, true); }}];
+    if (!rules.isDefault(g) && mayOrder() && !(groupFilter.value || "").trim()) {
+      var names = plainGroups().map(function (x) { return x.name; }), i = names.indexOf(g.name), out = orderOut;
+      items.push({separator: true},
+                 {label: t("mem.move_up"), disabled: i <= 0, run: function () { reorder(g.name, i - 1, out); }},
+                 {label: t("mem.move_down"), disabled: i >= names.length - 1, run: function () { reorder(g.name, i + 1, out); }});
+    }
     if (g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions)) {
       items.push({separator: true}, {label: t("mem.remove_group"), run: function () { removeGroup(g, b); }});
     }
     A.menu({label: t("mem.group_acts", {name: rules.label(g)}), anchor: b}, items, b);
   }
 
-  function entry(g, compact) {
+  var dragging = null, orderOut = null;
+
+  // Dragging a row (who may manage groups, with no filter): it goes before or after the row it is dropped on.
+  function draggable(li, g) {
+    li.draggable = true;
+    li.classList.add("draggable");
+    li.addEventListener("dragstart", function (ev) {
+      dragging = g.name;
+      li.classList.add("dragging");
+      ev.dataTransfer.effectAllowed = "move";
+      try { ev.dataTransfer.setData("text/plain", g.name); } catch (err) { /* the name is kept above */ }
+    });
+    li.addEventListener("dragend", function () {
+      dragging = null;
+      li.classList.remove("dragging");
+      Array.prototype.forEach.call(list.querySelectorAll(".drop-before, .drop-after"), function (x) {
+        x.classList.remove("drop-before", "drop-after");
+      });
+    });
+    li.addEventListener("dragover", function (ev) {
+      if (!dragging || dragging === g.name) return;
+      ev.preventDefault();
+      var r = li.getBoundingClientRect(), before = ev.clientY < r.top + r.height / 2;
+      li.classList.toggle("drop-before", before);
+      li.classList.toggle("drop-after", !before);
+    });
+    li.addEventListener("dragleave", function () { li.classList.remove("drop-before", "drop-after"); });
+    li.addEventListener("drop", function (ev) {
+      ev.preventDefault();
+      var name = dragging || ev.dataTransfer.getData("text/plain");
+      var before = li.classList.contains("drop-before");
+      li.classList.remove("drop-before", "drop-after");
+      if (!name || name === g.name) return;
+      var names = plainGroups().map(function (x) { return x.name; });
+      var to = names.indexOf(g.name) + (before ? 0 : 1);
+      if (names.indexOf(name) < to) to -= 1;
+      reorder(name, to, orderOut);
+    });
+  }
+
+  function entry(g, compact, order) {
     var li = make("li", "grow"), a = make("a", "place");
     a.href = BASE + "/groups?g=" + encodeURIComponent(g.name);
     a.dataset.key = "g:" + g.name;
@@ -252,6 +324,14 @@
     c.setAttribute("aria-hidden", "true");
     a.append(make("span", "place-name" + (g.kind === "custom" ? " mono" : ""), rules.label(g)), c,
              make("span", "vh", t("mem.count_label", {n: n})));
+    if (order) {
+      var grip = make("span", "grip");
+      grip.title = t("mem.order_drag");
+      grip.setAttribute("aria-hidden", "true");
+      grip.appendChild(A.glyph("grip"));
+      li.appendChild(grip);
+      draggable(li, g);
+    }
     li.appendChild(a);
     if (!compact) {
       var b = A.button("row-acts shown");
@@ -268,8 +348,23 @@
     return li;
   }
 
+  // The default groups' card: what every member holds by default (as Discord's @everyone).
+  function defaultsCard() {
+    var defaults = view.groups.filter(rules.isDefault);
+    var a = make("a", "place groups-defaults");
+    a.href = BASE + "/groups?g=" + encodeURIComponent(DEFAULTS);
+    a.dataset.key = "g:" + DEFAULTS;
+    a.dataset.group = DEFAULTS;
+    if (chosen() === DEFAULTS) a.setAttribute("aria-current", "true");
+    var text = make("span", "gd-card-text");
+    text.append(make("span", "place-name", t("mem.defaults")),
+                make("span", "gd-card-sub", defaults.map(rules.label).join("・")));
+    a.appendChild(text);
+    return a;
+  }
+
   function drawList(compact) {
-    var q = (groupFilter.value || "").trim().toLowerCase(), any = false;
+    var q = (groupFilter.value || "").trim().toLowerCase();
     list.textContent = "";
     if (compact) {
       var back = make("a", "place groups-back", t("mem.back_list"));
@@ -277,19 +372,20 @@
       back.dataset.key = "g-back";
       list.appendChild(back);
     }
-    [["mem.custom", "custom"], ["mem.default", "default"], ["mem.ownership", "ownership"]].forEach(function (s) {
-      var gs = view.groups.filter(function (g) {
-        return g.kind === s[1] && (matches(rules.label(g), q) || matches(g.name, q));
-      });
-      if (!gs.length) return;
-      any = true;
-      var sec = make("section", "groups-sec"), ul = make("ul", "side-list");
-      sec.appendChild(make("h3", "", t(s[0])));
-      gs.forEach(function (g) { ul.appendChild(entry(g, compact)); });
-      sec.appendChild(ul);
-      list.appendChild(sec);
-    });
-    if (!any) list.appendChild(make("p", "dim", t("mem.no_match")));
+    if (!q || matches(t("mem.defaults"), q) || view.groups.some(function (g) { return rules.isDefault(g) && matches(rules.label(g), q); })) {
+      list.appendChild(defaultsCard());
+    }
+    var gs = plainGroups().filter(function (g) { return matches(rules.label(g), q) || matches(g.name, q); });
+    if (!gs.length) { if (q) list.appendChild(make("p", "dim", t("mem.no_match"))); return; }
+    var sec = make("section", "groups-sec"), ul = make("ul", "side-list groups-order");
+    if (!compact) sec.appendChild(make("p", "groups-hint", t("mem.order_hint")));
+    var order = mayOrder() && !q && !compact;
+    gs.forEach(function (g) { ul.appendChild(entry(g, compact, order)); });
+    sec.appendChild(ul);
+    orderOut = make("p", "out");
+    orderOut.setAttribute("aria-live", "polite");
+    sec.appendChild(orderOut);
+    list.appendChild(sec);
   }
 
   if (list) {
@@ -301,7 +397,7 @@
     });
     list.addEventListener("contextmenu", function (ev) {
       var a = ev.target.closest && ev.target.closest("a.place[data-group]");
-      var g = a && rules.group(a.dataset.group);
+      var g = a && a.dataset.group !== DEFAULTS && rules.group(a.dataset.group);
       if (!g) return;
       ev.preventDefault();
       groupMenu(g, a);
@@ -333,7 +429,14 @@
     return input;
   }
 
-  function nameTab(g) {
+  // Who may switch "show separately": for a custom group who may manage groups; for a person's agents that person
+  // or who may manage groups.
+  function maySeparate(g) {
+    if (rules.isDefault(g)) return false;
+    return rules.mine("manage_groups") || (g.kind === "ownership" && g.owner === view.me.name);
+  }
+
+  function displayTab(g) {
     var box = make("div", "gd-tab");
     var facts = make("dl", "set-facts");
     facts.append(make("dt", "", t("set.name")), make("dd", "set-name mono", g.name));
@@ -343,6 +446,29 @@
     box.appendChild(make("p", "dim", g.kind === "ownership" ? t("mem.kind.ownership", {owner: g.owner})
                                                             : t("mem.kind." + g.kind, {name: g.name})));
     box.appendChild(make("p", "dim", g.kind === "custom" ? t("mem.rename_none") : t("mem.name_fixed")));
+    // Show separately: one switch, saved as it changes.
+    var rows = make("div", "perm-list"), row = make("div", "perm-row"), input = make("input");
+    input.type = "checkbox";
+    input.id = "sep-" + g.name;
+    input.checked = !!g.separate;
+    input.disabled = !maySeparate(g);
+    input.dataset.key = "sep:" + g.name;
+    var text = make("label", "perm-text"), out = make("span", "out");
+    text.htmlFor = input.id;
+    out.setAttribute("aria-live", "polite");
+    text.append(make("span", "perm-name", t("mem.separate")), make("span", "perm-hint", t("mem.separate_hint")));
+    if (input.disabled) text.appendChild(make("span", "perm-hint", t("mem.separate_readonly")));
+    text.appendChild(out);
+    row.append(input, text);
+    rows.appendChild(row);
+    input.addEventListener("change", async function () {
+      out.textContent = "";
+      var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {separate: input.checked});
+      if (!r.ok) { input.checked = !input.checked; out.textContent = A.refusal("mem.refused", r.data); return; }
+      g.separate = input.checked;
+      out.textContent = t("mem.saved");
+    });
+    box.appendChild(rows);
     if (g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions)) {
       var sec = make("section", "gd-sec");
       sec.appendChild(make("h3", "", t("mem.remove_group")));
@@ -441,20 +567,17 @@
         .concat(view.agents.filter(function (x) { return x.groups.indexOf(g.name) < 0 && rules.mayAdd(x, true, g); })
           .map(function (x) { return [x, true]; }));
       if (cands.length) {
-        var sel = make("select"), addOut = make("span", "out");
+        var addOut = make("span", "out");
         addOut.setAttribute("aria-live", "polite");
-        sel.dataset.key = "gadd:" + g.name;
-        sel.setAttribute("aria-label", t("mem.add_label", {group: rules.label(g)}));
-        cands.forEach(function (c) {
-          var o = make("option", "", c[1] ? c[0].name + " (" + t("mem.agent_of", {owner: c[0].owner}) + ")" : c[0].name);
-          o.value = c[0].name;
-          sel.appendChild(o);
-        });
+        var sel = A.dropdown({label: t("mem.add_label", {group: rules.label(g)}), options: cands.map(function (c) {
+          return {value: c[0].name, label: c[1] ? c[0].name + " (" + t("mem.agent_of", {owner: c[0].owner}) + ")" : c[0].name};
+        })});
+        sel.button.dataset.key = "gadd:" + g.name;
         var add = A.button("btn", t("mem.add"), async function () {
           done(addOut)(await P.regroup(sel.value, [g.name], []));
         });
         add.dataset.key = "gadd-go:" + g.name;
-        top.append(sel, add, addOut);
+        top.append(sel.el, add, addOut);
       }
     }
     box.appendChild(top);
@@ -518,31 +641,49 @@
     return box;
   }
 
+  // The default groups' card: one tab per default group, its permissions (fixed).
+  function drawDefaults() {
+    var head = make("header", "gd-head"), h = make("h2", "gd-title", t("mem.defaults"));
+    h.id = "gd-title";
+    head.append(h, make("p", "", t("mem.defaults_hint")));
+    detail.appendChild(head);
+    var kinds = view.groups.filter(rules.isDefault).map(function (g) {
+      return ["d:" + g.name, function () { return permsTab(g); }, rules.label(g)];
+    });
+    tabsOf(DEFAULTS, kinds);
+  }
+
   function drawGroup(g) {
     var head = make("header", "gd-head"), h = make("h2", "gd-title", rules.label(g));
     h.id = "gd-title";
     if (rules.label(g) !== g.name) h.appendChild(make("small", "", g.name));
     head.appendChild(h);
     detail.appendChild(head);
-    var kinds = g.kind === "ownership" ? [["members", membersTab], ["switches", switchesTab]]
-                                       : [["name", nameTab], ["perms", permsTab], ["members", membersTab]];
-    var want = tabs[g.name] && kinds.some(function (k) { return k[0] === tabs[g.name]; }) ? tabs[g.name] : kinds[0][0];
+    var kinds = g.kind === "ownership" ? [["display", displayTab], ["members", membersTab], ["switches", switchesTab]]
+                                       : [["display", displayTab], ["perms", permsTab], ["members", membersTab]];
+    tabsOf(g.name, kinds.map(function (k) { return [k[0], function () { return k[1](g); }, t("mem.tab." + k[0])]; }));
+  }
+
+  // Tabs over one pane: kinds are [key, draw(), label]; the choice is kept per group (`id`).
+  function tabsOf(id, kinds) {
+    var label = id === DEFAULTS ? t("mem.defaults") : rules.labelOf(id);
+    var want = tabs[id] && kinds.some(function (k) { return k[0] === tabs[id]; }) ? tabs[id] : kinds[0][0];
     var bar = make("div", "tabs");
     bar.setAttribute("role", "tablist");
-    bar.setAttribute("aria-label", t("mem.tabs", {name: rules.label(g)}));
+    bar.setAttribute("aria-label", t("mem.tabs", {name: label}));
     var pane = make("div", "tab-pane");
     pane.setAttribute("role", "tabpanel");
     pane.id = "gd-pane";
     kinds.forEach(function (k) {
-      var b = A.button("tab-btn-plain", t("mem.tab." + k[0]));
+      var b = A.button("tab-btn-plain", k[2]);
       b.setAttribute("role", "tab");
-      b.id = "gd-tab-" + k[0];
+      b.id = "gd-tab-" + k[0].replace(/[^A-Za-z0-9_-]/g, "_");
       b.dataset.key = "tab:" + k[0];
       b.setAttribute("aria-controls", pane.id);
       b.setAttribute("aria-selected", String(k[0] === want));
       b.tabIndex = k[0] === want ? 0 : -1;
       b.addEventListener("click", function () {
-        tabs[g.name] = k[0];
+        tabs[id] = k[0];
         drawGroups();
         var again = detail.querySelector('[data-key="tab:' + k[0] + '"]');
         if (again) again.focus();
@@ -558,8 +699,8 @@
       ev.preventDefault();
       all[j].click();
     });
-    pane.setAttribute("aria-labelledby", "gd-tab-" + want);
-    pane.appendChild(kinds.filter(function (k) { return k[0] === want; })[0][1](g));
+    pane.setAttribute("aria-labelledby", "gd-tab-" + want.replace(/[^A-Za-z0-9_-]/g, "_"));
+    pane.appendChild(kinds.filter(function (k) { return k[0] === want; })[0][1]());
     detail.append(bar, pane);
   }
 
@@ -578,12 +719,12 @@
 
   function drawGroups() {
     if (!groupsRoot) return;
-    var name = chosen(), g = name ? rules.group(name) : null;
+    var name = chosen(), g = name && name !== DEFAULTS ? rules.group(name) : null;
     groupsRoot.classList.toggle("has-detail", !!name);
     A.keepFocus(groupsRoot, function () {
       drawList(!!name);
       detail.textContent = "";
-      if (name && g) drawGroup(g); else if (name) drawMissing(name);
+      if (name === DEFAULTS) drawDefaults(); else if (name && g) drawGroup(g); else if (name) drawMissing(name);
       detail.hidden = !name;
       if (name) detail.setAttribute("aria-labelledby", "gd-title");
     });
@@ -622,7 +763,7 @@
     });
   }
 
-  // ------------------------------------------------------------------ a channel: notifications and pins
+  // ------------------------------------------------------------------ a channel: notifications
 
   Array.prototype.forEach.call(layer.querySelectorAll("input[data-mute]"), function (box) {
     var out = box.parentElement.querySelector(".out");
@@ -635,73 +776,6 @@
       out.textContent = t("msg.saved");
     });
   });
-
-  var pinsBox = document.getElementById("set-pins"), CAN_PIN = !!(pinsBox && pinsBox.dataset.canPin);
-
-  function pinText(p) { return p.kind === "file" ? p.path : "#" + p.message + " " + (p.from || "") + ": " + p.text; }
-
-  async function loadPins() {
-    if (!pinsBox || busy()) return;
-    var r = await A.request(API + "channels");
-    if (!r.ok) return;
-    var ch = (r.data.channels || []).filter(function (c) { return c.name === CHANNEL; })[0];
-    drawPins(ch ? ch.pins || [] : []);
-  }
-
-  function drawPins(list) {
-    A.keepFocus(pinsBox, function () {
-      pinsBox.textContent = "";
-      var ul = make("ul", "mlist");
-      list.forEach(function (p) {
-        var li = make("li", "mrow"), text = make("div", "mtext"), link;
-        if (p.kind === "file") {
-          link = make("a", "mname mono", p.path);
-          link.href = A.fileHref(SLUG, p.path);
-          link.title = t("pin.file_hint");
-        } else {
-          link = make("a", "mname", pinText(p));
-          link.href = "/" + encodeURIComponent(SLUG) + "#" + encodeURIComponent("#" + CHANNEL);
-        }
-        text.append(link, make("span", "msub", t("pin.by", {name: p.by})));
-        li.appendChild(text);
-        var out;
-        if (CAN_PIN) {
-          var x = A.button("btn", t("pin.remove"), async function () {
-            var res = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/pins/" + p.id + "/remove", null, {});
-            if (!res.ok) { out.textContent = A.refusal("pin.refused", res.data); return; }
-            loadPins();
-          });
-          x.dataset.key = "unpin:" + p.id;
-          x.setAttribute("aria-label", t("pin.remove_label", {what: p.kind === "file" ? p.path : "#" + p.message}));
-          var acts = make("div", "macts");
-          acts.appendChild(x);
-          li.appendChild(acts);
-        }
-        out = outOf(li);
-        ul.appendChild(li);
-      });
-      if (!list.length) ul.appendChild(make("li", "mempty", t("pin.none")));
-      pinsBox.appendChild(ul);
-      if (!CAN_PIN) return;
-      var form = make("form", "pin-add"), path = make("input"), out = make("span", "out");
-      path.name = "path";
-      path.maxLength = 300;
-      path.required = true;
-      path.placeholder = t("pin.path");
-      path.dataset.key = "pin-path";
-      path.setAttribute("aria-label", t("pin.path"));
-      form.append(path, make("button", "btn", t("pin.add_file")), out);
-      form.addEventListener("submit", async function (ev) {
-        ev.preventDefault();
-        if (!path.value.trim()) return;
-        var res = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/pins", null, {path: path.value});
-        if (!res.ok) { out.textContent = A.refusal("pin.refused", res.data); return; }
-        path.value = "";
-        loadPins();
-      });
-      pinsBox.appendChild(form);
-    });
-  }
 
   // ------------------------------------------------------------------ start
 

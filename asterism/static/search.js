@@ -1,8 +1,9 @@
-// Search over messages, at the far right of the channel bar (#search-input). Typing offers the filters as
-// suggestions (#search-suggest: from: a member, in: a channel or a private conversation); Enter searches. In a
-// channel the search starts limited to it, shown as a chip (#search-chip) that can be removed. The results take the
-// right column (#search-results, right.js), newest first, with the words marked; a result opens its place at that
-// message (Asterism.chat.openAt). Escape or the x clears the search and gives the right column back. It speaks only
+// Search over messages. The search icon of the top bar (#search-open) opens search in the right column
+// (#search-results, right.js): the field (#search-input) at its top, the results under it. Typing offers the filters
+// as suggestions (#search-suggest: from: a member, in: a channel or a private conversation); Enter searches. In a
+// channel the search starts limited to it, shown as a chip (#search-chip) that can be removed. The results are newest
+// first, with the words marked; a result opens its place at that message (Asterism.chat.openAt). Escape clears the
+// field, and on an empty field closes search and gives the right column back, as the x does. It speaks only
 // /api/search.
 "use strict";
 (function () {
@@ -226,16 +227,23 @@
     }
   }
 
-  function clear() {
-    var had = !!shown;
+  // Empty the field and the results; `close`: also close search, the right column going back to what it showed.
+  function clear(close) {
     shown = null;
     input.value = "";
     hideSuggestions();
+    summary.textContent = "";
+    body.textContent = "";
     var place = A.chat.place();
     if (place !== scope.place) { scope.place = place; scope.removed = false; }
     syncChip();
-    if (had) A.right.giveBack();
-    input.focus();
+    if (close) {
+      A.right.giveBack();
+      var opener = document.getElementById("search-open");
+      if (opener) opener.focus();
+    } else {
+      input.focus();
+    }
   }
 
   // ------------------------------------------------------------------ wiring
@@ -258,17 +266,17 @@
     } else if (ev.key === "Escape") {
       ev.preventDefault();
       if (open) { hideSuggestions(); return; }
-      clear();
+      clear(!input.value && !shown);
     } else if (ev.key === "Backspace" && !input.value && !chip.hidden) {
       scope.removed = true;               // as a chip in a field: Backspace at the start takes it away
       syncChip();
     }
   });
   // The native clear control of a search field clears the search too.
-  input.addEventListener("search", function () { if (!input.value) clear(); });
-  if (close) close.addEventListener("click", clear);
+  input.addEventListener("search", function () { if (!input.value) clear(false); });
+  if (close) close.addEventListener("click", function () { clear(true); });
   document.getElementById("search-results").addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && !ev.defaultPrevented) { ev.preventDefault(); clear(); }
+    if (ev.key === "Escape" && !ev.defaultPrevented) { ev.preventDefault(); clear(true); }
   });
   A.right.onShow(function (now) {
     if (now !== "search" && shown) { shown = null; summary.textContent = ""; body.textContent = ""; }

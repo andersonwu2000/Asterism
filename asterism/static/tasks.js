@@ -1,256 +1,256 @@
-// The task table on the right of the messages page (#task-panel): per group its members (presence mark, the word
-// for busy) with the tasks each is responsible for, then the tasks nobody is responsible for; groups without tasks
-// take one quiet line. Read from /api/tasks on the messages' rhythm; a refresh waits while the person is editing in
-// the panel or has an act armed. A person who may edit tasks (data-can-edit) adds, rewrites, reassigns, locks and
-// removes them with the acts on each task; a refusal shows the server's sentence at that task.
-// The panel is one of the right column's (right.js): #task-toggle shows or hides it; the toggle's name carries the
-// numbers. A member's name opens their profile card (people.js). Asterism.tasks.data is the last table read.
+// Tasks on the messages page (Asterism.tasks). The task table is read from /api/tasks on the messages' rhythm and is
+// shown in the member list (people.js), under each member as their status: a task's text on one line, cut with an
+// ellipsis; more than one task, or a long one, folds under "n 項任務", opened in place. A locked task carries the
+// quiet tag. Every act the former task panel had is here, offered to a person who may edit tasks (data-can-edit-tasks
+// on #chat; the server decides each one): add a task (to a member, or to nobody in a chosen group), rewrite it in
+// place, hand it to another member of its group, lock or unlock it, release it, remove it (in two steps). Each task
+// has its own small menu (its "..." control, right click, the context-menu key or Shift+F10); a refusal shows the
+// server's sentence at the task. A refresh waits while the reader is writing a task or has an act armed.
 "use strict";
 (function () {
-  var A = window.Asterism;
-  var panel = document.getElementById("task-panel"), root = document.getElementById("chat");
-  if (!A || !panel || !root) return;
+  var A = window.Asterism, root = document.getElementById("chat");
+  if (!A || !root) return;
   var t = A.t, make = A.make;
-
   var SLUG = root.dataset.slug, API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var EVERY_MS = 4000, OWN_SUFFIX = "-agents";
-  var body = document.getElementById("task-body"), summary = document.getElementById("task-summary");
-  var toggle = document.getElementById("task-toggle");
-  var tasks = A.tasks = {canEdit: !!panel.dataset.canEdit, last: "", data: null, adding: null, n: 0, open: 0};
+  var EVERY_MS = 4000, LONG = 40;
+  var T = A.tasks = {canEdit: !!root.dataset.canEditTasks, data: null, last: "", listeners: [],
+                     open: {},              // fold key -> opened by the reader
+                     adding: null,          // {key, member, groups} while a new task is being written
+                     editing: null};        // the id of the task being rewritten
+  T.onChange = function (fn) { T.listeners.push(fn); };
+  function changed() { T.listeners.forEach(function (fn) { fn(T.data); }); }
 
-  function groupLabel(g) {
+  // ------------------------------------------------------------------ the data
+
+  function all() {
+    var seen = {}, out = [];
+    ((T.data && T.data.groups) || []).forEach(function (g) {
+      g.tasks.forEach(function (x) { if (!seen[x.id]) { seen[x.id] = true; out.push(x); } });
+    });
+    return out;
+  }
+  // The tasks `name` is responsible for, and those nobody is.
+  T.of = function (name) { return all().filter(function (x) { return x.responsible === name; }); };
+  T.unheld = function () { return all().filter(function (x) { return !x.responsible; }); };
+  function group(name) {
+    return ((T.data && T.data.groups) || []).filter(function (g) { return g.name === name; })[0] || null;
+  }
+  // The groups a new task for `member` can be in: those it is in (all of them for a task of nobody).
+  T.groupsFor = function (member) {
+    return ((T.data && T.data.groups) || []).filter(function (g) {
+      return !member || g.members.some(function (m) { return m.name === member; });
+    });
+  };
+  T.groupLabel = function (g) {
+    var OWN = "-agents";
     if (g.kind === "default" && A.MSG["group." + g.name]) return t("group." + g.name);
-    if (g.kind === "ownership" && g.name.slice(-OWN_SUFFIX.length) === OWN_SUFFIX) {
-      return t("group.ownership", {owner: g.name.slice(0, -OWN_SUFFIX.length)});
-    }
+    if (g.kind === "ownership" && g.name.slice(-OWN.length) === OWN) return t("group.ownership", {owner: g.name.slice(0, -OWN.length)});
     return g.name;
-  }
+  };
 
-  async function taskCall(path, payload, out) {
-    var r = await A.request(API + path, null, payload);
-    if (!r.ok) { out.textContent = A.refusal("task.refused", r.data); return false; }
-    tasks.last = "";
-    await load(true);
-    return true;
-  }
-
-  function memberLine(m) {
-    var line = make("div", "tmember");
-    line.appendChild(A.side ? A.side.presence(m) : make("span"));
-    line.appendChild(A.people ? A.people.nameButton(m.name, "name-btn") : make("span", "", m.name));
-    if (m.kind === "agent" && m.busy) line.appendChild(make("span", "word", t("task.busy")));
-    return line;
-  }
-
-  function act(label, key, onClick) {
-    var b = A.button("", label, onClick);
-    b.dataset.key = key;
-    return b;
-  }
-
-  function taskRow(task, group) {
-    var li = make("li", "task" + (task.assigned_by ? " locked" : ""));
-    var line = make("div", "tline");
-    line.appendChild(make("span", "tid", "#" + task.id));
-    var text = line.appendChild(make("span", "ttext", task.text));
-    if (A.paths) A.paths.scan(text);
-    if (task.assigned_by) line.appendChild(make("span", "tag", t("task.locked", {name: task.assigned_by})));
-    li.appendChild(line);
-    var out = make("div", "out");
-    out.setAttribute("aria-live", "polite");
-    if (!tasks.canEdit) { li.appendChild(out); return li; }
-
-    var acts = make("div", "tacts");
-    acts.setAttribute("role", "group");
-    acts.setAttribute("aria-label", t("task.acts", {id: task.id}));
-
-    acts.appendChild(act(t("task.edit"), "edit:" + task.id, function () {
-      var form = make("form", "tedit"), area = make("textarea");
-      area.value = task.text;
-      area.rows = 2;
-      area.maxLength = 2000;
-      area.setAttribute("aria-label", t("task.text_label"));
-      var row = make("div", "row");
-      var cancel = A.button("btn", t("task.cancel"), function () { tasks.last = ""; load(true); });
-      row.append(make("button", "btn primary", t("task.save")), cancel);
-      form.append(area, row);
-      form.addEventListener("submit", async function (ev) {
-        ev.preventDefault();
-        await taskCall("tasks/" + task.id, {text: area.value}, out);
-      });
-      form.addEventListener("keydown", function (ev) { if (ev.key === "Escape") cancel.click(); });
-      line.replaceWith(form);
-      area.focus();
-    }));
-
-    var who = make("select");
-    who.dataset.key = "who:" + task.id;
-    who.setAttribute("aria-label", t("task.responsible"));
-    var none = make("option", "", t("task.nobody"));
-    none.value = "";
-    who.appendChild(none);
-    group.members.forEach(function (m) {
-      var o = make("option", "", m.name);
-      o.value = m.name;
-      who.appendChild(o);
-    });
-    who.value = task.responsible || "";
-    who.addEventListener("change", async function () {
-      if (!(await taskCall("tasks/" + task.id, {responsible: who.value}, out))) who.value = task.responsible || "";
-    });
-    acts.appendChild(who);
-
-    if (task.responsible_kind === "agent") {
-      var lock = act(t(task.assigned_by ? "task.unlock" : "task.lock"), "lock:" + task.id, function () {
-        taskCall("tasks/" + task.id, {locked: !task.assigned_by}, out);
-      });
-      lock.title = t("task.lock_hint");
-      acts.appendChild(lock);
-    }
-
-    acts.appendChild(act(t("task.remove"), "rm:" + task.id, function () {
-      if (!A.twoStep(this, t("task.confirm_remove", {id: task.id}))) return;
-      taskCall("tasks/" + task.id + "/remove", {}, out);
-    }));
-    li.append(acts, out);
-    return li;
-  }
-
-  function addForm(g) {
-    var form = make("form", "tadd"), input = make("input"), out = make("span", "out");
-    input.name = "text";
-    input.maxLength = 2000;
-    input.required = true;
-    input.dataset.key = "add-text:" + g.name;
-    input.placeholder = t("task.text_label");
-    input.setAttribute("aria-label", t("task.add_to", {group: groupLabel(g)}));
-    var cancel = A.button("btn", t("task.cancel"), function () { tasks.adding = null; draw(tasks.data, "add:" + g.name); });
-    form.append(input, make("button", "btn primary", t("task.add")), cancel, out);
-    form.addEventListener("submit", async function (ev) {
-      ev.preventDefault();
-      if (!input.value.trim()) return;
-      if (await taskCall("tasks", {group: g.name, text: input.value}, out)) tasks.adding = null;
-    });
-    form.addEventListener("keydown", function (ev) { if (ev.key === "Escape") { ev.stopPropagation(); cancel.click(); } });
-    return form;
-  }
-
-  function addButton(g) {
-    var plus = A.button("btn quiet tadd-btn", "+ " + t("task.add"), function () {
-      tasks.adding = g.name;
-      draw(tasks.data, null);
-      var input = body.querySelector('[data-key="add-text:' + g.name.replace(/["\\]/g, "\\$&") + '"]');
-      if (input) input.focus();
-    });
-    plus.dataset.key = "add:" + g.name;
-    plus.setAttribute("aria-label", t("task.add_to", {group: groupLabel(g)}));
-    return plus;
-  }
-
-  function groupHead(g) {
-    var head = make("div", "tghead"), name = make("h3", "", groupLabel(g));
-    if (groupLabel(g) !== g.name) name.appendChild(make("small", "", " " + g.name));
-    head.appendChild(name);
-    return head;
-  }
-
-  // A group with tasks: each member with the tasks they are responsible for, then those of nobody.
-  function groupBlock(g) {
-    var box = make("section", "tgroup"), head = groupHead(g);
-    if (tasks.canEdit && tasks.adding !== g.name) head.appendChild(addButton(g));
-    box.appendChild(head);
-    g.members.forEach(function (m) {
-      box.appendChild(memberLine(m));
-      var mine = g.tasks.filter(function (x) { return x.responsible === m.name; });
-      if (!mine.length) return;
-      var ul = make("ul", "tlist");
-      mine.forEach(function (x) { ul.appendChild(taskRow(x, g)); });
-      box.appendChild(ul);
-    });
-    var open = g.tasks.filter(function (x) {
-      return !x.responsible || !g.members.some(function (m) { return m.name === x.responsible; });
-    });
-    if (open.length) {
-      box.appendChild(make("div", "tmember nobody", t("task.nobody")));
-      var ul = make("ul", "tlist");
-      open.forEach(function (x) { ul.appendChild(taskRow(x, g)); });
-      box.appendChild(ul);
-    }
-    if (tasks.canEdit && tasks.adding === g.name) box.appendChild(addForm(g));
-    return box;
-  }
-
-  // A group without tasks: one quiet line, its members as marks.
-  function quietLine(g) {
-    var box = make("section", "tgroup"), head = groupHead(g), marks = make("span", "tmarks");
-    if (!g.members.length) marks.appendChild(make("span", "dim small", t("task.no_members")));
-    g.members.forEach(function (m) {
-      var mark = A.side ? A.side.presence(m) : make("span");
-      mark.title = m.name;
-      mark.setAttribute("aria-label", m.name + " " + (mark.getAttribute("aria-label") || ""));
-      marks.appendChild(mark);
-    });
-    head.appendChild(marks);
-    if (tasks.canEdit && tasks.adding !== g.name) head.appendChild(addButton(g));
-    box.appendChild(head);
-    if (tasks.canEdit && tasks.adding === g.name) box.appendChild(addForm(g));
-    return box;
-  }
-
-  function draw(data, focusKey) {
-    tasks.data = data;
-    var groups = data.groups || [];
-    tasks.n = 0;
-    tasks.open = 0;
-    groups.forEach(function (g) {
-      tasks.n += g.tasks.length;
-      tasks.open += g.tasks.filter(function (x) { return !x.responsible; }).length;
-    });
-    summary.textContent = t("task.summary", {n: tasks.n, open: tasks.open});
-    label();
-    A.keepFocus(body, function () {
-      body.textContent = "";
-      groups.filter(function (g) { return g.tasks.length; }).forEach(function (g) { body.appendChild(groupBlock(g)); });
-      var quiet = groups.filter(function (g) { return !g.tasks.length; });
-      if (quiet.length) {
-        var rest = make("div", "tquiet");
-        quiet.forEach(function (g) { rest.appendChild(quietLine(g)); });
-        body.appendChild(rest);
-      }
-    });
-    if (focusKey) {
-      var again = body.querySelector('[data-key="' + focusKey.replace(/["\\]/g, "\\$&") + '"]');
-      if (again) again.focus();
-    }
-  }
-
-  // Someone is typing in the panel, has an editor open or an act armed: a redraw would throw that away.
-  function editing() {
-    var a = document.activeElement;
-    return !!body.querySelector("form.tedit") || A.isArmed(body) ||
-           !!(a && body.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.value) ||
-           !!(a && body.contains(a) && a.tagName === "SELECT");
-  }
+  // The reader is writing a task, rewriting one or has an act armed: a redraw would throw that away.
+  T.busy = function () {
+    var box = document.getElementById("member-body"), a = document.activeElement;
+    if (!box) return false;
+    return T.editing !== null || T.adding !== null || A.isArmed(box) ||
+           !!(a && box.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.value);
+  };
 
   async function load(force) {
-    if (!force && editing()) return;
+    if (!force && T.busy()) return;
     var r = await A.request(API + "tasks");
     if (!r.ok) return;
     var raw = JSON.stringify(r.data);
-    if (raw === tasks.last && !force) return;
-    if (!force && editing()) return;
-    tasks.last = raw;
-    draw(r.data, null);
+    if (raw === T.last && !force) return;
+    if (!force && T.busy()) return;
+    T.last = raw;
+    T.data = r.data;
+    changed();
+  }
+  T.load = load;
+
+  // An act on the table: its refusal at `out`, else the table again.
+  async function call(path, payload, out) {
+    var r = await A.request(API + path, null, payload);
+    if (!r.ok) { if (out) out.textContent = A.refusal("task.refused", r.data); return false; }
+    T.last = "";
+    await load(true);
+    return true;
+  }
+  T.call = call;
+
+  // ------------------------------------------------------------------ one task, and a member's tasks
+
+  function outOf(li) { return li.querySelector(":scope > .out"); }
+
+  function editForm(task, li) {
+    var form = make("form", "tedit"), area = make("textarea");
+    area.value = task.text;
+    area.rows = 3;
+    area.maxLength = 2000;
+    area.setAttribute("aria-label", t("task.text_label"));
+    var row = make("div", "row");
+    var cancel = A.button("btn", t("task.cancel"), function () { T.editing = null; changed(); focusTask(task.id); });
+    row.append(make("button", "btn primary", t("task.save")), cancel);
+    form.append(area, row);
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      if (await call("tasks/" + task.id, {text: area.value}, outOf(li))) { T.editing = null; changed(); focusTask(task.id); }
+    });
+    form.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel.click(); }
+    });
+    setTimeout(function () { area.focus(); }, 0);
+    return form;
   }
 
-  // ------------------------------------------------------------------ the toggle
-
-  function label() {
-    var name = t("bar.tasks") + " · " + t("task.summary", {n: tasks.n, open: tasks.open});
-    toggle.setAttribute("aria-label", name);
-    toggle.title = name;
+  function focusTask(id) {
+    var b = document.querySelector('#member-body [data-key="tacts:' + id + '"]');
+    if (b) b.focus();
   }
-  label();
+
+  // Removing asks in place: a button armed at the task, a second press removes it.
+  function armRemove(task, li) {
+    var rm = A.button("btn tremove", t("task.remove"));
+    li.appendChild(rm);
+    rm.addEventListener("click", function () {
+      if (!A.twoStep(rm, t("task.confirm_remove", {id: task.id}))) return;
+      call("tasks/" + task.id + "/remove", {}, outOf(li));
+    });
+    function drop() { setTimeout(function () { if (!rm._armed) rm.remove(); }, 0); }
+    rm.addEventListener("blur", drop);
+    setTimeout(drop, 5200);
+    A.twoStep(rm, t("task.confirm_remove", {id: task.id}));
+  }
+
+  T.menuItems = function (task, li) {
+    var out = outOf(li), items = [{label: t("task.edit"), run: function () { T.editing = task.id; changed(); }}];
+    var g = group(task.group), others = g ? g.members.filter(function (m) { return m.name !== task.responsible; }) : [];
+    if (others.length) {
+      items.push({label: t("task.hand"), items: others.map(function (m) {
+        return {label: t("task.hand_to", {name: m.name}), run: function () { call("tasks/" + task.id, {responsible: m.name}, out); }};
+      })});
+    }
+    if (task.responsible_kind === "agent") {
+      items.push({label: t(task.assigned_by ? "task.unlock" : "task.lock"), run: function () {
+        call("tasks/" + task.id, {locked: !task.assigned_by}, out);
+      }});
+    }
+    if (task.responsible) {
+      items.push({label: t("task.release"), run: function () { call("tasks/" + task.id, {responsible: ""}, out); }});
+    }
+    items.push({separator: true}, {label: t("task.remove"), run: function () { armRemove(task, li); }});
+    return items;
+  };
+
+  function openMenu(task, li, where, opener) {
+    A.menu(Object.assign({label: t("task.task_acts", {text: task.text})}, where), T.menuItems(task, li), opener);
+  }
+
+  T.row = function (task) {
+    var li = make("li", "ptask" + (task.assigned_by ? " locked" : ""));
+    li.dataset.task = String(task.id);
+    if (T.editing === task.id && T.canEdit) {
+      li.appendChild(editForm(task, li));
+    } else {
+      var text = make("span", "ptask-text", task.text);
+      text.title = task.text;
+      li.appendChild(text);
+      if (task.assigned_by) {
+        var tag = make("span", "tag", t("task.locked_short"));
+        tag.title = t("task.locked", {name: task.assigned_by});
+        li.appendChild(tag);
+      }
+      if (T.canEdit) {
+        var acts = A.button("row-acts shown");
+        acts.appendChild(A.glyph("dots"));
+        acts.setAttribute("aria-label", t("task.task_acts", {text: task.text}));
+        acts.title = t("task.task_acts", {text: task.text});
+        acts.setAttribute("aria-haspopup", "menu");
+        acts.setAttribute("aria-expanded", "false");
+        acts.dataset.key = "tacts:" + task.id;
+        acts.addEventListener("click", function () { openMenu(task, li, {anchor: acts}, acts); });
+        li.appendChild(acts);
+        li.addEventListener("contextmenu", function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openMenu(task, li, {x: ev.clientX, y: ev.clientY}, acts);
+        });
+        li.addEventListener("keydown", function (ev) {
+          if (!(ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) || ev.target.closest("form")) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          openMenu(task, li, {anchor: acts}, acts);
+        });
+      }
+    }
+    var out = make("div", "out");
+    out.setAttribute("aria-live", "polite");
+    li.appendChild(out);
+    return li;
+  };
+
+  // A member's tasks as their status: one task on one line; more than one, or a long one, folded under "n 項任務".
+  T.block = function (tasks, key) {
+    var box = make("div", "ptasks");
+    if (!tasks.length) return box;
+    var long = tasks.length > 1 || tasks[0].text.length > LONG || T.editing === tasks[0].id;
+    var ul = make("ul", "ptask-list");
+    tasks.forEach(function (x) { ul.appendChild(T.row(x)); });
+    if (!long) { box.appendChild(ul); return box; }
+    var open = !!T.open[key] || tasks.some(function (x) { return x.id === T.editing; });
+    ul.id = "tl-" + key.replace(/[^A-Za-z0-9_-]/g, "_");
+    ul.hidden = !open;
+    var b = A.button("ptask-fold", t("task.n", {n: tasks.length}), function () {
+      T.open[key] = ul.hidden;
+      ul.hidden = !ul.hidden;
+      b.setAttribute("aria-expanded", String(!ul.hidden));
+    });
+    b.setAttribute("aria-expanded", String(open));
+    b.setAttribute("aria-controls", ul.id);
+    b.dataset.key = "fold:" + key;
+    box.append(b, ul);
+    return box;
+  };
+
+  // ------------------------------------------------------------------ a new task
+
+  // The form for a new task: for `member` (in one of its groups), or for nobody (the group chosen).
+  T.addForm = function (member) {
+    var groups = T.groupsFor(member), form = make("form", "tadd"), input = make("input"), out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    input.name = "text";
+    input.maxLength = 2000;
+    input.required = true;
+    input.placeholder = t("task.text_label");
+    input.dataset.key = "add-text:" + (member || "");
+    input.setAttribute("aria-label", member ? t("task.add_for", {name: member}) : t("task.add"));
+    var pick = A.dropdown({label: t("task.group_for"), options: groups.map(function (g) {
+      return {value: g.name, label: T.groupLabel(g)};
+    }), value: (T.adding && T.adding.group) || undefined});
+    var cancel = A.button("btn", t("task.cancel"), function () { T.adding = null; changed(); });
+    var row = make("div", "row");
+    row.append(make("button", "btn primary", t("task.add")), cancel);
+    if (groups.length > 1) form.appendChild(pick.el);
+    form.append(input, row, out);
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      if (!input.value.trim() || !pick.value) return;
+      var body = {group: pick.value, text: input.value};
+      if (member) body.responsible = member;
+      if (await call("tasks", body, out)) { T.adding = null; changed(); }
+    });
+    form.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel.click(); }
+    });
+    setTimeout(function () { input.focus(); }, 0);
+    return form;
+  };
+  // Start writing a new task for `member` ("" for nobody); the member list draws the form.
+  T.startAdding = function (member) {
+    T.adding = {member: member || ""};
+    changed();
+  };
 
   setInterval(function () { load(false); }, EVERY_MS);
   load(true);

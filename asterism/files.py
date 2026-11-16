@@ -818,6 +818,111 @@ async def resolve(slug: str, address: str, paths: Any) -> dict[str, Any]:
     return out
 
 
+# --------------------------------------------------------------------------- finding files by path
+
+FIND_MOST = 200
+FIND_DEFAULT = 50
+FIND_Q_MOST = 200
+# The last index read per project: (tree hash, index), so typing does not read the file on every key.
+_indexes: dict[str, tuple[str, dict[str, Any]]] = {}
+
+
+def _index_entries(tree: Any) -> list[list[str]]:
+    """GitHub's recursive listing as [path, "file" | "dir"]; a path that is not a usable path, and anything that is
+    neither a plain file nor a folder, is left out."""
+    if not isinstance(tree, list):
+        raise _Away("bad_answer")
+    out: list[list[str]] = []
+    for e in tree:
+        if not isinstance(e, dict) or split_path(e.get("path")) is None:
+            continue
+        if e.get("type") == "tree":
+            out.append([e["path"], "dir"])
+        elif e.get("type") == "blob" and e.get("mode") in ("100644", "100755"):
+            out.append([e["path"], "file"])
+    return out
+
+
+def _load_index(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None                             # missing or damaged: fetched again
+    if not isinstance(raw, dict) or not isinstance(raw.get("paths"), list):
+        return None
+    _touch(path)
+    return raw
+
+
+def _save_index(folder: Path, sha: str, index: dict[str, Any]) -> Path:
+    tmp, f = _write_new(folder, sha)
+    with f:
+        f.write(json.dumps(index, ensure_ascii=False).encode("utf-8"))
+    final = folder / f"{sha}.index"
+    _publish(tmp, final)
+    return final
+
+
+async def _index(slug: str, repo: Repo, sha: str) -> dict[str, Any]:
+    """Every path under the tree `sha`: one recursive listing from GitHub per tree, kept on disk by the tree's hash
+    like the other trees. {"truncated": GitHub cut the listing short, "paths": [[path, type], ...]}."""
+    if not HASH_RE.fullmatch(sha):              # never a file name otherwise
+        raise _Away("bad_answer")
+    mem = _indexes.get(slug)
+    if mem is not None and mem[0] == sha:
+        return mem[1]
+    folder = _cache_dir(slug)
+    path = folder / f"{sha}.index"
+    got = await anyio.to_thread.run_sync(_load_index, path)
+    if got is None:
+        async with _fetch_lock(f"{slug}/{sha}.index"):
+            got = await anyio.to_thread.run_sync(_load_index, path)
+            if got is None:
+                st = _state(slug, repo)
+                headers = await _auth(slug, repo, st)
+                r = await _get(f"{config.get().github_api_url}/repos/{repo.owner}/{repo.name}/git/trees/{sha}"
+                               f"?recursive=1", headers)
+                try:
+                    _check(r)
+                except _Refused:
+                    if r.status_code == 401:
+                        st.token = None
+                    raise _Missing(_reason(r)) from None
+                answer = _json(r)
+                got = {"truncated": bool(answer.get("truncated")), "paths": _index_entries(answer.get("tree"))}
+                written = await anyio.to_thread.run_sync(_save_index, folder, sha, got)
+                await anyio.to_thread.run_sync(evict, cache_root(), _limit(), written)
+    _indexes[slug] = (sha, got)
+    return got
+
+
+def _find_limit(raw: Any) -> int:
+    if raw is None or raw == "":
+        return FIND_DEFAULT
+    n = int(raw) if isinstance(raw, str) and re.fullmatch(r"\d{1,4}", raw.strip()) else None
+    if n is None or not 1 <= n <= FIND_MOST:
+        raise bad_request("invalid_limit", f"limit must be a whole number from 1 to {FIND_MOST}.")
+    return n
+
+
+async def find(slug: str, address: str, q: Any, raw_limit: Any) -> dict[str, Any]:
+    """The files and folders of the head whose path holds every word of `q`, ignoring case, the shortest paths
+    first. `complete` is false when GitHub listed the repository only in part."""
+    if not isinstance(q, str) or not q.strip() or len(q) > FIND_Q_MOST:
+        raise bad_request("invalid_query", f"q must be 1 to {FIND_Q_MOST} characters: words that the path contains.")
+    limit = _find_limit(raw_limit)
+    words = q.casefold().split()
+    repo = _repo_of(address)
+
+    async def work(h: Head):
+        return h, await _index(slug, repo, h.tree)
+    (h, index), _ = await _guarded(slug, repo, work)
+    hits = [(p, kind) for p, kind in index["paths"] if all(w in p.casefold() for w in words)]
+    hits.sort(key=lambda x: (len(x[0]), x[0]))
+    return {"ref": h.ref, "commit": h.commit, "paths": [{"path": p, "type": kind} for p, kind in hits[:limit]],
+            "complete": not index.get("truncated")}
+
+
 async def stream(f, size: int) -> AsyncIterator[bytes]:
     """The bytes of an open file, read in a worker thread, closed at the end."""
     try:

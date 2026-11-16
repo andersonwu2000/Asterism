@@ -1,7 +1,8 @@
 // What every page's scripts share (window.Asterism): the message catalogue (body data-msg), a JSON call, a small
 // element maker, the two-step confirmation in place, the floating confirmation of what cannot be undone, what the
-// browser keeps (A.store), copying, the addresses of the repository's files, the one popup menu (A.menu), and the
-// theme switch (#theme-toggle). Loaded first on every page.
+// browser keeps (A.store), copying, the addresses of the repository's files, the one popup menu (A.menu), the one
+// dropdown (A.dropdown, and every [data-dropdown] the server drew), and the theme switch (#theme-toggle). Loaded first
+// on every page.
 // This file holds no interface text: all of it comes from the catalogue.
 "use strict";
 (function () {
@@ -309,7 +310,8 @@
   // closes on Escape, Tab, a click outside or a choice, and gives the focus back to what opened it. An item with
   // `items` opens a second list in its place, with a way back (ArrowLeft or the first item).
   //   A.menu({label, x, y} | {label, anchor}, items, opener)
-  //   items: [{label, run: function () {}} | {label, href} | {label, items: [...]} | {separator: true}]
+  //   items: [{label, run: function () {}} | {label, href} | {label, items: [...]} | {separator: true} |
+  //           {heading: text}]; `checked` (true or false) makes an item a check box, with `radio` a choice of one.
 
   var menu = null;
   var ITEMS = "[role^=menuitem]:not([aria-disabled=true])";
@@ -395,6 +397,12 @@
     var box = menu.box;
     box.textContent = "";
     list.forEach(function (it) {
+      if (it.heading !== undefined) {
+        var head = A.make("div", "menu-head", it.heading);
+        head.setAttribute("role", "presentation");
+        box.appendChild(head);
+        return;
+      }
       if (it.separator) {
         var sep = A.make("div", "menu-sep");
         sep.setAttribute("role", "separator");
@@ -418,7 +426,7 @@
         });
       }
       // An item with `checked` (true or false) is a check box: choosing it runs its act, which turns it over.
-      el.setAttribute("role", it.checked === undefined ? "menuitem" : "menuitemcheckbox");
+      el.setAttribute("role", it.checked === undefined ? "menuitem" : it.radio ? "menuitemradio" : "menuitemcheckbox");
       if (it.checked !== undefined) el.setAttribute("aria-checked", String(!!it.checked));
       el.tabIndex = -1;
       if (it.disabled) el.setAttribute("aria-disabled", "true");
@@ -430,7 +438,7 @@
       if (it.mono) el.classList.add("mono");
       box.appendChild(el);
     });
-    var first = box.querySelector(ITEMS);
+    var first = box.querySelector("[role=menuitemradio][aria-checked=true]") || box.querySelector(ITEMS);
     (first || box).focus({preventScroll: true});
   }
 
@@ -480,6 +488,77 @@
     if (m.opener && m.opener.hasAttribute && m.opener.hasAttribute("aria-expanded")) m.opener.setAttribute("aria-expanded", "true");
     fill(items);
     place();
+  };
+
+  // ------------------------------------------------------------------ the one dropdown
+  //
+  // Instead of a native <select>: a button with the current choice and a chevron, opening the choices as the one menu
+  // (each a menuitemradio, the current one checked and focused): the arrow keys, Home, End and a letter move, Escape
+  // closes, and the focus goes back to the button. ArrowDown or ArrowUp on the button opens it too. With a hidden
+  // field beside the button (`name`), a form sends the value as it would a select's.
+  //   var d = A.dropdown({label, options: [{value, label, group}], value, name, list, onChange: function (value) {}})
+  //   d.el (to put in the page), d.value, d.set(value), d.setOptions(options)
+
+  function dropdownOn(b, hidden, opts) {
+    var text = b.querySelector(".dropdown-value");
+    var d = {el: b.parentNode, button: b, options: opts.options || [], value: ""};
+    function find(v) { for (var i = 0; i < d.options.length; i++) if (d.options[i].value === v) return d.options[i]; return null; }
+    function show() {
+      var o = find(d.value);
+      text.textContent = o ? o.label : "";
+      if (hidden) hidden.value = d.value;
+    }
+    d.set = function (v) { d.value = find(v) ? v : (d.options[0] ? d.options[0].value : ""); show(); };
+    d.setOptions = function (list) { d.options = list || []; d.set(d.value); };
+    d.set(opts.value !== undefined && opts.value !== null ? opts.value : hidden ? hidden.value : "");
+    function open() {
+      var items = [], group;
+      d.options.forEach(function (o) {
+        if (o.group && o.group !== group) items.push({heading: o.group});
+        group = o.group;
+        items.push({label: o.label, radio: true, checked: o.value === d.value, run: function () {
+          var was = d.value;
+          d.set(o.value);
+          if (was !== d.value && opts.onChange) opts.onChange(d.value);
+        }});
+      });
+      A.menu({label: b.getAttribute("aria-label") || "", anchor: b}, items, b);
+    }
+    b.addEventListener("click", open);
+    b.addEventListener("keydown", function (ev) {
+      if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+      ev.preventDefault();
+      open();
+    });
+    b._dropdown = d;
+    return d;
+  }
+
+  A.dropdown = function (opts) {
+    var wrap = A.make("span", "dropdown-field"), b = A.button("dropdown");
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    if (opts.label) { b.setAttribute("aria-label", opts.label); b.title = opts.label; }
+    b.append(A.make("span", "dropdown-value"), A.glyph("chevron"));
+    wrap.appendChild(b);
+    var hidden = null;
+    if (opts.name) {
+      hidden = A.make("input");
+      hidden.type = "hidden";
+      hidden.name = opts.name;
+      if (opts.list) hidden.setAttribute("data-list", "");
+      wrap.appendChild(hidden);
+    }
+    return dropdownOn(b, hidden, opts);
+  };
+
+  // The dropdowns the server drew (pages.dropdown): their choices are in data-dropdown as [[value, label], ...].
+  A.wireDropdowns = function (root) {
+    Array.prototype.forEach.call((root || document).querySelectorAll("button[data-dropdown]"), function (b) {
+      if (b._dropdown) return;
+      var options = (A.parseJSON(b.dataset.dropdown, []) || []).map(function (x) { return {value: x[0], label: x[1]}; });
+      dropdownOn(b, b.parentNode.querySelector("input[type=hidden]"), {options: options});
+    });
   };
 
   // Put the focus back on the element of `box` with the same data-key after `box` was redrawn.
@@ -577,6 +656,53 @@
     return g ? g.cloneNode(true) : A.make("span");
   };
 
+  // ------------------------------------------------------------------ the kind of a file, as a mark
+  //
+  // v1's kind marks (web/src/components/glyphs.tsx, KIND_MARKS), on its 10x11 box, stroked in the current ink:
+  // a folder; md, prose lines; tex, the same lines centred; lean, a chevron; pdf, a folded corner; image, a landscape
+  // frame; anything else, a blank page. Decorative: the name beside it says the kind. Used by the explorer's rows and
+  // the tabs of files mode.
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var PAGE = [["rect", {x: "1", y: "1", width: "8", height: "9", rx: "1", "stroke-width": "1"}]];
+  var KIND_MARKS = {
+    folder: [["path", {d: "M1 9.5V2h2.7l1 1.3H9v6.2z", "stroke-width": "1", "stroke-linejoin": "round"}]],
+    md: PAGE.concat([["path", {d: "M3 4.25h4M3 6.75h2.5", "stroke-width": "0.9", "stroke-linecap": "round", opacity: "0.55"}]]),
+    tex: PAGE.concat([["path", {d: "M2.7 4.25h4.6M4.3 6.75h1.4", "stroke-width": "0.9", "stroke-linecap": "round", opacity: "0.55"}]]),
+    lean: PAGE.concat([["path", {d: "M4 4.1l1.6 1.4L4 6.9", "stroke-width": "0.9", "stroke-linecap": "round",
+                                 "stroke-linejoin": "round", opacity: "0.75"}]]),
+    pdf: [["path", {d: "M1 10V1h4.7L9 4.2V10z", "stroke-width": "1", "stroke-linejoin": "round"}],
+          ["path", {d: "M5.7 1v3.2H9", "stroke-width": "0.9", "stroke-linejoin": "round", opacity: "0.55"}]],
+    image: [["rect", {x: "1", y: "2", width: "8", height: "7", rx: "1", "stroke-width": "1"}],
+            ["circle", {cx: "3.4", cy: "4.4", r: "0.8", fill: "currentColor", stroke: "none", opacity: "0.55"}],
+            ["path", {d: "M1.4 8.3l2.4-2.4 1.6 1.5 1.2-1.1L8.6 7.6", "stroke-width": "0.9", "stroke-linecap": "round",
+                      "stroke-linejoin": "round", opacity: "0.55"}]],
+    other: PAGE
+  };
+  // The kind of a path, as v1 named it: a folder, or by the file's extension.
+  A.kindOf = function (path, folder) {
+    if (folder) return "folder";
+    var m = /\.([A-Za-z0-9]+)$/.exec(path || ""), ext = m ? m[1].toLowerCase() : "";
+    if (ext === "md" || ext === "lean" || ext === "tex" || ext === "pdf") return ext;
+    return /^(?:png|jpe?g|gif|webp|svg)$/.test(ext) ? "image" : "other";
+  };
+  A.kindMark = function (path, folder) {
+    var svg = document.createElementNS(SVG_NS, "svg"), kind = A.kindOf(path, folder);
+    svg.setAttribute("class", "kind-mark kind-" + kind);
+    svg.setAttribute("viewBox", "0 0 10 11");
+    svg.setAttribute("width", "10");
+    svg.setAttribute("height", "11");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    KIND_MARKS[kind].forEach(function (part) {
+      var el = document.createElementNS(SVG_NS, part[0]);
+      Object.keys(part[1]).forEach(function (k) { el.setAttribute(k, part[1][k]); });
+      svg.appendChild(el);
+    });
+    return svg;
+  };
+
   // ------------------------------------------------------------------ invitations (the project menu, "my agents")
 
   // A line with the text to copy and its copy button.
@@ -670,4 +796,5 @@
     if (ev.key === KEY && (ev.newValue === "dark" || ev.newValue === "light")) set(ev.newValue);
   });
   label();
+  A.wireDropdowns(document);
 })();

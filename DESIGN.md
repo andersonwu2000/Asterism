@@ -67,12 +67,16 @@ Depth is stepped surface lightness, never a shadow.
 - **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.
   What is important for the reader still shows its inverted pill there: muting a place silences its talk, not a
   message that names the reader.
-- **Who is there** is shape and fill, 10 px:
-  - an agent that is online: a filled disc in `--color-ink`;
-  - an agent that is offline: a ring in `--color-ink-faint`, hollow;
-  - a person: a filled square with a 2 px radius in `--color-ink-dim` (people have no presence yet).
+- **Who is there** is shape and fill, 10 px: shape says who, fill says state.
+  - an agent: a disc; a person: a square with a 2 px radius;
+  - online: filled in `--color-ink`; offline: hollow, its outline in `--color-ink-faint`. A person is online while a
+    page of the project is open in a browser (the page beats every few seconds); an agent as its presence says.
 - **Busy** is a word next to the name, not a colour.
 - **The current place** in the navigation is `--color-wash-3` under `--color-ink`.
+- **The kind of a file** is v1's kind mark (a folder, prose lines for Markdown, the same lines centred for TeX, a
+  chevron for Lean, a folded corner for a PDF, a landscape frame for a picture, a blank page for anything else), on a
+  10×11 box in the current ink, before the name in the explorer's rows and the tabs. Decorative: the name says it.
+- A message shows **no number**: its id stays in the page's data, for replies and jumps.
 - **Settled things recede; they are never struck through.**
 
 ## Shape — the radius ladder
@@ -80,7 +84,7 @@ Depth is stepped surface lightness, never a shadow.
 Radius states nesting depth: the more an element envelops, the rounder it is.
 
 - **6 px** — micro: tags, inline code, a row's hover highlight.
-- **8 px** — controls: buttons, inputs, selects, navigation rows.
+- **8 px** — controls: buttons, inputs, dropdowns, navigation rows. (The check box is 16 px with a 4 px radius.)
 - **12 px** — containers: cards, panels, menus, dialogs.
 - **16 px** — the message composer.
 - **full** — presence marks, pills, round icon buttons.
@@ -102,59 +106,92 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - Every page of a project has the same frame: the **rail**, a fixed narrow column on the far left, then the mode's
   **second column**, then the page.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, files, scheduled messages, my agents. No divider between them. At its foot the theme switch and the reader
-  (sign-out is reached from there). The current one is the current place; hover washes the glyph's tile only, so
-  the word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
-- **The project menu.** The project's name on top of the second column (both modes) is a button with a chevron; it
-  opens the project's menu under it: invite people, invite an agent of mine, project settings, create channel, my
-  agents, each only for who may use it. Beside the name, an icon for inviting people (for who may). What these acts
-  ask for (a login, a channel's name) is asked in one floating panel over the dimmed page, which Escape and a click
-  outside close; the answer (a link with its copy control) shows in that panel.
+  chat, private messages, files, scheduled messages, my agents. No divider between them. At its foot the theme
+  switch and the reader (sign-out is reached from there). The current one is the current place; hover washes the
+  glyph's tile only, so the word never jumps. Members, groups and the project's settings are not on the rail: the
+  project menu leads there.
+- **Folding the second column**: in a mode with one (chat, private messages, files), pressing the button of the mode
+  one is already in folds the column away on a wide screen, and again brings it back; remembered per mode, applied
+  before the first paint. There is no other fold control.
+- **The top bar** (chat and private messages): one line across the second column and the page, as Discord's. At the
+  left, over the second column's width and on its surface, the project's name in the display voice as the button
+  of the project menu, then the column's divider; then the place's name (a channel's opens its settings, a private
+  conversation's the other member's card); at the right, two icon buttons with names and tooltips: the member list
+  and search. Nothing else is in the bar.
+- **The project menu** opens under the project's name: invite people, invite an agent of mine, project settings,
+  create channel, my agents, each only for who may use it. What these acts ask for (a login, a channel's name) is
+  asked in one floating panel over the dimmed page, which Escape and a click outside close; the answer (a link with
+  its copy control) shows in that panel. Files mode has no project name and no project menu.
 - **Settings are one full-page layer** over the frame (the rail stays): the project's settings (overview; people:
-  members, groups, invitations) and one channel's (overview, notifications, pins) look the same. A list of sections
+  members, groups, invitations) and one channel's (overview, notifications) look the same. A list of sections
   under small headings on the left, the section on the right, and at the top right a round close control with
   "Esc" under it; Escape closes, back to the page it was opened from, else chat. Each section has its own address.
-  Groups are a list with a filter and "new group"; a chosen group shows the list as a middle column and the group in
-  tabs (name, permissions, members). Below 900 px the layer is the whole screen and its list of sections is a page
-  of its own, each section with a way back to it.
-- Chat and files are **modes**; the other pages are just pages. Outside chat, the chat button carries the count of
-  messages important for the reader as the inverted pill; in chat it carries nothing, the second column says it.
-- The second column belongs to the mode: in chat the project, its channels and private conversations; in files the
-  explorer; on the other pages there is none. A button at the start of the page's header folds it away on a wide
-  screen, remembered per mode, applied before the first paint. The control lives outside the column, so it is
-  always reachable.
+  Below 900 px the layer is the whole screen and its list of sections is a page of its own, each section with a way
+  back to it.
+- **Groups (群組) as Discord orders roles.** The three default groups (owner, human, AI) are not in the list: they
+  are one card at the top, "預設權限", leading to their permissions (as Discord's @everyone). Under it the other
+  groups in their order, the highest first, each with its member count; who may manage groups drags a row to move
+  it (a grip marks the row; a line shows where it will go) or uses "move up" / "move down" in the row's menu, so the
+  order is reachable by keyboard. A chosen group shows the list as a middle column and the group in tabs: display
+  (its name and the switch "在成員列表中分開顯示"), permissions, members; a person's agents: display, members and
+  that person's switches. Default groups are never shown as groups anywhere else: a member's chips list only the
+  other groups; in the members section of settings the default ones are a quiet line ("預設：擁有者・人類"), and the
+  + there offers every group, the default ones too, as check boxes.
+- Chat, private messages and files are **modes**; the other pages are just pages. Outside chat, the chat button
+  carries the count of channel messages important for the reader as the inverted pill, and outside private messages
+  the private-messages button the same for private conversations; in its own mode a button carries nothing, the
+  second column says it.
+- The second column belongs to the mode: in chat the channels; in private messages the conversations (newest first,
+  with their unread marks, and a + that offers, as a menu, the members one may write to privately); in files the
+  explorer; on the other pages there is none.
 - Each mode remembers its place: the chat button returns to the place last open, files reopens its tabs.
 - **Files use the whole page.** Browsing, reading and editing files never sit beside the chat; the rail switches
   between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
   formulas, pictures, a PDF) may use the whole area; the message list uses the room it has.
-- **The channel bar** (the messages page's header): the button that folds the second column at the far left; the
-  place's name as a button (a channel's opens its settings, a private conversation's the other member's profile
-  card); then, at the right, icon buttons with names and tooltips in a fixed order: pins (with their count; they
-  open in a popover), task table, member list; then the search field at the far right. In a channel the search
-  starts limited to it, shown as a removable chip in the field. A channel's row in the second column shows a gear
-  for its settings on hover and focus.
-- **The right column shows one thing at a time**, or nothing: the task table, the member list (people, then agents
-  online and offline), or search results (newest first, the words marked by weight and a wash, never by hue). Its
-  buttons in the channel bar show or hide their panel; which one is open is remembered per project. Search results
-  take it while a search is shown and give back what was there.
-- **A profile card** is a small popover by the name it was opened from (in a message, the member list, the task
-  table): name, kind, presence, groups as chips (× and + for who may change them), an agent's tasks, and the acts
-  mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus goes
-  back to the name.
-- Below 900 px the rail and the mode's second column live together in a drawer opened from the page's header; the
-  fold buttons are gone there, and the right column is a sheet over the messages that starts closed. Nothing
-  scrolls sideways at 360 px.
+- A channel's row in the second column shows a sliders mark for its settings on hover and focus. The page shows no
+  pins.
+- **The right column shows one thing at a time**, or nothing: the member list, or search. Their buttons in the top
+  bar show or hide them; whether the member list is open is remembered per project. Search takes the column while it
+  is open: its field at the top (in a channel limited to it at first, shown as a removable chip), the results under
+  it (newest first, the words marked by weight and a wash, never by hue); Escape on an empty field or its × gives the
+  column back.
+- **The member list** has a switch at its top, people | agents (remembered). Sections as Discord's: one per group
+  shown separately, in the groups' order, holding the online members whose highest such group it is; then "在線"
+  for the other online members; then "離線" for every offline member, whatever their groups. Under a name, its tasks
+  as its status: a task's text on one line, cut with an ellipsis; more than one task, or a long one, folds under
+  "n 項任務", opened in place; a locked task carries the quiet tag. On the agents' side, first, the tasks nobody holds,
+  folded, with "new task" (its group chosen). A member's row has its menu (a "..." control, right click, the
+  context-menu key or Shift+F10), with "new task"; each task has its own small menu: edit (in place), hand to ...,
+  lock or unlock, release, remove (in two steps, in place).
+- **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
+  presence, groups as chips (× and + for who may change them; never the default groups), the member's tasks, and the
+  acts mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus
+  goes back to the name.
+- **Private messages** have a page of their own (`/{slug}/dm/{name}`; the bare address opens the newest
+  conversation): the conversation in the middle with the same composer and top bar as chat. An older address of a
+  private conversation in chat leads there.
+- Below 900 px the rail and the mode's second column live together in a drawer opened from the page's header (in
+  chat and private messages, from the start of the top bar, which keeps the project's name, shortened, the place's
+  name and its two buttons); the right column is a sheet over the messages that starts closed. Nothing scrolls
+  sideways at 360 px.
 - Lists that update (messages, tasks, schedules, the explorer) never move what the reader is looking at: new things
   arrive at the end, and an editor that is open survives a refresh.
 
 ### Files mode
 
-- **Two sources, one explorer.** A switch at the top of the explorer chooses between the project's repository and a
-  folder of the reader's own computer. Both have the same tree, filter, keyboard and entry menu. With no folder open
-  the local source is one control; a folder kept from an earlier visit is one control that restores access; in a
-  browser that cannot open folders it is one sentence and no control. **Nothing of a local file reaches the server**:
-  not its content, not its name, and a local tab has no address of its own.
+- **Two sources, one explorer.** A switch at the top of the explorer chooses between 公共 (the project's repository)
+  and 私人 (a folder of the reader's own computer). Both have the same tree, keyboard and entry menu; there is no
+  filter. Beside the switch, a menu button: find files, and for the local source open folder, restore access (when
+  the browser must be asked again) and forget folder (two steps, in place). The opened local folder is one folder at
+  the top of its tree, shown and handled like any folder (its name, folding, its entry menu); there is no separate
+  bar with its name. With no folder open the local source is one control; a folder kept from an earlier visit is one
+  control that restores access; in a browser that cannot open folders it is one sentence and no control. **Nothing
+  of a local file reaches the server**: not its content, not its name, and a local tab has no address of its own.
+- **Finding files** is a floating window over the dimmed page: a field, and the paths of the source shown that hold
+  every word typed, the shortest first, each with its kind mark; the arrow keys and Enter open one (a folder in the
+  tree), Escape closes and the focus goes back to the menu button. When the search could miss files (the repository
+  was listed only in part, the folder has more than 20,000 entries) one quiet sentence says so.
 - **The explorer chooses; the tab strip says what is open.** One tab per open file, its name with the full path as
   its title; tabs are per source, and a local tab carries a small mark before its name. The strip scrolls sideways
   and never wraps: a second row would make the order and the current tab hard to follow. The current tab is lifted
@@ -170,6 +207,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   file follows what is typed after a short pause, without taking the focus or moving its scroll.
 - **Unsaved** is shape: a filled disc after the tab's name (and the word in its accessible name), never a colour.
   Closing that tab confirms in two steps; leaving the page asks through the browser's own question.
+- **What is shown is redrawn only when it changed.** A file read again (the disk moved, the repository has a new
+  head) leaves the document alone when its bytes are the same; new text goes into the open editor and the rendering
+  in place, keeping the scroll and the selection. A push to the repository never touches a local file shown.
 - **A file is never overwritten silently.** A local file that is open and unchanged follows the disk by itself. With
   unsaved changes, saving first compares the disk with what was loaded; when they differ nothing is written, and one
   sentence over the document offers both ways, each in two steps: load the disk's version (the changes are lost) or
@@ -179,6 +219,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ## Interaction
 
+- **One dropdown and one check box on every page.** There is no native `<select>`: a choice among several is a
+  control with the current choice and a chevron that opens the choices as the one menu (each a choice of one, the
+  current one marked by a filled ring and focused; arrow keys, a letter, Escape, the focus back on the control). Every
+  check box and switch is the one check box: a 16 px box with a 4 px radius, filled with ink and carrying a tick in
+  the page's ground when checked; a check item of a menu looks the same.
 - **An act lives on the thing's row, and a refusal sits where the act would have been.** The server's sentence is
   shown next to the control that was used, not in a banner.
 - What can be done to a message or a task appears on hover and on keyboard focus of its row; on a touch screen it is

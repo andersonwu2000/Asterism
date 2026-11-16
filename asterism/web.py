@@ -397,7 +397,21 @@ async def api_groups(request: Request) -> Any:
 
 async def api_group_change(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    return projects.change_group(pj, actor, request.path_params["name"], (await body_json(request)).get("permissions"))
+    return projects.change_group_settings(pj, actor, request.path_params["name"], await body_json(request))
+
+
+async def api_group_order(request: Request) -> Any:
+    """The order of the groups. A group may be named "order" too: a body without `names` changes that group."""
+    pj, actor = member_actor(request, request.path_params["slug"])
+    b = await body_json(request)
+    if "names" not in b and projects.group_by_name(pj, "order"):
+        return projects.change_group_settings(pj, actor, "order", b)
+    return projects.order_groups(pj, actor, b.get("names"))
+
+
+async def api_presence(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.beat(pj, actor)
 
 
 async def api_group_remove(request: Request) -> Any:
@@ -463,6 +477,12 @@ def reader(request: Request) -> tuple[Project, str]:
 async def api_files_list(request: Request) -> Any:
     pj, repo = reader(request)
     return await files.listing(pj.slug, repo, request.query_params.get("dir"))
+
+
+async def api_files_find(request: Request) -> Any:
+    pj, repo = reader(request)
+    q = request.query_params
+    return await files.find(pj.slug, repo, q.get("q"), q.get("limit"))
 
 
 async def api_files_resolve(request: Request) -> Any:
@@ -850,14 +870,15 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     me = messaging.person_member(pj, actor.person_id)
     mine = projects.permissions(pj, actor)
     pa = projects.people_and_agents(pj)
-    directory = {x["name"]: {"kind": "person"} for x in pa["people"]}
+    directory = {x["name"]: {"kind": "person", "online": x["online"]} for x in pa["people"]}
     directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
     places = messaging.channels_view(pj, me)
     return {"slug": pj.slug, "name": info["name"], "repo": info["repo"],
-            "places": places,
-            "important": sum(c["important"] for c in places["channels"]) + sum(p["important"] for p in places["private"]),
+            "places": places, "beat_s": config.get().person_beat_s,
+            "important": sum(c["important"] for c in places["channels"]),
+            "important_private": sum(p["important"] for p in places["private"]),
             "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
             "perms": [p for p in projects.PERMISSIONS if p in mine],
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
@@ -881,6 +902,23 @@ async def messages_page(request: Request) -> Response:
     person, pj, actor = ctx
     view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view))
+
+
+async def dm_page(request: Request) -> Response:
+    """Private messages: the conversations in the second column and one of them (/{slug}/dm/{name}), with the same
+    composer as chat. A name one cannot write to privately is not found (or forbidden), as the API says."""
+    ctx = _page_context(request, request.path_params["slug"])
+    if isinstance(ctx, Response):
+        return ctx
+    person, pj, actor = ctx
+    name = request.path_params.get("name", "")
+    try:
+        if name:
+            messaging.resolve_place(pj, messaging.person_member(pj, actor.person_id), name)
+    except ApiError as e:
+        return page_error(request, e, person)
+    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
+    return html(pages.messages(tr_for(request), person, _frame(pj, actor), view, dm=name))
 
 
 async def schedules_page(request: Request) -> Response:
@@ -1071,12 +1109,15 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/channels/{name}/settings", channel_settings_page),
         Route("/{slug}/channels/{name}/settings/{section}", channel_settings_page),
         Route("/{slug}/schedules", schedules_page),
+        Route("/{slug}/dm", dm_page),
+        Route("/{slug}/dm/{name}", dm_page),
         Route("/{slug}/files", files_page),
         Route("/{slug}/files/{path:path}", files_page),
         Route("/{slug}/mcp", mcp, methods=["GET", "POST", "DELETE"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
         Route("/{slug}/api/groups", api(api_groups, 201), methods=["POST"]),
+        Route("/{slug}/api/groups/order", api(api_group_order), methods=["POST"]),
         Route("/{slug}/api/groups/{name}", api(api_group_change), methods=["POST"]),
         Route("/{slug}/api/groups/{name}/remove", api(api_group_remove), methods=["POST"]),
         Route("/{slug}/api/members/{name}/groups", api(api_member_groups), methods=["POST"]),
@@ -1101,6 +1142,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/files/list", api(api_files_list), methods=["GET"]),
         Route("/{slug}/api/files/raw/{path:path}", api_files_raw, methods=["GET"]),
         Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),
+        Route("/{slug}/api/files/find", api(api_files_find), methods=["GET"]),
+        Route("/{slug}/api/presence", api(api_presence), methods=["POST"]),
         Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
         Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),
         Route("/{slug}/api/tasks/{tid:int}", api(api_task_change), methods=["POST"]),

@@ -15,7 +15,8 @@
 // - writing: saving first compares the disk with what was loaded (time and size, then the bytes) and writes nothing
 //   when they differ; new file, new folder, rename, delete;
 // - watching: `changed()` tells whether the disk moved away from what was loaded (the viewer asks on focus and on a
-//   rhythm while a file shows).
+//   rhythm while a file shows);
+// - finding: `walk()` lists the whole folder (never `.git`), at most WALK_MOST entries, for the file search.
 // The explorer (explorer.js) and the tab strip (viewer.js) speak to it through the interface the repository has
 // (repo.js): id, state, on, listed, pending, failed, list, read, menuItems.
 "use strict";
@@ -23,7 +24,7 @@
   var A = window.Asterism, root = document.getElementById("files");
   if (!A || !root) return;
   var t = A.t, SLUG = root.dataset.slug;
-  var EDIT_MAX = 5 * 1024 * 1024, SHOW_MAX = 20 * 1024 * 1024, SNIFF = 8000;
+  var EDIT_MAX = 5 * 1024 * 1024, SHOW_MAX = 20 * 1024 * 1024, SNIFF = 8000, WALK_MOST = 20000, WALK_KEEP_MS = 30000;
   var PICTURES = {png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml"};
   var DB = "asterism-local", STORE = "folders";
 
@@ -81,6 +82,7 @@
     listings.clear();
     asking.clear();
     failed.clear();
+    walked = null;
   }
 
   L.start = async function () {
@@ -214,6 +216,34 @@
     for (var i = 0; i < folders.length; i++) {
       if (listings.has(folders[i])) await L.list(folders[i], true);
     }
+  };
+
+  // ------------------------------------------------------------------ the whole folder, for the file search
+
+  var walked = null;             // {at, entries: [{path, type}], cut} of the last walk, kept a little while
+
+  // Every file and folder under the folder, breadth first, never `.git`; `cut` when it stopped at WALK_MOST.
+  L.walk = async function (fresh) {
+    if (!dir || L.state !== "ok") return null;
+    if (!fresh && walked && Date.now() - walked.at < WALK_KEEP_MS) return walked;
+    var out = [], cut = false, todo = [["", dir]];
+    try {
+      while (todo.length && !cut) {
+        var next = todo.shift(), prefix = next[0];
+        for await (var pair of next[1].entries()) {
+          if (pair[0] === ".git") continue;
+          if (out.length >= WALK_MOST) { cut = true; break; }
+          var path = join(prefix, pair[0]), folder = pair[1].kind === "directory";
+          out.push({path: path, type: folder ? "dir" : "file"});
+          if (folder) todo.push([path, pair[1]]);
+        }
+      }
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") setState("closed");
+      return null;
+    }
+    walked = {at: Date.now(), entries: out, cut: cut};
+    return walked;
   };
 
   // ------------------------------------------------------------------ reading

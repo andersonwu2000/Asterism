@@ -1,7 +1,7 @@
-// The project menu on top of the second column in both modes (#project-menu-button, #project-menu; the items are
+// The project menu at the left of the top bar in chat and private messages (#project-menu-button, #project-menu; the items are
 // drawn by the server, each only for who may use it) and the floating panel its acts open (Asterism.project):
 // inviting people (a link, optionally for one GitHub login), inviting an agent of mine, creating a channel. Any
-// control with data-act opens the same panel (#invite-open, the "+" of the channels). A link to a settings layer
+// control with data-act opens the same panel (the "+" of the channels). A link to a settings layer
 // remembers the page it was followed from, so that closing the layer comes back here.
 "use strict";
 (function () {

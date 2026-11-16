@@ -14,7 +14,10 @@
 // too, never inlined), a PDF in the browser's own viewer in a frame, anything else as one sentence and a link. The
 // source view is the editor (editor.js) for both sources: read only for the repository, editable for a local text
 // file. A local file that is open and unchanged follows the disk by itself; with unsaved changes it is never
-// overwritten silently: saving compares first, and the reader chooses in place.
+// overwritten silently: saving compares first, and the reader chooses in place. A file read again (the disk moved, or
+// the repository has a new head) replaces what is shown only when it differs (apply): the same bytes redraw nothing,
+// new text goes into the open editor and the rendering in place, keeping the scroll and the selection.
+// Each tab carries the kind mark of its file (A.kindMark), and a local one the mark of the local folder before it.
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("files"), E = A && A.explorer, S = A && A.sources;
@@ -68,7 +71,7 @@
     E.setCurrent(tab ? tab.source : E.shown, tab ? tab.path : null, !!chosen);
     drawTabs(focusTab);
     if (tab && tab.status === "idle") load(tab);
-    else { draw(); follow(tab); }
+    else { draw(); follow(tab); if (tab && tab.stale) refresh(tab); }
   }
 
   function release(tab) {
@@ -140,6 +143,7 @@
       b.title = (local ? t("files.local_path", {path: x.path}) : x.path) + (x.dirty ? " · " + t("files.unsaved") : "");
       if (said) b.setAttribute("aria-label", said);
       if (local) b.appendChild(localGlyph());
+      b.appendChild(A.kindMark(x.path, false));
       b.appendChild(make("span", "tab-name", shown));
       if (x.dirty) {
         var dot = make("span", "tab-dirty");
@@ -221,21 +225,36 @@
     if (tab.key === active) { draw(true); follow(tab); }
   }
 
-  // After a push: the active file of the repository is read again, the other tabs of the repository when they are
-  // next shown, and a file that is gone says so on its tab. Only the repository's paths are asked about.
+  // After a push: a file of the repository that is gone says so on its tab; the others are read again quietly, the
+  // active one now and the rest when they are next shown, and redrawn only when they changed. Only the repository's
+  // paths are asked about; a local file shown is not touched (a push to the repository does not change it).
   R.on("changed", async function () {
     var mine = tabs.filter(function (x) { return x.source === "repo"; });
-    mine.forEach(function (x) { if (x.status !== "loading") x.status = "idle"; });
-    var paths = mine.map(function (x) { return x.path; });
+    var paths = mine.map(function (x) { return x.path; }), found = null;
     if (paths.length) {
       var r = await A.request("/" + encodeURIComponent(SLUG) + "/api/files/resolve", null, {paths: paths.slice(0, 200)});
-      if (r.ok) mine.forEach(function (x) { if ((r.data.found || {})[x.path] !== "file") x.status = "gone"; });
+      if (r.ok) found = r.data.found || {};
     }
+    mine.forEach(function (x) {
+      if (found && found[x.path] !== "file") {
+        if (shownTab === x) shownTab = null;
+        release(x);
+        x.doc = null;
+        x.status = "gone";
+      } else if (x.status === "ok") {
+        x.stale = true;
+      } else if (x.status !== "loading") {
+        x.status = "idle";
+      }
+    });
     drawTabs(false);
     var cur = find(active);
-    if (cur && cur.status === "idle") load(cur); else draw(true);
+    if (!cur || cur.source !== "repo") return;
+    if (cur.status === "gone") draw(true);
+    else if (cur.status === "idle") load(cur);
+    else if (cur.stale) refresh(cur);
   });
-  R.on("state", function () { draw(true); });
+  R.on("state", function () { draw(); });
 
   // The local folder: its tabs come back when access does, and go when it is forgotten.
   L.on("state", function () {
@@ -289,7 +308,7 @@
     tab.following = true;
     try {
       var moved = await L.changed(tab.path, tab.doc);
-      if (!moved || find(tab.key) !== tab || tab.dirty) return;
+      if (!moved || find(tab.key) !== tab || tab.dirty) { if (moved && moved.doc) L.release(moved.doc); return; }
       if (moved.gone) {
         release(tab);
         tab.doc = null;
@@ -298,23 +317,59 @@
         if (tab.key === active) draw(true);
         return;
       }
-      var doc = moved.doc, old = tab.doc;
-      if (tab.editor && doc.status === "ok" && doc.kind === old.kind && !!doc.editable === !!old.editable &&
-          (doc.kind === "text" || doc.kind === "markdown")) {
-        tab.doc = doc;
-        tab.editor.setText(doc.text);
-        settle(tab);
-        if (tab.key === active && modeOf(tab) !== "source") refreshRendering(tab);
-        return;
-      }
-      L.release(old);
-      if (tab.editor) { tab.editor.destroy(); tab.editor = null; }
-      tab.doc = doc;
-      tab.status = doc.status;
-      if (tab.key === active) draw(true);
+      apply(tab, moved.doc);
     } finally {
       tab.following = false;
     }
+  }
+
+  // A file of the repository read again after a push, quietly: the view stays as it is while it is read.
+  async function refresh(tab) {
+    if (!tab || tab.refreshing) return;
+    tab.refreshing = true;
+    try {
+      var doc = await S[tab.source].read(tab.path);
+      if (find(tab.key) !== tab) { S[tab.source].release(doc); return; }
+      tab.stale = false;
+      apply(tab, doc);
+    } finally {
+      tab.refreshing = false;
+    }
+  }
+
+  // The same document twice: the same kind and the same text, or (a picture, a PDF, a download of the repository)
+  // the same hash.
+  function same(a, b) {
+    if (!a || !b || a.kind !== b.kind || !!a.editable !== !!b.editable) return false;
+    if (typeof a.text === "string" || typeof b.text === "string") return a.text === b.text;
+    return !!a.etag && a.etag === b.etag;
+  }
+
+  // What was read again takes the place of what the tab holds, redrawing only what changed: the same document
+  // redraws nothing; new text of the same kind goes into the open editor (its selection and scroll kept) and the
+  // rendering is replaced where the reader had scrolled to; anything else is drawn anew.
+  function apply(tab, doc) {
+    var old = tab.doc, src = S[tab.source];
+    if (tab.status === "ok" && doc.status === "ok" && same(old, doc)) {
+      if (doc.stamp) old.stamp = doc.stamp;
+      if (doc.bytes) old.bytes = doc.bytes;
+      src.release(doc);
+      return;
+    }
+    if (tab.status === "ok" && doc.status === "ok" && old && doc.kind === old.kind && !!doc.editable === !!old.editable &&
+        (doc.kind === "text" || doc.kind === "markdown")) {
+      src.release(old);
+      tab.doc = doc;
+      if (tab.editor) { tab.editor.setText(doc.text); settle(tab); }
+      if (tab.key === active && shownTab === tab && modeOf(tab) !== "source") refreshRendering(tab);
+      return;
+    }
+    src.release(old);
+    if (tab.editor) { tab.editor.destroy(); tab.editor = null; }
+    tab.doc = doc;
+    tab.status = doc.status;
+    if (tab.status === "gone") drawTabs(false);
+    if (tab.key === active) draw(true);
   }
   setInterval(function () { if (!document.hidden) follow(find(active)); }, WATCH_MS);
   window.addEventListener("focus", function () { follow(find(active)); });
@@ -437,8 +492,9 @@
   function draw(force) {
     var tab = find(active), mode = modeOf(tab);
     drawTools(tab);
+    var repoSide = tab ? tab.source === "repo" : E.shown === "repo";
     var key = JSON.stringify([tab ? tab.key : E.shown, tab && tab.status, tab && tab.doc && tab.doc.kind, mode,
-                              tab && tab.conflict, tab && tab.said, R.state]);
+                              tab && tab.conflict, tab && tab.said, repoSide ? R.state : ""]);
     if (!force && key === drawn) return;
     drawn = key;
     keepPlace();
@@ -446,7 +502,6 @@
     el.view.textContent = "";
     el.view.className = "file-view";
     shownTab = tab;
-    var repoSide = tab ? tab.source === "repo" : E.shown === "repo";
     if (repoSide && (R.state === "not_connected" || (tab && tab.status === "not_connected"))) {
       var box = note(R.message || A.errorText("not_connected"));
       if (CAN_MANAGE) box.appendChild(make("p", "dim", t("files.not_connected_manage")));

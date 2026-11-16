@@ -196,8 +196,8 @@ def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, 
     if holder:
         raise conflict(describe_holder(pj, holder) + ". Choose another name.")
     with pj.db:
-        pj.db.execute("INSERT INTO groups (name, kind, permissions, created) VALUES (?, 'custom', ?, ?)",
-                      (name, json.dumps(perms), util.now()))
+        pj.db.execute("INSERT INTO groups (name, kind, permissions, created, position) VALUES (?, 'custom', ?, ?, ?)",
+                      (name, json.dumps(perms), util.now(), _next_position(pj)))
     util.log("group_created", project=pj.slug, group=name, by=actor.person_id)
     return {"name": name, "kind": "custom", "permissions": perms}
 
@@ -221,6 +221,51 @@ def _custom_group(pj: Project, actor: Actor, name: str, need: str) -> sqlite3.Ro
     if g["kind"] == "ownership":
         raise conflict(f"'{name}' holds the agents of one person and follows ownership; it cannot be changed or removed.")
     return g
+
+
+def _next_position(pj: Project) -> int:
+    """Where a new group goes: below every other non-default group."""
+    return pj.db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM groups WHERE kind != 'default'").fetchone()[0]
+
+
+def order_groups(pj: Project, actor: Actor, names: Any) -> dict[str, Any]:
+    """Put the non-default groups in a new order (the first is the highest). `names` names every one of them once
+    and nothing else; otherwise nothing changes."""
+    _person_only(actor)
+    require(pj, actor, "manage_groups", "Ordering groups needs the manage_groups permission.")
+    have = [r["name"] for r in pj.db.execute("SELECT name FROM groups WHERE kind != 'default' ORDER BY position, id")]
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names)             or len(names) != len(have) or set(names) != set(have):
+        raise bad_request("invalid_order", "names must list every group except the default ones (owner, human, ai), "
+                                           "each once, in the new order: " + ", ".join(have) + ".")
+    with pj.db:
+        for i, n in enumerate(names):
+            pj.db.execute("UPDATE groups SET position = ? WHERE name = ?", (i, n))
+    util.log("groups_ordered", project=pj.slug, by=actor.person_id)
+    return {"groups": names}
+
+
+def change_group_settings(pj: Project, actor: Actor, name: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Change a group: its permissions (custom groups, change_group), whether it is shown separately in the member
+    list, or both. Showing separately: a custom group for who may manage groups; a person's own agent group for that
+    person or who may manage groups; never a default group."""
+    if "separate" not in body:
+        return change_group(pj, actor, name, body.get("permissions"))
+    separate = body["separate"]
+    if not isinstance(separate, bool):
+        raise bad_request("invalid_request", "separate must be true or false.")
+    _person_only(actor)
+    g = group_by_name(pj, name)
+    if not g:
+        raise not_found(f"There is no group '{name}'.")
+    if g["kind"] == "default":
+        raise conflict(f"'{name}' is one of the project's default groups; it is never shown as a group of its own.")
+    if g["kind"] == "custom" or g["owner_person"] != actor.person_id:
+        require(pj, actor, "manage_groups", "Changing groups needs the manage_groups permission.")
+    out = change_group(pj, actor, name, body.get("permissions")) if "permissions" in body else         {"name": name, "kind": g["kind"], "permissions": json.loads(g["permissions"])}
+    with pj.db:
+        pj.db.execute("UPDATE groups SET separate = ? WHERE id = ?", (int(separate), g["id"]))
+    util.log("group_changed", project=pj.slug, group=name, separate=separate, by=actor.person_id)
+    return dict(out, separate=separate)
 
 
 def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, Any]:
@@ -356,8 +401,8 @@ def _admit(pj: Project, person: sqlite3.Row, group_names: list[str]) -> None:
         pj.db.execute("INSERT INTO people (person_id, name, joined) VALUES (?, ?, ?)", (person["id"], name, t))
         for gname in group_names:
             _add_to_group(pj, group_by_name(pj, gname)["id"], "person", person["id"])
-        pj.db.execute("INSERT INTO groups (name, kind, permissions, owner_person, created) "
-                      "VALUES (?, 'ownership', '[]', ?, ?)", (name + OWNERSHIP_SUFFIX, person["id"], t))
+        pj.db.execute("INSERT INTO groups (name, kind, permissions, owner_person, created, position) "
+                      "VALUES (?, 'ownership', '[]', ?, ?, ?)", (name + OWNERSHIP_SUFFIX, person["id"], t, _next_position(pj)))
     util.log("member_added", project=pj.slug, person=person["id"], groups=group_names)
 
 
@@ -433,23 +478,49 @@ def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None
             "last_active": util.iso(a["last_active"]), "generation": a["generation"]}
 
 
+def person_online(row: sqlite3.Row) -> bool:
+    """A person is online while a page of the project is open: its last beat is recent enough."""
+    return row["last_beat"] is not None and util.now() - row["last_beat"] < config.get().person_offline_after_s
+
+
+def beat(pj: Project, actor: Actor) -> dict[str, Any]:
+    """An open page of the project says it is still open. Nothing is announced or logged."""
+    _person_only(actor)
+    with pj.db:
+        pj.db.execute("UPDATE people SET last_beat = ? WHERE person_id = ?", (util.now(), actor.person_id))
+    return {"online": True}
+
+
 def people_and_agents(pj: Project) -> dict[str, Any]:
     owners = _owners(pj)
     people = []
     for r in pj.db.execute("SELECT * FROM people ORDER BY joined, person_id"):
         acc = accounts.person(pj.accounts, r["person_id"])
-        # A person's presence comes with the live web connection of a later slice; until then nobody is shown online.
         people.append({"name": r["name"], "github_login": acc["github_login"] if acc else "",
-                       "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": False})
+                       "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": person_online(r)})
     agents = [agent_view(pj, a, owners) for a in pj.db.execute("SELECT * FROM agents ORDER BY id")]
     return {"people": people, "agents": agents}
 
 
+def ordered_groups(pj: Project) -> list[sqlite3.Row]:
+    """Every group: the non-default ones in their order (the highest first), then the default ones."""
+    return pj.db.execute("SELECT * FROM groups ORDER BY kind = 'default', position, id").fetchall()
+
+
 def group_list(pj: Project) -> list[dict[str, Any]]:
+    """The groups in their order; a non-default group with its position (0 is the highest) and whether it is shown
+    separately; the default groups last, marked default."""
     owners = _owners(pj)
     out = []
-    for g in pj.db.execute("SELECT * FROM groups ORDER BY id"):
+    position = 0
+    for g in ordered_groups(pj):
         item: dict[str, Any] = {"name": g["name"], "kind": g["kind"], "permissions": json.loads(g["permissions"])}
+        if g["kind"] == "default":
+            item["default"] = True
+        else:
+            item["position"] = position
+            item["separate"] = bool(g["separate"])
+            position += 1
         if g["kind"] == "ownership":
             item["owner"] = owners.get(g["owner_person"], "")
             item["switches"] = {k: bool(g[k]) for k in SWITCHES}     # what others may do with that person's agents

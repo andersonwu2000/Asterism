@@ -1,29 +1,24 @@
-// The right column of the messages page (Asterism.right): one thing at a time, or nothing: the task table
-// (#task-panel), the member list (#member-panel) or search results (#search-results). #task-toggle and
-// #members-toggle in the channel bar show or hide their panel. Which one is open is remembered per project on a wide
-// screen; below 900 px the column is a sheet over the messages that starts closed, closes on Escape and gives the
-// focus back to its control. Search results take the column while a search is shown and then give back what was
-// there before.
+// The right column of the messages pages (Asterism.right): one thing at a time, or nothing: the member list
+// (#member-panel, with each member's tasks) or search (#search-results: the field and its results). #members-toggle
+// and #search-open in the top bar show or hide their panel. Whether the member list is open is remembered per project
+// on a wide screen; below 900 px the column is a sheet over the messages that starts closed, closes on Escape and
+// gives the focus back to its control. Search takes the column while it is open and then gives back what was there.
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("chat");
   if (!A || !root) return;
-  var SLUG = root.dataset.slug, KEY = "asterism-right:" + SLUG, OLD_KEY = "asterism-tasks-folded:" + SLUG;
+  var SLUG = root.dataset.slug, KEY = "asterism-right:" + SLUG;
   function byId(id) { return document.getElementById(id); }
-  var panels = {tasks: byId("task-panel"), members: byId("member-panel"), search: byId("search-results")};
-  var toggles = {tasks: byId("task-toggle"), members: byId("members-toggle")};
+  var panels = {members: byId("member-panel"), search: byId("search-results")};
+  var toggles = {members: byId("members-toggle"), search: byId("search-open")};
   var narrow = window.matchMedia("(max-width: 899.98px)");
   var R = A.right = {current: null, before: null, listeners: []};
 
-  // What a wide screen showed last: "tasks", "members" or "none" (the task table's old folded flag counts).
-  function stored() {
-    var v = A.store.get(KEY, null);
-    if (v === "tasks" || v === "members" || v === "none") return v;
-    return A.store.get(OLD_KEY, 0) === 1 ? "none" : "tasks";
-  }
+  // What a wide screen showed last: the member list (also for the task table of earlier versions) or nothing.
+  function stored() { return A.store.get(KEY, "members") === "none" ? "none" : "members"; }
 
   // Show one panel (or none, for null). `how.remember`: a choice of the reader, kept on a wide screen;
-  // `how.focus`: on a narrow screen the focus goes into the sheet.
+  // `how.focus`: the focus goes into the panel (always for search, on a narrow screen for the member list).
   R.show = function (name, how) {
     how = how || {};
     var was = R.current;
@@ -33,15 +28,19 @@
     Object.keys(toggles).forEach(function (k) {
       if (toggles[k]) toggles[k].setAttribute("aria-expanded", String(k === name));
     });
-    if (how.remember && !narrow.matches && name !== "search") A.store.set(KEY, name || "none");
-    if (name && narrow.matches && how.focus) {
-      var close = panels[name].querySelector(".right-close, .search-close");
-      (close || panels[name]).focus();
+    if (how.remember && !narrow.matches && name !== "search" && was !== "search") A.store.set(KEY, name || "none");
+    if (name && how.focus) {
+      var into = name === "search" ? byId("search-input") : narrow.matches ? panels[name].querySelector(".right-close") : null;
+      if (into) into.focus();
     }
     R.listeners.forEach(function (fn) { fn(R.current, was); });
   };
   R.toggle = function (name) {
-    R.show(R.current === name ? null : name, {remember: true, focus: true});
+    if (R.current === name) {
+      if (name === "search") R.giveBack(); else R.show(null, {remember: true});
+      return;
+    }
+    R.show(name, {remember: true, focus: true});
   };
   // After a search: what was there before (nothing on a narrow screen).
   R.giveBack = function () {
@@ -59,20 +58,18 @@
       if (toggles[name]) toggles[name].focus();
     });
   });
-  Object.keys(panels).forEach(function (k) {
-    if (!panels[k] || k === "search") return;
-    panels[k].addEventListener("keydown", function (ev) {
+  if (panels.members) {
+    panels.members.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape" && narrow.matches && !ev.defaultPrevented) {
         R.show(null);
-        if (toggles[k]) toggles[k].focus();
+        if (toggles.members) toggles.members.focus();
       }
     });
-  });
+  }
 
   function fit() {
     if (R.current === "search") return;
-    var v = stored();
-    R.show(narrow.matches ? null : (v === "none" ? null : v));
+    R.show(narrow.matches || stored() === "none" ? null : "members");
   }
   if (narrow.addEventListener) narrow.addEventListener("change", fit);
   fit();

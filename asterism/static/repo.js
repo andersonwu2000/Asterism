@@ -125,7 +125,8 @@
     if (r.status === 502) return {status: "unavailable"};
     if (r.status === 409) return {status: "not_connected"};
     if (!r.ok) return {status: "error", code: String(r.status)};
-    var ctype = (r.headers.get("content-type") || "").toLowerCase(), doc = {status: "ok", url: url};
+    // The ETag is the file's hash: a file read again after a push is the same file when it has the same one.
+    var ctype = (r.headers.get("content-type") || "").toLowerCase(), doc = {status: "ok", url: url, etag: r.headers.get("etag")};
     if (ctype.indexOf("text/plain") === 0) {
       doc.kind = byName === "markdown" ? "markdown" : "text";
       doc.text = (await r.text()).replace(/^﻿/, "").replace(/\r\n?/g, "\n");
