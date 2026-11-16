@@ -15,7 +15,10 @@ import pytest
 from test_m1b import SLUG, Agent, Person, build_world, frame, until
 from test_m1b2 import leave, notices, system_messages
 
-LOCKED = "Task {id} was assigned by {person}, so only {person} can change it. When it is done, tell {person}."
+LOCKED = ("Task {id} was assigned by {person}: only {person} changes its title or who holds it. Keep its body current, "
+          "and mark it done when it is.")
+OPEN = ("Open task {id} [{group}]: {title}. An agent of {group} that has no task may take it (task_update with id={id} "
+        "and responsible set to its own name).")
 NOT_YOURS = "Task {id} is {agent}'s. Ask {agent} to change it or to hand it over."
 NOT_YOURS_OFFLINE = ("Task {id} is {agent}'s, and {agent} is offline. Its user has not allowed others to move its tasks: "
                      "ask {person}, or make a task of your own.")
@@ -131,9 +134,11 @@ def test_people_make_tasks_and_everybody_sees_the_table(t):
     r = p_make(t.alice, group="ai", text="  Find out who can check Lemma 3.2 [p1]  ")
     assert r.status_code == 201, r.text
     one = r.json()["task"]
-    assert one == {"id": one["id"], "group": "ai", "text": "Find out who can check Lemma 3.2 [p1]", "responsible": None,
-                   "responsible_kind": None, "assigned_by": None, "posted_by": "alice", "posted_at": one["posted_at"],
-                   "taken_at": None}, "an open task: nobody responsible, no lock, no online (f7: who posted it, when)"
+    assert one == {"id": one["id"], "group": "ai", "title": "Find out who can check Lemma 3.2 [p1]", "body": "",
+                   "responsible": None, "responsible_kind": None, "assigned_by": None, "posted_by": "alice",
+                   "posted_at": one["posted_at"], "taken_at": None, "body_at": one["body_at"], "update_every_h": None,
+                   "overdue": False, "done": False, "done_at": None}, \
+        "an open task: nobody responsible, no lock, no online (f7: who posted it, when; 1t: a title, no body, not done)"
     r = p_make(t.carol, group="human", text="Read the draft [p2]", responsible="bob")
     assert r.status_code == 400 and err(r) == "not_an_agent", "a task is given to an agent or to nobody (f5)"
     two = made(p_make(t.carol, group="human", text="Read the draft [p2]"))
@@ -148,18 +153,20 @@ def test_people_make_tasks_and_everybody_sees_the_table(t):
     assert {m["name"]: m["kind"] for m in ai["members"]} == {"a1": "agent", "a2": "agent", "b1": "agent"}
     assert all(set(m) >= {"online", "busy"} for m in ai["members"])
     assert [x["id"] for x in ai["tasks"]] == [one["id"]]
-    assert table(t.carol)[two["id"]]["text"] == "Read the draft [p2]"
+    assert table(t.carol)[two["id"]]["title"] == "Read the draft [p2]"
 
     assert err(p_make(t.alice, group="ai", text="   ")) == "bad_request"
-    assert made(p_make(t.alice, group="ai", text="長" * 2_000))["text"] == "長" * 2_000, "characters, not bytes"
-    assert err(p_make(t.alice, group="ai", text="x" * 2_001)) == "too_long"
+    long = made(p_make(t.alice, group="ai", title="長" * 200, body="長" * 10_000))
+    assert (long["title"], long["body"]) == ("長" * 200, "長" * 10_000), "characters, not bytes"
+    assert err(p_make(t.alice, group="ai", title="x" * 201)) == "too_long"
+    assert err(p_make(t.alice, group="ai", title="x", body="x" * 10_001)) == "too_long"
     assert p_make(t.alice, group="no-such-group", text="x").status_code in (400, 404)
     r = p_make(t.alice, group="human", text="x", responsible="a1")
     assert r.status_code == 400 and err(r) == "not_in_group" and "human" in r.json()["message"], r.text
     assert p_change(t.alice, 999_999, text="x").status_code == 404
 
     changed = made(p_change(t.bob, one["id"], text="Find out who can check Lemma 3.3 [p1]"))
-    assert changed["text"].endswith("3.3 [p1]"), "a task nobody's agent holds is anybody's to change"
+    assert changed["title"].endswith("3.3 [p1]"), "a task nobody's agent holds is anybody's to change"
     assert made(p_change(t.bob, two["id"], responsible=""))["responsible"] is None
     r = p_remove(t.carol, two["id"])
     assert r.status_code == 200 and r.json() == {"removed": two["id"]} and two["id"] not in table(t.alice)
@@ -197,23 +204,28 @@ def test_an_agent_sees_only_the_tasks_of_its_groups(t):
     assert r.status_code == 403 and "ai" in r.json()["message"] and OWN_A in r.json()["message"], "it is told its groups"
     assert a_task(t.a2, group="no-such-group", text="x").status_code == 403
     assert a_task(t.a1, id=999_999, text="x").status_code == 404
-    assert err(a_task(t.a1, group="topic")) == "bad_request", "a new task needs its text"
+    assert err(a_task(t.a1, group="topic")) == "bad_request", "a new task needs its title"
     assert err(a_task(t.a1, id=in_topic["id"])) == "bad_request", "a change must name something to change"
     r = a_task(t.a1, id=in_topic["id"], text="Sketch the topic, v2 [g1]")
-    assert made(r)["text"] == "Sketch the topic, v2 [g1]" and isinstance(r.json().get("unread", []), list)
+    assert made(r)["title"] == "Sketch the topic, v2 [g1]" and isinstance(r.json().get("unread", []), list)
     wipe(t)
 
 
 def test_agents_of_one_person_settle_tasks_among_themselves(t):
+    """One task per agent (1t): a1 holds one, a2 the other; an open task is announced to the idle agents of its group,
+    and its poster is told when it is taken."""
     before = system_count(t.alice)
     mine = made(a_task(t.a1, group=OWN_A, text="Prove the easy direction [s1]", responsible="a1"))
     assert (mine["responsible"], mine["responsible_kind"], mine["online"], mine["assigned_by"]) == ("a1", "agent", True, None)
     assert until(lambda: busy(t.alice, "a1"), 3) and not busy(t.alice, "a2"), "holding a task is what busy means"
-    open_one = made(a_task(t.a1, group=OWN_A, text="Somebody: tidy the notation [s2]"))
-    assert open_one["responsible"] is None
     made(a_task(t.a1, id=mine["id"], text="Prove the easy direction, both cases [s1]"))
     time.sleep(1.0)
-    assert system_count(t.alice) == before, "what an agent does with its own tasks is told to nobody"
+    assert system_count(t.alice) == before, "what an agent does with its own task is told to nobody"
+    open_one = made(a_task(t.a1, group=OWN_A, text="Somebody: tidy the notation [s2]"))
+    assert open_one["responsible"] is None
+    opened = OPEN.format(id=open_one["id"], group=OWN_A, title="Somebody: tidy the notation [s2]")
+    assert told(t.a2, opened)["message"]["level"] == "normal", "an open task is announced to the idle agents of its group"
+    not_told(t.b1, "[s2]", 1.0)
 
     made(a_task(t.a2, id=mine["id"], text="Prove the easy direction; case 2 is open [s1]"))
     d = told(t.a1, f"a2 changed task {mine['id']} [{OWN_A}] of a1: Prove the easy direction; case 2 is open [s1]")
@@ -228,9 +240,12 @@ def test_agents_of_one_person_settle_tasks_among_themselves(t):
 
     made(a_task(t.a2, id=mine["id"], responsible="a1"))
     told(t.a1, f"a2 gave task {mine['id']} [{OWN_A}] to a1: Prove the easy direction; case 2 is open [s1]")
-    made(a_task(t.a1, id=open_one["id"], responsible="a1"))            # claiming an open task concerns nobody else
-    made(a_task(t.a1, id=open_one["id"], responsible=""))              # and so does giving it up
+    made(a_task(t.a2, id=open_one["id"], responsible="a2"))            # claiming an open task: its poster is told
+    claimed = f"a2 gave task {open_one['id']} [{OWN_A}] to a2: Somebody: tidy the notation [s2]"
+    assert told(t.a1, claimed)["message"]["level"] == "normal"
+    made(a_task(t.a2, id=open_one["id"], responsible=""))              # giving it up: open again, told to idle agents
     assert table(t.alice)[open_one["id"]]["responsible"] is None
+    not_told(t.a1, opened, 1.0)                                         # and a1 holds a task, so not to a1
 
     r = a_task(t.a2, id=mine["id"], remove=True)
     assert r.status_code == 200 and r.json()["removed"] == mine["id"]
@@ -266,9 +281,12 @@ def test_a_task_a_person_assigns_is_locked(t):
                         (t.a1, {"responsible": "a2"}), (t.a2, {"text": "x"}), (t.a2, {"responsible": "a2"})):
         r = a_task(who, id=one["id"], **change)
         assert r.status_code == 403 and err(r) == "task_locked" and r.json()["message"] == refusal, (change, r.text)
-    assert table(t.alice)[one["id"]]["text"] == text
+    assert table(t.alice)[one["id"]]["title"] == text
+    kept = made(a_task(t.a1, id=one["id"], body="Half written; the constant is still open [k1]"))
+    assert (kept["assigned_by"], kept["body"]) == ("alice", "Half written; the constant is still open [k1]"), \
+        "the lock covers title and holder: its holder keeps the body current (1t)"
 
-    new = "Write up the proof of Lemma 3.2, with the corrected constant [k1]"
+    new ="Write up the proof of Lemma 3.2, with the corrected constant [k1]"
     assert made(p_change(t.alice, one["id"], text=new))["assigned_by"] == "alice"
     assert told(t.a1, f"alice changed task {one['id']} [{OWN_A}] of a1: {new}")["message"]["level"] == "important"
 
@@ -279,7 +297,7 @@ def test_a_task_a_person_assigns_is_locked(t):
 
     assert made(p_change(t.alice, one["id"], locked=False))["assigned_by"] is None
     told(t.a2, f"alice released task {one['id']} [{OWN_A}]: a2 may change it now.")
-    assert made(a_task(t.a2, id=one["id"], text="mine to shape now [k1]"))["text"].startswith("mine")
+    assert made(a_task(t.a2, id=one["id"], text="mine to shape now [k1]"))["title"].startswith("mine")
     assert made(p_change(t.alice, one["id"], locked=True))["assigned_by"] == "alice"
     told(t.a2, f"alice assigned task {one['id']} [{OWN_A}] to a2: mine to shape now [k1]")
     assert err(a_task(t.a2, id=one["id"], remove=True)) == "task_locked"
@@ -305,23 +323,24 @@ def test_others_need_the_agents_switch(t):
     for attempt in (p_change(t.bob, own["id"], text="bob's idea of it"), p_change(t.bob, own["id"], responsible=""),
                     p_remove(t.bob, own["id"]), p_change(t.bob, own["id"], locked=True)):
         assert attempt.status_code == 403, attempt.text
-    assert table(t.alice)[own["id"]]["text"] == "My own plan [o2]"
+    assert table(t.alice)[own["id"]]["title"] == "My own plan [o2]"
 
     t.alice.switches(others_assign=True)
     try:
-        one = made(p_make(t.bob, group="ai", text=text, responsible="a1"))
+        # to a2: a1 holds its own task, which one task per agent (1t) would put back on the board
+        one = made(p_make(t.bob, group="ai", text=text, responsible="a2"))
         assert one["assigned_by"] == "bob"
-        assert told(t.a1, f"bob assigned task {one['id']} [ai] to a1: {text}")["message"]["level"] == "important"
-        assert err(a_task(t.a1, id=one["id"], remove=True)) == "task_locked"
-        assert a_task(t.a1, id=one["id"], remove=True).json()["message"] == LOCKED.format(id=one["id"], person="bob")
+        assert told(t.a2, f"bob assigned task {one['id']} [ai] to a2: {text}")["message"]["level"] == "important"
+        assert err(a_task(t.a2, id=one["id"], remove=True)) == "task_locked"
+        assert a_task(t.a2, id=one["id"], remove=True).json()["message"] == LOCKED.format(id=one["id"], person="bob")
         r = p_change(t.carol, one["id"], text="carol's version")
         assert r.status_code == 403 and err(r) == "task_locked", "a locked task: only who assigned it and the agent's person"
         assert made(p_change(t.alice, one["id"], text=text + " (alice: after Friday)"))["assigned_by"] == "bob"
-        told(t.a1, f"alice changed task {one['id']} [ai] of a1: {text} (alice: after Friday)")
+        told(t.a2, f"alice changed task {one['id']} [ai] of a2: {text} (alice: after Friday)")
         assert made(p_change(t.carol, own["id"], text="My own plan, as carol reads it [o2]"))["assigned_by"] is None, \
             "open to others now: a member who may assign tasks changes an unlocked one"
         assert p_remove(t.bob, one["id"]).status_code == 200
-        told(t.a1, f"bob removed task {one['id']} [ai] of a1.")
+        told(t.a2, f"bob removed task {one['id']} [ai] of a2.")
     finally:
         t.alice.switches(others_assign=False)
     assert p_change(t.bob, own["id"], text="closed again").status_code == 403
@@ -332,7 +351,8 @@ def test_others_need_the_agents_switch(t):
 
 def test_another_persons_agent_must_ask(t):
     """An agent that is not a coordinator changes a task of somebody else's agent only through that agent: the
-    consent is the other agent's own call (the user's decision of 2026-11-15)."""
+    consent is the other agent's own call (the user's decision of 2026-11-15). Since 1t an agent holds one task, so
+    b1's offer is claimed by a2 (a1 claiming it would put its own back on the board), and b1, its poster, is told."""
     own = made(a_task(t.a1, group="ai", text="Check the base case [h1]", responsible="a1"))
     refusal = NOT_YOURS.format(id=own["id"], agent="a1")
     for change in ({"text": "b1's idea of it"}, {"remove": True}, {"responsible": "b1"}, {"responsible": ""}):
@@ -342,10 +362,11 @@ def test_another_persons_agent_must_ask(t):
     assert r.status_code == 403 and err(r) == "ask_first" and r.json()["message"] == ASK_FIRST.format(agent="a1"), r.text
 
     offer = made(a_task(t.b1, group="ai", text="Open: the inductive step [h2]"))
-    assert made(a_task(t.a1, id=offer["id"], responsible="a1"))["responsible"] == "a1", "the other agent claims it itself"
-    r = a_task(t.b1, id=offer["id"], responsible="a1")
-    assert r.status_code == 403, "once it is a1's, b1 has no hand in it"
-    not_told(t.b1, "[h2]", 1.0)
+    assert made(a_task(t.a2, id=offer["id"], responsible="a2"))["responsible"] == "a2", "the other agent claims it itself"
+    r = a_task(t.b1, id=offer["id"], responsible="a2")
+    assert r.status_code == 403, "once it is a2's, b1 has no hand in it"
+    claimed = f"a2 gave task {offer['id']} [ai] to a2: Open: the inductive step [h2]"
+    assert told(t.b1, claimed)["message"]["level"] == "normal", "its poster is told it was taken (1t)"
 
     leave(t.a1)                                             # a1 is offline now; its tasks stay its own
     assert until(lambda: not t.alice.is_online("a1"), 5)
@@ -362,8 +383,8 @@ def test_another_persons_agent_must_ask(t):
         come_back(t, t.a1)
         assert told(t.a1, said)["message"]["level"] == "important", "it is handed the message when it is back"
         r = a_task(t.b1, id=offer["id"], responsible="b1")
-        assert r.status_code == 403 and err(r) == "not_yours" and r.json()["message"] == NOT_YOURS.format(id=offer["id"], agent="a1"), \
-            "online again: ask it"
+        assert r.status_code == 403 and err(r) == "not_yours" and r.json()["message"] == NOT_YOURS.format(id=offer["id"], agent="a2"), \
+            "its holder is online: ask it, switch or no switch"
     finally:
         t.alice.switches(others_assign=False)
         if not t.alice.is_online("a1"):
@@ -411,21 +432,19 @@ def test_presence_is_told_to_busy_agents_when_it_moves_the_work(t):
     assert level_for(t.alice, "a2 is online.") == "normal" and level_for(t.bob, "a2 is online.") == "muted"
     assert not notices(t.b1, "a2 is online."), "an agent of someone else is not close"
 
-    long = "Check every constant\nin section 4 " + "and then the next one " * 8 + "[n1]"
-    first = made(a_task(t.a2, group=OWN_A, text=long, responsible="a2"))
-    second = made(p_make(t.alice, group="ai", text="Also this, from alice [n2]", responsible="a2"))
-    told(t.a2, f"alice assigned task {second['id']} [ai] to a2: Also this, from alice [n2]")
-    off = (f"a2 is offline. Its tasks:\n{first['id']} [{OWN_A}] {clip(long)}\n"
-           f"{second['id']} [ai] Also this, from alice [n2]")
+    long = "Check every constant\nin section 4 " + "and then the next one " * 6 + "[n1]"   # 1t: one task, a long title
+    first = made(p_make(t.alice, group=OWN_A, text=long, body="Sections 4.1 to 4.3; " * 20, responsible="a2"))
+    told(t.a2, f"alice assigned task {first['id']} [{OWN_A}] to a2: {clip(long)}")
+    off = f"a2 is offline. Its tasks:\n{first['id']} [{OWN_A}] {clip(long)}"    # its title, cut; not its body
     assert len(clip(long)) == 121 and "\n" not in clip(long)
-    leave(t.a2)                                             # 3. with tasks, goes offline: its work is unattended
+    leave(t.a2)                                             # 3. with a task, goes offline: its work is unattended
     got = until(lambda: notices(t.a1, off), 6)
     assert got and got[-1]["message"]["level"] == "normal" and got[-1]["frame"].endswith("\n" + RECOORDINATE)
-    assert level_for(t.alice, off) == "important", "alice assigned one of them"
+    assert level_for(t.alice, off) == "important", "alice assigned it"
     assert level_for(t.bob, off) == "muted" and level_for(t.carol, off) == "muted"
     assert not notices(t.b1, off)
 
-    come_back(t, t.a2)                                      # 4. with tasks, back online: nothing to settle
+    come_back(t, t.a2)                                      # 4. with a task, back online: nothing to settle
     on = off.replace("is offline.", "is online.")
     assert level_for(t.alice, on) == "muted"
     time.sleep(1.5)
@@ -444,11 +463,13 @@ def test_presence_is_told_to_busy_agents_when_it_moves_the_work(t):
     wipe(t)
 
 
-def test_a_long_list_of_tasks_is_cut_in_the_notice(t):
+def test_the_notice_names_only_the_task_the_agent_holds(t):
+    """Before 1t an agent could hold many tasks and the notice cut the list after ten. Now it holds one: an agent that
+    took twelve in turn holds the last, the others went back to the board, and the notice names that one."""
     ids = [made(a_task(t.a2, group=OWN_A, text=f"piece {i} [m1]", responsible="a2"))["id"] for i in range(12)]
+    assert [x["id"] for x in a_tasks(t.a2) if x["responsible"] == "a2"] == ids[-1:]
     leave(t.a2)
-    lines = [f"{i} [{OWN_A}] piece {n} [m1]" for n, i in enumerate(ids[:10])]
-    off = "a2 is offline. Its tasks:\n" + "\n".join(lines) + "\nand 2 more."
+    off = f"a2 is offline. Its tasks:\n{ids[-1]} [{OWN_A}] piece 11 [m1]"
     assert level_for(t.alice, off) == "normal", "alice is close to her own agent"
     come_back(t, t.a2)
     wipe(t)
@@ -483,16 +504,20 @@ def test_a_coordinating_agent_changes_tasks_directly(t):
         given = made(a_task(t.b1, group="ai", text="Then the inductive step [c2]", responsible="a1"))
         assert given["assigned_by"] is None
         assert told(t.a1, f"b1 gave task {given['id']} [ai] to a1: Then the inductive step [c2]")["message"]["level"] == "important"
+        assert told(t.a1, f"b1 took task {own['id']} [ai] from a1.")["message"]["level"] == "important", \
+            "one task per agent (1t): the one a1 held went back to the board"
+        assert table(t.alice)[own["id"]]["responsible"] is None
         assert made(a_task(t.a1, id=given["id"], text="The inductive step, my way [c2]"))["responsible"] == "a1", \
             "it is a1's to shape: nothing is locked"
         assert made(a_task(t.b1, id=given["id"], responsible="b1"))["responsible"] == "b1", "online or not, it may take it"
         assert told(t.a1, f"b1 took task {given['id']} [ai] from a1.")["message"]["level"] == "important"
 
-        locked = made(p_make(t.alice, group="ai", text="alice's own order [c3]", responsible="a1"))
-        r = a_task(t.b1, id=locked["id"], text="a coordinator's idea of it")
-        assert r.status_code == 403 and err(r) == "task_locked", "a person's lock holds against a coordinator too"
+        made(a_task(t.a1, id=own["id"], responsible="a1"))  # a1, free again, takes back the one that went to the board
         assert a_task(t.b1, id=own["id"], remove=True).status_code == 200
         assert told(t.a1, f"b1 removed task {own['id']} [ai] of a1.")["message"]["level"] == "important"
+        locked = made(p_make(t.alice, group="ai", text="alice's own order [c3]", responsible="a2"))   # not a1: it takes c4 below
+        r = a_task(t.b1, id=locked["id"], text="a coordinator's idea of it")
+        assert r.status_code == 403 and err(r) == "task_locked", "a person's lock holds against a coordinator too"
     finally:
         t.alice.switches(others_assign=False)
         t.bob.c.post(f"/{SLUG}/api/members/b1/groups", json={"add": [], "remove": ["coordinators"]})

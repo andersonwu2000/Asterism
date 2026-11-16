@@ -39,7 +39,7 @@ def texts(person, tag: str) -> list[dict]:
 def tasks_with(person, tag: str) -> list[dict]:
     got = person.c.get(f"/{SLUG}/api/tasks")
     assert got.status_code == 200, got.text
-    return [x for g in got.json()["groups"] for x in g["tasks"] if tag in x["text"]]
+    return [x for g in got.json()["groups"] for x in g["tasks"] if tag in x["title"]]
 
 
 # ------------------------------------------------------------------ agents

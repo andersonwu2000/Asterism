@@ -95,7 +95,7 @@ def tagged(v, tag: str) -> list[dict]:
 
 def tasks_with(v, tag: str) -> list[dict]:
     got = v.alice.c.get(f"/{SLUG}/api/tasks").json()["groups"]
-    return [x for g in got for x in g["tasks"] if tag in x["text"]]
+    return [x for g in got for x in g["tasks"] if tag in x["title"]]
 
 
 def started(exe, home, sid: str, name: str) -> Mcp:
