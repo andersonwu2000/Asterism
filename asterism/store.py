@@ -404,15 +404,15 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
                 conn.execute("INSERT INTO upgrades (name, at) VALUES (?, ?)", (key, util.now()))
         have = {r[1] for r in conn.execute("PRAGMA table_info(groups)")}
         moved = [c for c in SWITCH_COLUMNS if c in have]
-        if moved:
+        # The old switch columns are moved into the permissions once and then left in place, unread: the hub's
+        # SQLite (3.34) has no ALTER TABLE ... DROP COLUMN (3.35+).
+        if moved and not conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
             for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
                                   f"WHERE kind = 'ownership'").fetchall():
                 perms = json.loads(r[1])
                 perms += [c for c in moved if r[c] and c not in perms]
                 conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
-            conn.commit()
-            for c in moved:
-                conn.execute(f"ALTER TABLE groups DROP COLUMN {c}")
+            conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
     for table, sql in DATA_FIXES:
         if _has_table(conn, table):
             conn.execute(sql)
