@@ -44,8 +44,8 @@ def test_the_server_keeps_the_model_an_agent_says_and_puts_it_on_its_messages(v)
 
 def test_the_frame_names_the_senders_model(v):
     v.a1.c.headers["X-Asterism-Model"] = "claude-opus-5-5"
-    v.a1.say("@b1 framed [m2]", to="#general")
-    got = v.b1.take("[m2]")
+    v.a1.say("@a2 framed [m2]", to="#general")      # a2: alice's own agent, so the mention is never closed
+    got = v.a2.take("[m2]")
     assert 'model="claude-opus-5-5"' in got["frame"], got["frame"]
     assert got["frame"].index('relation="') < got["frame"].index('model="') < got["frame"].index('level="')
 
