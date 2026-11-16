@@ -74,7 +74,7 @@ def test_files_mode_has_a_source_dropdown_and_a_search_field_above_the_tree(t):
     left = page.split('id="explorer"', 1)[1]
     assert left.index('id="files-menu"') < left.index('id="files-search"') < left.index('id="explorer-tree"'), \
         "the menu, then the search field, then the tree"
-    assert 'aria-haspopup="menu"' in page.split('id="source-switch"', 1)[1][:400], "the source is a dropdown menu"
+    assert 'aria-pressed=' in page.split('id="source-switch"', 1)[1][:600], "the source is two buttons (1x)"
 
 
 # ------------------------------------------------------------------ the agent page (m1f5_agent_page_design.md)
