@@ -184,9 +184,7 @@ def test_the_favicon_is_v1s():
     if not v1.exists():
         pytest.skip("v1 is not next to this repository")
     ours = ROOT / "asterism" / "static" / "favicon.svg"
-    same = lambda b: b.replace(b"
-", b"
-").strip()       # line endings follow the checkout's settings
+    same = lambda b: b.replace(b"\r\n", b"\n").strip()       # line endings follow the checkout's settings
     assert same(ours.read_bytes()) == same(v1.read_bytes())
 
 
