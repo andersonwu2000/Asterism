@@ -64,8 +64,9 @@ def test_every_page_of_a_project_has_the_same_frame(f):
     messages = f.alice.c.get(f"/{SLUG}").text
     assert 'id="members-toggle"' in messages and 'id="search-open"' in messages and 'id="pins"' not in messages
     files = f.alice.c.get(f"/{SLUG}/files").text
-    for needed in ('id="explorer"', 'id="explorer-toggle"', 'id="file-tabs"', 'id="file-view"', 'id="view-switch"'):
+    for needed in ('id="explorer"', 'id="file-tabs"', 'id="file-view"', 'id="view-switch"'):
         assert needed in files, needed
+    assert 'id="explorer-toggle"' not in files, "the rail's files button folds the explorer (f4)"
     deep = f.alice.c.get(f"/{SLUG}/files/notes/deep/MAP.md")
     assert deep.status_code == 200 and 'id="file-view"' in deep.text, "a file has an address of its own"
     assert f.alice.c.get(f"/{SLUG}/files/..%2f..%2fetc").status_code in (200, 400, 404)
