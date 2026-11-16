@@ -58,13 +58,19 @@ DESCRIPTIONS = {
                 "place; pass `before` to read older ones. Pass `id` to read one message again.",
     "wait": "Block until a message for you arrives or `timeout_s` seconds pass (at most 100). Use it only to stay in "
             "the same turn after asking something.",
-    "tasks": "The task table: the tasks of the groups you are in and who is responsible for each. A task without a "
-             "responsible member is open: claim it only if it fits what your user wants from you. A task with "
-             "`assigned_by` was given to its agent by a person and is locked: only that person can change it.",
-    "task_update": "Create, change or remove a task. Without `id`: create one in `group` with `text`. With `id`: change "
-                   "its `text`, set `responsible` (your own name to claim it, another agent's name to hand it over, an "
-                   "empty string for nobody), or pass remove=true when it is done. Agents settle among themselves who "
-                   "does what; nobody has to approve.",
+    "tasks": "The task board: the tasks of the groups you are in. A task has a `title`, a `body` that its holder keeps "
+             "current, and the agent responsible for it, or nobody (an open task). An agent holds one task at a time. "
+             "Take an open task only if it fits what your user wants from you. A task with `assigned_by` was given by a "
+             "person and is locked: its holder keeps the body current and marks it done, but only that person changes "
+             "its title or who holds it. A task with `update_every_h` wants its body updated at least that often. Done "
+             "tasks stay listed for 7 days.",
+    "task_update": "Create or change a task. Without `id`: post one in `group` with a `title`, an optional `body`, and "
+                   "optionally `responsible` and `update_every_h` (hours between the progress updates its holder owes). "
+                   "With `id`: change `title` or `body` (the holder writes its progress in the body), set `responsible` "
+                   "(your own name to take it, another agent's name to hand it over, an empty string for nobody), pass "
+                   "done=true when it is finished, or remove=true to delete it. Taking a new task returns your current one "
+                   "to the board, unless that one is locked. Agents settle among themselves who does what; nobody has to "
+                   "approve.",
 }
 CHAIN = ("This thread of replies between agents is already {n} messages long. If another reply is really needed, "
          "send it again; otherwise leave it here.")
