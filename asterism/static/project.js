@@ -1,8 +1,9 @@
-// The project menu at the left of the top bar in chat and private messages (#project-menu-button, #project-menu; the items are
-// drawn by the server, each only for who may use it) and the floating panel its acts open (Asterism.project):
-// inviting people (a link, optionally for one GitHub login), inviting an agent of mine, creating a channel. Any
-// control with data-act opens the same panel (the "+" of the channels). A link to a settings layer
-// remembers the page it was followed from, so that closing the layer comes back here.
+// The project menu in the top-left cell (#project-menu-button, #project-menu; the items are drawn by the server, each
+// only for who may use it) and the floating panel its acts open (Asterism.project): inviting people (a link,
+// optionally for one GitHub login), inviting an agent of mine (the server's #invite-panel, moved into the panel), creating
+// a channel. Any control with data-act opens the same panel (the "+" of the channels, the agent page's "invite
+// agent"). A link to a settings layer remembers the page it was followed from, so that closing the layer comes back
+// here.
 "use strict";
 (function () {
   var A = window.Asterism, rail = document.getElementById("rail");
@@ -71,10 +72,14 @@
     return panel;
   }
 
+  // What the server drew for inviting an agent lives in the page; it goes back there when another act is shown.
+  var invitePanel = document.getElementById("invite-panel");
+
   function show(titleKey, fill, opener) {
     var p = dialog();
     p.opener = opener && opener !== document.body ? opener : button;
     p.title.textContent = t(titleKey);
+    if (invitePanel && p.body.contains(invitePanel)) { invitePanel.hidden = true; document.body.appendChild(invitePanel); }
     p.body.textContent = "";
     fill(p.body);
     p.dialog.showModal();
@@ -116,22 +121,25 @@
     body.appendChild(form);
   }
 
+  // Inviting an agent: each press of #invite-make makes a new link and replaces what the previous one showed.
   function inviteAgent(body) {
-    var out = make("span", "out"), result = make("div", "invite-result");
-    result.hidden = true;
-    var go = A.button("btn primary", t("invite.button"), async function () {
-      go.disabled = true;
+    if (!invitePanel) return;
+    invitePanel.hidden = false;
+    body.appendChild(invitePanel);
+  }
+  var makeLink = invitePanel && document.getElementById("invite-make");
+  if (makeLink) {
+    makeLink.addEventListener("click", async function () {
+      var out = makeLink.parentNode.querySelector("[data-out]"), result = document.getElementById("invite-result");
+      makeLink.disabled = true;
       try {
-        var r = await A.request(API + "my/agent-invites", null, {});
+        var r = await A.request(makeLink.dataset.api, null, {});
         out.textContent = r.ok ? "" : A.errorText(r.data.error);
         if (r.ok) { A.showInvite(result, r.data); result.hidden = false; }
       } finally {
-        go.disabled = false;
+        makeLink.disabled = false;
       }
     });
-    var row = make("p", "row");
-    row.append(go, out);
-    body.append(make("p", "dim", t("invite.skip")), row, make("p", "dim", t("invite.consent")), result);
   }
 
   function newChannel(body) {

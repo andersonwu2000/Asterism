@@ -1,17 +1,19 @@
-// Tasks on the messages page (Asterism.tasks). The task table is read from /api/tasks on the messages' rhythm and is
-// shown in the member list (people.js), under each member as their status: a task's text on one line, cut with an
-// ellipsis; more than one task, or a long one, folds under "n 項任務", opened in place. A locked task carries the
-// quiet tag. Every act the former task panel had is here, offered to a person who may edit tasks (data-can-edit-tasks
-// on #chat; the server decides each one): add a task (to a member, or to nobody in a chosen group), rewrite it in
-// place, hand it to another member of its group, lock or unlock it, release it, remove it (in two steps). Each task
-// has its own small menu (its "..." control, right click, the context-menu key or Shift+F10); a refusal shows the
-// server's sentence at the task. A refresh waits while the reader is writing a task or has an act armed.
+// Tasks (Asterism.tasks), on the messages pages and the agent page. The task table is read from /api/tasks every few
+// seconds. A task is given to an agent or to nobody, never to a person. In chat it is shown in the member list
+// (people.js), under each agent as its status: a task's text on one line, cut with an ellipsis; more than one task, or
+// a long one, folds under "n 項任務", opened in place. A locked task carries the quiet tag. The agent page's task tab
+// (tasktable.js) shows the same table by group, with the same acts and the same menu (T.menuItems), offered to a
+// person who may edit tasks (data-can-edit-tasks on #chat or #agent-page; the server decides each one): add a task
+// (to an agent, or to nobody in a chosen group), rewrite it in place, hand it to another agent of its group, lock or
+// unlock it, release it, remove it (in two steps). Each task has its own small menu (its "..." control, right click,
+// the context-menu key or Shift+F10), offered only where the page cannot already tell the answer is no; a refusal
+// shows the server's sentence at the task. A refresh waits while the reader is writing a task or has an act armed.
 "use strict";
 (function () {
-  var A = window.Asterism, root = document.getElementById("chat");
+  var A = window.Asterism, root = document.getElementById("chat") || document.getElementById("agent-page");
   if (!A || !root) return;
   var t = A.t, make = A.make;
-  var SLUG = root.dataset.slug, API = "/" + encodeURIComponent(SLUG) + "/api/";
+  var SLUG = root.dataset.slug, ME = root.dataset.me, API = "/" + encodeURIComponent(SLUG) + "/api/";
   var EVERY_MS = 4000, LONG = 40;
   var T = A.tasks = {canEdit: !!root.dataset.canEditTasks, data: null, last: "", listeners: [],
                      open: {},              // fold key -> opened by the reader
@@ -50,10 +52,40 @@
 
   // The reader is writing a task, rewriting one or has an act armed: a redraw would throw that away.
   T.busy = function () {
-    var box = document.getElementById("member-body"), a = document.activeElement;
+    var box = document.getElementById("member-body") || document.getElementById("task-table"), a = document.activeElement;
     if (!box) return false;
     return T.editing !== null || T.adding !== null || A.isArmed(box) ||
            !!(a && box.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.value);
+  };
+
+  // ------------------------------------------------------------------ what the page can tell before the server
+  //
+  // From the members (frame.js): whose an agent is and whether its person lets others give it tasks. Where nothing
+  // is known yet, the act is offered and the server decides.
+
+  function ownerOf(name) {
+    var who = A.side && A.side.directory[name];
+    return who && who.kind === "agent" ? who.owner : null;
+  }
+  // Another person's agent: may tasks be given to it by the reader? Null when the members are not read yet.
+  T.closedBy = function (name) {
+    var owner = ownerOf(name), v = A.side && A.side.members;
+    if (!owner || owner === ME || !v) return null;
+    var own = (v.groups || []).filter(function (g) { return g.kind === "ownership" && g.owner === owner; })[0];
+    if (!(own && own.switches && own.switches.others_assign)) return "closed";
+    return A.can("assign_tasks") ? null : "permission";
+  };
+  // May the reader give a task to this agent (and lock it)?
+  T.mayGive = function (name) { return !T.closedBy(name); };
+  // May the reader act on this task at all? Nobody's: who may edit tasks. An agent's: its person; a locked one only
+  // who locked it besides; another's otherwise only where its person lets them.
+  T.mayAct = function (task) {
+    if (!T.canEdit) return false;
+    if (!task.responsible || task.responsible_kind !== "agent") return true;
+    var owner = ownerOf(task.responsible);
+    if (!owner || owner === ME) return true;
+    if (task.assigned_by) return task.assigned_by === ME;
+    return T.mayGive(task.responsible);
   };
 
   async function load(force) {
@@ -83,6 +115,7 @@
 
   function outOf(li) { return li.querySelector(":scope > .out"); }
 
+  // Rewriting a task in place: its text, saved or given up (Escape); Ctrl/Cmd+Enter saves.
   function editForm(task, li) {
     var form = make("form", "tedit"), area = make("textarea");
     area.value = task.text;
@@ -99,13 +132,15 @@
     });
     form.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel.click(); }
+      else if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); form.requestSubmit(); }
     });
     setTimeout(function () { area.focus(); }, 0);
     return form;
   }
+  T.editForm = editForm;
 
   function focusTask(id) {
-    var b = document.querySelector('#member-body [data-key="tacts:' + id + '"]');
+    var b = document.querySelector('[data-key="tacts:' + id + '"]');
     if (b) b.focus();
   }
 
@@ -125,7 +160,9 @@
 
   T.menuItems = function (task, li) {
     var out = outOf(li), items = [{label: t("task.edit"), run: function () { T.editing = task.id; changed(); }}];
-    var g = group(task.group), others = g ? g.members.filter(function (m) { return m.name !== task.responsible; }) : [];
+    var g = group(task.group), others = g ? g.members.filter(function (m) {
+      return m.kind === "agent" && m.name !== task.responsible && T.mayGive(m.name);
+    }) : [];
     if (others.length) {
       items.push({label: t("task.hand"), items: others.map(function (m) {
         return {label: t("task.hand_to", {name: m.name}), run: function () { call("tasks/" + task.id, {responsible: m.name}, out); }};
@@ -146,6 +183,12 @@
   function openMenu(task, li, where, opener) {
     A.menu(Object.assign({label: t("task.task_acts", {text: task.text})}, where), T.menuItems(task, li), opener);
   }
+  T.openMenu = openMenu;
+
+  // The task tab of the agent page at a scope: `query` like "agent=a1" or "show=unheld".
+  T.tableHref = function (query) {
+    return "/" + encodeURIComponent(SLUG) + "/agent/tasks" + (query ? "?" + query : "");
+  };
 
   T.row = function (task) {
     var li = make("li", "ptask" + (task.assigned_by ? " locked" : ""));
@@ -161,7 +204,7 @@
         tag.title = t("task.locked", {name: task.assigned_by});
         li.appendChild(tag);
       }
-      if (T.canEdit) {
+      if (T.mayAct(task)) {
         var acts = A.button("row-acts shown");
         acts.appendChild(A.glyph("dots"));
         acts.setAttribute("aria-label", t("task.task_acts", {text: task.text}));
@@ -215,7 +258,7 @@
 
   // ------------------------------------------------------------------ a new task
 
-  // The form for a new task: for `member` (in one of its groups), or for nobody (the group chosen).
+  // The form for a new task: for an agent `member` (in one of its groups), or for nobody (the group chosen).
   T.addForm = function (member) {
     var groups = T.groupsFor(member), form = make("form", "tadd"), input = make("input"), out = make("span", "out");
     out.setAttribute("aria-live", "polite");

@@ -4,6 +4,10 @@
 // file (its name, the full path as its title, a close control; a middle click also closes); it scrolls sideways and
 // never wraps; the arrow keys move between tabs and Delete closes one. A tab with unsaved changes carries a filled
 // disc after its name and says so in its name for assistive technology; closing it, or leaving the page, asks first.
+// Opening a file shows it in the current tab (a preview: what was there goes) unless that tab has unsaved changes,
+// or the file is asked for in a new tab (the explorer's "open in a new tab", a middle click, Ctrl/Cmd+click, a row
+// dragged onto the strip, dropped where its marker shows); a file already open only has its tab chosen. Tabs are
+// moved by dragging them along the strip.
 // At the strip's far right: the view switch (#view-switch: rendered, source, or source on the left with the
 // rendering on the right; what makes no sense for the file is disabled) and one more control: "open on GitHub"
 // (#file-github) for a file of the repository, save (#file-save, also Ctrl+S / Cmd+S) for a local one.
@@ -55,11 +59,34 @@
 
   // ------------------------------------------------------------------ opening and closing
 
-  V.open = function (source, path) {
+  // opts: {newTab: true} for a tab of its own; {at: index} where a new tab (or the file's open tab) goes in the strip.
+  V.open = function (source, path, opts) {
+    opts = opts || {};
     if (!S[source] || !A.splitPath(path)) return;
-    if (!find(keyOf(source, path))) tabs.push(tabFor(source, path));
-    activate(keyOf(source, path), true, true);
+    var key = keyOf(source, path), cur = find(active), at = typeof opts.at === "number" ? opts.at : null;
+    if (find(key)) {
+      if (at !== null) move(key, at);
+    } else if (!opts.newTab && at === null && cur && !cur.dirty) {
+      if (shownTab === cur) shownTab = null;               // the current tab shows the file instead
+      release(cur);
+      tabs.splice(tabs.indexOf(cur), 1, tabFor(source, path));
+    } else {
+      var i = at !== null ? at : cur ? tabs.indexOf(cur) + 1 : tabs.length;
+      tabs.splice(Math.max(0, Math.min(i, tabs.length)), 0, tabFor(source, path));
+    }
+    activate(key, true, true);
   };
+
+  // A tab moved to the place `to` (an index of the strip before the move).
+  function move(key, to) {
+    var tab = find(key), from = tabs.indexOf(tab);
+    if (from < 0) return;
+    tabs.splice(from, 1);
+    if (to > from) to -= 1;
+    tabs.splice(Math.max(0, Math.min(to, tabs.length)), 0, tab);
+    save();
+    drawTabs(false);
+  }
 
   // `chosen`: the reader chose this tab (or it is the one restored), so the explorer shows its source too.
   function activate(key, focusTab, chosen) {
@@ -164,6 +191,14 @@
         ev.preventDefault();
         A.menu({x: ev.clientX, y: ev.clientY, label: t("files.acts", {name: name})}, E.menuItems(x.source, x.path, false), b);
       });
+      wrap.draggable = true;
+      wrap.addEventListener("dragstart", function (ev) {
+        dragKey = x.key;
+        wrap.classList.add("dragging");
+        ev.dataTransfer.effectAllowed = "move";
+        try { ev.dataTransfer.setData("text/plain", x.path); } catch (err) { /* the key is kept above */ }
+      });
+      wrap.addEventListener("dragend", function () { dragKey = null; wrap.classList.remove("dragging"); unmark(); });
       el.tabs.appendChild(wrap);
     });
     var cur = active && tabButton(active);
@@ -175,6 +210,46 @@
       el.view.removeAttribute("aria-labelledby");
     }
   }
+
+  // ------------------------------------------------------------------ dropping on the strip
+  //
+  // A tab dragged along the strip, or a file dragged from the tree (E.dragging): it goes before the first tab whose
+  // middle is right of the pointer, else at the end; a line marks the place while it is over the strip.
+
+  var dragKey = null;
+  function unmark() {
+    el.tabs.classList.remove("drop-end");
+    Array.prototype.forEach.call(el.tabs.querySelectorAll(".drop-before"), function (w) { w.classList.remove("drop-before"); });
+  }
+  function dropIndex(x) {
+    var wraps = el.tabs.querySelectorAll(".tab");
+    for (var i = 0; i < wraps.length; i++) {
+      var r = wraps[i].getBoundingClientRect();
+      if (x < r.left + r.width / 2) return i;
+    }
+    return wraps.length;
+  }
+  el.tabs.addEventListener("dragover", function (ev) {
+    if (!dragKey && !E.dragging) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = dragKey ? "move" : "copy";
+    var i = dropIndex(ev.clientX), wraps = el.tabs.querySelectorAll(".tab");
+    unmark();
+    if (i < wraps.length) wraps[i].classList.add("drop-before"); else el.tabs.classList.add("drop-end");
+  });
+  el.tabs.addEventListener("dragleave", function (ev) {
+    if (!ev.relatedTarget || !el.tabs.contains(ev.relatedTarget)) unmark();
+  });
+  el.tabs.addEventListener("drop", function (ev) {
+    if (!dragKey && !E.dragging) return;
+    ev.preventDefault();
+    var i = dropIndex(ev.clientX);
+    unmark();
+    if (dragKey) { move(dragKey, i); dragKey = null; return; }
+    var f = E.dragging;
+    E.dragging = null;
+    V.open(f.source, f.path, {newTab: true, at: i});
+  });
 
   el.tabs.addEventListener("keydown", function (ev) {
     var b = ev.target.closest("[role=tab]");

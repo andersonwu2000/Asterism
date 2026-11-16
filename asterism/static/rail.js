@@ -3,11 +3,13 @@
 //   inverted pill), and outside private messages the private-messages button (#rail-dm) the same for private
 //   conversations, from the places frame.js reads on the pages' rhythm;
 // - each mode remembers its place: the chat button goes to the place the reader was last in (messages.js keeps it),
-//   the files page reopens its own tabs (viewer.js);
-// - on a wide screen, pressing the button of the mode one is in (chat, private messages, files: [data-fold]) folds
-//   that mode's second column away or brings it back, remembered per mode in localStorage and applied before the
-//   first paint by the head script (data-folded on <html>);
-// - below 900 px the rail and the second column live in the drawer (#nav) that #side-open opens.
+//   the files page reopens its own tabs (viewer.js), the agent button returns to the tab and scope last shown
+//   (agentpage.js keeps it);
+// - on a wide screen, pressing the button of the mode one is in (chat, private messages, files, agent: [data-fold])
+//   folds that mode's left cells (the top-left cell and the second column) away or brings them back, remembered per
+//   mode in localStorage and applied before the first paint by the head script (data-folded on <html>);
+// - below 900 px the rail and the left cells live in the drawer (#nav) that #side-open opens: the top-left cell
+//   (#corner) moves to the head of the second column there, and back into the top bar on a wide screen.
 "use strict";
 (function () {
   var A = window.Asterism, rail = document.getElementById("rail");
@@ -30,6 +32,17 @@
     return typeof place === "string" && place ? base + "#" + encodeURIComponent(place) : base;
   };
   if (chat && HERE !== "messages") chat.href = R.chatHref();
+
+  // The agent button: the address of the agent page last shown (its tab and scope).
+  R.agentKey = "asterism-agent-place:" + SLUG;
+  var agentButton = document.getElementById("rail-my");
+  if (agentButton && HERE !== "agent") {
+    var lastAgent = A.store.get(R.agentKey, null), agentBase = "/" + encodeURIComponent(SLUG) + "/agent";
+    if (typeof lastAgent === "string" && (lastAgent === agentBase || lastAgent.indexOf(agentBase + "/") === 0 ||
+                                          lastAgent.indexOf(agentBase + "?") === 0)) {
+      agentButton.href = lastAgent;
+    }
+  }
 
   function showOne(count, k) {
     if (!count) return;
@@ -92,6 +105,17 @@
   var narrow = window.matchMedia("(max-width: 899.98px)");
   var shown = false;
 
+  // The top-left cell belongs over the second column: in the top bar's grid on a wide screen, at the head of the
+  // column in the drawer below 900 px (the stylesheet hides it in the bar there until it has moved).
+  var corner = document.getElementById("corner"), column = nav.querySelector(".column");
+  var bar = corner && corner.parentNode;
+  function placeCorner() {
+    if (!corner || !column) return;
+    if (narrow.matches) { if (corner.parentNode !== column) column.insertBefore(corner, column.firstChild); }
+    else if (corner.parentNode !== bar) bar.insertBefore(corner, bar.firstChild);
+  }
+  placeCorner();
+
   function openDrawer() {
     if (!narrow.matches) return;
     shown = true;
@@ -133,6 +157,6 @@
     if (hit && !hit.closest("#me-menu")) closeDrawer(false);
   });
   R.isDrawer = function () { return shown; };
-  var onWidth = function () { if (!narrow.matches) closeDrawer(false); };
+  var onWidth = function () { placeCorner(); if (!narrow.matches) closeDrawer(false); };
   if (narrow.addEventListener) narrow.addEventListener("change", onWidth);
 })();

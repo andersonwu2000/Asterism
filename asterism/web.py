@@ -435,14 +435,25 @@ async def api_tasks(request: Request) -> Any:
     return tasks.table(pj, actor)
 
 
+def _for_people(request: Request, e: tasks.NotAnAgent) -> ApiError:
+    """The refusal of a person named as responsible, in the reader's language (agents get tasks.NOT_AN_AGENT)."""
+    return bad_request(e.code, tr_for(request)("task.not_an_agent", name=e.name))
+
+
 async def api_task_create(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    return tasks.person_create(pj, actor, await body_json(request))
+    try:
+        return tasks.person_create(pj, actor, await body_json(request))
+    except tasks.NotAnAgent as e:
+        raise _for_people(request, e) from None
 
 
 async def api_task_change(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    return tasks.person_change(pj, actor, request.path_params["tid"], await body_json(request))
+    try:
+        return tasks.person_change(pj, actor, request.path_params["tid"], await body_json(request))
+    except tasks.NotAnAgent as e:
+        raise _for_people(request, e) from None
 
 
 async def api_task_remove(request: Request) -> Any:
@@ -921,20 +932,37 @@ async def dm_page(request: Request) -> Response:
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view, dm=name))
 
 
-async def schedules_page(request: Request) -> Response:
+def _agent_page(request: Request, tab: str) -> Response:
+    """The agent page at one of its tabs: agents (/{slug}/agent, and the former /{slug}/my), tasks
+    (/{slug}/agent/tasks) and scheduled messages (/{slug}/agent/schedules, and the former /{slug}/schedules). The
+    scope of a tab is in the query and is the page script's business."""
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
     mine = projects.permissions(pj, actor)
     view = {"can_create": {"create_schedule", "post"} <= mine, "can_manage": "manage_members" in mine,
-            "min_every_s": config.get().schedule_min_every_s,
-            "places": {"channels": messaging.channel_names(pj),
-                       "people": [r["name"] for r in pj.db.execute(
-                           "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
-                       "agents": [r["name"] for r in pj.db.execute(
-                           "SELECT name FROM agents WHERE person_id = ? ORDER BY name", (actor.person_id,))]}}
-    return html(pages.schedules(tr_for(request), person, _frame(pj, actor), view))
+            "can_edit_tasks": "edit_tasks" in mine}
+    if tab == "schedules":
+        view["min_every_s"] = config.get().schedule_min_every_s
+        view["places"] = {"channels": messaging.channel_names(pj),
+                          "people": [r["name"] for r in pj.db.execute(
+                              "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
+                          "agents": [r["name"] for r in pj.db.execute(
+                              "SELECT name FROM agents WHERE person_id = ? ORDER BY name", (actor.person_id,))]}
+    return html(pages.agent(tr_for(request), person, _frame(pj, actor), tab, view))
+
+
+async def agents_page(request: Request) -> Response:
+    return _agent_page(request, "agents")
+
+
+async def tasks_page(request: Request) -> Response:
+    return _agent_page(request, "tasks")
+
+
+async def schedules_page(request: Request) -> Response:
+    return _agent_page(request, "schedules")
 
 
 def _settings(request: Request, scope: str, section: str, channel: str | None = None) -> Response:
@@ -980,15 +1008,6 @@ async def members_page(request: Request) -> Response:
 async def admin_page(request: Request) -> Response:
     """The former settings page: the settings layer at the invitations."""
     return _settings(request, "project", "invites")
-
-
-async def my_page(request: Request) -> Response:
-    ctx = _page_context(request, request.path_params["slug"])
-    if isinstance(ctx, Response):
-        return ctx
-    person, pj, actor = ctx
-    return html(pages.my(tr_for(request), person, _frame(pj, actor), projects.my_view(pj, actor), projects.group_list(pj),
-                         projects.groups_assignable(pj, actor)))
 
 
 async def files_page(request: Request) -> Response:
@@ -1102,7 +1121,10 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/a/{code}", agent_invite_page),
         Route("/{slug}/a/{code}/redeem", api(agent_invite_redeem), methods=["POST"]),
         Route("/{slug}/members", members_page),
-        Route("/{slug}/my", my_page),
+        Route("/{slug}/my", agents_page),
+        Route("/{slug}/agent", agents_page),
+        Route("/{slug}/agent/tasks", tasks_page),
+        Route("/{slug}/agent/schedules", schedules_page),
         Route("/{slug}/admin", admin_page),
         Route("/{slug}/settings", settings_page),
         Route("/{slug}/settings/{section}", settings_page),

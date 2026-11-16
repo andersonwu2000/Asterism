@@ -1,32 +1,32 @@
-// The schedules page: every schedule of the project (#schedules) and, for a person who may make one, the form
-// (#schedule-form). It speaks only the JSON API (/api/schedules) and reads the list again every few seconds,
-// except while the person is editing. Times are shown and entered in the browser's local time; the API gets ISO
-// times. A refusal shows the server's sentence at the schedule. Removing confirms in place, in two steps.
-// All texts come from the page's message catalogue (body data-msg); the shared helpers from base.js.
+// The agent page's scheduled messages tab (#schedules; m1f5_agent_page_design.md section 4), from /api/schedules,
+// read again every few seconds (agentpage.js), never while one is being changed. Times are shown and entered in the
+// browser's local time; the API gets ISO times. All texts come from the page's message catalogue.
+// - Scopes: all; made by me; paused; and one per place a schedule posts to.
+// - One block per schedule, by id (a list that re-sorted by the next run would move under the reader): where to (a
+//   member with its presence mark), its level as a quiet tag when it is not the usual one, "paused", who made it when
+//   not me; at the right when it runs next over how often; its text (four lines, then "顯示全部"); the last message it
+//   posted, or why it is paused. Its menu: pause or resume (its creator; who may manage members), change (its creator:
+//   the block becomes the form; a paused one can be saved and resumed at once), remove (in two steps, in place).
+// - The form for a new one (#schedule-form, only for who may create) opens from the tab's action at the top of the
+//   list; Escape closes it and the focus goes back to the action.
 "use strict";
 (function () {
-  var A = window.Asterism;
-  var root = document.getElementById("schedules");
-  if (!root || !A) return;
-  var t = A.t, make = A.make, parseJSON = A.parseJSON;
-
-  var SLUG = root.dataset.slug, ME = root.dataset.me, CAN_MANAGE = !!root.dataset.canManage;
-  var PLACES = parseJSON(root.dataset.places, {channels: [], people: [], agents: []});
+  var A = window.Asterism, G = A && A.agentPage, root = document.getElementById("agent-page");
+  var list = document.getElementById("schedules");
+  if (!G || !list) return;
+  var t = A.t, make = A.make, S = A.side;
+  var ME = G.me, API = G.api;
+  var PLACES = A.parseJSON(root.dataset.places, {channels: [], people: [], agents: []});
   var MIN_EVERY = Number(root.dataset.minEvery) || 300;
-  var API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var LEVELS = ["important", "normal", "muted"], EVERY_MS = 4000;
-  var LANG = document.documentElement.lang || undefined;
-  var shown = "";
+  var LEVELS = ["important", "normal", "muted"];
+  var data = [], raw = "", loaded = false, opened = {};
 
   function call(path, body) { return A.request(API + path, null, body); }
-
-  function refused(out, data) { out.textContent = A.refusal("sch.refused", data); }
 
   // ------------------------------------------------------------------ times
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }
-  function localInput(iso) {               // an ISO time as the value of a datetime-local input
-    var d = new Date(iso);
+  function localInput(d) {                 // a time as the value of a datetime-local input
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" +
            pad(d.getMinutes());
   }
@@ -34,8 +34,11 @@
     var d = new Date(value);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
-  function showTime(iso) {
-    return new Date(iso).toLocaleString(LANG, {dateStyle: "medium", timeStyle: "short"});
+  function nextHour() {
+    var d = new Date();
+    d.setMinutes(0, 0, 0);
+    d.setHours(d.getHours() + 1);
+    return d;
   }
   function everyText(s) {
     if (s % 3600 === 0) return t("sch.every_h", {n: s / 3600});
@@ -43,7 +46,7 @@
     return t("sch.every_s", {n: s});
   }
 
-  // ------------------------------------------------------------------ the fields (new schedule and editing)
+  // ------------------------------------------------------------------ the fields (new schedule and changing one)
 
   function field(label, input, wide) {
     var lab = make("label", "sch-field" + (wide ? " wide" : ""));
@@ -64,8 +67,8 @@
     return A.dropdown({label: t("sch.to"), options: options, value: value || undefined, name: "to"});
   }
 
-  // The fields of a schedule; `s` fills them for editing. Returns {box, read()} where read() gives the body
-  // (only what changed, when editing) or null when the time is missing.
+  // The fields of a schedule; `s` fills them for changing it. Returns {box, read(), focus()} where read() gives the
+  // body (only what changed, when changing) or null when the time is missing.
   function fields(s) {
     var box = make("div", "sch-fields");
     var to = placeSelect(s ? s.to : "");
@@ -81,7 +84,7 @@
     start.type = "datetime-local";
     start.name = "start_at";
     start.required = true;
-    if (s) start.value = localInput(s.start_at);
+    start.value = localInput(s ? new Date(s.start_at) : nextHour());
     var n = make("input"), every = null;
     if (s && s.every_s) every = s.every_s % 3600 === 0 ? "hours" : "minutes";
     var repeat = A.dropdown({label: t("sch.repeat"), name: "repeat", value: every || "once", onChange: function () { sync(); },
@@ -93,25 +96,15 @@
     n.step = "1";
     n.name = "every_n";
     n.setAttribute("aria-label", t("sch.every_n"));
-    if (s && s.every_s) {
-      n.value = String(s.every_s % 3600 === 0 ? s.every_s / 3600 : Math.max(1, Math.round(s.every_s / 60)));
-    } else {
-      n.value = String(Math.max(1, Math.ceil(MIN_EVERY / 60)));
-    }
+    n.value = s && s.every_s ? String(s.every_s % 3600 === 0 ? s.every_s / 3600 : Math.max(1, Math.round(s.every_s / 60)))
+                             : String(Math.max(1, Math.ceil(MIN_EVERY / 60)));
     function sync() { n.hidden = repeat.value === "once"; }
     sync();
     var how = make("span", "sch-repeat");
-    how.appendChild(repeat.el);
-    how.appendChild(n);
-    var hint = make("small", "muted", (MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
-                                                             : t("sch.min_seconds", {n: MIN_EVERY})));
-    how.appendChild(hint);
-
-    box.appendChild(field(t("sch.to"), to.el));
-    box.appendChild(field(t("sch.level"), level.el));
-    box.appendChild(field(t("sch.text"), text, true));
-    box.appendChild(field(t("sch.start"), start));
-    box.appendChild(field(t("sch.repeat"), how));
+    how.append(repeat.el, n, make("small", "muted", MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
+                                                                     : t("sch.min_seconds", {n: MIN_EVERY})));
+    box.append(field(t("sch.to"), to.el), field(t("sch.level"), level.el), field(t("sch.text"), text, true),
+               field(t("sch.start"), start), field(t("sch.repeat"), how));
 
     function read() {
       var at = fromInput(start.value);
@@ -123,127 +116,253 @@
       if (body.to !== s.to) changed.to = body.to;
       if (body.text !== s.text) changed.text = body.text;
       if (body.level !== s.level) changed.level = body.level;
-      if (start.value !== localInput(s.start_at)) changed.start_at = body.start_at;
+      if (start.value !== localInput(new Date(s.start_at))) changed.start_at = body.start_at;
       if (body.every_s !== s.every_s) changed.every_s = body.every_s;
       return changed;
     }
-    return {box: box, read: read};
+    return {box: box, read: read, text: text, focus: function () { to.button.focus(); }};
+  }
+
+  // Escape gives up (`cancel`), Ctrl/Cmd+Enter in the text sends.
+  function keys(form, cancel) {
+    form.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel(); }
+      else if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey) && ev.target.tagName === "TEXTAREA") {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
   }
 
   // ------------------------------------------------------------------ the list
 
-  function canControl(s) { return s.by === ME || CAN_MANAGE; }
+  function canControl(s) { return s.by === ME || G.canManage; }
+  function isMember(to) { return to.charAt(0) !== "#"; }
+
+  function place(to) {
+    var span = make("span", "ag-line");
+    if (isMember(to) && S) span.appendChild(S.presence(S.directory[to] || {kind: "person"}));
+    span.appendChild(make("span", "sch-to" + (isMember(to) ? " mono" : ""), to));
+    var who = S && S.directory[to];
+    if (who && who.kind === "agent" && who.owner === ME) span.appendChild(make("span", "dim", t("nav.my_agent")));
+    return span;
+  }
+
+  // Where the last message it posted is: a channel's in chat, a private one (only mine to open) on its page.
+  function lastHref(s) {
+    var base = "/" + encodeURIComponent(G.slug);
+    if (!isMember(s.to)) return base + "?m=" + s.last_message + "#" + encodeURIComponent(s.to);
+    return s.by === ME ? base + "/dm/" + encodeURIComponent(s.to) + "?m=" + s.last_message : null;
+  }
 
   function item(s) {
-    var li = make("li", "sch" + (s.paused ? " paused" : ""));
+    var li = make("li", "sch-item" + (s.paused ? " paused" : "")), out = make("div", "out");
     li.id = "s-" + s.id;
-    var head = make("div", "sch-head");
-    head.appendChild(make("span", "tid", "#" + s.id));
-    head.appendChild(make("strong", "", s.to));
-    head.appendChild(make("span", "tag", t("sch.level_short." + s.level)));
-    head.appendChild(make("span", "muted small", t("sch.by", {name: s.by})));
-    if (s.paused) head.appendChild(make("span", "tag", t("sch.paused")));
-    li.appendChild(head);
-    li.appendChild(make("div", "sch-text", s.text));
-    var when = make("div", "sch-when muted");
-    var parts = [s.every_s ? everyText(s.every_s) : t("sch.runs_once")];
-    if (!s.paused) parts.push(s.next_at ? t("sch.next", {time: showTime(s.next_at)}) : t("sch.no_next"));
-    if (s.last_message) parts.push(t("sch.last", {id: s.last_message}));
-    when.textContent = parts.join(" \u00b7 ");
+    out.setAttribute("aria-live", "polite");
+    if (editing === s.id) { li.appendChild(editor(li, s, out)); li.appendChild(out); return li; }
+    var line = place(s.to);
+    if (s.level !== "normal") line.appendChild(make("span", "tag", t("sch.level_short." + s.level)));
+    if (s.paused) line.appendChild(make("span", "tag", t("sch.paused")));
+    if (s.by !== ME) line.appendChild(make("span", "dim", t("sch.by", {name: s.by})));
+    li.appendChild(line);
+    var when = make("div", "sch-when");
+    if (!s.paused) when.appendChild(document.createTextNode(s.next_at ? t("sch.next", {time: G.time(s.next_at, true)}) : t("sch.no_next")));
+    when.appendChild(make("span", "dim", s.every_s ? everyText(s.every_s) : t("sch.runs_once")));
     li.appendChild(when);
-    if (s.paused && s.paused_because) li.appendChild(make("div", "sch-paused", t("sch.paused." + s.paused_because)));
-    var tools = make("div", "sch-tools"), out = make("span", "out");
-    function tool(label, key, onClick) {
-      var b = A.button("btn", label, onClick);
-      b.dataset.key = key + ":" + s.id;
-      tools.appendChild(b);
-    }
     if (canControl(s)) {
-      tool(t(s.paused ? "sch.resume" : "sch.pause"), "pause", function () {
-        act("schedules/" + s.id, {paused: !s.paused}, out);
-      });
+      var open = function (where, opener) {
+        A.menu(Object.assign({label: t("sch.acts", {text: s.text})}, where), menuItems(s, li, out), opener);
+      };
+      var acts = G.acts(t("sch.acts", {text: s.text}), "sacts:" + s.id, open);
+      li.appendChild(acts);
+      G.menuOn(li, acts, open);
     }
-    if (s.by === ME) tool(t("sch.edit"), "edit", function () { editor(li, s); });
-    if (canControl(s)) {
-      tool(t("sch.remove"), "rm", function () {
-        if (A.twoStep(this, t("sch.confirm_remove", {id: s.id}))) act("schedules/" + s.id + "/remove", {}, out);
-      });
+    li.appendChild(G.clamp(s.text, "s" + s.id, opened));
+    var foot = [];
+    if (s.last_message) {
+      var href = lastHref(s);
+      if (href) { var a = make("a", "", t("sch.last")); a.href = href; foot.push(a); } else foot.push(t("sch.last"));
     }
-    tools.appendChild(out);
-    if (tools.children.length > 1) li.appendChild(tools);
+    if (s.paused && s.paused_because) foot.push(t("sch.paused." + s.paused_because));
+    if (foot.length) li.appendChild(G.facts("sch-foot", foot));
+    li.appendChild(out);
     return li;
   }
 
-  function editor(li, s) {
-    var form = make("form", "sch-form sch-edit"), f = fields(s), out = make("span", "out");
-    var save = make("button", "btn primary", t("sch.save"));
-    var cancel = A.button("btn", t("sch.cancel"), function () { shown = ""; load(true); });
+  function menuItems(s, li, out) {
+    var items = [{label: t(s.paused ? "sch.resume" : "sch.pause"), run: function () { act("schedules/" + s.id, {paused: !s.paused}, out); }}];
+    if (s.by === ME) items.push({label: t("sch.edit"), run: function () { editing = s.id; G.redraw(true); }});
+    items.push({separator: true}, {label: t("sch.remove"), run: function () { armRemove(s, li, out); }});
+    return items;
+  }
+
+  // Removing asks in place: a button armed on the block, a second press removes it.
+  function armRemove(s, li, out) {
+    var rm = A.button("btn tremove", t("sch.remove"));
+    rm.dataset.key = "srm:" + s.id;
+    li.insertBefore(rm, out);
+    rm.addEventListener("click", function () {
+      if (!A.twoStep(rm, t("sch.confirm_remove"))) return;
+      act("schedules/" + s.id + "/remove", {}, out);
+    });
+    function drop() { setTimeout(function () { if (!rm._armed) { rm.remove(); G.redraw(false); } }, 0); }
+    rm.addEventListener("blur", drop);
+    setTimeout(drop, 5200);
+    A.twoStep(rm, t("sch.confirm_remove"));
+  }
+
+  var editing = null;            // the id of the schedule being changed
+
+  function editor(li, s, out) {
+    var form = make("form", "ag-form sch-edit"), f = fields(s);
+    var resume = null;
     form.appendChild(f.box);
-    var row = make("div", "sch-tools");
-    row.appendChild(save);
-    row.appendChild(cancel);
-    row.appendChild(out);
+    if (s.paused) {
+      resume = make("input");
+      resume.type = "checkbox";
+      resume.checked = true;
+      resume.id = "resume-" + s.id;
+      var lab = make("label", "ag-check");
+      lab.htmlFor = resume.id;
+      lab.append(resume, make("span", "", t("sch.resume_after")));
+      form.appendChild(lab);
+    }
+    function cancel() {
+      editing = null;
+      G.redraw(true);
+      var b = list.querySelector('[data-key="sacts:' + s.id + '"]');
+      if (b) b.focus();
+    }
+    var row = make("div", "row");
+    row.append(make("button", "btn primary", t("sch.save")), A.button("btn", t("sch.cancel"), cancel));
     form.appendChild(row);
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
       var body = f.read();
       if (body === null) { out.textContent = t("sch.no_time"); return; }
-      if (!Object.keys(body).length) { shown = ""; load(true); return; }
-      await act("schedules/" + s.id, body, out);
+      if (resume && resume.checked) body.paused = false;
+      if (!Object.keys(body).length) { cancel(); return; }
+      if (await act("schedules/" + s.id, body, out)) cancel();
     });
-    li.textContent = "";
-    li.appendChild(form);
+    keys(form, cancel);
+    setTimeout(function () { f.text.focus(); }, 0);
+    return form;
   }
 
   async function act(path, body, out) {
     var r = await call(path, body);
-    if (!r.ok) { refused(out, r.data); return false; }
-    shown = "";
+    if (!r.ok) { G.say(out, A.refusal("sch.refused", r.data)); return false; }
     await load(true);
     return true;
   }
 
-  function draw(list) {
-    A.keepFocus(root, function () {
-      root.textContent = "";
-      if (!list.length) { root.appendChild(make("p", "muted", t("sch.empty"))); return; }
-      var ul = make("ul", "sch-list");
-      list.forEach(function (s) { ul.appendChild(item(s)); });
-      root.appendChild(ul);
-    });
-  }
-
-  function editing() { return !!root.querySelector("form.sch-edit") || A.isArmed(root); }
-
   async function load(force) {
-    if (!force && editing()) return;
     var r = await call("schedules");
     if (!r.ok) return;
-    var raw = JSON.stringify(r.data.schedules || []);
-    if (raw === shown || (!force && editing())) return;
-    shown = raw;
-    draw(r.data.schedules || []);
+    var now = JSON.stringify(r.data.schedules || []);
+    loaded = true;
+    if (now === raw && !force) return;
+    raw = now;
+    data = r.data.schedules || [];
+    G.redraw(!!force, !!force);
+  }
+
+  // ------------------------------------------------------------------ the scope
+
+  function scope() {
+    var p = G.params(), show = p.get("show"), to = p.get("to");
+    if (show === "mine" || show === "paused") return {show: show};
+    if (to && data.some(function (s) { return s.to === to; })) return {to: to};
+    return {};
+  }
+  function query(sc) {
+    return sc.show ? "show=" + sc.show : sc.to ? "to=" + encodeURIComponent(sc.to) : "";
+  }
+  function inScope(s, sc) {
+    if (sc.show === "mine") return s.by === ME;
+    if (sc.show === "paused") return s.paused;
+    if (sc.to) return s.to === sc.to;
+    return true;
+  }
+
+  function draw() {
+    var sc = scope(), shown = data.filter(function (s) { return inScope(s, sc); });
+    list.textContent = "";
+    if (!loaded) return;
+    if (!shown.length) { list.appendChild(make("p", "ag-empty", t(data.length ? "sch.empty_scope" : "sch.empty"))); return; }
+    var ul = make("ul", "ag-list");
+    shown.forEach(function (s) { ul.appendChild(item(s)); });
+    list.appendChild(ul);
   }
 
   // ------------------------------------------------------------------ the form for a new schedule
 
-  var form = document.getElementById("schedule-form");
-  if (form) {
-    var f = fields(null), out = make("span", "out"), btn = make("button", "btn primary", t("sch.create"));
-    form.appendChild(f.box);
-    var row = make("div", "sch-tools");
-    row.appendChild(btn);
-    row.appendChild(out);
-    form.appendChild(row);
+  var form = document.getElementById("schedule-form"), action = document.getElementById("schedule-new");
+  var made = null;
+  function openForm() {
+    form.textContent = "";
+    made = fields(null);
+    var out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    var row = make("div", "row");
+    row.append(make("button", "btn primary", t("sch.create")), A.button("btn", t("sch.cancel"), function () { closeForm(true); }), out);
+    form.append(made.box, row);
+    form.hidden = false;
+    action.setAttribute("aria-expanded", "true");
+    made.focus();
+  }
+  function closeForm(refocus) {
+    form.hidden = true;
+    form.textContent = "";
+    made = null;
+    action.setAttribute("aria-expanded", "false");
+    if (refocus) action.focus();
+  }
+  if (form && action) {
+    action.addEventListener("click", function () { if (form.hidden) openForm(); else closeForm(true); });
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
-      var body = f.read();
-      if (body === null) { out.textContent = t("sch.no_time"); return; }
+      var out = form.querySelector(".out"), body = made && made.read();
+      if (!body) { out.textContent = t("sch.no_time"); return; }
       out.textContent = "";
-      if (await act("schedules", body, out)) form.elements.text.value = "";
+      var r = await call("schedules", body);
+      if (!r.ok) { out.textContent = A.refusal("sch.refused", r.data); return; }
+      closeForm(true);
+      await load(true);
     });
+    keys(form, function () { closeForm(true); });
   }
 
-  setInterval(function () { load(false); }, EVERY_MS);
+  // ------------------------------------------------------------------ the tab
+
+  function count(f) { return data.filter(f).length; }
+
+  G.register({
+    scopes: function () {
+      var out = [{heading: t("sch.title")},
+                 {query: "", label: t("sch.all"), count: data.length},
+                 {query: "show=mine", label: t("sch.mine"), count: count(function (s) { return s.by === ME; })},
+                 {query: "show=paused", label: t("sch.paused_scope"), count: count(function (s) { return s.paused; })}];
+      var seen = [];
+      data.forEach(function (s) { if (seen.indexOf(s.to) < 0) seen.push(s.to); });
+      if (seen.length) out.push({heading: t("sch.to_scope")});
+      seen.forEach(function (to) {
+        out.push({query: "to=" + encodeURIComponent(to), label: to, mono: isMember(to),
+                  presence: isMember(to) && S ? S.directory[to] || {kind: "person"} : null,
+                  count: count(function (s) { return s.to === to; })});
+      });
+      return out;
+    },
+    current: function () { return query(scope()); },
+    title: function () {
+      var sc = scope();
+      var name = sc.show === "mine" ? t("sch.mine") : sc.show === "paused" ? t("sch.paused_scope") : sc.to || t("sch.scope_all");
+      return t("ag.count", {name: name, n: count(function (s) { return inScope(s, sc); })});
+    },
+    draw: draw,
+    busy: function () { return editing !== null; },
+    load: function () { load(false); }
+  });
+  if (S) S.onMembers(function () { G.redraw(false); });
   load(true);
 })();

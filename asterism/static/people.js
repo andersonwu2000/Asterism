@@ -4,12 +4,13 @@
 // - in chat and private messages, the member list in the right column (#member-panel): a switch at its top between
 //   people and agents (remembered), then sections as Discord's: one per group shown separately, in the groups'
 //   order, holding the online members whose highest such group it is; "online" for the other online members;
-//   "offline" for every offline member. Under each name, the member's tasks (tasks.js), and on the agents' side,
-//   first, the tasks nobody holds, folded. A member's row has a "..." control, right click, the context-menu key or
-//   Shift+F10 for the member's menu;
-// - a profile card (a popover: name, kind, presence, groups with x and +, the member's tasks, and mention, private
+//   "offline" for every offline member. Under each agent, its tasks (tasks.js; a person holds none), and on the
+//   agents' side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
+//   control, right click, the context-menu key or Shift+F10 for the member's menu;
+// - a profile card (a popover: name, kind, presence, groups with x and +, an agent's tasks, and mention, private
 //   message, open in settings), opened by any name marked data-member (in a message, the member list); the member's
-//   menu gives the same acts, with the groups as a submenu of check boxes, "new task" and removal at the foot.
+//   menu gives the same acts, with the groups as a submenu of check boxes, for an agent "new task" and "open in the
+//   task table", and removal at the foot.
 // Default groups (owner, human, ai) are never shown as groups here: only in the settings layer.
 // The data is /api/members as the frame reads it (Asterism.side) or as the settings layer holds it.
 "use strict";
@@ -256,7 +257,7 @@
     card.appendChild(groups);
 
     var mine = T ? T.of(name) : [];
-    if (found.isAgent || mine.length) {
+    if (found.isAgent) {
       var tasks = make("section", "card-sec");
       tasks.appendChild(make("h3", "", t("people.tasks")));
       if (!mine.length) tasks.appendChild(make("p", "dim small", t("people.no_tasks")));
@@ -315,9 +316,10 @@
     if (A.chat) items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
     if (mayMessage(found)) items.push({label: t("people.message"), href: dmHref(name)});
     if (found) {
-      if (T && T.canEdit && T.groupsFor(name).length) {
+      if (T && found.isAgent && T.canEdit && T.mayGive(name) && T.groupsFor(name).length) {
         items.push({label: t("task.add"), run: function () { newTask(found); }});
       }
+      if (T && found.isAgent) items.push({label: t("task.open_table"), href: T.tableHref("agent=" + encodeURIComponent(name))});
       var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) { after(r, null); });
       if (boxes.length) items.push({label: t("people.groups"), items: boxes});
       if (rules.mayManage()) items.push({label: t("people.open_settings"), href: settingsHref(name)});
@@ -387,7 +389,7 @@
     acts.addEventListener("click", function () { P.menu(who.name, {anchor: acts}, acts); });
     line.append(b, acts);
     li.appendChild(line);
-    if (T) {
+    if (T && found.isAgent) {
       li.appendChild(T.block(T.of(who.name), "m:" + who.name));
       if (T.adding && T.adding.member === who.name) li.appendChild(T.addForm(who.name));
     }
@@ -433,6 +435,10 @@
       fold.setAttribute("aria-expanded", String(!inner.hidden));
     });
     head.appendChild(fold);
+    var table = make("a", "btn quiet tadd-btn", t("task.open_table"));
+    table.href = T.tableHref("show=unheld");
+    table.dataset.key = "table:unheld";
+    head.appendChild(table);
     if (T.canEdit && !(T.adding && T.adding.member === "")) {
       var add = A.button("btn quiet tadd-btn", "+ " + t("task.add"), function () { T.open.unheld = true; T.startAdding(""); });
       add.dataset.key = "add:unheld";

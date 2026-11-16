@@ -496,7 +496,7 @@
   // (each a menuitemradio, the current one checked and focused): the arrow keys, Home, End and a letter move, Escape
   // closes, and the focus goes back to the button. ArrowDown or ArrowUp on the button opens it too. With a hidden
   // field beside the button (`name`), a form sends the value as it would a select's.
-  //   var d = A.dropdown({label, options: [{value, label, group}], value, name, list, onChange: function (value) {}})
+  //   var d = A.dropdown({label, options: [{value, label, group, disabled}], value, name, list, onChange: function (value) {}})
   //   d.el (to put in the page), d.value, d.set(value), d.setOptions(options)
 
   function dropdownOn(b, hidden, opts) {
@@ -516,7 +516,7 @@
       d.options.forEach(function (o) {
         if (o.group && o.group !== group) items.push({heading: o.group});
         group = o.group;
-        items.push({label: o.label, radio: true, checked: o.value === d.value, run: function () {
+        items.push({label: o.label, radio: true, checked: o.value === d.value, disabled: !!o.disabled, run: function () {
           var was = d.value;
           d.set(o.value);
           if (was !== d.value && opts.onChange) opts.onChange(d.value);

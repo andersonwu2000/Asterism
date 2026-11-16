@@ -361,11 +361,6 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
     return {"groups": [g["name"] for g in groups_of(pj, kind, mid)]}
 
 
-def groups_assignable(pj: Project, actor: Actor) -> list[str]:
-    """The groups a person may give their own agents: the non-ownership groups they are in."""
-    return [g["name"] for g in groups_of(pj, "person", actor.person_id) if g["kind"] != "ownership"]
-
-
 # --------------------------------------------------------------------------- membership
 
 def member(pj: Project, person: sqlite3.Row) -> sqlite3.Row | None:
@@ -564,7 +559,8 @@ def credential_view(c: sqlite3.Row) -> dict[str, Any]:
 
 def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
     owners = _owners(pj)
-    agents = [agent_view(pj, a, owners) for a in
+    # Each agent with the credential its session is bound through (null when none): only its own person sees it.
+    agents = [{**agent_view(pj, a, owners), "credential": a["credential_id"]} for a in
               pj.db.execute("SELECT * FROM agents WHERE person_id = ? ORDER BY id", (actor.person_id,))]
     creds = []
     for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",

@@ -1,10 +1,12 @@
-// Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (#source-switch: 公共, the project's
-// repository, repo.js; 私人, a folder of the reader's own computer, local.js) and the tree of the source shown. Both
-// sources answer the same small interface (see repo.js), so the tree, the keyboard and the entry menu are one for
-// both. Files open in a tab (viewer.js).
-// Beside the switch, the files menu (#files-menu): "find files" (a floating window: type, and the paths of the source
-// shown that hold every word appear; the arrow keys and Enter open one, Escape closes), and for the local source "open
-// folder", "restore access" (when the browser must be asked again) and "forget folder" (two steps, in place).
+// Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (the top-left cell's dropdown
+// #source-switch: 公共, the project's repository, repo.js; 私人, a folder of the reader's own computer, local.js) and
+// the tree of the source shown. Both sources answer the same small interface (see repo.js), so the tree, the keyboard
+// and the entry menu are one for both. A file opens in the current tab, or in a new one (viewer.js): by the entry
+// menu's "open in a new tab", a middle click, Ctrl/Cmd+click, or dragging the row onto the tab strip.
+// Above the tree, the files menu (#files-menu: for the local source "open folder", "restore access" when the browser
+// must be asked again, and "forget folder", two steps in place; for the repository, the repository on GitHub) and the
+// search field (#files-search): typing shows, in the tree's place, the paths of the source shown that hold every word
+// (the arrow keys and Enter open one); Escape or emptying the field gives the tree back.
 // The local folder, once open, is one folder at the top of its tree, shown and handled like any folder (its name,
 // folding, its entry menu). With no folder open the local source is one control (#local-open); a folder kept from an
 // earlier visit is one control that restores access (#local-restore); in a browser without the File System Access
@@ -28,7 +30,9 @@
 
   var el = {tree: document.getElementById("explorer-tree"), note: document.getElementById("explorer-note"),
             ref: document.getElementById("explorer-ref"), status: document.getElementById("explorer-status"),
-            sw: document.getElementById("source-switch"), menu: document.getElementById("files-menu"),
+            sw: document.getElementById("source-switch"), swName: document.getElementById("source-name"),
+            menu: document.getElementById("files-menu"), search: document.getElementById("files-search"),
+            found: document.getElementById("files-found"), foundStatus: document.getElementById("files-found-status"),
             bar: document.getElementById("local-bar"), unsupported: document.getElementById("local-unsupported"),
             none: document.getElementById("local-none"), open: document.getElementById("local-open"),
             restore: document.getElementById("local-restore"), said: document.getElementById("local-note")};
@@ -70,9 +74,7 @@
     el.ref.textContent = R.headText();
     el.note.hidden = !(repo && R.stale);
     el.note.textContent = repo && R.stale ? t("files.stale") : "";
-    Array.prototype.forEach.call(el.sw.querySelectorAll("[data-source]"), function (b) {
-      b.setAttribute("aria-pressed", String(b.dataset.source === E.shown));
-    });
+    el.swName.textContent = t(repo ? "files.source_repo" : "files.source_local");
     var st = L.state;
     el.bar.hidden = repo || (st === "ok" && !el.said.textContent);
     el.unsupported.hidden = st !== "unsupported";
@@ -91,15 +93,25 @@
       asked = null;
       focusPath = null;
       listeners.source.forEach(function (fn) { fn(); });
+      if (el.search.value.trim()) find.run();
     }
     showHead();
     draw();
     if (src().state === "ok" || id === "repo") await relistOpen(id, false);
   };
 
-  el.sw.addEventListener("click", function (ev) {
-    var b = ev.target.closest("[data-source]");
-    if (b) E.show(b.dataset.source);
+  // The source as a dropdown: the two sources, the one shown checked.
+  function sourceMenu() {
+    A.menu({label: t("files.source"), anchor: el.sw}, ["repo", "local"].map(function (id) {
+      return {label: t(id === "repo" ? "files.source_repo" : "files.source_local"), radio: true, checked: id === E.shown,
+              run: function () { E.show(id); }};
+    }), el.sw);
+  }
+  el.sw.addEventListener("click", sourceMenu);
+  el.sw.addEventListener("keydown", function (ev) {
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    ev.preventDefault();
+    sourceMenu();
   });
 
   function say(text) {
@@ -142,12 +154,15 @@
   // ------------------------------------------------------------------ the files menu
 
   el.menu.addEventListener("click", function () {
-    var items = [{label: t("files.find"), run: function () { find.open(); }}];
+    var items = [];
     if (local() && L.state !== "unsupported") {
-      items.push({separator: true}, {label: t("local.open"), run: openFolder});
+      items.push({label: t("local.open"), run: openFolder});
       if (L.state === "closed") items.push({label: t("local.reauth"), run: restore});
       if (L.state === "ok" || L.state === "closed") items.push({label: t("local.forget_folder"), run: armForget});
     }
+    var gh = !local() && R.githubUrl("", true);
+    if (gh) items.push({label: t("files.open_github"), href: gh, external: true});
+    if (!items.length) items.push({label: t("files.menu_none"), disabled: true});
     A.menu({label: t("files.menu"), anchor: el.menu}, items, el.menu);
   });
 
@@ -301,6 +316,7 @@
     li.style.setProperty("--level", r.level);
     li.tabIndex = e.path === focusPath ? 0 : -1;
     li.title = e.top ? e.name : e.path;
+    if (e.type === "file") li.draggable = true;
     if (e.type === "dir") {
       var expanded = open().has(e.path);
       li.setAttribute("aria-expanded", String(expanded));
@@ -357,10 +373,11 @@
     if (on) await S[id].list(path);
   }
 
-  function activate(e) {
+  // `newTab`: the file opens in a tab of its own (else in the current tab, unless that one has unsaved changes).
+  function activate(e, newTab) {
     if (e.type === "dir") { toggle(e.path); return; }
     if (e.type !== "file") return;
-    if (A.viewer) A.viewer.open(E.shown, e.path);
+    if (A.viewer) A.viewer.open(E.shown, e.path, {newTab: !!newTab});
     el.status.textContent = t("files.opened", {name: e.name});
     if (A.rail && A.rail.isDrawer()) {                 // below 900 px: the file is what the reader wanted to see
       A.rail.closeDrawer(false);
@@ -380,8 +397,28 @@
     if (!li) return;
     var e = entryOf(li.dataset.path);
     focusRow(li.dataset.path);
-    if (e) activate(e);
+    if (e) activate(e, ev.ctrlKey || ev.metaKey);
   });
+  // A middle click opens a file in a new tab (and does not start the browser's scrolling).
+  el.tree.addEventListener("mousedown", function (ev) { if (ev.button === 1 && ev.target.closest("[role=treeitem]")) ev.preventDefault(); });
+  el.tree.addEventListener("auxclick", function (ev) {
+    var li = ev.button === 1 && ev.target.closest("[role=treeitem]");
+    var e = li && entryOf(li.dataset.path);
+    if (!e || e.type !== "file") return;
+    ev.preventDefault();
+    focusRow(li.dataset.path);
+    activate(e, true);
+  });
+  // A file dragged onto the tab strip opens there in a new tab (viewer.js takes the drop).
+  el.tree.addEventListener("dragstart", function (ev) {
+    var li = ev.target.closest && ev.target.closest("[role=treeitem]");
+    var e = li && entryOf(li.dataset.path);
+    if (!e || e.type !== "file") { ev.preventDefault(); return; }
+    E.dragging = {source: E.shown, path: e.path};
+    ev.dataTransfer.effectAllowed = "copy";
+    try { ev.dataTransfer.setData("text/plain", e.path); } catch (err) { /* the path is kept above */ }
+  });
+  el.tree.addEventListener("dragend", function () { E.dragging = null; });
   el.tree.addEventListener("contextmenu", function (ev) {
     if (ev.target.closest(".ask-field")) return;
     var li = ev.target.closest("[role=treeitem]");
@@ -414,7 +451,7 @@
       else if (up !== null) focusRow(up);
     } else if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
-      if (e) activate(e);
+      if (e) activate(e, ev.ctrlKey || ev.metaKey);
     } else if (ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) {
       ev.preventDefault();
       if (e && e.type !== "other") menuFor(e, {anchor: li}, li);
@@ -555,96 +592,77 @@
 
   function menuFor(e, where, opener) {
     where.label = t("files.acts", {name: e.name});
-    var items = src().menuItems(e, ui);
+    var items = src().menuItems(e, ui), id = E.shown;
+    if (e.type === "file") {
+      items = [{label: t("files.open_new_tab"), run: function () { if (A.viewer) A.viewer.open(id, e.path, {newTab: true}); }},
+               {separator: true}].concat(items);
+    }
     if (e.top) items = items.concat([{separator: true}, {label: t("local.forget_folder"), run: armForget}]);
     A.menu(where, items, opener);
   }
 
   // ------------------------------------------------------------------ finding files by path
   //
-  // A floating window over the dimmed page (a modal <dialog>): a field and the paths of the source shown that hold
-  // every word typed, without regard to case, the shortest first. The repository is asked (GET /api/files/find); the
-  // local folder is walked here, in the browser (local.js), and nothing of it is sent anywhere. Arrow keys move,
-  // Enter opens a file in a tab or a folder in the tree, Escape closes; the focus goes back to the files menu.
+  // The field above the tree (a combobox): the paths of the source shown that hold every word typed, without regard to
+  // case, the shortest first, in the tree's place. The repository is asked (GET /api/files/find); the local folder is
+  // walked here, in the browser (local.js), and nothing of it is sent anywhere. The arrow keys move, Enter opens a
+  // file (Ctrl/Cmd+Enter in a new tab) or a folder in the tree; Escape, or emptying the field, gives the tree back.
 
   var find = (function () {
-    var d = make("dialog", "panel find-panel"), input = make("input", "find-input"), list = make("ul", "find-list");
-    var status = make("p", "find-status"), x = A.button("icon-btn", null, function () { d.close(); });
-    var title = make("h2", "panel-title", t("files.find"));
-    title.id = "find-title";
-    d.setAttribute("closedby", "any");
-    d.setAttribute("aria-labelledby", "find-title");
-    x.appendChild(make("span", "cross")).setAttribute("aria-hidden", "true");
-    x.setAttribute("aria-label", t("files.find_close"));
-    x.title = t("files.find_close");
-    var head = make("div", "panel-head");
-    head.append(title, x);
-    input.type = "text";             // not "search": its own Escape would only empty the field
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    input.setAttribute("autocapitalize", "off");
-    input.setAttribute("role", "combobox");
-    input.setAttribute("aria-autocomplete", "list");
-    input.setAttribute("aria-expanded", "false");
-    input.setAttribute("aria-controls", "find-list");
-    input.setAttribute("aria-label", t("files.find_label"));
-    input.placeholder = t("files.find_placeholder");
-    list.id = "find-list";
-    list.setAttribute("role", "listbox");
-    list.setAttribute("aria-label", t("files.find_label"));
-    status.setAttribute("role", "status");
-    d.append(head, input, list, status);
-    document.body.appendChild(d);
-    if (!("closedBy" in HTMLDialogElement.prototype)) {       // a click on the backdrop is a click outside
-      d.addEventListener("click", function (ev) {
-        if (ev.target !== d) return;
-        var r = d.getBoundingClientRect();
-        if (ev.clientY < r.top || ev.clientY > r.bottom || ev.clientX < r.left || ev.clientX > r.right) d.close();
-      });
-    }
-    var found = [], active = -1, timer = null, asked = 0, source = "repo";
+    var found = [], active = -1, timer = null, asked = 0;
 
     function setActive(i) {
       active = i;
-      Array.prototype.forEach.call(list.children, function (li, j) { li.setAttribute("aria-selected", String(j === i)); });
-      if (i >= 0 && list.children[i]) {
-        input.setAttribute("aria-activedescendant", list.children[i].id);
-        list.children[i].scrollIntoView({block: "nearest"});
-      } else input.removeAttribute("aria-activedescendant");
+      Array.prototype.forEach.call(el.found.children, function (li, j) { li.setAttribute("aria-selected", String(j === i)); });
+      if (i >= 0 && el.found.children[i]) {
+        el.search.setAttribute("aria-activedescendant", el.found.children[i].id);
+        el.found.children[i].scrollIntoView({block: "nearest"});
+      } else el.search.removeAttribute("aria-activedescendant");
+    }
+
+    function searching(on) {
+      el.tree.hidden = on;
+      el.found.hidden = !on;
+      el.foundStatus.hidden = !on || !el.foundStatus.textContent;
+      el.search.setAttribute("aria-expanded", String(on && found.length > 0));
     }
 
     function show(paths, sentence) {
       found = paths;
-      list.textContent = "";
+      el.found.textContent = "";
       paths.forEach(function (p, i) {
-        var li = make("li", "find-option");
-        li.id = "find-opt-" + i;
+        var li = make("li", "found-option");
+        li.id = "found-" + i;
         li.setAttribute("role", "option");
+        li.title = p.path;
         li.appendChild(A.kindMark(p.path, p.type === "dir"));
         li.appendChild(make("span", "find-path", p.path));
-        li.addEventListener("mousedown", function (ev) { ev.preventDefault(); choose(i); });
-        list.appendChild(li);
+        li.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
+        li.addEventListener("click", function (ev) { choose(i, ev.ctrlKey || ev.metaKey); });
+        li.addEventListener("auxclick", function (ev) { if (ev.button === 1) { ev.preventDefault(); choose(i, true); } });
+        el.found.appendChild(li);
       });
-      input.setAttribute("aria-expanded", String(paths.length > 0));
-      status.textContent = sentence || "";
+      el.foundStatus.textContent = sentence || "";
+      searching(true);
       setActive(paths.length ? 0 : -1);
     }
 
     function words(q) { return q.toLowerCase().split(/\s+/).filter(Boolean); }
 
     async function run() {
-      var q = input.value.trim(), mine = ++asked;
-      if (!q) { show([], ""); return; }
-      status.textContent = t("files.find_searching");
+      var q = el.search.value.trim(), mine = ++asked, source = E.shown;
+      if (!q) { clear(false); return; }
+      el.foundStatus.textContent = t("files.find_searching");
+      searching(true);
       if (source === "repo") {
         var r = await A.request("/" + encodeURIComponent(SLUG) + "/api/files/find", {q: q, limit: FIND_MOST});
         if (mine !== asked) return;
         if (!r.ok) { show([], A.errorText(r.data.error)); return; }
-        var paths = r.data.paths || [], notes = [];
-        if (!paths.length) notes.push(t("files.find_none"));
-        else if (paths.length >= FIND_MOST) notes.push(t("files.find_more", {n: FIND_MOST}));
-        if (r.data.complete === false) notes.push(t("files.find_partial"));
-        show(paths, notes.join(" "));
+        var paths = r.data.paths || [], said = [];
+        if (!paths.length) said.push(t("files.find_none"));
+        else if (paths.length >= FIND_MOST) said.push(t("files.find_more", {n: FIND_MOST}));
+        if (r.data.complete === false) said.push(t("files.find_partial"));
+        show(paths, said.join(" "));
         return;
       }
       if (L.state !== "ok") { show([], t("files.find_no_folder")); return; }
@@ -656,26 +674,43 @@
         var low = e.path.toLowerCase();
         return w.every(function (x) { return low.indexOf(x) >= 0; });
       }).sort(function (a, b) { return a.path.length - b.path.length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0); });
-      var said = [];
-      if (!hits.length) said.push(t("files.find_none"));
-      else if (hits.length > FIND_MOST) said.push(t("files.find_more", {n: FIND_MOST}));
-      if (walked.cut) said.push(t("files.find_cut"));
-      show(hits.slice(0, FIND_MOST), said.join(" "));
+      var notes = [];
+      if (!hits.length) notes.push(t("files.find_none"));
+      else if (hits.length > FIND_MOST) notes.push(t("files.find_more", {n: FIND_MOST}));
+      if (walked.cut) notes.push(t("files.find_cut"));
+      show(hits.slice(0, FIND_MOST), notes.join(" "));
     }
 
-    function choose(i) {
+    // The tree again; `empty` also empties the field.
+    function clear(empty) {
+      clearTimeout(timer);
+      asked++;
+      if (empty) el.search.value = "";
+      found = [];
+      el.found.textContent = "";
+      el.foundStatus.textContent = "";
+      setActive(-1);
+      searching(false);
+    }
+
+    function choose(i, newTab) {
       var p = found[i];
       if (!p) return;
-      d.close();
-      if (p.type === "dir") E.openFolder(source, p.path);
-      else if (A.viewer) A.viewer.open(source, p.path);
+      var source = E.shown;
+      if (p.type === "dir") { clear(true); E.openFolder(source, p.path); return; }
+      if (A.viewer) A.viewer.open(source, p.path, {newTab: !!newTab});
+      el.status.textContent = t("files.opened", {name: nameOf(p.path)});
     }
 
-    input.addEventListener("input", function () {
+    el.search.addEventListener("input", function () {
       clearTimeout(timer);
+      if (!el.search.value.trim()) { clear(false); return; }
       timer = setTimeout(run, FIND_PAUSE_MS);
     });
-    input.addEventListener("keydown", function (ev) {
+    el.search.addEventListener("focus", function () {
+      if (local() && L.state === "ok") L.walk(false);           // the walk starts while the reader types
+    });
+    el.search.addEventListener("keydown", function (ev) {
       var n = found.length;
       if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
         ev.preventDefault();
@@ -683,28 +718,16 @@
       } else if (ev.key === "Enter" && !ev.isComposing && ev.keyCode !== 229) {
         ev.preventDefault();
         clearTimeout(timer);
-        if (active >= 0) choose(active); else run();
+        if (active >= 0) choose(active, ev.ctrlKey || ev.metaKey); else run();
       } else if (ev.key === "Escape") {
+        if (!el.search.value && el.found.hidden) return;
         ev.preventDefault();
-        d.close();
+        ev.stopPropagation();
+        clear(true);
       }
-    });
-    d.addEventListener("close", function () {
-      clearTimeout(timer);
-      asked++;
-      if (el.menu.isConnected && !d._opening) el.menu.focus();
     });
 
-    return {
-      open: function () {
-        source = E.shown;
-        input.value = "";
-        show([], local() && L.state !== "ok" ? t("files.find_no_folder") : "");
-        d.showModal();
-        input.focus();
-        if (local() && L.state === "ok") L.walk(false);          // the walk starts while the reader types
-      }
-    };
+    return {run: run, clear: clear};
   })();
 
   // ------------------------------------------------------------------ starting

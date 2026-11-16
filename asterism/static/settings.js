@@ -1,16 +1,18 @@
 // The settings layer (#settings-layer): project settings or one channel's, one section at a time.
-// - The list of sections (#settings-nav) switches the section in place; each has its own address, so a reload or a
-//   shared link shows the same one, and the browser's back goes back through them. Below 900 px the bare address
-//   is the list itself, and a section has a way back to it.
+// - The list of sections (#settings-nav, the second column) switches the section in place and names it in the
+//   top-right cell (#settings-title); each has its own address, so a reload or a shared link shows the same one, and
+//   the browser's back goes back through them. The bare address is the first section. Below 900 px the list is in
+//   the drawer, as every second column.
 // - The close control (#settings-close) and Escape go back to the page the layer was opened from (project.js keeps
 //   it), else to chat.
 // - Project: members (one table of people and agents: the non-default groups as chips, x to take one away; the
 //   default ones as a quiet line; + gives or takes any group, the default ones too, as check boxes; removal from the
-//   project), groups (the default groups as one card at the top, "default permissions", leading to their
-//   permissions; under it the other groups in their order, the highest first, with a filter and "new group": who may
-//   manage groups drags a row to move it, or moves it with "move up" / "move down" in the row's menu; a chosen group,
-//   ?g= in the address, in tabs: display (its name and "show separately in the member list"), permissions, members;
-//   a person's agents: display, members and that person's switches), invitations (app.js).
+//   project), groups (the groups in their order, the highest first, with a filter and "new group": who may manage
+//   groups drags a row to move it, or moves it with "move up" / "move down" in the row's menu; under them the three
+//   default groups, owner, human and AI, each a row of its own marked "預設", not draggable; a chosen group, ?g= in the
+//   address, in tabs: display (its name and "show separately in the member list"), permissions, members; a default
+//   group: its permissions (fixed) and members; a person's agents: display, members and that person's switches),
+//   invitations (app.js).
 // - Channel: notifications (my mute and my agents').
 // The data is /api/members (embedded at first, then read again every 15 s while nobody is mid-act). Only what the
 // reader may do is offered (Asterism.people's rules); a refusal shows the server's sentence where the act was.
@@ -26,10 +28,9 @@
   var SWITCHES = ["others_mention", "others_channel", "others_assign", "others_regroup"];
   var EVERY_MS = 15000;
   var view = A.parseJSON(layer.dataset.view, null), last = JSON.stringify(view), rules = P.rules(view);
-  var nav = document.getElementById("settings-nav");
+  var nav = document.getElementById("settings-nav"), heading = document.getElementById("settings-title");
   var sections = Array.prototype.slice.call(layer.querySelectorAll(".set-sec"));
   var names = sections.map(function (s) { return s.dataset.section; });
-  var narrow = window.matchMedia("(max-width: 899.98px)");
   var current = "";
 
   // ------------------------------------------------------------------ sections
@@ -47,17 +48,13 @@
     current = cur;
     sections.forEach(function (s) { s.hidden = s.dataset.section !== cur; });
     Array.prototype.forEach.call(nav.querySelectorAll("a[data-section]"), function (a) {
-      if (a.dataset.section === cur && (section || !narrow.matches)) a.setAttribute("aria-current", "page");
-      else a.removeAttribute("aria-current");
+      if (a.dataset.section === cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
-    layer.classList.toggle("at-list", !section);
     var title = layer.querySelector("#set-h-" + cur);
+    if (title) heading.textContent = title.textContent;
     document.title = (title ? title.textContent + " · " : "") + document.title.split(" · ").slice(-1)[0];
     draw(cur);
-    if (focus && title) {
-      title.tabIndex = -1;
-      title.focus({preventScroll: true});
-    }
+    if (focus) heading.focus({preventScroll: true});
   }
 
   function go(section) {
@@ -70,16 +67,10 @@
     var a = ev.target.closest && ev.target.closest("a[data-section]");
     if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
     ev.preventDefault();
+    if (A.rail) A.rail.closeDrawer(false);
     go(a.dataset.section);
   });
-  document.getElementById("settings-back").addEventListener("click", function (ev) {
-    ev.preventDefault();
-    go("");
-    var first = nav.querySelector("a[data-section]");
-    if (first) first.focus();
-  });
   window.addEventListener("popstate", function () { show(sectionFromPath(), false); });
-  if (narrow.addEventListener) narrow.addEventListener("change", function () { show(sectionFromPath(), false); });
 
   // ------------------------------------------------------------------ closing
 
@@ -241,8 +232,6 @@
     else if (!name) { var row = list.querySelector("a.place"); if (row) row.focus(); }
   }
 
-  var DEFAULTS = "@default";              // the address (?g=) of the default groups' card
-
   function plainGroups() { return view.groups.filter(function (g) { return !rules.isDefault(g); }); }
   function mayOrder() { return rules.mine("manage_groups"); }
 
@@ -322,8 +311,9 @@
     if (chosen() === g.name) a.setAttribute("aria-current", "true");
     var n = rules.count(g.name), c = make("span", "count", t("mem.count", {n: n}));
     c.setAttribute("aria-hidden", "true");
-    a.append(make("span", "place-name" + (g.kind === "custom" ? " mono" : ""), rules.label(g)), c,
-             make("span", "vh", t("mem.count_label", {n: n})));
+    a.appendChild(make("span", "place-name" + (g.kind === "custom" ? " mono" : ""), rules.label(g)));
+    if (rules.isDefault(g)) a.appendChild(make("span", "default-mark", t("mem.default")));
+    a.append(c, make("span", "vh", t("mem.count_label", {n: n})));
     if (order) {
       var grip = make("span", "grip");
       grip.title = t("mem.order_drag");
@@ -348,21 +338,6 @@
     return li;
   }
 
-  // The default groups' card: what every member holds by default (as Discord's @everyone).
-  function defaultsCard() {
-    var defaults = view.groups.filter(rules.isDefault);
-    var a = make("a", "place groups-defaults");
-    a.href = BASE + "/groups?g=" + encodeURIComponent(DEFAULTS);
-    a.dataset.key = "g:" + DEFAULTS;
-    a.dataset.group = DEFAULTS;
-    if (chosen() === DEFAULTS) a.setAttribute("aria-current", "true");
-    var text = make("span", "gd-card-text");
-    text.append(make("span", "place-name", t("mem.defaults")),
-                make("span", "gd-card-sub", defaults.map(rules.label).join("・")));
-    a.appendChild(text);
-    return a;
-  }
-
   function drawList(compact) {
     var q = (groupFilter.value || "").trim().toLowerCase();
     list.textContent = "";
@@ -372,20 +347,29 @@
       back.dataset.key = "g-back";
       list.appendChild(back);
     }
-    if (!q || matches(t("mem.defaults"), q) || view.groups.some(function (g) { return rules.isDefault(g) && matches(rules.label(g), q); })) {
-      list.appendChild(defaultsCard());
+    function found(g) { return matches(rules.label(g), q) || matches(g.name, q); }
+    var gs = plainGroups().filter(found);
+    var defaults = view.groups.filter(rules.isDefault).filter(function (g) {
+      return found(g) || matches(t("mem.default"), q);
+    });
+    if (!gs.length && !defaults.length) { if (q) list.appendChild(make("p", "dim", t("mem.no_match"))); return; }
+    if (gs.length) {
+      var sec = make("section", "groups-sec"), ul = make("ul", "side-list groups-order");
+      if (!compact) sec.appendChild(make("p", "groups-hint", t("mem.order_hint")));
+      var order = mayOrder() && !q && !compact;
+      gs.forEach(function (g) { ul.appendChild(entry(g, compact, order)); });
+      sec.appendChild(ul);
+      orderOut = make("p", "out");
+      orderOut.setAttribute("aria-live", "polite");
+      sec.appendChild(orderOut);
+      list.appendChild(sec);
     }
-    var gs = plainGroups().filter(function (g) { return matches(rules.label(g), q) || matches(g.name, q); });
-    if (!gs.length) { if (q) list.appendChild(make("p", "dim", t("mem.no_match"))); return; }
-    var sec = make("section", "groups-sec"), ul = make("ul", "side-list groups-order");
-    if (!compact) sec.appendChild(make("p", "groups-hint", t("mem.order_hint")));
-    var order = mayOrder() && !q && !compact;
-    gs.forEach(function (g) { ul.appendChild(entry(g, compact, order)); });
-    sec.appendChild(ul);
-    orderOut = make("p", "out");
-    orderOut.setAttribute("aria-live", "polite");
-    sec.appendChild(orderOut);
-    list.appendChild(sec);
+    // The default groups: each its own row under the ordered ones, never dragged.
+    if (defaults.length) {
+      var dl = make("ul", "side-list groups-defaults-list");
+      defaults.forEach(function (g) { dl.appendChild(entry(g, compact, false)); });
+      list.appendChild(dl);
+    }
   }
 
   if (list) {
@@ -397,7 +381,7 @@
     });
     list.addEventListener("contextmenu", function (ev) {
       var a = ev.target.closest && ev.target.closest("a.place[data-group]");
-      var g = a && a.dataset.group !== DEFAULTS && rules.group(a.dataset.group);
+      var g = a && rules.group(a.dataset.group);
       if (!g) return;
       ev.preventDefault();
       groupMenu(g, a);
@@ -641,32 +625,23 @@
     return box;
   }
 
-  // The default groups' card: one tab per default group, its permissions (fixed).
-  function drawDefaults() {
-    var head = make("header", "gd-head"), h = make("h2", "gd-title", t("mem.defaults"));
-    h.id = "gd-title";
-    head.append(h, make("p", "", t("mem.defaults_hint")));
-    detail.appendChild(head);
-    var kinds = view.groups.filter(rules.isDefault).map(function (g) {
-      return ["d:" + g.name, function () { return permsTab(g); }, rules.label(g)];
-    });
-    tabsOf(DEFAULTS, kinds);
-  }
-
   function drawGroup(g) {
     var head = make("header", "gd-head"), h = make("h2", "gd-title", rules.label(g));
     h.id = "gd-title";
     if (rules.label(g) !== g.name) h.appendChild(make("small", "", g.name));
     head.appendChild(h);
+    if (rules.isDefault(g)) head.appendChild(make("p", "", t("mem.default_hint")));
     detail.appendChild(head);
+    // A default group: its own permissions (fixed) and its members; it has no display settings.
     var kinds = g.kind === "ownership" ? [["display", displayTab], ["members", membersTab], ["switches", switchesTab]]
-                                       : [["display", displayTab], ["perms", permsTab], ["members", membersTab]];
+              : rules.isDefault(g) ? [["perms", permsTab], ["members", membersTab]]
+              : [["display", displayTab], ["perms", permsTab], ["members", membersTab]];
     tabsOf(g.name, kinds.map(function (k) { return [k[0], function () { return k[1](g); }, t("mem.tab." + k[0])]; }));
   }
 
   // Tabs over one pane: kinds are [key, draw(), label]; the choice is kept per group (`id`).
   function tabsOf(id, kinds) {
-    var label = id === DEFAULTS ? t("mem.defaults") : rules.labelOf(id);
+    var label = rules.labelOf(id);
     var want = tabs[id] && kinds.some(function (k) { return k[0] === tabs[id]; }) ? tabs[id] : kinds[0][0];
     var bar = make("div", "tabs");
     bar.setAttribute("role", "tablist");
@@ -719,12 +694,12 @@
 
   function drawGroups() {
     if (!groupsRoot) return;
-    var name = chosen(), g = name && name !== DEFAULTS ? rules.group(name) : null;
+    var name = chosen(), g = name ? rules.group(name) : null;
     groupsRoot.classList.toggle("has-detail", !!name);
     A.keepFocus(groupsRoot, function () {
       drawList(!!name);
       detail.textContent = "";
-      if (name === DEFAULTS) drawDefaults(); else if (name && g) drawGroup(g); else if (name) drawMissing(name);
+      if (name && g) drawGroup(g); else if (name) drawMissing(name);
       detail.hidden = !name;
       if (name) detail.setAttribute("aria-labelledby", "gd-title");
     });

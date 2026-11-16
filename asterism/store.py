@@ -323,6 +323,15 @@ ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks"]}
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened.
 DROPPED_TABLES = ("device_requests",)
 
+# Data an earlier version allowed and this one does not, made right when a database is opened: (table, statement).
+# Each statement leaves a database that is already right unchanged, so running it on every opening is safe.
+DATA_FIXES = (
+    # f5: a task is given to an agent or to nobody. A task a person held becomes nobody's, without a lock (a lock is
+    # only ever held over an agent's task); nobody is told.
+    ("tasks", "UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL "
+              "WHERE responsible_kind = 'person'"),
+)
+
 
 def _upgrade(conn: sqlite3.Connection) -> None:
     for table in DROPPED_TABLES:
@@ -349,6 +358,9 @@ def _upgrade(conn: sqlite3.Connection) -> None:
             missing = [p for p in perms if p not in have]
             if missing:
                 conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(have + missing), row[0]))
+    for table, sql in DATA_FIXES:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+            conn.execute(sql)
     conn.commit()
 
 

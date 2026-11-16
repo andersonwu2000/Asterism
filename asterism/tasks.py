@@ -1,6 +1,7 @@
 """The task table: who does what. A task belongs to one group (fixed when it is made), has a text, and may have a
-responsible member of that group. A person who makes an agent responsible locks the task in their own name
-(`assigned_by`); an agent never locks. There is no status, done mark or history: a task that is done is removed.
+responsible agent of that group: a task is given to an agent or to nobody, never to a person. A person who makes an
+agent responsible locks the task in their own name (`assigned_by`); an agent never locks. There is no status, done
+mark or history: a task that is done is removed.
 
 The rules, for every entrance:
 - every change needs `edit_tasks`; an agent acts only in the groups it is in;
@@ -40,6 +41,8 @@ TAKE_OVER_ONLY = ("Task {id} is {agent}'s, and {agent} is offline. You may take 
                   "name); change it after that.")
 ASK_FIRST = ("{agent} is another collaborator's agent, so you cannot put a task in its name. Leave the task without a "
              "responsible member and ask {agent} to claim it.")
+# agent-facing: approved by the user (2026-11-16)
+NOT_AN_AGENT = "{name} is a person. A task is given to an agent, or to nobody (responsible empty)."
 # What a person, or an agent that coordinates, is told when the agent's person keeps its tasks to their own side.
 CLOSED = "{agent} is an agent of {person}, who has not allowed others to give it tasks or to change its tasks."
 TOLD = {
@@ -156,13 +159,23 @@ def _text(v: Any) -> str:
     return v
 
 
+class NotAnAgent(ApiError):
+    """A `responsible` that names a person. The message is the agents' sentence; the web pages say it in the
+    reader's language (`name` is the person named)."""
+    def __init__(self, name: str):
+        super().__init__(400, "not_an_agent", NOT_AN_AGENT.format(name=name))
+        self.name = name
+
+
 def _who(pj: Project, name: Any) -> Member | None:
-    """The member a `responsible` names; empty or null is nobody."""
+    """The agent a `responsible` names; empty or null is nobody. A person is never given a task."""
     if name is None or name == "":
         return None
     m = messaging.member_by_name(pj, name) if isinstance(name, str) else None
     if m is None:
         raise not_found(f"There is no member '{name}'. responsible is a member's name, or empty for nobody.")
+    if m.kind != "agent":
+        raise NotAnAgent(m.name)
     return m
 
 
@@ -204,7 +217,7 @@ def _person_may_direct(pj: Project, actor: Actor, agent: Member) -> None:
 
 def _person_may_touch(pj: Project, actor: Actor, tid: int, before: State) -> None:
     r = before.responsible
-    if r is None or r.kind == "person" or r.person_id == actor.person_id:
+    if r is None or r.kind != "agent" or r.person_id == actor.person_id:
         return
     if before.assigned_by is not None:
         if before.assigned_by != actor.person_id:
@@ -258,9 +271,10 @@ def person_change(pj: Project, actor: Actor, tid: Any, body: dict[str, Any]) -> 
         raise bad_request("bad_request", "Say what to change: text, responsible or locked.")
     text = _text(body["text"]) if "text" in body else row["text"]
     locked = _locked(body.get("locked"))
+    asked = _who(pj, body["responsible"]) if "responsible" in body else None
     before = _state(pj, row)
     _person_may_touch(pj, actor, row["id"], before)
-    now = _who(pj, body["responsible"]) if "responsible" in body else before.responsible
+    now = asked if "responsible" in body else before.responsible
     if now != before.responsible:
         _check_in_group(pj, row["group_id"], now)
         if now is not None and now.kind == "agent":
@@ -280,11 +294,14 @@ def person_remove(pj: Project, actor: Actor, tid: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------- agents
 
 def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str, Any]:
-    """task_update. The order of the checks: the task exists; the agent is in its group; the lock; whose task
-    it is; the new responsible member is in the group; then whether the agent may put the task in its name."""
+    """task_update. The order of the checks: `responsible` names an agent or nobody; the task exists; the agent is
+    in its group; the lock; whose task it is; the new responsible member is in the group; then whether the agent may
+    put the task in its name."""
     me = messaging.agent_member(a)
     actor = Actor(a["person_id"], a["id"])
     _edit(pj, actor)
+    if "responsible" in body:
+        _who(pj, body["responsible"])          # a person is refused before anything else is looked at
     coordinates = "coordinate_tasks" in projects.permissions(pj, actor)
     mine = [g["name"] for g in projects.groups_of(pj, "agent", a["id"])]
     if body.get("id") is None:
@@ -335,8 +352,8 @@ def agent_update(pj: Project, a: sqlite3.Row, body: dict[str, Any]) -> dict[str,
 
 
 def _may_name(pj: Project, me: Member, now: Member | None, coordinates: bool) -> None:
-    """An agent puts a task in the name of itself, an agent of its own person, a person, or nobody; an agent
-    that coordinates also in the name of another person's agent whose switch is on."""
+    """An agent puts a task in the name of itself, an agent of its own person, or nobody (`_who` refuses a person);
+    an agent that coordinates also in the name of another person's agent whose switch is on."""
     if now is None or now.kind != "agent" or now.person_id == me.person_id:
         return
     if not coordinates:
