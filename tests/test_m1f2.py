@@ -62,9 +62,12 @@ def test_a_custom_groups_permissions_can_be_changed(g):
     assert change(g.alice, "no-such-group", ["read"]).status_code == 404
     r = change(g.bob, "team", ["read"])
     assert r.status_code == 403 and err(r) == "forbidden", "changing a group needs manage_groups"
-    for fixed in ("owner", "alice-agents"):       # f6: human and AI are set like any group; owner holds everything;
-        r = change(g.alice, fixed, ["read"])       # a person's agent group carries only the four agent permissions
-        assert r.status_code == 409 and err(r) == "conflict", f"{fixed}: not changed this way"
+    r = change(g.alice, "owner", ["read"])         # f6: human and AI are set like any group; owner holds everything
+    assert r.status_code == 409 and err(r) == "conflict", "owner is not changed"
+    mine = group(g.alice, "alice-agents")["permissions"]
+    assert change(g.bob, "alice-agents", mine + ["read"]).status_code == 403, "only its person sets a person's agent group"
+    assert change(g.alice, "alice-agents", mine + ["read"]).status_code == 200, "it carries ordinary permissions too"
+    assert change(g.alice, "alice-agents", mine).status_code == 200
     assert "edit_tasks" in group(g.alice, "human")["permissions"]
 
 
