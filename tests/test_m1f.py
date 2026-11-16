@@ -61,7 +61,7 @@ def test_every_page_of_a_project_has_the_same_frame(f):
         assert ('id="side-channels"' in html and 'id="side-private"' in html) == in_chat, f"{path}: channels belong to chat"
         assert ('id="explorer"' in html) == in_files, f"{path}: the explorer belongs to files"
     messages = f.alice.c.get(f"/{SLUG}").text
-    assert 'id="task-panel"' in messages and 'id="task-toggle"' in messages and 'id="pins"' in messages
+    assert 'id="members-toggle"' in messages and 'id="search-open"' in messages and 'id="pins"' not in messages
     files = f.alice.c.get(f"/{SLUG}/files").text
     for needed in ('id="explorer"', 'id="explorer-toggle"', 'id="file-tabs"', 'id="file-view"', 'id="view-switch"'):
         assert needed in files, needed

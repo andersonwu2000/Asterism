@@ -84,20 +84,19 @@ def test_search_refuses_what_it_cannot_do(s):
 
 def test_the_chat_page_has_the_project_menu_and_the_new_channel_bar(s):
     page = s.alice.c.get(f"/{SLUG}").text
-    for needed in ('id="project-menu-button"', 'id="project-menu"', 'id="invite-open"', 'id="pins-toggle"',
-                   'id="task-toggle"', 'id="members-toggle"', 'id="search-input"', 'id="search-results"', 'id="pins"'):
+    for needed in ('id="project-menu-button"', 'id="project-menu"', 'id="members-toggle"', 'id="search-open"',
+                   'id="search-results"'):
         assert needed in page, needed
     assert 'aria-haspopup="menu"' in page and 'role="menu"' in page
-    assert 'id="settings-toggle"' not in page, "the text button for channel settings is gone"
-    carol = s.carol.c.get(f"/{SLUG}").text
-    assert 'id="project-menu-button"' in carol and 'id="invite-open"' not in carol, "who may not invite gets no invite icon"
+    for gone in ('id="settings-toggle"', 'id="invite-open"', 'id="pins-toggle"', 'id="task-toggle"'):
+        assert gone not in page, f"{gone} is gone (f4)"
 
 
-def test_the_rail_leads_to_chat_files_schedules_and_my_agents_only(s):
+def test_the_rail_leads_to_chat_private_files_schedules_and_my_agents_only(s):
     page = s.alice.c.get(f"/{SLUG}").text
     rail = page.split('id="rail"', 1)[1].split("</nav>", 1)[0]
     assert f'href="/{SLUG}/members"' not in rail and f'href="/{SLUG}/admin"' not in rail and "/settings" not in rail
-    for href in (f'/{SLUG}/files', f'/{SLUG}/schedules', f'/{SLUG}/my'):
+    for href in (f'/{SLUG}/dm', f'/{SLUG}/files', f'/{SLUG}/schedules', f'/{SLUG}/my'):
         assert href in rail, href
 
 

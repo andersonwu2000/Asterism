@@ -46,6 +46,7 @@ class FakeGitHub:
         self.tokens: list[str] = []
         self.blobs: dict[str, bytes] = {}
         self.trees: dict[str, list[dict]] = {}
+        self.recursive, self.truncate_after = 0, 0      # recursive listings asked for; cut them after n entries
         self.head = ("", "")
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
@@ -118,6 +119,18 @@ class FakeGitHub:
                     tree = fake.trees.get(rest.rsplit("/", 1)[1])
                     if tree is None:
                         return self._send(404, {"message": "Not Found"})
+                    if "recursive=" in self.path:
+                        fake.recursive += 1
+                        flat, todo = [], [("", tree)]
+                        while todo:
+                            prefix, entries = todo.pop(0)
+                            for x in entries:
+                                flat.append(dict(x, path=prefix + x["path"]))
+                                if x["type"] == "tree":
+                                    todo.append((prefix + x["path"] + "/", fake.trees[x["sha"]]))
+                        cut = fake.truncate_after
+                        return self._send(200, {"sha": rest.rsplit("/", 1)[1], "tree": flat[:cut] if cut else flat,
+                                                "truncated": bool(cut and len(flat) > cut)})
                     return self._send(200, {"sha": rest.rsplit("/", 1)[1], "tree": tree, "truncated": False})
                 if rest.startswith("/git/blobs/"):
                     blob = fake.blobs.get(rest.rsplit("/", 1)[1])

@@ -153,7 +153,7 @@ def test_files_and_messages_are_pinned_to_a_channel(s):
     assert pin(s.alice, path="room-again.md").status_code == 201
     assert len([m for m in s.alice.read() if m["from_kind"] == "system"]) == before, "nobody is told about a pin"
     page = s.alice.c.get(f"/{SLUG}")
-    assert page.status_code == 200 and 'id="pins"' in page.text
+    assert page.status_code == 200 and 'id="pins"' not in page.text, "the page shows no pins (the user's ruling, f4)"
 
 
 # ------------------------------------------------------------------ scheduled messages
