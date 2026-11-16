@@ -326,13 +326,15 @@ def test_an_agent_never_manages_and_groups_follow_the_owner(srv, alice, bob, cre
     assert as_agent.post(f"/{SLUG}/api/invites", json={}).status_code in (401, 403)
     assert alice.post(f"/{SLUG}/api/groups", json={"name": "stewards", "permissions": ["read", "manage_members"]}).status_code == 201
     assert bob.post(f"/{SLUG}/api/groups", json={"name": "rogues", "permissions": ["read"]}).status_code == 403
-    # the owner may give her own agent any group she holds; it still cannot manage
-    assert alice.post(f"/{SLUG}/api/members/fern/groups", json={"add": ["owner"], "remove": []}).status_code == 200
-    assert "owner" in agent_row(alice, "fern")["groups"]
+    # the owner may give her own agent any group she holds; it still cannot manage (default groups are never
+    # given by hand: f6)
+    assert alice.post(f"/{SLUG}/api/members/alice/groups", json={"add": ["stewards"], "remove": []}).status_code == 200
+    assert alice.post(f"/{SLUG}/api/members/fern/groups", json={"add": ["stewards"], "remove": []}).status_code == 200
+    assert "stewards" in agent_row(alice, "fern")["groups"]
+    assert alice.post(f"/{SLUG}/api/members/fern/groups", json={"add": ["owner"], "remove": []}).status_code == 409
     assert as_agent.post(f"/{SLUG}/api/invites", json={}).status_code in (401, 403), "an agent never gets management permissions"
     assert as_agent.post(f"/{SLUG}/api/members/bob/remove").status_code in (401, 403)
     # a person gives an agent only groups the person holds
-    assert bob.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["owner"], "remove": []}).status_code == 403
     assert bob.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 403
     # someone else, even with the permission, needs the owner's switch
     assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 403

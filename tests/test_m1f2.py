@@ -62,22 +62,24 @@ def test_a_custom_groups_permissions_can_be_changed(g):
     assert change(g.alice, "no-such-group", ["read"]).status_code == 404
     r = change(g.bob, "team", ["read"])
     assert r.status_code == 403 and err(r) == "forbidden", "changing a group needs manage_groups"
-    for fixed in ("human", "ai", "owner", "alice-agents"):
-        r = change(g.alice, fixed, ["read"])
-        assert r.status_code == 409 and err(r) == "conflict", f"{fixed}: only a custom group is changed here"
+    for fixed in ("owner", "alice-agents"):       # f6: human and AI are set like any group; owner holds everything;
+        r = change(g.alice, fixed, ["read"])       # a person's agent group carries only the four agent permissions
+        assert r.status_code == 409 and err(r) == "conflict", f"{fixed}: not changed this way"
     assert "edit_tasks" in group(g.alice, "human")["permissions"]
 
 
 def test_a_change_takes_effect_at_once(g):
-    assert make(g.alice, "readers", ["read", "post"]).status_code == 201
-    assert put(g.alice, "carol", add=["readers"], take=["human"]).status_code == 200
+    before = group(g.alice, "human")["permissions"]
+    assert change(g.alice, "human", [p for p in before if p != "create_channel"]).status_code == 200
     pin = lambda: g.carol.c.post(f"/{SLUG}/api/channels/general/pins", json={"path": "notes/carol.md"})
     assert pin().status_code == 403
-    assert change(g.alice, "readers", ["read", "post", "create_channel"]).status_code == 200
+    assert make(g.alice, "readers", ["read", "post", "create_channel"]).status_code == 201
+    assert put(g.alice, "carol", add=["readers"]).status_code == 200
     assert pin().status_code == 201, "carol holds what her group holds now"
     assert change(g.alice, "readers", ["read", "post"]).status_code == 200
     assert g.carol.c.post(f"/{SLUG}/api/channels/general/pins", json={"path": "notes/again.md"}).status_code == 403
-    assert put(g.alice, "carol", add=["human"], take=["readers"]).status_code == 200
+    assert change(g.alice, "human", before).status_code == 200
+    assert put(g.alice, "carol", take=["readers"]).status_code == 200
 
 
 def test_nobody_hands_out_or_takes_away_what_they_do_not_hold(g):

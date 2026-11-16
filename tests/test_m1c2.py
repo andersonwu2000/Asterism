@@ -27,10 +27,15 @@ REMINDER = "You have not answered message {id} from {sender}. Answer with send, 
 @pytest.fixture(scope="module")
 def s(tmp_path_factory):
     """alice owns the project and has the agents a1 and a2; bob has b1; carol has none. All agents are online.
-    carol is taken out of `human` and put into a group that only reads and posts."""
+    `human` only reads and posts; what it held beyond that is held by `planners`, which alice and bob are in, carol not
+    (default groups are never left by hand, f6: a person is limited through the default group's permissions)."""
     world = build_world(tmp_path_factory.mktemp("datac2"), ENVS)
-    assert world.alice.c.post(f"/{SLUG}/api/groups", json={"name": "readers", "permissions": ["read", "post"]}).status_code == 201
-    r = world.alice.c.post(f"/{SLUG}/api/members/carol/groups", json={"add": ["readers"], "remove": ["human"]})
+    more = ["create_channel", "create_schedule", "assign_tasks", "manage_own_agents", "edit_tasks"]
+    assert world.alice.c.post(f"/{SLUG}/api/groups", json={"name": "planners", "permissions": ["read", "post"] + more}).status_code == 201
+    for who in ("alice", "bob"):
+        r = world.alice.c.post(f"/{SLUG}/api/members/{who}/groups", json={"add": ["planners"], "remove": []})
+        assert r.status_code == 200, r.text
+    r = world.alice.c.post(f"/{SLUG}/api/groups/human", json={"permissions": ["read", "post"]})
     assert r.status_code == 200, r.text
     yield world
     world.srv.stop()
@@ -309,10 +314,10 @@ def test_a_schedule_whose_person_or_place_is_gone(s):
     assert remove(s.alice, to_bob["id"]).status_code == 200
 
     # the creator loses the permission: carol's group is given it, a schedule is made, and it is taken away again
-    assert s.alice.c.post(f"/{SLUG}/api/members/carol/groups", json={"add": ["human"], "remove": []}).status_code == 200
+    assert s.alice.c.post(f"/{SLUG}/api/members/carol/groups", json={"add": ["planners"], "remove": []}).status_code == 200
     hers = made(schedule(s.carol, text="while she may [gn3]", every_s=MIN_EVERY_S))
     assert until(lambda: posted(s.alice, "[gn3]"), 5)
-    assert s.alice.c.post(f"/{SLUG}/api/members/carol/groups", json={"add": [], "remove": ["human"]}).status_code == 200
+    assert s.alice.c.post(f"/{SLUG}/api/members/carol/groups", json={"add": [], "remove": ["planners"]}).status_code == 200
     assert until(lambda: schedules(s.alice)[hers["id"]]["paused"], 6)
     assert schedules(s.alice)[hers["id"]]["paused_because"] == "permission"
     assert remove(s.alice, hers["id"]).status_code == 200
