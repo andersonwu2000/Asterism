@@ -184,7 +184,10 @@ def test_the_favicon_is_v1s():
     if not v1.exists():
         pytest.skip("v1 is not next to this repository")
     ours = ROOT / "asterism" / "static" / "favicon.svg"
-    assert ours.read_bytes().strip() == v1.read_bytes().strip()
+    same = lambda b: b.replace(b"
+", b"
+").strip()       # line endings follow the checkout's settings
+    assert same(ours.read_bytes()) == same(v1.read_bytes())
 
 
 def test_the_theme_is_a_personal_setting_not_a_rail_button(w):
@@ -206,3 +209,15 @@ def test_general_is_a_channel_like_the_others_and_notices_go_where_the_project_s
     assert r.status_code == 201, r.text
     told = [m for m in w.alice.read("#lobby") if m["from_kind"] == "system" and "[p5]" in m["text"]]
     assert told, "the task change is announced in the notice channel"
+
+
+def test_an_allow_in_a_channel_grants_what_the_project_does_not(w):
+    human = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == "human")["permissions"]
+    assert w.alice.c.post(f"/{SLUG}/api/groups/human", json={"permissions": [p for p in human if p != "post"]}).status_code == 200
+    try:
+        assert w.alice.c.post(f"/{SLUG}/api/channels", json={"name": "open-mic"}).status_code == 201
+        assert w.carol.post("not allowed anywhere [p6]", to="#general").status_code == 403
+        assert overrides(w.alice, "open-mic", {"human": {"post": "allow"}}).status_code == 200
+        assert w.carol.post("allowed here [p6]", to="#open-mic").status_code == 201, "as Discord: an allow grants"
+    finally:
+        assert w.alice.c.post(f"/{SLUG}/api/groups/human", json={"permissions": human}).status_code == 200
