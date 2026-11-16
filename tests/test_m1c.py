@@ -133,9 +133,11 @@ def test_people_make_tasks_and_everybody_sees_the_table(t):
     one = r.json()["task"]
     assert one == {"id": one["id"], "group": "ai", "text": "Find out who can check Lemma 3.2 [p1]", "responsible": None,
                    "responsible_kind": None, "assigned_by": None}, "an open task: nobody responsible, no lock, no online"
-    two = made(p_make(t.carol, group="human", text="Read the draft [p2]", responsible="bob"))
-    assert (two["responsible"], two["responsible_kind"], two["assigned_by"]) == ("bob", "person", None), \
-        "an ordinary member may make tasks; a person's task is never locked"
+    r = p_make(t.carol, group="human", text="Read the draft [p2]", responsible="bob")
+    assert r.status_code == 400 and err(r) == "not_an_agent", "a task is given to an agent or to nobody (f5)"
+    two = made(p_make(t.carol, group="human", text="Read the draft [p2]"))
+    assert (two["responsible"], two["responsible_kind"], two["assigned_by"]) == (None, None, None), \
+        "an ordinary member may make tasks"
     assert two["id"] > one["id"] and "online" not in two
 
     everything = t.bob.c.get(f"/{SLUG}/api/tasks").json()["groups"]
