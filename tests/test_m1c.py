@@ -165,7 +165,7 @@ def test_people_make_tasks_and_everybody_sees_the_table(t):
 
 def test_the_page_shows_the_table_above_the_channels(t):
     page = t.alice.c.get(f"/{SLUG}")
-    assert page.status_code == 200 and 'id="task-panel"' in page.text
+    assert page.status_code == 200 and 'id="members-toggle"' in page.text and 'id="task-panel"' not in page.text,         "tasks are shown under the agents in the member list (f4), not in a panel"
     mine = t.alice.c.get(f"/{SLUG}/my")
     assert mine.status_code == 200 and "之後的版本才生效" not in mine.text, "every switch is in force now"
 

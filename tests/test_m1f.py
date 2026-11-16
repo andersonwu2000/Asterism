@@ -58,7 +58,8 @@ def test_every_page_of_a_project_has_the_same_frame(f):
         assert "data-theme" in head and "localStorage" in head, f"{path}: the theme is chosen before the first paint"
         assert head.index("data-theme") < head.index("/static/app.css"), f"{path}: the theme script comes before the stylesheet"
         in_chat, in_files = path == "", path == "/files"
-        assert ('id="side-channels"' in html and 'id="side-private"' in html) == in_chat, f"{path}: channels belong to chat"
+        assert ('id="side-channels"' in html) == in_chat, f"{path}: channels belong to chat"
+        assert 'id="side-private"' not in html, f"{path}: private conversations have their own page (f4)"
         assert ('id="explorer"' in html) == in_files, f"{path}: the explorer belongs to files"
     messages = f.alice.c.get(f"/{SLUG}").text
     assert 'id="members-toggle"' in messages and 'id="search-open"' in messages and 'id="pins"' not in messages
