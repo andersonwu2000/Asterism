@@ -187,18 +187,18 @@
     }
   }
 
-  // What the agent holds, in one line after its name: the first task's number and text (cut with an ellipsis), "+n"
-  // for more, a link to the board at this agent; nothing when it holds none.
+  // What the agent holds, in one line after its name: its task's number and title (cut with an ellipsis), "+n" for more
+  // (only from before 1t), a link to the board at this agent; nothing when it holds none (a done task holds nobody).
   function taskLine(name) {
-    var mine = tasks.filter(function (x) { return x.responsible === name; });
+    var mine = tasks.filter(function (x) { return !x.done && x.responsible === name; });
     if (!mine.length) return null;
     var a = make("a", "agent-tasks");
     a.href = "/" + encodeURIComponent(SLUG) + "/work?agent=" + encodeURIComponent(name);
     a.dataset.key = "agent-tasks";
-    a.title = mine.map(function (x) { return x.id + " " + x.text; }).join("\n");
-    a.append(make("span", "mono", String(mine[0].id)), make("span", "agent-task-text", mine[0].text));
+    a.title = mine.map(function (x) { return x.id + " " + x.title; }).join("\n");
+    a.append(make("span", "mono", String(mine[0].id)), make("span", "agent-task-text", mine[0].title));
     if (mine.length > 1) a.appendChild(make("span", "agent-task-more", t("agp.more_tasks", {n: mine.length - 1})));
-    a.setAttribute("aria-label", t("agp.tasks_label", {n: mine.length, text: mine[0].text}));
+    a.setAttribute("aria-label", t("agp.tasks_label", {n: mine.length, text: mine[0].title}));
     return a;
   }
   var tasksRaw = "";

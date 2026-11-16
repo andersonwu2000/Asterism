@@ -834,6 +834,28 @@ h2.tt-gname { margin: 0; font-size: 14px; }
 .tt-holder .tt-agent { flex: none; color: var(--color-ink); font-weight: 600; font-size: 13px; }
 .tt-holder .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tt-since { font-size: 12px; }
+/* 1t: a card's title, and its body as Markdown with mathematics, folded after about six lines. */
+.tt-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow-wrap: anywhere; }
+.tt-bodytext { margin-top: 2px; }
+.tt-bodytext:empty { display: none; }
+.tt-md { font-size: 13px; }
+.tt-md.folded { max-height: 9em; overflow: hidden;
+                -webkit-mask-image: linear-gradient(to bottom, currentColor 60%, transparent);
+                mask-image: linear-gradient(to bottom, currentColor 60%, transparent); }
+.tt-task.done .tt-title { font-weight: 500; color: var(--color-ink-dim); }
+.tt-finished .tt-agent { color: var(--color-ink); font-weight: 600; }
+/* The overdue mark: a word in a dashed tag after a triangle, so it never rests on colour. */
+.tag.overdue { border-style: dashed; color: var(--color-ink); gap: 4px; }
+.tag.overdue::before { content: ""; flex: none; width: 0; height: 0; border-left: 4px solid transparent;
+                       border-right: 4px solid transparent; border-bottom: 7px solid currentColor; }
+.t-updated { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.ptask-updated { flex-basis: 100%; font-size: 12px; }
+/* "要求每 __ 小時更新內容": the number in the sentence. */
+.ag-field > .tt-every-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px;
+                              font-weight: 400; color: var(--color-ink); }
+.ag-field .tt-every-line input.tt-every-n { flex: none; width: 5.5em; }
+.tt-warn:empty { display: none; }
+.tt-warn { color: var(--color-ink); }
 /* A form's acts at its right: the outcome, then cancel, then the act (the same order in every floating panel). */
 .form-acts { justify-content: flex-end; }
 .form-acts > .out { margin-right: auto; }

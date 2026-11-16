@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Callable
 
 from . import util
 
@@ -184,7 +185,9 @@ CREATE TABLE IF NOT EXISTS messages (
     sent REAL NOT NULL,
     notice INTEGER,                -- 1: a notice of presence (never asks for an answer); NULL: any other message
     schedule_id INTEGER,           -- the schedule that posted it; NULL: posted by hand (or by the system)
-    sender_model TEXT              -- an agent sender's model when it was sent; NULL: unknown, or not an agent
+    sender_model TEXT,             -- an agent sender's model when it was sent; NULL: unknown, or not an agent
+    task_id INTEGER                -- the task whose body update it asks for (tasks.UPDATE_DUE): an update of that
+                                   -- body by its holder answers it; NULL: any other message
 );
 CREATE INDEX IF NOT EXISTS messages_place ON messages(place, id);
 CREATE INDEX IF NOT EXISTS messages_speaker ON messages(sender_kind, sender_id, place, sent);
@@ -251,15 +254,22 @@ CREATE INDEX IF NOT EXISTS subscriptions_agent ON subscriptions(agent_id, expire
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- increasing, never used twice
     group_id INTEGER NOT NULL,     -- fixed when the task is made
-    text TEXT NOT NULL,
+    title TEXT NOT NULL,           -- one line, 1 to 200 characters
+    body TEXT NOT NULL DEFAULT '', -- 0 to 10,000 characters, kept as written; its holder keeps it current
     responsible_kind TEXT,         -- person, agent; NULL: nobody is responsible
     responsible_id INTEGER,
     assigned_by INTEGER,           -- the person who locked it (only while an agent is responsible); NULL: not locked
     created REAL NOT NULL,         -- when it was posted
     posted_kind TEXT,              -- who posted it: person, agent; NULL: unknown (posted before f7)
     posted_id INTEGER,
-    taken REAL                     -- when the agent responsible now was given it or took it; NULL: nobody holds it,
+    taken REAL,                    -- when the agent responsible now was given it or took it; NULL: nobody holds it,
                                    -- or unknown (taken before f7)
+    body_at REAL,                  -- when the body last changed; NULL: not since it was posted
+    update_every_h INTEGER,        -- its holder owes a body update at least this often (hours); NULL: not asked
+    reminded REAL,                 -- when its holder was last reminded of an update due (tasks.UPDATE_DUE)
+    done INTEGER NOT NULL DEFAULT 0, -- 1: finished. It holds no agent (the responsible columns keep who finished
+                                   -- it) and is deleted ASTERISM_TASK_DONE_KEEP_S after done_at
+    done_at REAL
 );
 CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
 CREATE TABLE IF NOT EXISTS pins (
@@ -305,7 +315,7 @@ CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
 CREATE TABLE IF NOT EXISTS agent_states (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- an agent's changes of state, for its timeline (timeline.py); kept since f6b
     agent_id INTEGER NOT NULL,
-    state TEXT NOT NULL,           -- online, offline, task_given, task_taken, task_released, task_removed
+    state TEXT NOT NULL,           -- online, offline, task_given, task_taken, task_released, task_done, task_removed
     reason TEXT,                   -- offline: why (presence.OFFLINE_BECAUSE)
     task_id INTEGER,               -- a task change: the task's number
     by_kind TEXT,                  -- a task change: who made it (person, agent; NULL: the system)
@@ -334,13 +344,14 @@ ADDED_COLUMNS = {
                     ("last_poll", "REAL"), ("connected", "INTEGER")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
-                 ("sender_model", "TEXT")],
+                 ("sender_model", "TEXT"), ("task_id", "INTEGER")],
     # The groups that existed before groups had an order keep the order of their ids; default groups have none.
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
     "people": [("last_beat", "REAL")],
-    # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then.
+    # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then. The
+    # columns of 1t (title, body, tracking, done) come with the rebuild that drops `text` (DROPPED_COLUMNS).
     "tasks": [("posted_kind", "TEXT"), ("posted_id", "INTEGER"), ("taken", "REAL")],
     # Until f6 the system's notices went to #general, the channel every project was created with.
     "project": [("notice_channel", "INTEGER", "(SELECT id FROM channels WHERE name = 'general')")],
@@ -378,6 +389,14 @@ DATA_FIXES = (
     # mislead); one set before is dropped.
     ("channel_overrides", "DELETE FROM channel_overrides WHERE group_id IN "
                           "(SELECT id FROM groups WHERE kind = 'default' AND name = 'owner')"),
+    # 1t: an agent holds at most one task that is not done. One that holds several keeps the newest (taken last; the
+    # higher id among equals); the others go back to the board, without a lock (a lock is only ever held over an
+    # agent's task); nobody is told.
+    ("tasks", "UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL, taken = NULL "
+              "WHERE done = 0 AND responsible_kind = 'agent' AND EXISTS (SELECT 1 FROM tasks n WHERE n.done = 0 "
+              "AND n.responsible_kind = 'agent' AND n.responsible_id = tasks.responsible_id "
+              "AND (coalesce(n.taken, 0) > coalesce(tasks.taken, 0) "
+              "OR (coalesce(n.taken, 0) = coalesce(tasks.taken, 0) AND n.id > tasks.id)))"),
 )
 
 
@@ -413,47 +432,84 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
                     conn.execute("UPDATE groups SET permissions = ? WHERE id = ?",
                                  (json.dumps(json.loads(row[1]) + [p]), row[0]))
                 conn.execute("INSERT INTO upgrades (name, at) VALUES (?, ?)", (key, util.now()))
-        _drop_switch_columns(conn)
+    for table, (columns, move) in DROPPED_COLUMNS.items():
+        if _has_table(conn, table):
+            _rebuild(conn, table, columns, move)
     for table, sql in DATA_FIXES:
         if _has_table(conn, table):
             conn.execute(sql)
     conn.commit()
 
 
-def _drop_switch_columns(conn: sqlite3.Connection) -> None:
-    """A `groups` table that still has the old switch columns: the switches that are on are moved into the ownership
-    groups' permissions (unless an earlier start did that already, `switches_moved`), and the table is rebuilt without
-    the columns by copy, as SQLite's own procedure for a change ALTER TABLE cannot make (the hub's SQLite, 3.34, has
-    no DROP COLUMN, which came with 3.35): the table of today's schema is made under another name, every row copied
-    with its id (so memberships, tasks and channel overrides still point at their groups), the old table dropped and
-    the new one renamed. All of it is one transaction, with foreign keys off (a pragma that can only change outside
-    a transaction) and `foreign_key_check` empty before it commits; on any failure nothing is changed. A table
-    without the columns is left alone, so this happens once."""
-    have = [r[1] for r in conn.execute("PRAGMA table_info(groups)")]
-    moved = [c for c in SWITCH_COLUMNS if c in have]
+def _move_switches(conn: sqlite3.Connection, moved: list[str]) -> None:
+    """The switches that are on are moved into the ownership groups' permissions, unless an earlier start did that
+    already (`switches_moved`)."""
+    if conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
+        return
+    for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
+                          f"WHERE kind = 'ownership'").fetchall():
+        perms = json.loads(r[1])
+        perms += [c for c in moved if r[c] and c not in perms]
+        conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
+    conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
+
+
+TASK_TITLE_MAX = 200
+
+
+def _split_task_text(conn: sqlite3.Connection, moved: list[str]) -> None:
+    """1t: a task's `text` (up to 2,000 characters) becomes its title (the first line, every run of whitespace one
+    space, cut to 200 characters) and its body (the rest, without the blank lines around it)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    for name in ("title", "body"):
+        if name not in have:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    for r in conn.execute("SELECT id, text FROM tasks").fetchall():
+        first, _, rest = (r[1] or "").strip().partition("\n")
+        title = " ".join(first.split())[:TASK_TITLE_MAX] or "-"
+        conn.execute("UPDATE tasks SET title = ?, body = ? WHERE id = ?", (title, rest.strip("\r\n"), r[0]))
+
+
+# Columns dropped after they shipped: table -> (the columns, what keeps what they held). A table that still has one of
+# them is rebuilt without them (_rebuild), so this happens once.
+# - groups: the four switches of an ownership group were columns until f6; since then they are permissions of that
+#   group, kept in its JSON list.
+# - tasks: a task was one `text` until 1t; since then it is a title and a body.
+DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "tasks": (("text",), _split_task_text)}
+
+
+def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
+             move: Callable[[sqlite3.Connection, list[str]], None]) -> None:
+    """A table that still has dropped columns: `move` keeps what they held, and the table is rebuilt without them by
+    copy, as SQLite's own procedure for a change ALTER TABLE cannot make (the hub's SQLite, 3.34, has no DROP COLUMN,
+    which came with 3.35): the table of today's schema is made under another name, every row copied with its id (so
+    whatever points at a row still does), the old table dropped, the new one renamed and its indexes made again. All
+    of it is one transaction, with foreign keys off (a pragma that can only change outside a transaction) and
+    `foreign_key_check` empty before it commits; on any failure nothing is changed. A table without the columns is
+    left alone."""
+    have = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    moved = [c for c in columns if c in have]
     if not moved:
         return
-    body = re.search(r"CREATE TABLE IF NOT EXISTS groups \((.*?)\n\);", PROJECT_SCHEMA, re.S).group(1)
+    body = re.search(rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", PROJECT_SCHEMA, re.S).group(1)
+    indexes = re.findall(rf"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON {table}\(.*?\);", PROJECT_SCHEMA)
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
-        if not conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
-            for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
-                                  f"WHERE kind = 'ownership'").fetchall():
-                perms = json.loads(r[1])
-                perms += [c for c in moved if r[c] and c not in perms]
-                conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
-            conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
-        conn.execute("DROP TABLE IF EXISTS groups_rebuilt")
-        conn.execute(f"CREATE TABLE groups_rebuilt ({body}\n)")
-        keep = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(groups_rebuilt)") if r[1] in have)
-        conn.execute(f"INSERT INTO groups_rebuilt ({keep}) SELECT {keep} FROM groups")
-        conn.execute("DROP TABLE groups")
-        conn.execute("ALTER TABLE groups_rebuilt RENAME TO groups")
+        move(conn, moved)
+        have = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        conn.execute(f"DROP TABLE IF EXISTS {table}_rebuilt")
+        conn.execute(f"CREATE TABLE {table}_rebuilt ({body}\n)")
+        keep = ", ".join(r[1] for r in conn.execute(f"PRAGMA table_info({table}_rebuilt)") if r[1] in have)
+        conn.execute(f"INSERT INTO {table}_rebuilt ({keep}) SELECT {keep} FROM {table}")
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}_rebuilt RENAME TO {table}")
+        for sql in indexes:
+            conn.execute(sql)
         broken = conn.execute("PRAGMA foreign_key_check").fetchall()
         if broken:
-            raise sqlite3.IntegrityError(f"foreign keys broken by rebuilding groups: {broken[:5]}")
+            raise sqlite3.IntegrityError(f"foreign keys broken by rebuilding {table}: {broken[:5]}")
         conn.commit()
     except BaseException:
         conn.rollback()

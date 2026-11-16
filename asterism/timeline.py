@@ -1,5 +1,5 @@
 """An agent's timeline, for the agent page: the messages it sent or was handed, and its changes of state (online,
-offline with the reason, a task given to it, taken, released or removed), oldest first.
+offline with the reason, a task given to it, taken, released, finished or removed), oldest first.
 
 The changes of state are written down where they are decided (notices.sync for presence, tasks.py for tasks) in
 the project's database, from f6b on; earlier ones are not recovered. Each is kept with the newest message id at the
@@ -22,7 +22,7 @@ from .errors import bad_request, not_found
 from .messaging import Member
 from .projects import Actor, Project
 
-STATES = ("online", "offline", "task_given", "task_taken", "task_released", "task_removed")
+STATES = ("online", "offline", "task_given", "task_taken", "task_released", "task_done", "task_removed")
 LIMIT_DEFAULT, LIMIT_MAX = 50, 200
 _STATE_CURSOR = re.compile(r"s(\d{1,18})")
 _NEVER = 1 << 62                    # larger than any id
@@ -113,7 +113,7 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
         f"UNION SELECT id FROM messages WHERE place = ?) "
         f"AND m.id < ? AND (m.place IN ({','.join('?' * len(chans)) or 'NULL'}) OR m.place = ?) "
         f"AND NOT (m.sender_kind = 'system' AND m.notice IS NULL AND EXISTS (SELECT 1 FROM agent_states s "
-        f"WHERE s.agent_id = ? AND s.state IN ('task_given', 'task_taken', 'task_released', 'task_removed') "
+        f"WHERE s.agent_id = ? AND s.state IN ('task_given', 'task_taken', 'task_released', 'task_done', 'task_removed') "
         f"AND s.after_message = m.id - 1)) "
         f"{concerns}ORDER BY m.id DESC LIMIT ?",
         (a["id"], a["id"], a["id"], private, below, *chans, private, a["id"],

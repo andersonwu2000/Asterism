@@ -901,9 +901,13 @@ def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str
               f'<div id="work-scopes" class="side-inner"></div></nav>')
     data = {"slug": slug, "me": person["name"], "tab": tab, "can-edit-tasks": "1" if view["can_edit_tasks"] else "",
             "can-manage": "1" if view["can_manage"] else "", "can-create": "1" if view["can_create"] else ""}
+    styles: list[str] = []
     if tab == "tasks":
         content = '<div id="task-table" class="ag-view"></div>'
-        scripts = ["people.js", "tasks.js", "workpage.js", "tasktable.js"]
+        # A task's body is Markdown with mathematics (render.js), as a message.
+        styles = ["vendor/katex/katex.min.css"]
+        scripts = ["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
+                   "render.js", "people.js", "tasks.js", "workpage.js", "tasktable.js"]
     else:
         data.update({"places": view["places"], "min-every": view["min_every_s"]})
         form = '<form id="schedule-form" class="ag-form sch-form" hidden></form>' if view["can_create"] else ""
@@ -915,4 +919,4 @@ def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str
             f'aria-label="{e(tr("ag.scope_open"))}" hidden></button>{content}</div></div>')
     title = tr("ag.tab." + tab)
     return layout(tr, title, body, person, frame, "work", page_class="agent-main", corner=_project_button(tr, frame),
-                  column=column, bar=bar, scripts=scripts)
+                  column=column, bar=bar, styles=styles, scripts=scripts)

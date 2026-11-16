@@ -65,8 +65,11 @@ Depth is stepped surface lightness, never a shadow.
   saying anything. A control that is armed for its second press wears the same inversion while it is armed.
 - **Locked** (a task a person assigned) is a quiet tag: `--color-edge-strong` outline, `--color-ink-dim` text, saying
   who assigned it. A lock is a settled fact, not a call for attention.
-- **A task is held by an agent or by nobody**, never by a person. On the work page's tasks tab a task shows its number
-  (mono, 12 px, dim: agents and the system's notices name tasks by number); a message still shows none.
+- **A task is held by an agent or by nobody**, never by a person, and an agent holds one task at a time. On the work
+  page's tasks tab a task shows its number (mono, 12 px, dim: agents and the system's notices name tasks by number); a
+  message still shows none.
+- **Overdue** (a task whose body was not updated as often as its poster asked) is a word in a dashed tag after a small
+  triangle, in `--color-ink`: shape and word, never a colour alone. "更新於 3 小時前" beside it is plain dim text.
 - **A schedule's level** is a quiet tag; the usual level (normal) is unmarked.
 - **An agent's model** (as its program last said it) is a quiet tag in mono, 11 px, right after its name: in the
   member list, the profile card and the agent page; a message header carries the model its sender had when it was
@@ -204,13 +207,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   shown separately, in the groups' order, holding the online members whose highest such group it is; then "在線"
   for the other online members; then "離線" for every offline member, whatever their groups. In a channel it lists
   only who may read the channel. Under an agent's name,
-  its tasks as its status (a person holds none): a task's text on one line, cut with an ellipsis; more than one task,
-  or a long one, folds under "n 項任務", opened in place; a locked task carries the quiet tag. On the agents' side,
+  its task as its status (a person holds none): its title on one line, cut with an ellipsis, and under it "更新於…"
+  with the overdue mark when an update is due; a long title folds under "n 項任務", opened in place; a locked task
+  carries the quiet tag. On the agents' side,
   first, the tasks nobody holds, folded, with "open in the task table" and "new task" (its group chosen). A member's
   row has its menu (a "..." control, right click, the context-menu key or Shift+F10); an agent's has "new task" and
-  "open in the task table"; each task has its own small menu: edit (in place), hand to another agent ..., lock or
-  unlock, release, remove (in two steps, in place), offered only where the page cannot already tell the answer is no.
-  It is the work page's task menu too.
+  "open in the task table"; each task has its own small menu: edit its title and body (in place), hand to another
+  agent ..., lock or unlock, release, 標記完成 (also for its poster), remove (in two steps, in place), offered only
+  where the page cannot already tell the answer is no; a done task only removes. It is the work page's task menu too.
 - **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
   presence, groups as chips (× and + for who may change them; never the default groups), an agent's tasks, and the
   acts mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus
@@ -246,7 +250,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   mine first). A row is a place row: presence, name (mono), the model tag, and "忙碌" or "閒置" in plain dim text at
   the right; the chosen one is the current place.
 - Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, "忙碌" or "閒置", what
-  it holds in one line (the first task's number and text, "+n" for more; a link to the board at this agent), then
+  it holds in one line (its task's number and title; a link to the board at this agent), then
   kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
   boxes, remove from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
 - The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
@@ -267,17 +271,21 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   project menu; top right the two tabs **任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
   the current one, no counts), and at the right one action for the current tab (發布任務 / new schedule), only for
   who may; below 900 px it is a round icon button with its name as label and tooltip.
-- The second column lists the tab's scopes (all, waiting, posted by me, my agents', assigned by me, each group: AI
-  first, the custom groups, each person's agent group last; all, mine, paused, each place). The scope is in the
+- The second column lists the tab's scopes (all, waiting, in progress, done, posted by me, my agents', assigned by me,
+  each group: AI first, the custom groups, each person's agent group last; all, mine, paused, each place). The scope is in the
   address's query, changed in place; below 900 px the list is in the drawer and the content starts with one line
   naming the scope and its count, which opens it.
 - **The tasks tab is a bounty board**: whoever needs something posts it; an idle agent of the group it is open to
-  takes it. Two sections in the reading column, in this order: **待接** (nobody holds it; oldest first) and **進行中**
-  (an agent holds it). A card: its number, its whole text (four lines, then "顯示全部"), and one quiet line: who posted
-  it and how long ago, and "開放給 {group}" as a quiet tag (the group decides which agents may take it); a task held
-  also shows its holder (presence, name in mono, model tag), since when it holds it, and the lock's quiet tag.
-  Posting, "發布任務", is a form in place at the top: the text first, then **開放給** (AI, every agent, unless the scope
-  is a group), then, optionally, an agent to give it to directly (with the lock).
+  takes it and keeps its body current. Three sections in the reading column, in this order: **待接** (nobody holds it;
+  oldest first), **進行中** (an agent holds it) and **已完成** (done, newest first; the server keeps them 7 days). A
+  card: its number, its title (600), its body as Markdown with mathematics (about six lines, then "顯示全部" opens it in
+  place), and quiet lines: who posted it and how long ago, "開放給 {group}" as a quiet tag (the group decides which
+  agents may take it), "每 N 小時更新" and "更新於 3 小時前" with the overdue mark; a task held also shows its holder
+  (presence, name in mono, model tag), since when it holds it, and the lock's quiet tag; a done one, who finished it
+  and "完成於 …". Posting, "發布任務", is a form in place at the top: **標題** first, then **內容** (optional), **開放給**
+  (AI, every agent, unless the scope is a group), **指定給** (optional, with the lock), and "要求每 __ 小時更新內容"
+  (optional). Choosing an agent that holds a task says in place what happens: "{agent} 正在做「{title}」：交給它會把
+  那件退回待接", or, for a locked one, who must take it off the agent first.
 - A schedule says where to, when next over how often, its text and its last message or why it is paused. Every row's
   acts are behind one "..." control; a new task or schedule is a form in place, which Escape closes.
 

@@ -618,15 +618,33 @@ def post_notice(pj: Project, a: sqlite3.Row, online: bool, text: str, assigners:
     return _post_system(pj, text, level, notice=True, without=a["id"])
 
 
-def post_from_system(pj: Project, text: str, agents: dict[int, str]) -> int:
-    """An ordinary message from the system in the notice channel (hop 0, no mentions) to the agents in `agents` (agent id
-    -> level, important or normal); muted for every other reader. It is delivered like any message: an
-    important one is kept for an agent that is offline and followed up until it is answered."""
-    return _post_system(pj, text, lambda r, row: agents.get(r.id, "muted") if r.kind == "agent" else "muted",
-                        notice=False)
+def post_from_system(pj: Project, text: str, levels: dict[str, str], task_id: int | None = None) -> int:
+    """An ordinary message from the system in the notice channel (hop 0, no mentions) to the members in `levels`
+    (member key, as Member.key -> level, important or normal); muted for every other reader. It is delivered like any
+    message: an important one is kept for an agent that is offline and followed up until it is answered. `task_id`:
+    the task whose body update it asks for (tasks.UPDATE_DUE), which answers it too (answer_by_body)."""
+    return _post_system(pj, text, lambda r, row: levels.get(r.key, "muted"), notice=False, task_id=task_id)
 
 
-def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: int | None = None) -> int:
+def answer_by_body(pj: Project, agent_id: int, task_id: int, t: float) -> None:
+    """The holder updated the body of task `task_id`: every message asking it for that update is answered, as a reply
+    with reply_to would answer it (inside the caller's transaction). One not handed over yet is answered before it
+    starts its follow-up (the follow-up row exists, answered, so handing it over starts none), and a reminder about
+    it that is still waiting is dropped."""
+    mids = [r[0] for r in pj.db.execute(
+        "SELECT m.id FROM messages m JOIN levels l ON l.message_id = m.id AND l.reader_kind = 'agent' "
+        "AND l.reader_id = ? WHERE m.task_id = ? AND l.level = 'important'", (agent_id, task_id))]
+    for mid in mids:
+        pj.db.execute("INSERT OR IGNORE INTO followups (agent_id, message_id, handed, period, due, answered) "
+                      "VALUES (?, ?, ?, ?, NULL, ?)", (agent_id, mid, t, t, t))
+        pj.db.execute("UPDATE followups SET answered = ?, due = NULL WHERE agent_id = ? AND message_id = ? "
+                      "AND answered IS NULL", (t, agent_id, mid))
+        pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND message_id = ? "
+                      "AND kind = 'reminder' AND state = 'pending'", (t, agent_id, mid))
+
+
+def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: int | None = None,
+                 task_id: int | None = None) -> int:
     """Write a message from the system in the notice channel, for those who may read it, with each reader's level, level_of(member, agent row or None),
     and the agents' deliveries: a notice only to agents that are online, a message as _distribute does."""
     t = util.now()
@@ -640,8 +658,9 @@ def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: i
     woken: list[int] = []
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
-                            "reply_to, hop, mentions, sent, notice) VALUES (?, 'system', NULL, NULL, 'system', "
-                            "?, NULL, 0, '[]', ?, ?)", (place, text, t, 1 if notice else None)).lastrowid
+                            "reply_to, hop, mentions, sent, notice, task_id) VALUES (?, 'system', NULL, NULL, "
+                            "'system', ?, NULL, 0, '[]', ?, ?, ?)",
+                            (place, text, t, 1 if notice else None, task_id)).lastrowid
         levels = []
         for r, row in readers:
             level = level_of(r, row)

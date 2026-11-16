@@ -5,8 +5,9 @@
 //   people and agents (remembered), then sections as Discord's: one per group shown separately, in the groups'
 //   order, holding the online members whose highest such group it is; "online" for the other online members;
 //   "offline" for every offline member. In a channel only who may read it (its permissions' readers). A row keeps the
-//   name's width; an agent's busy or idle word stays by it, the owner note goes first. Under each agent, its tasks (tasks.js; a person holds none), and on the
-//   agents' side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
+//   name's width; an agent's busy or idle word stays by it, the owner note goes first. Under each agent, its task
+//   (tasks.js: its title, when its body was last updated, the overdue mark; a person holds none), and on the agents'
+//   side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
 //   control, right click, the context-menu key or Shift+F10 for the member's menu;
 // - a profile card (a popover: name, kind, presence, groups with x and +, an agent's tasks, and mention, private
 //   message, open in settings), opened by any name marked data-member (in a message, the member list); the member's
@@ -276,7 +277,7 @@
       tasks.appendChild(make("h3", "", t("people.tasks")));
       if (!mine.length) tasks.appendChild(make("p", "dim small", t("people.no_tasks")));
       var ul = make("ul", "card-tasks");
-      mine.forEach(function (x) { ul.appendChild(make("li", "", x.text)); });
+      mine.forEach(function (x) { ul.appendChild(make("li", "", x.title)); });
       if (mine.length) tasks.appendChild(ul);
       card.appendChild(tasks);
     }

@@ -34,6 +34,8 @@ class Settings:
     replay_keep_s: float            # the answer to a request with an Idempotency-Key is kept this long
     person_beat_s: float            # an open page of a project tells the server every this long that it is open
     person_offline_after_s: float   # a person whose last page beat is older than this is offline
+    task_hour_s: float              # one hour of a task's update_every_h (shorter in tests)
+    task_done_keep_s: float         # a done task stays listed this long, then it is deleted
 
     @property
     def secure_cookies(self) -> bool:
@@ -87,7 +89,9 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     files_max_mb=_env_s("ASTERISM_FILES_MAX_MB", 25),
                     replay_keep_s=_env_s("ASTERISM_REPLAY_KEEP_S", 86400),
                     person_beat_s=_env_s("ASTERISM_PERSON_BEAT_S", 20),
-                    person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60))
+                    person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60),
+                    task_hour_s=_env_s("ASTERISM_TASK_HOUR_S", 3600),
+                    task_done_keep_s=_env_s("ASTERISM_TASK_DONE_KEEP_S", 604800))
 
 
 def use(s: Settings) -> Settings:
