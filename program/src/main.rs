@@ -20,6 +20,7 @@ mod local;
 mod mcp;
 mod model;
 mod push;
+mod report;
 mod state;
 mod status;
 mod sys;

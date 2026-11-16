@@ -48,6 +48,27 @@
   }
   S.presence = presence;
 
+  // What an agent is doing, in words (1x): while online, working or idle (its session did something within the last
+  // two minutes, or not), after "has a task" when it holds one; nothing while offline (the hollow mark says that).
+  S.workText = function (a) {
+    if (!a || !a.online) return "";
+    if (a.stale) return t("nav.stale");
+    return (a.busy ? [t("nav.busy")] : []).concat(t(a.work === "active" ? "nav.active" : "nav.idle")).join(" · ");
+  };
+  // The same beside an agent's name: one word in `cls` (brighter while it works), or, for an agent that holds a task
+  // and has been idle too long, the dashed tag after a triangle (the overdue mark's shape: never a colour alone).
+  S.workMark = function (a, cls) {
+    var text = S.workText(a);
+    if (!text) return null;
+    if (a.stale) {
+      var tag = make("span", "tag overdue work-stale", text);
+      var lang = document.documentElement.lang || undefined;
+      if (a.last_active) tag.title = t("nav.stale_hint", {when: new Date(a.last_active).toLocaleString(lang)});
+      return tag;
+    }
+    return make("span", (cls || "note") + (a.work === "active" ? " working" : ""), text);
+  };
+
   // Important unread: the inverted pill, muted or not (muting silences a place's talk, not a message that names the
   // reader). Other unread: the plain count, none in a muted place.
   function counts(a, unread, important, muted) {
@@ -100,7 +121,8 @@
   function privateItem(name, unread, important) {
     var who = S.directory[name], inner = [presence(who), make("span", "place-name", name)];
     if (who && who.kind === "agent" && who.owner === ME) inner.push(make("span", "note", t("nav.my_agent")));
-    if (who && who.kind === "agent" && who.busy) inner.push(make("span", "note", t("nav.busy")));
+    var work = who && who.kind === "agent" ? S.workMark(who, "note") : null;
+    if (work) inner.push(work);
     return item(name, inner, unread, important, false);
   }
 
@@ -163,7 +185,10 @@
     membersRaw = raw;
     var d = {};
     (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person", online: !!x.online}; });
-    (r.data.agents || []).forEach(function (a) { d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy}; });
+    (r.data.agents || []).forEach(function (a) {
+      d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy, work: a.work, stale: !!a.stale,
+                   last_active: a.last_active};
+    });
     S.directory = d;
     S.members = r.data;
     draw(false);

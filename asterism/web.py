@@ -362,7 +362,8 @@ def computer_caller(request: Request) -> agents.Caller:
 
 async def computer_sessions(request: Request) -> Any:
     c = computer_caller(request)
-    return computers.report_sessions(c, (await body_json(request)).get("sessions"))
+    b = await body_json(request)
+    return computers.report_sessions(c, b.get("sessions"), b.get("quotas"))
 
 
 async def computer_poll(request: Request) -> Any:
@@ -377,6 +378,11 @@ async def computer_poll(request: Request) -> Any:
 async def computer_ack(request: Request) -> Any:
     c = computer_caller(request)
     return computers.ack(c, (await body_json(request)).get("deliveries"))
+
+
+async def computer_command(request: Request) -> Any:
+    c = computer_caller(request)
+    return computers.answer_command(c, await body_json(request))
 
 
 # --------------------------------------------------------------------------- joining
@@ -749,7 +755,7 @@ async def api_post(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     b = await body_json(request)
     out = messaging.send(pj, me, b.get("to"), b.get("text"), b.get("reply_to"))
-    return {"id": out["id"], "mentions": out["mentions"]}
+    return {"id": out["id"], "mentions": out["mentions"], **({"command": out["command"]} if "command" in out else {})}
 
 
 async def api_read(request: Request) -> Any:
@@ -964,9 +970,10 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     owner for the presence marks."""
     me = messaging.person_member(pj, actor.person_id)
     mine = projects.permissions(pj, actor)
-    pa = projects.people_and_agents(pj)
+    pa = projects.people_and_agents(pj, work=True)
     directory = {x["name"]: {"kind": "person", "online": x["online"]} for x in pa["people"]}
-    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"]}
+    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"],
+                                  "work": a["work"], "stale": a["stale"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
     # The channels the reader may read (an override may grant one without the project's read), and private
@@ -1317,6 +1324,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
         Route("/{slug}/api/computer/poll", api(computer_poll)),
         Route("/{slug}/api/computer/ack", api(computer_ack), methods=["POST"]),
+        Route("/{slug}/api/computer/command", api(computer_command), methods=["POST"]),
     ]
     if config.get().test_mode:
         routes.insert(0, Route("/test/login", test_login, methods=["POST"]))

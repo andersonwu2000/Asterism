@@ -802,13 +802,18 @@ def _owners(pj: Project) -> dict[int, str]:
     return {r["person_id"]: r["name"] for r in pj.db.execute("SELECT person_id, name FROM people")}
 
 
-def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None) -> dict[str, Any]:
+def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None, work: bool = False) -> dict[str, Any]:
+    """An agent as the member lists give it. `work`: for people, also what it is doing (presence.work: `work`,
+    `last_active` as its session's last activity, `stale`); what agents read (whoami) stays without it."""
     owners = owners if owners is not None else _owners(pj)
     because = presence.offline_because(pj.slug, a, pj.db)
-    return {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"], "model": a["model"],
+    view = {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"], "model": a["model"],
             "groups": [g["name"] for g in groups_of(pj, "agent", a["id"])],
             "online": because is None, "offline_because": because, "busy": presence.busy(pj.db, a),
             "last_active": util.iso(a["last_active"]), "generation": a["generation"]}
+    if work:
+        view.update(presence.work(pj.slug, a, pj.db, because is None))
+    return view
 
 
 def person_online(row: sqlite3.Row) -> bool:
@@ -824,14 +829,14 @@ def beat(pj: Project, actor: Actor) -> dict[str, Any]:
     return {"online": True}
 
 
-def people_and_agents(pj: Project) -> dict[str, Any]:
+def people_and_agents(pj: Project, work: bool = False) -> dict[str, Any]:
     owners = _owners(pj)
     people = []
     for r in pj.db.execute("SELECT * FROM people ORDER BY joined, person_id"):
         acc = accounts.person(pj.accounts, r["person_id"])
         people.append({"name": r["name"], "github_login": acc["github_login"] if acc else "",
                        "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": person_online(r)})
-    agents = [agent_view(pj, a, owners) for a in pj.db.execute("SELECT * FROM agents ORDER BY id")]
+    agents = [agent_view(pj, a, owners, work) for a in pj.db.execute("SELECT * FROM agents ORDER BY id")]
     return {"people": people, "agents": agents}
 
 
@@ -867,7 +872,7 @@ def members_view(pj: Project, actor: Actor) -> dict[str, Any]:
     the requester may do)."""
     require(pj, actor, "read", "Reading the project needs the read permission.")
     mine = permissions(pj, actor)
-    return {"project": info(pj), **people_and_agents(pj), "groups": group_list(pj),
+    return {"project": info(pj), **people_and_agents(pj, work=True), "groups": group_list(pj),
             "me": {"name": person_name(pj, actor.person_id), "permissions": [p for p in PERMISSIONS if p in mine]}}
 
 
@@ -909,7 +914,7 @@ def credential_view(c: sqlite3.Row) -> dict[str, Any]:
 def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
     owners = _owners(pj)
     # Each agent with the credential its session is bound through (null when none): only its own person sees it.
-    agents = [{**agent_view(pj, a, owners), "credential": a["credential_id"]} for a in
+    agents = [{**agent_view(pj, a, owners, work=True), "credential": a["credential_id"]} for a in
               pj.db.execute("SELECT * FROM agents WHERE person_id = ? ORDER BY id", (actor.person_id,))]
     creds = []
     for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",
@@ -917,6 +922,8 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
         view = credential_view(c)
         if c["kind"] == "computer":     # whether that computer's program holds its connection now
             view["connected"] = presence.computer_connected(pj.slug, c["id"], pj.db)
+            if c["quotas"] is not None:  # what its program last reported (1x); only its own person sees it
+                view["quotas"] = [dict(q, at=util.iso(c["quotas_at"])) for q in json.loads(c["quotas"])]
         creds.append(view)
     return {"agents": agents, "credentials": creds, "switches": switches(pj, actor.person_id),
             "program": downloads.program(config.get().data)}

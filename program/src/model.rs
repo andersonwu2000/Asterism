@@ -87,7 +87,7 @@ fn user_dir(var: &str, default: &str) -> Option<PathBuf> {
     base.filter(|v| !v.is_empty()).map(|b| PathBuf::from(b).join(default))
 }
 
-fn find(product: Product, id: &str) -> Option<PathBuf> {
+pub fn find(product: Product, id: &str) -> Option<PathBuf> {
     match product {
         Product::ClaudeCode => {
             let name = format!("{id}.jsonl");
@@ -125,7 +125,7 @@ fn rollout(dir: &Path, ending: &str, depth: usize) -> Option<PathBuf> {
 }
 
 /// The last `TAIL` bytes of the file, from the start of a line.
-fn tail(path: &Path) -> Option<Vec<u8>> {
+pub fn tail(path: &Path) -> Option<Vec<u8>> {
     let mut f = fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     let start = len.saturating_sub(TAIL);

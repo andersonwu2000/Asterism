@@ -36,6 +36,8 @@ class Settings:
     person_offline_after_s: float   # a person whose last page beat is older than this is offline
     task_hour_s: float              # one hour of a task's update_every_h (shorter in tests)
     task_done_keep_s: float         # a done task stays listed this long, then it is deleted
+    active_s: float                 # an agent whose session did something this recently is working (1x)
+    stale_s: float                  # an agent holding a task and idle this long is marked "has a task, idle"
 
     @property
     def secure_cookies(self) -> bool:
@@ -91,7 +93,9 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     person_beat_s=_env_s("ASTERISM_PERSON_BEAT_S", 20),
                     person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60),
                     task_hour_s=_env_s("ASTERISM_TASK_HOUR_S", 3600),
-                    task_done_keep_s=_env_s("ASTERISM_TASK_DONE_KEEP_S", 604800))
+                    task_done_keep_s=_env_s("ASTERISM_TASK_DONE_KEEP_S", 604800),
+                    active_s=_env_s("ASTERISM_ACTIVE_S", 120),
+                    stale_s=_env_s("ASTERISM_STALE_S", 1800))
 
 
 def use(s: Settings) -> Settings:

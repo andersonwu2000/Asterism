@@ -1,4 +1,4 @@
-// Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (the top-left cell's dropdown
+// Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (the top-left cell's two buttons
 // #source-switch: 公共, the project's repository, repo.js; 私人, a folder of the reader's own computer, local.js) and
 // the tree of the source shown. Both sources answer the same small interface (see repo.js), so the tree, the keyboard
 // and the entry menu are one for both. Each source keeps its own tabs (viewer.js listens to "source" and shows the
@@ -31,7 +31,7 @@
 
   var el = {tree: document.getElementById("explorer-tree"), note: document.getElementById("explorer-note"),
             ref: document.getElementById("explorer-ref"), status: document.getElementById("explorer-status"),
-            sw: document.getElementById("source-switch"), swName: document.getElementById("source-name"),
+            sw: document.getElementById("source-switch"),
             menu: document.getElementById("files-menu"), search: document.getElementById("files-search"),
             found: document.getElementById("files-found"), foundStatus: document.getElementById("files-found-status"),
             bar: document.getElementById("local-bar"), unsupported: document.getElementById("local-unsupported"),
@@ -75,7 +75,9 @@
     el.ref.textContent = R.headText();
     el.note.hidden = !(repo && R.stale);
     el.note.textContent = repo && R.stale ? t("files.stale") : "";
-    el.swName.textContent = t(repo ? "files.source_repo" : "files.source_local");
+    Array.prototype.forEach.call(el.sw.querySelectorAll("[data-source]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.source === E.shown));
+    });
     var st = L.state;
     el.bar.hidden = repo || (st === "ok" && !el.said.textContent);
     el.unsupported.hidden = st !== "unsupported";
@@ -101,18 +103,10 @@
     if (src().state === "ok" || id === "repo") await relistOpen(id, false);
   };
 
-  // The source as a dropdown: the two sources, the one shown checked.
-  function sourceMenu() {
-    A.menu({label: t("files.source"), anchor: el.sw}, ["repo", "local"].map(function (id) {
-      return {label: t(id === "repo" ? "files.source_repo" : "files.source_local"), radio: true, checked: id === E.shown,
-              run: function () { E.show(id); }};
-    }), el.sw);
-  }
-  el.sw.addEventListener("click", sourceMenu);
-  el.sw.addEventListener("keydown", function (ev) {
-    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
-    ev.preventDefault();
-    sourceMenu();
+  // The source: two buttons side by side, the one shown pressed.
+  el.sw.addEventListener("click", function (ev) {
+    var b = ev.target.closest && ev.target.closest("[data-source]");
+    if (b) E.show(b.dataset.source);
   });
 
   function say(text) {

@@ -130,6 +130,14 @@
     }
     li.appendChild(facts(["connected" in c ? t(c.connected ? "my.connected.yes" : "my.connected.no") : null,
                           c.last_used ? t("ag.last_used", {time: when(c.last_used)}) : null, names]));
+    // The quotas its program last reported (1x): a line per product, only ever shown to this person.
+    (c.quotas || []).forEach(function (q) {
+      if (!(q.windows || []).length) return;
+      var product = A.MSG["kind." + q.product] ? t("kind." + q.product) : q.product;
+      li.appendChild(facts([make("span", "quota-product", product), A.quotaText(q, true),
+                            q.plan ? t("quota.plan", {plan: q.plan}) : null,
+                            q.at ? t("quota.at", {time: when(q.at)}) : null]));
+    });
     li.appendChild(out);
     return li;
   }

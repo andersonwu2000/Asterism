@@ -9,10 +9,13 @@ agent; this module only decides which agents a computer serves.
 from __future__ import annotations
 
 import asyncio
+import json
+import math
+import re
 import sqlite3
 from typing import Any, Awaitable, Callable
 
-from . import agents, config, downloads, messaging, notices, presence, projects, util
+from . import agents, commands, config, downloads, messaging, notices, presence, projects, util
 from .agents import Caller
 from .errors import bad_request, forbidden, gone, invalid_credential
 from .projects import Actor, Project
@@ -21,6 +24,9 @@ from .store import Store
 POLL_MAX_S = 100.0
 SESSIONS_MAX = 1000
 LOCAL = "local:"
+# A quota report (1x): per product, an optional plan and the windows of its limits.
+QUOTA_WINDOW_RE = re.compile(r"[A-Za-z0-9]{1,16}")
+QUOTA_PLAN_MAX, QUOTA_WINDOWS_MAX = 40, 8
 
 # Agent-facing wording, word for word from the specification.
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
@@ -143,25 +149,75 @@ def _agents_of(pj: Project, cred_id: int) -> list[int]:
     return [r["id"] for r in pj.db.execute("SELECT id FROM agents WHERE credential_id = ?", (cred_id,))]
 
 
-def report_sessions(c: Caller, sessions: Any) -> dict[str, Any]:
-    """The complete list of local sessions the program can wake right now; it replaces the previous one."""
+def _seconds(v: Any, what: str) -> float:
+    """A point in time in Unix seconds, from JSON."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        raise bad_request("bad_request", f"{what} must be a time in Unix seconds.")
+    return float(v)
+
+
+def _quotas(raw: Any) -> list[dict[str, Any]]:
+    """A report's quotas, checked: [{product, plan?, windows: [{name, used_percent, resets_at?}]}], one per product."""
+    shape = ('quotas must be a list of {product, plan?, windows: [{name, used_percent, resets_at?}]}, one per '
+             'product.')
+    if not isinstance(raw, list) or len(raw) > len(agents.LOCAL_KINDS):
+        raise bad_request("bad_request", shape)
+    out: list[dict[str, Any]] = []
+    for q in raw:
+        if not isinstance(q, dict) or q.get("product") not in agents.LOCAL_KINDS \
+                or any(o["product"] == q["product"] for o in out):
+            raise bad_request("bad_request", shape)
+        windows = q.get("windows")
+        if not isinstance(windows, list) or len(windows) > QUOTA_WINDOWS_MAX:
+            raise bad_request("bad_request", shape)
+        item: dict[str, Any] = {"product": q["product"]}
+        plan = q.get("plan")
+        if plan is not None:
+            if not isinstance(plan, str) or not 0 < len(plan) <= QUOTA_PLAN_MAX or not plan.isprintable():
+                raise bad_request("bad_request", f"plan must be 1 to {QUOTA_PLAN_MAX} printable characters.")
+            item["plan"] = plan
+        item["windows"] = []
+        for w in windows:
+            used = w.get("used_percent") if isinstance(w, dict) else None
+            if not isinstance(w, dict) or not isinstance(w.get("name"), str) or not QUOTA_WINDOW_RE.fullmatch(w["name"]) \
+                    or isinstance(used, bool) or not isinstance(used, (int, float)) or not 0 <= used <= 100:
+                raise bad_request("bad_request", "Each window is {name: 1 to 16 letters or digits, used_percent: 0 to "
+                                                 "100, resets_at?: Unix seconds}.")
+            win: dict[str, Any] = {"name": w["name"], "used_percent": used}
+            if w.get("resets_at") is not None:
+                win["resets_at"] = _seconds(w["resets_at"], "resets_at")
+            item["windows"].append(win)
+        out.append(item)
+    return out
+
+
+def report_sessions(c: Caller, sessions: Any, quotas: Any = None) -> dict[str, Any]:
+    """The complete list of local sessions the program can wake right now; it replaces the previous one. Each may
+    say when the session last did something (`active_at`, Unix seconds: presence.work); the report may carry the
+    computer's quotas (`quotas`, kept until the next report that carries them; shown to its person only)."""
     cred_id = _computer(c)
     pj = c.pj
     if not isinstance(sessions, list) or len(sessions) > SESSIONS_MAX:
         raise bad_request("bad_request", f"sessions must be a list (at most {SESSIONS_MAX}) of {{session, product}}.")
-    rows = {}
+    rows: dict[str, tuple[str, float | None]] = {}
     for s in sessions:
         sid, product = (s.get("session"), s.get("product")) if isinstance(s, dict) else (None, None)
         if not isinstance(sid, str) or not agents.SESSION_RE.fullmatch(sid):
             raise bad_request("invalid_session", "Each session id must be 1 to 200 printable characters without spaces.")
         if product not in agents.LOCAL_KINDS:
             raise bad_request("bad_request", "product must be one of: " + ", ".join(agents.LOCAL_KINDS))
-        rows[LOCAL + sid] = product
+        at = s.get("active_at")
+        # A clock ahead of the server's says "now", not "in the future".
+        rows[LOCAL + sid] = (product, None if at is None else min(_seconds(at, "active_at"), util.now()))
+    checked = _quotas(quotas) if quotas is not None else None
     before = notices.online_now(pj, _agents_of(pj, cred_id))
     with pj.db:
         pj.db.execute("DELETE FROM computer_sessions WHERE credential_id = ?", (cred_id,))
-        pj.db.executemany("INSERT INTO computer_sessions (credential_id, session, product) VALUES (?, ?, ?)",
-                          [(cred_id, sid, product) for sid, product in rows.items()])
+        pj.db.executemany("INSERT INTO computer_sessions (credential_id, session, product, active_at) VALUES (?, ?, ?, ?)",
+                          [(cred_id, sid, product, at) for sid, (product, at) in rows.items()])
+        if checked is not None:
+            pj.db.execute("UPDATE credentials SET quotas = ?, quotas_at = ? WHERE id = ?",
+                          (json.dumps(checked), util.now(), cred_id))
     presence.computer_changed(pj.slug, cred_id)
     for aid in before:                  # a per-session poll of a session that left or joined the list looks again
         messaging.notify(pj.slug, aid)
@@ -214,8 +270,8 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                             continue
                         me = messaging.agent_member(a)
                         session = a["session"][len(LOCAL):] if a["session"].startswith(LOCAL) else a["session"]
-                        out += [dict(d, agent=a["name"], session=session) for d in messaging.hand_out(pj, me)]
-                        due = messaging.next_due(pj, me)
+                        out += [dict(d, agent=a["name"], session=session) for d in messaging.hand_out(pj, me, True)]
+                        due = messaging.next_due(pj, me, True)
                         if due is not None:
                             left = min(left, max(0.05, due - util.now()))
                     if out:
@@ -238,6 +294,11 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
     finally:
         presence.computer_closed(pj.slug, cred_id, waker)
         mark()
+
+
+def answer_command(c: Caller, body: dict[str, Any]) -> dict[str, Any]:
+    """The program's answer to a command it was handed for one of the agents bound through this credential."""
+    return commands.answer(c.pj, _computer(c), body.get("delivery"), body.get("result"), body.get("detail"))
 
 
 def ack(c: Caller, ids: Any) -> dict[str, Any]:

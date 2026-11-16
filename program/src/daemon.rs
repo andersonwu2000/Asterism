@@ -3,10 +3,13 @@
 //!
 //! For every joined project it holds this computer's connection to the server: it reports the local
 //! sessions it can wake right now (`POST /api/computer/sessions`, the complete list, again whenever it
-//! changes), keeps a poll open (`GET /api/computer/poll`), puts each delivery in front of its session and
-//! acknowledges (`POST /api/computer/ack`) only what was put there. Each project has two threads: the
-//! reporter (sends the list when it changes) and the poller (polls, delivers, acknowledges), so that a new
-//! session is reported while a poll is held.
+//! changes, with each session's last activity and the products' quotas: report.rs), keeps a poll open
+//! (`GET /api/computer/poll`), puts each delivery in front of its session and acknowledges
+//! (`POST /api/computer/ack`) only what was put there. A command a person gives an agent (a delivery of kind
+//! `command`) is never put in front of the session: it is answered (`POST /api/computer/command`), for now
+//! always `unsupported`, since the session is open in its product and nothing here can reach it there yet.
+//! Each project has two threads: the reporter (sends the list when it or what it says changed) and the
+//! poller (polls, delivers, acknowledges), so that a new session is reported while a poll is held.
 //!
 //! What it can wake: a Claude Code session while that session's `mcp` holds a connection to us (the
 //! message channel and its token come from that connection, because only the session's environment has
@@ -19,7 +22,9 @@
 
 use crate::http::{self, Fail};
 use crate::local;
+use crate::model::Product;
 use crate::push;
+use crate::report;
 use crate::state::{self, Project};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -33,6 +38,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 const POLL_S: u64 = 25; // one held poll; short enough for any proxy in between
+// How often the sessions' activity and the quotas are looked at again; a report goes out only when they changed.
+const LOOK_EVERY: Duration = Duration::from_secs(20);
 const RELOAD_EVERY: Duration = Duration::from_secs(30);
 const LOG_MAX: u64 = 1024 * 1024;
 
@@ -112,6 +119,7 @@ struct Daemon {
     cv: Condvar,
     projects: Mutex<HashMap<String, Arc<Proj>>>,
     report_after: std::time::Instant,
+    records: report::Records,
 }
 
 pub fn run(home: PathBuf) -> i32 {
@@ -162,6 +170,7 @@ pub fn run(home: PathBuf) -> i32 {
         cv: Condvar::new(),
         projects: Mutex::new(HashMap::new()),
         report_after: std::time::Instant::now() + grace,
+        records: report::Records::default(),
     });
     d.reload();
     crate::update::start(home);
@@ -309,33 +318,64 @@ impl Daemon {
         http::call(&self.agent, method, &format!("{}/api/computer/{path}", p.p.url), body, &[("Authorization", &auth)], query, t)
     }
 
-    /// Send the list of wakeable sessions whenever it changed (or the server may have lost it).
+    /// The report: each session with its last activity where its record is here, and the quotas (report.rs).
+    /// Files are read outside the lock.
+    fn report_body(&self, list: &[(String, Product)]) -> Value {
+        let mut sessions = Vec::new();
+        let (mut claude_records, mut rollouts) = (false, Vec::new());
+        for (id, product) in list {
+            let name = if *product == Product::Codex { "codex" } else { "claude-code" };
+            let mut s = json!({"session": id, "product": name});
+            if let Some(path) = self.records.path(*product, id) {
+                if let Some(t) = report::modified(&path) {
+                    s["active_at"] = json!(t);
+                }
+                match product {
+                    Product::ClaudeCode => claude_records = true,
+                    Product::Codex => rollouts.push(path),
+                }
+            }
+            sessions.push(s);
+        }
+        json!({"sessions": sessions, "quotas": report::quotas(claude_records, &rollouts)})
+    }
+
+    /// Send the list of wakeable sessions whenever it, or what it says of them, changed (or the server may
+    /// have lost it).
     fn reporter(&self, p: &Proj) {
         let wait = self.report_after.saturating_duration_since(std::time::Instant::now());
         nap(p, wait);
         let mut pause = Backoff(1);
+        let mut sent: Option<Value> = None; // the body the server took last
+        let mut look_at = std::time::Instant::now();
         loop {
-            let (gen, sessions) = {
+            let (gen, list, forced) = {
                 let mut w = lock(&self.w);
-                loop {
+                let forced = loop {
                     if p.stopped() {
                         return;
                     }
                     let last = p.reported.load(Ordering::SeqCst);
-                    if last != w.gen || p.force_report.swap(false, Ordering::SeqCst) {
-                        break;
+                    let forced = p.force_report.swap(false, Ordering::SeqCst);
+                    if last != w.gen || forced || std::time::Instant::now() >= look_at {
+                        break forced;
                     }
-                    w = self.cv.wait_timeout(w, Duration::from_secs(30)).map(|r| r.0).unwrap_or_else(|e| e.into_inner().0);
-                }
-                let mut list: Vec<Value> = w.claude.keys().map(|s| json!({"session": s, "product": "claude-code"})).collect();
-                list.extend(
-                    w.codex.keys().filter(|t| !w.claude.contains_key(*t)).map(|t| json!({"session": t, "product": "codex"})),
-                );
-                (w.gen, list)
+                    let left = look_at.saturating_duration_since(std::time::Instant::now());
+                    w = self.cv.wait_timeout(w, left).map(|r| r.0).unwrap_or_else(|e| e.into_inner().0);
+                };
+                let mut list: Vec<(String, Product)> = w.claude.keys().map(|s| (s.clone(), Product::ClaudeCode)).collect();
+                list.extend(w.codex.keys().filter(|t| !w.claude.contains_key(*t)).map(|t| (t.clone(), Product::Codex)));
+                (w.gen, list, forced)
             };
-            let n = sessions.len();
-            match self.call(p, "POST", "sessions", Some(&json!({"sessions": sessions})), &[], Duration::from_secs(30)) {
+            look_at = std::time::Instant::now() + LOOK_EVERY;
+            let body = self.report_body(&list);
+            if !forced && p.reported.load(Ordering::SeqCst) == gen && sent.as_ref() == Some(&body) {
+                continue; // nothing new to say
+            }
+            let n = list.len();
+            match self.call(p, "POST", "sessions", Some(&body), &[], Duration::from_secs(30)) {
                 Ok(_) => {
+                    sent = Some(body);
                     p.reported.store(gen, Ordering::SeqCst);
                     // The server took the list; the poll opens right after, but answers only after up to POLL_S.
                     p.set_state("connected");
@@ -408,12 +448,16 @@ impl Daemon {
         }
         let mut done = Vec::new();
         for d in ds {
-            let (Some(id), Some(frame), Some(session)) = (d["delivery"].as_i64(), d["frame"].as_str(), d["session"].as_str()) else {
-                continue;
-            };
             if p.stopped() {
                 break;
             }
+            if d["kind"] == "command" {
+                self.answer_command(p, d);
+                continue;
+            }
+            let (Some(id), Some(frame), Some(session)) = (d["delivery"].as_i64(), d["frame"].as_str(), d["session"].as_str()) else {
+                continue;
+            };
             let to = {
                 let mut w = lock(&self.w);
                 if let Some(agent) = d["agent"].as_str() {
@@ -452,6 +496,35 @@ impl Daemon {
             // The server hands them out again later; delivering twice is better than losing one.
             Err(Fail::Unreachable(e)) => log(&format!("{}: acknowledging failed ({e})", p.p.slug)),
             Err(Fail::Refused { message, .. }) => log(&format!("{}: acknowledging refused ({message})", p.p.slug)),
+        }
+    }
+
+    /// A command a person gave an agent of theirs (`goal`, `compact`, `model`): never put in front of the
+    /// session. Until commands can reach a session that is open in its product, the answer is `unsupported`,
+    /// saying why. The answer hands the delivery over; one that does not reach the server is handed out again.
+    fn answer_command(&self, p: &Proj, d: &Value) {
+        let (Some(id), Some(session)) = (d["delivery"].as_i64(), d["session"].as_str()) else { return };
+        let product = {
+            let w = lock(&self.w);
+            if w.claude.contains_key(session) {
+                Some(Product::ClaudeCode)
+            } else if w.codex.contains_key(session) {
+                Some(Product::Codex)
+            } else {
+                None
+            }
+        };
+        let detail = match product {
+            Some(Product::ClaudeCode) => "the session is open in Claude Code; commands cannot reach it from Asterism yet",
+            Some(Product::Codex) => "the session is open in the Codex App; commands cannot reach it from Asterism yet",
+            None => "the session is not known on this computer (any more)",
+        };
+        let body = json!({"delivery": id, "result": "unsupported", "detail": detail});
+        match self.call(p, "POST", "command", Some(&body), &[], Duration::from_secs(30)) {
+            Ok(_) => log(&format!("{}: command {id} for {session} answered (unsupported)", p.p.slug)),
+            Err(e) if e.is_revoked() => self.revoked(p),
+            Err(Fail::Unreachable(e)) => log(&format!("{}: answering command {id} failed ({e})", p.p.slug)),
+            Err(Fail::Refused { message, .. }) => log(&format!("{}: answering command {id} refused ({message})", p.p.slug)),
         }
     }
 

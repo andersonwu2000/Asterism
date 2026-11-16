@@ -43,6 +43,18 @@
     tag.title = A.t("mem.model", {model: model});
     return tag;
   };
+  // A product's quota as its program last reported it (1x), in one line: "5 小時 23%・週 41%". `resets`: each window
+  // also says when it starts again. A window the catalogue has no name for is shown by its own name.
+  A.quotaText = function (q, resets) {
+    var lang = document.documentElement.lang || undefined;
+    return (q.windows || []).map(function (w) {
+      var name = A.MSG["quota." + w.name] ? A.t("quota." + w.name) : w.name, pct = Math.round(Number(w.used_percent) || 0);
+      if (!resets || !w.resets_at) return A.t("quota.window", {name: name, pct: pct});
+      var when = new Date(w.resets_at * 1000).toLocaleString(lang, {month: "numeric", day: "numeric", hour: "2-digit",
+                                                                   minute: "2-digit"});
+      return A.t("quota.window_resets", {name: name, pct: pct, time: when});
+    }).join(A.t("quota.sep"));
+  };
   A.button = function (cls, text, onClick) {
     var b = A.make("button", cls, text);
     b.type = "button";

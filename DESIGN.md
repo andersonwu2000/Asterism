@@ -83,8 +83,16 @@ Depth is stepped surface lightness, never a shadow.
   - an agent: a disc; a person: a square with a 2 px radius;
   - online: filled in `--color-ink`; offline: hollow, its outline in `--color-ink-faint`. A person is online while a
     page of the project is open in a browser (the page beats every few seconds); an agent as its presence says.
-- **Busy** and **idle** are words next to an agent's name, not a colour: busy, it holds a task; idle, it is online and
-  holds none (the one to take a task nobody holds). Offline it carries neither.
+- **What an agent is doing** is words next to its name, not a colour (1x): while online, **工作中** (its session did
+  something within the last two minutes, as its program reads it from the session's own record) in `--color-ink`, or
+  **閒置** in the dim ink, after **有任務** when it holds a task ("有任務 · 閒置"). One that holds a task and has been
+  idle for longer than half an hour carries **有任務但閒置** in the overdue mark's shape instead (a dashed tag after a
+  small triangle, the time of its last activity in its title): a task taken and left is the exception worth ink.
+  Offline it carries none of them (the hollow mark says it). The same words in the member list, the agent page, the
+  private conversations and the composer's list of names.
+- **A quota** (the 5-hour and weekly use of a product, as the person's own program last reported it) is plain dim
+  text, "5 小時 23%・週 41%", shown only to that person: on the agent page of their own agents (the reset times in its
+  title) and in 電腦和連接器 (with the reset times, the plan and when it was reported). Nobody else ever sees it.
 - **A name never shrinks first.** In every list a member's name keeps its width; the model tag shrinks or drops, and
   the owner ("alice 的 agent") is the first to shrink and go.
 - **A channel some members may not read** carries a small lock after its name in the channel list (a shape in the
@@ -234,11 +242,18 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the list says "↓ 新訊息", or, as the inverted pill, "↓ 有人找你" when one of them is important for the reader; it goes
   to the first of them, then to the end. The browser tab's title starts with the count of messages important for the
   reader in the whole project: `(2) #general · Asterism`.
-- **The composer** keeps one draft per place, for the life of the tab. In a channel, "@" lists whom a mention can
-  reach, over the composer: my agents first, then the other agents and the people, then the groups, each with its
-  presence mark, name (mono) and model tag; arrow keys, Enter or Tab, Escape. A mention of a name that is no member or
-  group is said under the composer and the message waits: sending again sends it as it is. In a message drawn, a
-  mention that reached someone is at weight 600, no hue.
+- **The composer** keeps one draft per place, for the life of the tab. It completes three things in one list over
+  the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
+  other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is
+  doing); "#" lists the channels the reader may read; "/" right after "@<an agent of mine> " at the start of the
+  message lists the commands for it (/goal, /goal clear, /compact, /model), each with one line saying what it does.
+  The list filters as one types (names that start with it first, then names that hold it); arrow keys, Enter or Tab
+  take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
+  composer and the message waits: sending again sends it as it is. In a message drawn, a mention that reached someone
+  is at weight 600, no hue.
+- **A command to an agent** (`@cody /compact`, only its own person's) is posted like any message; under the composer
+  one line says it was handed to the agent's program, and the outcome comes as a reply from the system, in the
+  reader's words.
 
 ### The agent page
 
@@ -247,10 +262,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - The second column is every agent of the project, under a switch at its top (remembered): **依群組** (sections by
   the groups people organise, in their order; an agent under the first such group it is in, else under AI; a
   person's own agent group says whose an agent is, which is the other sorting) or **依擁有者** (sections by person,
-  mine first). A row is a place row: presence, name (mono), the model tag, and "忙碌" or "閒置" in plain dim text at
-  the right; the chosen one is the current place.
-- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, "忙碌" or "閒置", what
-  it holds in one line (its task's number and title; a link to the board at this agent), then
+  mine first). A row is a place row: presence, name (mono), the model tag, and what it is doing (工作中, 閒置, 有任務,
+  or the 有任務但閒置 tag) at the right; the chosen one is the current place.
+- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, what it is doing, what
+  it holds in one line (its task's number and title; a link to the board at this agent), for an agent of the reader's
+  own its quota in dim, then
   kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
   boxes, remove from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
 - The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
@@ -291,9 +307,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ### Files mode
 
-- **Two sources, one explorer.** The top-left cell is the source shown as a dropdown, as chat's project name:
-  "公共 ▾" (the project's repository) or "私人 ▾" (a folder of the reader's own computer), opening a menu of the two,
-  the current one checked. Both have the same tree, keyboard and entry menu. Above the tree, one line: the files menu
+- **Two sources, one explorer.** The top-left cell is the two sources side by side, two buttons as the member
+  list's people | agents: **公共** (the project's repository) and **私人** (a folder of the reader's own computer), the
+  one shown pressed (`aria-pressed`). Both have the same tree, keyboard and entry menu. Above the tree, one line: the files menu
   (for the local source open folder, restore access when the browser must be asked again, and forget folder, two
   steps in place; for the repository, the repository on GitHub) and the search field filling the rest. The opened
   local folder is one folder at the top of its tree, shown and handled like any folder (its name, folding, its entry

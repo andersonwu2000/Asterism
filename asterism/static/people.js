@@ -5,8 +5,8 @@
 //   people and agents (remembered), then sections as Discord's: one per group shown separately, in the groups'
 //   order, holding the online members whose highest such group it is; "online" for the other online members;
 //   "offline" for every offline member. In a channel only who may read it (its permissions' readers). A row keeps the
-//   name's width; an agent's busy or idle word stays by it, the owner note goes first. Under each agent, its task
-//   (tasks.js: its title, when its body was last updated, the overdue mark; a person holds none), and on the agents'
+//   name's width; what an agent is doing stays by it (frame.js, S.workMark), the owner note goes first. Under each
+//   agent, its task (tasks.js: its title, when its body was last updated, the overdue mark; a person holds none), and on the agents'
 //   side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
 //   control, right click, the context-menu key or Shift+F10 for the member's menu;
 // - a profile card (a popover: name, kind, presence, groups with x and +, an agent's tasks, and mention, private
@@ -113,12 +113,10 @@
     return R;
   };
 
-  // An agent's state as a word beside its name: busy (it holds a task), idle (online and holding none: the one to
-  // take a task nobody holds), nothing while offline or for a person.
+  // An agent's state in words (frame.js, S.workText): working or idle while online, after "has a task" when it holds
+  // one, or "has a task, idle" for one idle too long; nothing while offline or for a person.
   P.stateWord = function (who, isAgent) {
-    if (!isAgent) return "";
-    if (who.busy) return t("nav.busy");
-    return who.online ? t("nav.idle") : "";
+    return isAgent && S ? S.workText(who) : "";
   };
 
   // ------------------------------------------------------------------ the acts
@@ -391,9 +389,9 @@
     b.appendChild(make("span", "prow-name" + (found.isAgent ? " mono" : ""), who.name));
     var model = found.isAgent ? A.modelTag(who.model) : null;
     if (model) b.appendChild(model);
-    // The name keeps its width; busy or idle stays beside it; the model tag shrinks, the owner goes first.
-    var state = P.stateWord(who, found.isAgent);
-    if (state) b.appendChild(make("span", "prow-state", state));
+    // The name keeps its width; what it is doing stays beside it; the model tag shrinks, the owner goes first.
+    var state = found.isAgent ? S.workMark(who, "prow-state") : null;
+    if (state) b.appendChild(state);
     var note = found.isAgent ? (who.owner === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who.owner}))
              : who.name === ME ? t("people.you") : "";
     if (note) b.appendChild(make("span", "prow-note", note));

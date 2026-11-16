@@ -12,7 +12,8 @@
 - the answers kept under an Idempotency-Key whose keeping time is over (replays.py). They count as gone from
   then on whether or not they are deleted yet, so they never wake the task;
 - the task board (tasks.sweep): the holder of a task whose body is due for an update reminded, done tasks deleted
-  once kept long enough.
+  once kept long enough;
+- commands to agents nobody will answer (commands.sweep): told as such to their person.
 
 It runs one sweep over all projects, then sleeps until the earliest time something falls due or until it is
 kicked (presence.kick: a message was sent, a poll ended, a binding changed, an event attempt finished). A
@@ -24,7 +25,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from . import config, events, messaging, notices, presence, replays, schedules, tasks, util
+from . import commands, config, events, messaging, notices, presence, replays, schedules, tasks, util
 from .projects import Project
 from .store import Store
 
@@ -39,9 +40,10 @@ def _guard(pj: Project, step: str, fn: Callable[[], None]) -> None:
 
 
 def _unanswered(pj: Project, t: float) -> None:
-    """A local agent's delivery handed out twice and still not acknowledged a redelivery period later."""
+    """A local agent's delivery handed out twice and still not acknowledged a redelivery period later. A command is
+    its program's, not the agent's: commands.sweep answers for it."""
     for r in pj.db.execute("SELECT DISTINCT d.agent_id FROM deliveries d JOIN agents a ON a.id = d.agent_id "
-                           "WHERE a.kind != 'chatgpt' AND a.offline_reason IS NULL AND d.state = 'out' "
+                           "WHERE a.kind != 'chatgpt' AND a.offline_reason IS NULL AND d.state = 'out' AND d.kind != 'command' "
                            "AND d.attempts >= 2 AND d.handed_out <= ?",
                            (t - config.get().redeliver_after_s,)).fetchall():
         _guard(pj, "unanswered", lambda aid=r["agent_id"]: notices.hold(pj, aid, "unanswered"))
@@ -92,7 +94,8 @@ def _due_times(pj: Project) -> list[float]:
             out.append(r["last_poll"] + s.offline_after_s)
     out += [r[0] + s.redeliver_after_s for r in pj.db.execute(
         "SELECT d.handed_out FROM deliveries d JOIN agents a ON a.id = d.agent_id WHERE a.kind != 'chatgpt' "
-        "AND a.offline_reason IS NULL AND d.state = 'out' AND d.attempts >= 2")]
+        "AND a.offline_reason IS NULL AND d.state = 'out' AND d.attempts >= 2 AND d.kind != 'command'")]
+    out += commands.next_due(pj)
     out += [r[0] for r in pj.db.execute("SELECT due FROM followups WHERE answered IS NULL AND due IS NOT NULL")]
     return out + events.next_due(pj) + schedules.next_due(pj) + tasks.next_due(pj)
 
@@ -135,6 +138,7 @@ def sweep(store: Store) -> float | None:
         for sid in schedules.due(pj, t):
             _guard(pj, "schedule", lambda sid=sid: schedules.run(pj, sid, t))
         _guard(pj, "tasks", lambda: tasks.sweep(pj, t))
+        _guard(pj, "commands", lambda: commands.sweep(pj, t))
         for f in pj.db.execute("SELECT * FROM followups WHERE answered IS NULL AND due <= ? ORDER BY due", (t,)).fetchall():
             _guard(pj, "remind", lambda f=f: _remind(pj, f, t))
         for r in pj.db.execute("SELECT id FROM credentials WHERE connected = 1").fetchall():

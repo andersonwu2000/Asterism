@@ -100,6 +100,31 @@ def is_online(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> bool:
     return offline_because(slug, a, db) is None
 
 
+def last_activity(db: sqlite3.Connection, a: sqlite3.Row) -> float | None:
+    """When the agent last did something: the last activity of its session as its computer's program reported it
+    (the session record's modification time), else its latest tool call (a connector agent, a program that does not
+    report it). None: never known."""
+    r = db.execute("SELECT active_at FROM computer_sessions WHERE credential_id = ? AND session = ?",
+                   (a["credential_id"], a["session"])).fetchone() if a["credential_id"] and a["session"] else None
+    if r is not None and r["active_at"] is not None:
+        return r["active_at"]
+    return a["last_tool"]
+
+
+def work(slug: str, a: sqlite3.Row, db: sqlite3.Connection, online: bool | None = None) -> dict[str, object]:
+    """What the agent is doing, for people (1x; agents never read it): `work` active (it did something within
+    ASTERISM_ACTIVE_S), idle (online, not active) or offline; `last_active` (ISO or None); `stale`: it holds a task
+    and has been idle for longer than ASTERISM_STALE_S. Holding a task (busy) is apart from all three."""
+    s = config.get()
+    if online is None:
+        online = is_online(slug, a, db)
+    t = last_activity(db, a)
+    ago = util.now() - t if t is not None else None
+    state = "offline" if not online else "active" if ago is not None and ago < s.active_s else "idle"
+    stale = state == "idle" and ago is not None and ago > s.stale_s and busy(db, a)
+    return {"work": state, "last_active": util.iso(t), "stale": stale}
+
+
 def opened(slug: str, agent_id: int, session: str, waker: asyncio.Event) -> None:
     _open[(slug, agent_id, session)] += 1
     _wakers[(slug, agent_id)].add(waker)

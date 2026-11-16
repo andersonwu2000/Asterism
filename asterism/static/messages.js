@@ -13,10 +13,13 @@
 // end of the list is seen, and a pill over the foot of the list says so (inverted when one of them is important for
 // the reader) and goes to the first of them, then to the end. The browser tab's title starts with the count of
 // messages important for the reader in the whole project, from the frame's places.
-// The composer keeps one draft per place (sessionStorage: this tab's, gone with it). In a channel, typing "@" offers
-// the members (my agents first, then the other agents and the people, then the groups) as a list over the composer
-// (arrow keys, Enter or Tab, Escape); a mention of a name that is no member or group holds the message back once,
-// said under the composer, and sending again sends it as it is. A mention that reached someone is drawn in bold.
+// The composer keeps one draft per place (sessionStorage: this tab's, gone with it). It completes, in one list over the
+// composer (arrow keys, Enter or Tab, Escape; it never sends): in a channel, "@" and the members (my agents first, then
+// the other agents and the people, then the groups); "#" and the channels; "/" right after "@<an agent of mine> " at the
+// start, the commands for it (1x: /goal, /goal clear, /compact, /model, each with one line). A mention of a name that is
+// no member or group holds the message back once, said under the composer, and sending again sends it as it is. A
+// mention that reached someone is drawn in bold. A command's outcome is the system's reply to it, drawn in the page's
+// own words from its `outcome`.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -277,6 +280,14 @@
     });
   }
 
+  // The system's reply that tells how a command to an agent went (1x), in the reader's words; the stored text is the
+  // same sentence in English.
+  function outcomeText(o) {
+    var key = "msg.cmd." + o.result, vars = {agent: o.agent, command: o.command, detail: o.detail || ""};
+    if (o.detail && A.MSG[key + "_why"]) key += "_why";
+    return A.MSG[key] ? t(key, vars) : o.result;
+  }
+
   function agentTag(name) {
     var who = A.side.directory[name];
     return who && who.owner ? t("msg.agent_of", {owner: who.owner}) : t("msg.kind_agent");
@@ -317,7 +328,7 @@
     if (m.level === "important") meta.appendChild(make("span", "pill", t("msg.important")));
     body.appendChild(meta);
 
-    var box = A.renderText(m.text, {mentions: m.mentions});
+    var box = A.renderText(m.outcome ? outcomeText(m.outcome) : m.text, {mentions: m.mentions});
     if (A.paths) A.paths.scan(box);
     body.appendChild(box);
     body.appendChild(clampable(li, box, m.id));
@@ -677,12 +688,18 @@
     grow();
   }
 
-  // ------------------------------------------------------------------ @ in the composer
+  // ------------------------------------------------------------------ completion in the composer: @, # and /
 
   // The server's rule for a mention: "@" not after a name's character, then the name's characters; a name that is
   // nobody loses its trailing ".", "_" or "-" before it is given up.
   var MENTION_RE = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
   var AT_MAX = 12;
+  // The commands a person gives an agent of theirs (1x): `@agent /command ...` at the start of a message. What each
+  // puts into the composer; the ones that take an argument leave the caret after a space.
+  var COMMANDS = [{name: "/goal", insert: "/goal ", hint: "msg.cmd_hint.goal"},
+                  {name: "/goal clear", insert: "/goal clear", hint: "msg.cmd_hint.goal_clear"},
+                  {name: "/compact", insert: "/compact", hint: "msg.cmd_hint.compact"},
+                  {name: "/model", insert: "/model ", hint: "msg.cmd_hint.model"}];
   var atList = make("ul", "mention-list");
   atList.id = "mention-list";
   atList.setAttribute("role", "listbox");
@@ -694,11 +711,28 @@
   el.text.setAttribute("aria-expanded", "false");
   var at = {options: [], active: -1, start: -1, shut: -1};
 
-  // The "@name" being typed at the caret (a channel only: a private message mentions nobody), or null.
+  function isMyAgent(name) {
+    var v = A.side.members;
+    return !!v && (v.agents || []).some(function (a) { return a.name === name && a.owner === ME; });
+  }
+
+  // What is being completed at the caret, or null: {kind, start, end, query}, where kind is
+  // - "/": a command right after "@<an agent of mine> " at the very start of the text (any place);
+  // - "@": a name to mention (a channel only: a private message mentions nobody);
+  // - "#": a channel's name (any place).
   function atToken() {
-    if (!isChannel(state.place) || el.text.selectionStart !== el.text.selectionEnd) return null;
-    var caret = el.text.selectionStart, m = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]*)$/.exec(el.text.value.slice(0, caret));
-    return m ? {start: caret - m[2].length - 1, end: caret, query: m[2]} : null;
+    if (el.text.selectionStart !== el.text.selectionEnd) return null;
+    var caret = el.text.selectionStart, before = el.text.value.slice(0, caret), m;
+    if ((m = /^@([A-Za-z0-9._-]+) \/([A-Za-z]*)$/.exec(before)) && isMyAgent(m[1])) {
+      return {kind: "/", start: caret - m[2].length - 1, end: caret, query: m[2]};
+    }
+    if (isChannel(state.place) && (m = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]*)$/.exec(before))) {
+      return {kind: "@", start: caret - m[2].length - 1, end: caret, query: m[2]};
+    }
+    if ((m = /(^|[^A-Za-z0-9._#-])#([a-z0-9-]*)$/.exec(before))) {
+      return {kind: "#", start: caret - m[2].length - 1, end: caret, query: m[2]};
+    }
+    return null;
   }
 
   // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups.
@@ -707,10 +741,10 @@
     if (v) {
       var agents = v.agents || [];
       agents.filter(function (a) { return a.owner === ME; }).forEach(function (a) {
-        out.push({name: a.name, kind: "agent", model: a.model, busy: a.busy, note: t("nav.my_agent")});
+        out.push({name: a.name, kind: "agent", model: a.model, who: a, note: t("nav.my_agent")});
       });
       agents.filter(function (a) { return a.owner !== ME; }).forEach(function (a) {
-        out.push({name: a.name, kind: "agent", model: a.model, busy: a.busy,
+        out.push({name: a.name, kind: "agent", model: a.model, who: a,
                   note: a.owner ? t("msg.agent_of", {owner: a.owner}) : t("msg.kind_agent")});
       });
       (v.people || []).filter(function (p) { return p.name !== ME; }).forEach(function (p) {
@@ -726,38 +760,56 @@
         if (n !== ME) out.push({name: n, kind: d.kind, note: d.owner === ME ? t("nav.my_agent") : ""});
       });
     }
-    return out;
+    return out.map(function (o) { return Object.assign(o, {key: o.name, insert: "@" + o.name + " "}); });
+  }
+
+  // The channels the reader may read, in their order.
+  function channelChoices() {
+    var p = A.side.places;
+    return (p ? p.channels : []).map(function (c) {
+      return {key: c.name, name: "#" + c.name, kind: "channel", insert: "#" + c.name + " ", note: ""};
+    });
+  }
+
+  function commandChoices() {
+    return COMMANDS.map(function (c) {
+      return {key: c.name.slice(1), name: c.name, kind: "command", insert: c.insert, note: t(c.hint)};
+    });
   }
 
   function atOption(o, i) {
-    var li = make("li", "mention-option");
+    var li = make("li", "mention-option" + (o.kind === "command" ? " command-option" : ""));
     li.id = "mention-opt-" + i;
     li.setAttribute("role", "option");
-    if (o.kind === "group") li.appendChild(make("span", "mention-mark"));
+    if (o.kind === "group" || o.kind === "channel" || o.kind === "command") li.appendChild(make("span", "mention-mark"));
     else li.appendChild(A.side.presence(A.side.directory[o.name] || {kind: o.kind}));
     li.appendChild(make("span", "mono mention-name", o.name));
     var model = o.kind === "agent" ? A.modelTag(o.model) : null;
     if (model) li.appendChild(model);
-    if (o.busy) li.appendChild(make("span", "dim", t("nav.busy")));
+    var work = o.kind === "agent" && o.who ? A.side.workText(o.who) : "";
+    if (work) li.appendChild(make("span", "dim", work));
     if (o.note) li.appendChild(make("span", "dim mention-note", o.note));
     li.addEventListener("mousedown", function (ev) { ev.preventDefault(); atChoose(i); });
     return li;
   }
 
+  var LIST_LABEL = {"@": "msg.at_label", "#": "msg.hash_label", "/": "msg.cmd_label"};
   function atDraw() {
     var tok = atToken();
-    if (!tok) at.shut = -1;                         // Escape shuts the list for that one name only
+    if (!tok) at.shut = -1;                         // Escape shuts the list for that one token only
     if (!tok || tok.start === at.shut) { atClose(); return; }
     var q = tok.query.toLowerCase();
+    var all = tok.kind === "/" ? commandChoices() : tok.kind === "#" ? channelChoices() : mentionable();
     // Names starting with what was typed first, then names holding it; each in the order above.
-    var ranked = mentionable().map(function (o, i) {
-      var low = o.name.toLowerCase(), where = low.indexOf(q);
+    var ranked = all.map(function (o, i) {
+      var low = o.key.toLowerCase(), where = low.indexOf(q);
       return {o: o, i: i, score: where === 0 ? 0 : where > 0 ? 1 : 2};
     }).filter(function (x) { return x.score < 2; });
     ranked.sort(function (a, b) { return a.score - b.score || a.i - b.i; });
     at.options = ranked.slice(0, AT_MAX).map(function (x) { return x.o; });
     if (!at.options.length) { atClose(); return; }
     at.start = tok.start;
+    atList.setAttribute("aria-label", t(LIST_LABEL[tok.kind]));
     atList.textContent = "";
     at.options.forEach(function (o, i) { atList.appendChild(atOption(o, i)); });
     atList.hidden = false;
@@ -785,10 +837,11 @@
     el.text.removeAttribute("aria-activedescendant");
   }
 
+  // Taking a choice puts its text in the token's place; it never sends.
   function atChoose(i) {
     var o = at.options[i], tok = atToken();
     if (!o || !tok) { atClose(); return; }
-    var v = el.text.value, put = "@" + o.name + " ";
+    var v = el.text.value, put = o.insert;
     el.text.value = v.slice(0, tok.start) + put + v.slice(tok.end).replace(/^ /, "");
     var caret = tok.start + put.length;
     el.text.setSelectionRange(caret, caret);
@@ -816,12 +869,19 @@
 
   // ------------------------------------------------------------------ sending
 
+  // The words a refused command needs: the agent it names and that agent's person.
+  function commandVars(text) {
+    var m = /^@([A-Za-z0-9._-]+) \//.exec(text), who = m && A.side.directory[m[1]];
+    return m ? {agent: m[1], person: (who && who.owner) || "?"} : {};
+  }
+
   var held = null;                        // the text held back once for a mention of nobody
 
   async function send() {
     var text = el.text.value;
     if (!text.trim() || !state.place) return;
-    var unknown = unknownMentions(text);
+    // A command to an agent mentions nobody (the server's rule): nothing in it is held back.
+    var unknown = /^@[A-Za-z0-9._-]+ \/(goal|compact|model)(\s|$)/.test(text) ? [] : unknownMentions(text);
     if (unknown.length && held !== text) {          // said in place; sending the same text again sends it
       held = text;
       el.out.textContent = t("msg.unknown_hold", {names: unknown.map(function (n) { return "@" + n; }).join(", ")});
@@ -832,12 +892,14 @@
     if (state.replyTo) body.reply_to = state.replyTo;
     var place = state.place;
     var r = await post("messages", body);
-    if (!r.ok) { el.out.textContent = A.refusal("msg.send", r.data); return; }
+    if (!r.ok) { el.out.textContent = A.refusal("msg.send", r.data, commandVars(text)); return; }
     if (place === state.place) {
       el.text.value = "";
       grow();
       setReply(null);
-      el.out.textContent = outcome(r.data.mentions);
+      var c = r.data.command;
+      el.out.textContent = c ? (c.delivered ? t("msg.cmd.sent", {agent: c.agent, command: "/" + c.command}) : "")
+                             : outcome(r.data.mentions);
     }
     try { sessionStorage.removeItem(DRAFT + place); } catch (err) { /* nothing kept */ }
     await news();

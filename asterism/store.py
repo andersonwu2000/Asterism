@@ -140,7 +140,10 @@ CREATE TABLE IF NOT EXISTS credentials (
     revoked REAL,
     via TEXT,                      -- how it was issued: invite, device, connector
     last_poll REAL,                -- start or end of the latest computer poll with this credential
-    connected INTEGER              -- the computer connection last written to the log (1 connected, 0 or NULL not)
+    connected INTEGER,             -- the computer connection last written to the log (1 connected, 0 or NULL not)
+    quotas TEXT,                   -- a computer's: the quotas its program last reported (JSON list, computers.QUOTAS);
+                                   -- shown to its person only. NULL: none reported
+    quotas_at REAL                 -- when they were reported
 );
 CREATE TABLE IF NOT EXISTS agent_invites (
     digest TEXT PRIMARY KEY,       -- digest of the code in the link; the code itself is never kept
@@ -156,6 +159,8 @@ CREATE TABLE IF NOT EXISTS computer_sessions (
     credential_id INTEGER NOT NULL, -- the local sessions a computer's program reported it can wake right now
     session TEXT NOT NULL,          -- namespaced like agents.session: 'local:<id>'
     product TEXT NOT NULL,          -- claude-code, codex
+    active_at REAL,                 -- the session's last activity as the program reported it (its record's
+                                    -- modification time); NULL: not said
     PRIMARY KEY (credential_id, session)
 );
 CREATE TABLE IF NOT EXISTS channels (
@@ -203,7 +208,8 @@ CREATE TABLE IF NOT EXISTS levels (
 CREATE TABLE IF NOT EXISTS deliveries (
     id INTEGER PRIMARY KEY,
     agent_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,            -- message, notice, or reminder (message_id: the message it is about)
+    kind TEXT NOT NULL,            -- message, notice, reminder (message_id: the message it is about), or command
+                                   -- (message_id: a person's command to the agent, for its program; see `commands`)
     message_id INTEGER,
     state TEXT NOT NULL,           -- pending, out (handed out, not acknowledged), done, dropped
     how TEXT NOT NULL,             -- what an acknowledgement counts as: push, or return (held while offline)
@@ -324,6 +330,19 @@ CREATE TABLE IF NOT EXISTS agent_states (
     at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agent_states_agent ON agent_states(agent_id, after_message, id);
+CREATE TABLE IF NOT EXISTS commands (
+    message_id INTEGER PRIMARY KEY, -- a person's message `@agent /command ...` to one of their agents (1x)
+    agent_id INTEGER NOT NULL,
+    command TEXT NOT NULL,         -- goal, compact, model
+    args TEXT NOT NULL,            -- what follows the command, trimmed ('' for none; `/goal clear` has 'clear')
+    delivery_id INTEGER,           -- its delivery to the agent's program (kind command); NULL: none was made
+    result TEXT,                   -- the outcome: done, failed, unsupported (the program's answer), offline (no program
+                                   -- could take it), no_answer (the program did not answer); NULL: not known yet
+    detail TEXT,                   -- the program's one line about the outcome, as it said it
+    answered REAL,
+    reply_id INTEGER               -- the system's reply to the command that tells the outcome
+);
+CREATE INDEX IF NOT EXISTS commands_reply ON commands(reply_id);
 CREATE TABLE IF NOT EXISTS upgrades (
     name TEXT PRIMARY KEY,         -- a one-time change of data (ADDED_PERMISSIONS) that was made, or found not needed
     at REAL NOT NULL
@@ -341,7 +360,8 @@ ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
                ("model", "TEXT")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
-                    ("last_poll", "REAL"), ("connected", "INTEGER")],
+                    ("last_poll", "REAL"), ("connected", "INTEGER"), ("quotas", "TEXT"), ("quotas_at", "REAL")],
+    "computer_sessions": [("active_at", "REAL")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
                  ("sender_model", "TEXT"), ("task_id", "INTEGER")],

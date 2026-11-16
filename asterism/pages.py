@@ -359,13 +359,11 @@ def _dm_side(tr: Translator, f: dict[str, Any]) -> str:
 
 
 def _source_button(tr: Translator) -> str:
-    """Files' top-left cell: the source shown (the repository or a local folder, by their catalogue names) as a
-    dropdown like the project's name in chat; explorer.js opens the two sources as a menu and keeps the word current."""
-    label = e(tr("files.source"))
-    return (f'<button type="button" id="source-switch" class="project-name source-switch" aria-haspopup="menu" '
-            f'aria-expanded="false" aria-label="{label}" title="{label}">'
-            f'<span class="project-name-text" id="source-name">{e(tr("files.source_repo"))}</span>{glyph("chevron", 16)}'
-            f'</button>')
+    """Files' top-left cell: the two sources side by side (1x), the repository and a local folder (by their catalogue
+    names), the one shown pressed; explorer.js keeps aria-pressed current."""
+    buttons = "".join(f'<button type="button" class="seg-btn" data-source="{k}" aria-pressed="{"true" if k == "repo" else "false"}">'
+                      f'{e(tr(key))}</button>' for k, key in (("repo", "files.source_repo"), ("local", "files.source_local")))
+    return f'<div id="source-switch" class="seg source-switch" role="group" aria-label="{e(tr("files.source"))}">{buttons}</div>'
 
 
 def _explorer(tr: Translator, f: dict[str, Any]) -> str:

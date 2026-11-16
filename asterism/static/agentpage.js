@@ -2,13 +2,14 @@
 // (/api/agents/{name}/timeline). All texts come from the page's message catalogue.
 // - The second column (#agent-list): every agent of the project, under a switch at its top (#agent-sort, remembered):
 //   by group (sections by the groups in their order; an agent under the first group it is in that is not a default
-//   group, else under AI) or by owner (sections by person, mine first). A row: presence, name, model, busy.
+//   group, else under AI) or by owner (sections by person, mine first). A row: presence, name, model, what it is doing.
 // - The chosen agent is the address's query (?name=), changed in place with history.pushState; without one, the
 //   first of my agents, else the first listed. The rail's agent button returns to it. Top right (#agent-head): its
 //   presence, name, model, kind and owner; at the right its acts where the reader may (its groups as check boxes, and
 //   removing it from the project, floating), and "invite agent".
 //   By group, a person's own agent groups are passed over (they say whose an agent is: that is the other sorting).
-//   Beside a name, busy (it holds a task) or idle (online, holding none). Top right also what it holds, in one line.
+//   Beside a name, what it is doing (frame.js, S.workMark: working or idle, has a task, has a task but idle). Top right
+//   also what it holds, in one line, and for an agent of the reader's own its quota (/api/my; 1x).
 // - The page: its timeline, as a conversation: the messages that concern it (it sent them, they name it, or they are
 //   the reader's private conversation with it; #tl-filter, remembered) or every message it sent or was handed, that
 //   the reader may read, with where it was, and its changes of state (online, offline with the reason, a task given,
@@ -103,8 +104,8 @@
     link.append(S.presence({kind: "agent", online: !!a.online}), make("span", "place-name", a.name));
     var model = A.modelTag(a.model);
     if (model) link.appendChild(model);
-    var state = P.stateWord(a, true);
-    if (state) link.appendChild(make("span", "busy", state));
+    var state = S.workMark(a, "busy");
+    if (state) link.appendChild(state);
     li.appendChild(link);
     return li;
   }
@@ -154,10 +155,12 @@
     el.head.appendChild(make("span", "agent-name", a.name));
     var model = A.modelTag(a.model);
     if (model) el.head.appendChild(model);
-    var state = P.stateWord(a, true);
-    if (state) el.head.appendChild(make("span", "agent-state", state));
+    var state = S.workMark(a, "agent-state");
+    if (state) el.head.appendChild(state);
     var doing = taskLine(a.name);
     if (doing) el.head.appendChild(doing);
+    var quota = quotaLine(a);
+    if (quota) el.head.appendChild(quota);
     var kind = A.MSG["kind." + a.kind] ? t("kind." + a.kind) : a.kind;
     el.head.appendChild(make("span", "agent-facts", [kind, ownerWord(a)].join(" · ")));
     if (!R) return;
@@ -200,6 +203,29 @@
     if (mine.length > 1) a.appendChild(make("span", "agent-task-more", t("agp.more_tasks", {n: mine.length - 1})));
     a.setAttribute("aria-label", t("agp.tasks_label", {n: mine.length, text: mine[0].title}));
     return a;
+  }
+  // The quota of an agent of the reader's own, as its computer's program last reported it for its product (1x): only
+  // the reader's own (/api/my); the reset times in its title.
+  var mine = null, mineRaw = "";
+  function quotaLine(a) {
+    if (a.owner !== ME || !mine) return null;
+    var me = (mine.agents || []).filter(function (x) { return x.name === a.name; })[0];
+    var cred = me && (mine.credentials || []).filter(function (c) { return c.id === me.credential; })[0];
+    var q = cred && (cred.quotas || []).filter(function (x) { return x.product === a.kind; })[0];
+    if (!q || !(q.windows || []).length) return null;
+    var span = make("span", "agent-quota", A.quotaText(q, false));
+    span.title = A.quotaText(q, true);
+    span.setAttribute("aria-label", t("quota.label", {text: A.quotaText(q, true)}));
+    return span;
+  }
+  async function loadMine() {
+    var r = await A.request(API + "my");
+    if (!r.ok) return;
+    var raw = JSON.stringify(r.data);
+    if (raw === mineRaw) return;
+    mineRaw = raw;
+    mine = r.data;
+    A.keepFocus(el.head.parentNode, drawHead);
   }
   var tasksRaw = "";
   async function loadTasks() {
@@ -450,6 +476,8 @@
   setInterval(news, EVERY_MS);
   loadTasks();
   setInterval(loadTasks, EVERY_MS);
+  loadMine();
+  setInterval(loadMine, 30000);
 
   // The timeline's filter (#tl-filter, remembered): what concerns the agent (what it said, what names it, the private
   // conversation with the reader), or everything it was handed.
