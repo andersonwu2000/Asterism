@@ -32,6 +32,13 @@
     if (text !== undefined && text !== null) n.textContent = text;
     return n;
   };
+  // The model an agent runs on (as its program last said), a quiet tag after its name; nothing when unknown.
+  A.modelTag = function (model) {
+    if (!model) return null;
+    var tag = A.make("span", "tag model-tag", model);
+    tag.title = A.t("mem.model", {model: model});
+    return tag;
+  };
   A.button = function (cls, text, onClick) {
     var b = A.make("button", cls, text);
     b.type = "button";

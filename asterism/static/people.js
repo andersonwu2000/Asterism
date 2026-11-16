@@ -222,7 +222,11 @@
     var who = found ? found.who : {name: name};
     head.appendChild(S.presence(found ? dirOf(found) : S.directory[name] || {kind: "person"}));
     var names = make("div", "card-names");
-    names.appendChild(make("h2", "card-name" + (found && found.isAgent ? " mono" : ""), name));
+    var title = make("div", "card-title");
+    title.appendChild(make("h2", "card-name" + (found && found.isAgent ? " mono" : ""), name));
+    var model = found && found.isAgent ? A.modelTag(who.model) : null;
+    if (model) title.appendChild(model);
+    names.appendChild(title);
     var sub = [];
     if (found) {
       sub.push(kindText(found), t(who.online ? "presence.online" : "presence.offline"));
@@ -374,6 +378,8 @@
     b.dataset.key = "m:" + who.name;
     b.appendChild(S.presence(dirOf(found)));
     b.appendChild(make("span", "prow-name" + (found.isAgent ? " mono" : ""), who.name));
+    var model = found.isAgent ? A.modelTag(who.model) : null;
+    if (model) b.appendChild(model);
     var notes = [];
     if (found.isAgent) notes.push(who.owner === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who.owner}));
     if (found.isAgent && who.busy) notes.push(t("nav.busy"));

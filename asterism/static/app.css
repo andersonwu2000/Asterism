@@ -243,6 +243,7 @@ form.inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6
   padding: 0 6px; border: 1px solid var(--color-edge-strong); border-radius: var(--r-micro); color: var(--color-ink-dim);
   white-space: nowrap;
 }
+.tag.model-tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; font-weight: 400; }
 .pill {
   display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 7px;
   font: 600 12px/1 var(--font-ui); border-radius: var(--r-full);
@@ -631,6 +632,7 @@ td .muted, td small { color: var(--color-ink-dim); }
 .prow-btn:hover { background: var(--color-wash-2); background-image: none; }
 .prow-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prow-name.mono { font-size: 13px; }
+.prow-btn .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .prow-note { margin-left: auto; font-size: 12px; color: var(--color-ink-dim); white-space: nowrap; overflow: hidden;
              text-overflow: ellipsis; min-width: 0; }
 
@@ -640,6 +642,7 @@ td .muted, td small { color: var(--color-ink-dim); }
 .card-names { min-width: 0; }
 .card-name { font-family: var(--font-display); font-size: 18px; overflow-wrap: anywhere; }
 .card-name.mono { font-family: var(--font-mono); font-size: 16px; font-weight: 500; }
+.card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .card-sub { margin: 0; font-size: 13px; color: var(--color-ink-dim); }
 .card-sec { border-top: 1px solid var(--color-edge); padding-top: 8px; }
 .card-sec h3 { font-size: 12px; margin-bottom: 4px; }

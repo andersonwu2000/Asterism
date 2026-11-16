@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS agents (
     offline_reason TEXT,           -- unanswered or silent: held offline until its session calls a tool
     announced INTEGER,             -- the presence last announced in #general (1 online, 0 offline, NULL never)
     last_tool REAL,                -- the latest call of an agent endpoint other than poll and ack
-    quiet_since REAL               -- its session left its computer's list then; going offline not announced yet
+    quiet_since REAL,              -- its session left its computer's list then; going offline not announced yet
+    model TEXT                     -- the model its session last said it runs on (X-Asterism-Model); NULL: unknown
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agents_session ON agents(person_id, session) WHERE session IS NOT NULL;
 CREATE TABLE IF NOT EXISTS superseded (
@@ -177,7 +178,8 @@ CREATE TABLE IF NOT EXISTS messages (
     mentions TEXT NOT NULL,        -- JSON list of the member and group names mentioned
     sent REAL NOT NULL,
     notice INTEGER,                -- 1: a notice of presence (never asks for an answer); NULL: any other message
-    schedule_id INTEGER            -- the schedule that posted it; NULL: posted by hand (or by the system)
+    schedule_id INTEGER,           -- the schedule that posted it; NULL: posted by hand (or by the system)
+    sender_model TEXT              -- an agent sender's model when it was sent; NULL: unknown, or not an agent
 );
 CREATE INDEX IF NOT EXISTS messages_place ON messages(place, id);
 CREATE INDEX IF NOT EXISTS messages_speaker ON messages(sender_kind, sender_id, place, sent);
@@ -297,11 +299,13 @@ CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
 # Columns added after a table first shipped: a database made by an earlier version gets them when opened.
 # The optional third item fills the new column of the rows that existed before (an SQL expression).
 ADDED_COLUMNS = {
-    "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL")],
+    "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
+               ("model", "TEXT")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
                     ("last_poll", "REAL"), ("connected", "INTEGER")],
     # Until tasks came, every message from the system was a notice of presence.
-    "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER")],
+    "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
+                 ("sender_model", "TEXT")],
     # The groups that existed before groups had an order keep the order of their ids; default groups have none.
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),

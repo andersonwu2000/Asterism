@@ -18,6 +18,7 @@ mod http;
 mod join;
 mod local;
 mod mcp;
+mod model;
 mod push;
 mod state;
 mod status;

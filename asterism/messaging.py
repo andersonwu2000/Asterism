@@ -211,9 +211,11 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
         # Members who joined after a message was sent have no level for it.
         level = levels.get(r["id"]) or ("normal" if own or me.kind == "person" else "muted")
         m: dict[str, Any] = {"id": r["id"], "in": _place_for(pj, r["place"], me, names), "from": r["sender_name"],
-                             "from_kind": r["sender_kind"], "relation": relation(me, r), "level": level,
-                             "reply_to": r["reply_to"], "text": r["text"], "sent_at": util.iso(r["sent"]),
-                             "mentions": json.loads(r["mentions"])}
+                             "from_kind": r["sender_kind"], "relation": relation(me, r)}
+        if r["sender_kind"] == "agent" and r["sender_model"]:
+            m["model"] = r["sender_model"]
+        m.update({"level": level, "reply_to": r["reply_to"], "text": r["text"], "sent_at": util.iso(r["sent"]),
+                  "mentions": json.loads(r["mentions"])})
         if not r["place"].startswith("#"):
             m["private"] = True
         if r["schedule_id"] is not None:
@@ -234,12 +236,13 @@ def frame(m: dict[str, Any], notice: bool = False) -> str:
     at level normal asks the agent to settle the tasks again if they need it."""
     place = "private" if m.get("private") else m["in"]
     reply = f' reply-to="{_attr(m["reply_to"])}"' if m.get("reply_to") else ""
+    model = f' model="{_attr(m["model"])}"' if m.get("model") else ""
     if notice:
         last = RECOORDINATE if m["level"] == "normal" else NO_ANSWER
     else:
         last = f"(Asterism message. To answer: send with reply_to={m['id']}.)" if m["level"] == "important" else NO_ANSWER
     return (f'<asterism-message id="{m["id"]}" in="{_attr(place)}" from="{_attr(m["from"])}" '
-            f'relation="{_attr(m["relation"])}" level="{_attr(m["level"])}"{reply}>\n'
+            f'relation="{_attr(m["relation"])}"{model} level="{_attr(m["level"])}"{reply}>\n'
             f'{_CLOSER_RE.sub("&lt;", m["text"])}\n</asterism-message>\n{last}')
 
 
@@ -353,12 +356,16 @@ def _post(pj: Project, sender: Member, place: str, text: str, orig: sqlite3.Row 
     """Write a message checked by the caller, each reader's level and the deliveries; wake the agents."""
     rid = orig["id"] if orig is not None else None
     t = util.now()
+    # An agent's message keeps the model its session last said it runs on, as it is now.
+    said = pj.db.execute("SELECT model FROM agents WHERE id = ?", (sender.id,)).fetchone() \
+        if sender.kind == "agent" else None
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
-                            "reply_to, hop, mentions, sent, schedule_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "reply_to, hop, mentions, sent, schedule_id, sender_model) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (place, sender.kind, sender.id, sender.person_id, sender.name, text, rid, hop,
                              json.dumps([n for n, _, _ in found]), t,
-                             scheduled[1] if scheduled else None)).lastrowid
+                             scheduled[1] if scheduled else None, said["model"] if said else None)).lastrowid
         results, woken = _distribute(pj, mid, place, sender, found, orig, t, scheduled[0] if scheduled else None)
         if scheduled:
             _unstack(pj, scheduled[1], mid, t)

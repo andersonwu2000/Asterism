@@ -13,6 +13,7 @@
 
 use crate::http::{self, Fail};
 use crate::local;
+use crate::model::{self, Product};
 use crate::push;
 use crate::state::{self, Project};
 use serde_json::{json, Map, Value};
@@ -101,6 +102,8 @@ struct Mcp {
     s: Mutex<Sess>,
     sid_from_env: bool,
     claude: Option<(String, Option<String>)>, // the message channel and its token
+    claude_session: Option<String>,           // CLAUDE_CODE_SESSION_ID: whose record says the model
+    records: model::Finder,
     initialized: AtomicBool,
     no_codex_said: AtomicBool,
     retry_for: Duration, // a write is tried again this long after its first attempt (ASTERISM_RETRY_S)
@@ -118,6 +121,8 @@ pub fn run(home: PathBuf) -> i32 {
         sid_from_env: !sid.is_empty(),
         s: Mutex::new(Sess { sid, ..Default::default() }),
         claude: env("CLAUDE_CODE_MESSAGING_SOCKET").map(|s| (s, env("CLAUDE_CODE_MESSAGING_TOKEN"))),
+        claude_session: env("CLAUDE_CODE_SESSION_ID"),
+        records: model::Finder::default(),
         initialized: AtomicBool::new(false),
         no_codex_said: AtomicBool::new(false),
         retry_for: Duration::from_secs_f64(env("ASTERISM_RETRY_S").and_then(|v| v.parse().ok()).filter(|s: &f64| *s >= 0.0).unwrap_or(45.0)),
@@ -357,7 +362,21 @@ impl Mcp {
         if let Some(key) = key {
             headers.push(("Idempotency-Key", key));
         }
+        // Read again at each call, so a change of model inside the session shows from the next one.
+        let model = self.model(sid, client);
+        if let Some(m) = &model {
+            headers.push(("X-Asterism-Model", m));
+        }
         http::call(&self.agent, method, &format!("{}/api/agent/{path}", p.url), body, &headers, query, t)
+    }
+
+    /// The model this session's agent runs on, from its own session record; None when unknown.
+    fn model(&self, sid: &str, client: &str) -> Option<String> {
+        if client == "codex" {
+            self.records.model(Product::Codex, sid)
+        } else {
+            self.records.model(Product::ClaudeCode, self.claude_session.as_deref().unwrap_or(sid))
+        }
     }
 
     /// A write (`send`, `task_update`) that is done once however often it is tried. It carries an

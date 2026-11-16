@@ -80,8 +80,10 @@
     var li = make("li", "ag-item"), out = make("div", "out");
     out.setAttribute("aria-live", "polite");
     var first = make("div", "ag-line");
-    first.append(S.presence({kind: "agent", online: !!who.online}), make("span", "ag-name mono", who.name),
-                 make("span", "dim", A.MSG["kind." + who.kind] ? t("kind." + who.kind) : who.kind));
+    first.append(S.presence({kind: "agent", online: !!who.online}), make("span", "ag-name mono", who.name));
+    var model = A.modelTag(who.model);
+    if (model) first.appendChild(model);
+    first.appendChild(make("span", "dim", A.MSG["kind." + who.kind] ? t("kind." + who.kind) : who.kind));
     li.appendChild(first);
     function open(where, opener) {
       A.menu(Object.assign({label: t("ag.acts", {name: who.name})}, where), menuFor(who, out, mine), opener);

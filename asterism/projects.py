@@ -467,7 +467,7 @@ def _owners(pj: Project) -> dict[int, str]:
 def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None) -> dict[str, Any]:
     owners = owners if owners is not None else _owners(pj)
     because = presence.offline_because(pj.slug, a, pj.db)
-    return {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"],
+    return {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"], "model": a["model"],
             "groups": [g["name"] for g in groups_of(pj, "agent", a["id"])],
             "online": because is None, "offline_because": because, "busy": presence.busy(pj.db, a),
             "last_active": util.iso(a["last_active"]), "generation": a["generation"]}

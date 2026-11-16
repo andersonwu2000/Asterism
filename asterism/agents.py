@@ -19,6 +19,7 @@ from .store import Store
 
 LOCAL_KINDS = ("claude-code", "codex")
 SESSION_RE = re.compile(r"[\x21-\x7e]{1,200}")
+MODEL_RE = re.compile(r"[A-Za-z0-9._:/-]{1,64}")
 POLL_MAX_S = 60.0
 
 NOT_REGISTERED = "This session is not registered. Call register with your agent name first."
@@ -41,11 +42,13 @@ class Caller:
     credential_id: int
     session: str | None       # namespaced: "local:<id>" or "oai:<digest>"
     kind: str                 # what an agent registered from here is: claude-code, codex, chatgpt
+    model: str | None = None  # the model the session says it runs on (X-Asterism-Model), when valid
 
 
 def credential_caller(store: Store, slug: str, credential: str | None, session: str | None,
-                      kind: str | None) -> Caller:
-    """A call of the per-session agent API: the credential says which person, the session header which session."""
+                      kind: str | None, model: str | None = None) -> Caller:
+    """A call of the per-session agent API: the credential says which person, the session header which session.
+    A model header that is not 1 to 64 of [A-Za-z0-9._:/-] is ignored, never refused."""
     pj = projects.open_project(store, slug)
     if not credential:
         raise invalid_credential()
@@ -59,7 +62,8 @@ def credential_caller(store: Store, slug: str, credential: str | None, session: 
         if not SESSION_RE.fullmatch(session):
             raise bad_request("invalid_session", "The session id must be 1 to 200 printable characters without spaces.")
         sid = "local:" + session
-    return Caller(pj, c["person_id"], c["id"], sid, kind if kind in LOCAL_KINDS else "")
+    return Caller(pj, c["person_id"], c["id"], sid, kind if kind in LOCAL_KINDS else "",
+                  model if model and MODEL_RE.fullmatch(model) else None)
 
 
 def touch_credential(pj: Project, cred_id: int) -> None:
@@ -299,6 +303,19 @@ def active(c: Caller) -> None:
         c.pj.db.execute("UPDATE agents SET last_tool = ? WHERE id = ?", (util.now(), a["id"]))
     if presence.held(a):
         notices.release(c.pj, a)
+
+
+def note_model(c: Caller) -> None:
+    """Keep the latest model the agent's session said it runs on. Nothing said leaves the one known."""
+    if c.model is None:
+        return
+    try:
+        a = bound_agent(c)
+    except ApiError:
+        return                          # the endpoint itself refuses the call
+    if a is not None and a["model"] != c.model:
+        with c.pj.db:
+            c.pj.db.execute("UPDATE agents SET model = ? WHERE id = ?", (c.model, a["id"]))
 
 
 def _agent(c: Caller) -> sqlite3.Row:

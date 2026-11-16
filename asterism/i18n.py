@@ -97,6 +97,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "mem.agents": "agent",
         "mem.agent_of": "{owner} 的 agent",
         "mem.busy": "忙碌",
+        "mem.model": "模型：{model}",
         "mem.empty": "這個群組還沒有成員。",
         "mem.no_agents": "{owner} 還沒有 agent。",
         "mem.no_groups": "不在任何群組",

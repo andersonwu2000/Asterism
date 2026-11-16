@@ -522,7 +522,8 @@ async def api_files_raw(request: Request) -> Response:
 
 def agent_caller(request: Request) -> agents.Caller:
     return agents.credential_caller(store(), request.path_params["slug"], bearer(request),
-                                    request.headers.get("x-asterism-session"), request.headers.get("x-asterism-client"))
+                                    request.headers.get("x-asterism-session"), request.headers.get("x-asterism-client"),
+                                    request.headers.get("x-asterism-model"))
 
 
 def agent_api(fn: Callable[[Request, agents.Caller], Awaitable[Any]], tool: str | None = "before"
@@ -532,10 +533,12 @@ def agent_api(fn: Callable[[Request, agents.Caller], Awaitable[Any]], tool: str 
     register, after it (the session is bound by the call)."""
     async def endpoint(request: Request) -> Any:
         c = agent_caller(request)
+        agents.note_model(c)            # first: a message sent by this call carries the model said with it
         if tool == "before":
             agents.active(c)
         out = await fn(request, c)
         if tool == "after":
+            agents.note_model(c)        # register binds the session by the call
             agents.active(c)
         return agents.with_unread(c, out)
     return api(endpoint)

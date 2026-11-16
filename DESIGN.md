@@ -65,6 +65,9 @@ Depth is stepped surface lightness, never a shadow.
 - **A task is held by an agent or by nobody**, never by a person. On the agent page's task tab a task shows its number
   (mono, 12 px, dim: agents and the system's notices name tasks by number); a message still shows none.
 - **A schedule's level** is a quiet tag; the usual level (normal) is unmarked.
+- **An agent's model** (as its program last said it) is a quiet tag in mono, 11 px, right after its name: in the
+  member list, the profile card and the agent page; a message header carries the model its sender had when it was
+  sent. An unknown model is unmarked.
 - **Unread** is weight: the name of a place with unread messages is in `--color-ink` at weight 600; a place with none
   is `--color-ink-dim` at 400. The count is plain dim text.
 - **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.

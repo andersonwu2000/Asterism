@@ -257,7 +257,11 @@
     var meta = make("div", "meta");
     meta.appendChild(m.from_kind === "system" || !A.people ? make("span", "from", senderName(m))
                                                            : A.people.nameButton(m.from, "from name-btn"));
-    if (m.from_kind === "agent") meta.appendChild(make("span", "tag", agentTag(m.from)));
+    if (m.from_kind === "agent") {
+      meta.appendChild(make("span", "tag", agentTag(m.from)));
+      var model = A.modelTag(m.model);          // the sender's model when it sent this message
+      if (model) meta.appendChild(model);
+    }
     if (m.scheduled) {
       var sch = make("span", "tag", t("msg.scheduled"));
       sch.title = t("msg.scheduled_hint", {name: m.from});
