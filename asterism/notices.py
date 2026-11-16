@@ -2,7 +2,8 @@
 notice per change that the system posts in the project's notice channel.
 
 sync() compares what presence says now with what was last announced (agents.announced, kept in the
-database so a restart neither repeats nor loses a change) and posts the notice when they differ. It is
+database so a restart neither repeats nor loses a change) and posts the notice when they differ, writing the
+change into the agent's timeline (timeline.note). It is
 called where a change happens (poll opened, leave, subscribe, a tool call ending a hold) and, for the
 changes that time makes (no poll any more, a subscription expired, a grace that ended), by the background task.
 """
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import config, messaging, presence, tasks, util
+from . import config, messaging, presence, tasks, timeline, util
 from .projects import Project
 
 
@@ -53,6 +54,8 @@ def sync(pj: Project, agent_id: int) -> None:
         util.log("agent_online", project=pj.slug, agent=a["name"])
     else:
         util.log("agent_offline", project=pj.slug, agent=a["name"], reason=_reason(a))
+    # The agent's timeline keeps the change, with why it is offline as the pages say it (presence.OFFLINE_BECAUSE).
+    timeline.note(pj, agent_id, "online" if online else "offline", reason=because)
     messaging.post_notice(pj, a, online, tasks.presence_text(pj, a, online), tasks.assigners(pj, a))
 
 

@@ -1,5 +1,5 @@
-// The agent page's scheduled messages tab (#schedules; m1f5_agent_page_design.md section 4), from /api/schedules,
-// read again every few seconds (agentpage.js), never while one is being changed. Times are shown and entered in the
+// The work page's scheduled messages tab (#schedules; m1f5_agent_page_design.md section 4), from /api/schedules,
+// read again every few seconds (workpage.js), never while one is being changed. Times are shown and entered in the
 // browser's local time; the API gets ISO times. All texts come from the page's message catalogue.
 // - Scopes: all; made by me; paused; and one per place a schedule posts to.
 // - One block per schedule, by id (a list that re-sorted by the next run would move under the reader): where to (a
@@ -11,7 +11,7 @@
 //   list; Escape closes it and the focus goes back to the action.
 "use strict";
 (function () {
-  var A = window.Asterism, G = A && A.agentPage, root = document.getElementById("agent-page");
+  var A = window.Asterism, G = A && A.workPage, root = document.getElementById("work-page");
   var list = document.getElementById("schedules");
   if (!G || !list) return;
   var t = A.t, make = A.make, S = A.side;

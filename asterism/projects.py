@@ -972,6 +972,7 @@ def _purge_agents(pj: Project, where: str, args: tuple[Any, ...]) -> None:
             pj.db.execute("DELETE FROM chain_reminders WHERE agent_id = ?", (aid,))
             pj.db.execute("DELETE FROM followups WHERE agent_id = ?", (aid,))
             pj.db.execute("DELETE FROM subscriptions WHERE agent_id = ?", (aid,))
+            pj.db.execute("DELETE FROM agent_states WHERE agent_id = ?", (aid,))
             pj.db.execute("DELETE FROM agents WHERE id = ?", (aid,))
     for aid in ids:
         presence.binding_changed(pj.slug, aid)

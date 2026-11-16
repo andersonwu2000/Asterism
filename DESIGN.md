@@ -65,7 +65,7 @@ Depth is stepped surface lightness, never a shadow.
   saying anything. A control that is armed for its second press wears the same inversion while it is armed.
 - **Locked** (a task a person assigned) is a quiet tag: `--color-edge-strong` outline, `--color-ink-dim` text, saying
   who assigned it. A lock is a settled fact, not a call for attention.
-- **A task is held by an agent or by nobody**, never by a person. On the agent page's task tab a task shows its number
+- **A task is held by an agent or by nobody**, never by a person. On the work page's tasks tab a task shows its number
   (mono, 12 px, dim: agents and the system's notices name tasks by number); a message still shows none.
 - **A schedule's level** is a quiet tag; the usual level (normal) is unmarked.
 - **An agent's model** (as its program last said it) is a quiet tag in mono, 11 px, right after its name: in the
@@ -86,7 +86,7 @@ Depth is stepped surface lightness, never a shadow.
   chevron for Lean, a folded corner for a PDF, a landscape frame for a picture, a blank page for anything else), on a
   10×11 box in the current ink, before the name in the explorer's rows and the tabs. Decorative: the name says it.
 - A message shows **no number**: its id stays in the page's data, for replies and jumps.
-- **A count in a list of scopes** (the agent page's second column) is plain dim text, absent when 0; weight is never
+- **A count in a list of scopes** (the work page's second column) is plain dim text, absent when 0; weight is never
   used there (weight means unread).
 - **Settled things recede; they are never struck through.**
 
@@ -122,12 +122,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   **top-right cell**, one line over the page (the page's title or tabs at its left, its actions at its right); and
   the **page** under it. The lines between the cells are the same everywhere: the second column's divider runs up
   through the top line, and the top line's rule runs under both top cells. Chat, private messages, files, the agent
-  page and the settings layer all have them.
+  page, the work page and the settings layer all have them.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, private messages, files, agent. No divider between them. At its foot the reader, whose menu opens the
+  chat, private messages, files, agent, 任務 (the work page). No divider between them. At its foot the reader, whose menu opens the
   personal settings (設定), all projects and sign-out. The current one is the current place; hover washes the glyph's tile only, so the
   word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
-- **Folding**: in a mode (chat, private messages, files, agent), pressing the button of the mode one is already in
+- **Folding**: in a mode (chat, private messages, files, agent, work), pressing the button of the mode one is already in
   folds both left cells (the top-left cell and the second column) away on a wide screen, and again brings them back;
   remembered per mode, applied before the first paint. There is no other fold control.
 - **The top cells in chat and private messages**, as Discord's: top left, the project's name in the display voice as
@@ -160,17 +160,18 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **A channel's permissions** are a table of the groups (in their order, the default ones last) with read and post
   each a control of three, as Discord's: ✕ deny, / inherit, ✓ allow; the chosen one is the current place, saved as it
   is pressed. A deny is not red.
-- Chat, private messages, files and agent are **modes**; the settings layer is not. Outside chat, the chat button
+- Chat, private messages, files, agent and work are **modes**; the settings layer is not. Outside chat, the chat button
   carries the count of channel messages important for the reader as the inverted pill, and outside private messages
   the private-messages button the same for private conversations; in its own mode a button carries nothing, the
   second column says it.
 - The second column belongs to the mode: in chat the channels; in private messages the conversations (newest first,
   with their unread marks, and a + that offers, as a menu, the members one may write to privately); in files the
-  explorer; on the agent page the current tab's **list of scopes**; in settings the sections. A list of scopes looks
+  explorer; on the agent page every agent of the project; on the work page the current tab's **list of scopes**; in
+  settings the sections. A list of scopes looks
   like chat's places: short rows under small headings, the chosen one the current place, the others dim, a count as
   plain dim text.
 - Each mode remembers its place: the chat button returns to the place last open, files reopens its tabs, the agent
-  button returns to the tab and scope last shown.
+  button returns to the agent last chosen, the work button to the tab and scope last shown.
 - **Files use the whole page.** Browsing, reading and editing files never sit beside the chat; the rail switches
   between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
@@ -191,7 +192,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   row has its menu (a "..." control, right click, the context-menu key or Shift+F10); an agent's has "new task" and
   "open in the task table"; each task has its own small menu: edit (in place), hand to another agent ..., lock or
   unlock, release, remove (in two steps, in place), offered only where the page cannot already tell the answer is no.
-  It is the agent page's task menu too.
+  It is the work page's task menu too.
 - **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
   presence, groups as chips (× and + for who may change them; never the default groups), an agent's tasks, and the
   acts mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus
@@ -208,22 +209,37 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ### The agent page
 
-- One page for my agents, the task table and the scheduled messages (`/{slug}/agent`, `/agent/tasks`,
-  `/agent/schedules`; the former `/my` and `/schedules` answer with the same page at the matching tab). Top left the
-  project menu; top right the three tabs **agent · 任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px
-  underline for the current one, no counts), and at the right one action for the current tab (invite agent / new
-  task / new schedule), only for who may; below 900 px it is a round icon button with its name as label and tooltip.
-- The second column lists the tab's scopes (mine and each other person's agents; all, my agents', assigned by me,
-  nobody's, each group; all, mine, paused, each place). The scope is in the address's query, changed in place; below
-  900 px the list is in the drawer and the content starts with one line naming the scope and its count, which opens
-  it.
-- The content is one list in the reading column. An agent is a block: presence, name, kind; where it is, its last
-  activity and its tasks as a link; an offline agent's reason on a wash (offline is the exception, online is said by
-  the disc alone); its groups as chips, the default ones as a quiet line. Computers and connectors say which agents
-  are on them; revoking floats. My switches save as they change. Tasks are grouped by group, then by agent, with
-  their numbers and whole texts (four lines, then "顯示全部"). A schedule says where to, when next over how often, its
-  text and its last message or why it is paused. Every row's acts are behind one "..." control; a new task or
-  schedule is a form in place, which Escape closes.
+- `/{slug}/agent` (the former `/my` answers with the same page); the chosen agent is the address's query
+  (`?name=`), changed in place; without one, the first of my agents, else the first listed.
+- The second column is every agent of the project, under a switch at its top (remembered): **依群組** (sections by
+  the groups in their order; an agent under the first group it is in that is not a default group, else under AI) or
+  **依擁有者** (sections by person, mine first). A row is a place row: presence, name (mono), the model tag, and
+  "忙碌" in plain dim text at the right; the chosen one is the current place.
+- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, then kind · owner in
+  dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check boxes, remove
+  from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
+- The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
+  older items loaded on scrolling up, new ones arriving at the end. A message is a message row (time in the gutter,
+  sender, model) whose header also says where it was (the channel, or "私訊", a link to it there) and, in plain dim
+  text, "發出" or "收到". A change of state is a quiet line between them, as a day is: time, then "上線", "離線" (its
+  reason under it on a wash), or what happened to a task, by number. Only what the reader may read is there.
+- Its own person has the composer at the foot, which writes to it privately; anybody else sees one quiet line saying
+  who can. With no agent at all, the column says so and the page is empty.
+
+### The work page
+
+- One page for the task table and the scheduled messages (`/{slug}/work`, `/work/schedules`; the former
+  `/agent/tasks`, `/agent/schedules` and `/schedules` answer with the same page at the matching tab). Top left the
+  project menu; top right the two tabs **任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
+  the current one, no counts), and at the right one action for the current tab (new task / new schedule), only for
+  who may; below 900 px it is a round icon button with its name as label and tooltip.
+- The second column lists the tab's scopes (all, my agents', assigned by me, nobody's, each group; all, mine, paused,
+  each place). The scope is in the address's query, changed in place; below 900 px the list is in the drawer and
+  the content starts with one line naming the scope and its count, which opens it.
+- The content is one list in the reading column. Tasks are grouped by group, then by agent, with their numbers and
+  whole texts (four lines, then "顯示全部"). A schedule says where to, when next over how often, its text and its last
+  message or why it is paused. Every row's acts are behind one "..." control; a new task or schedule is a form in
+  place, which Escape closes.
 
 ### Files mode
 

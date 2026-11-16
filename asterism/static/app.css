@@ -328,7 +328,8 @@ td .muted, td small { color: var(--color-ink-dim); }
   /* Folded (the head script sets data-folded before the first paint): both left cells go. */
   :root[data-folded~="chat"] .mode-chat :is(.column, .corner), :root[data-folded~="files"] .mode-files :is(.column, .corner),
   :root[data-folded~="dm"] .mode-dm :is(.column, .corner),
-  :root[data-folded~="agent"] .mode-agent :is(.column, .corner) { display: none; }
+  :root[data-folded~="agent"] .mode-agent :is(.column, .corner),
+  :root[data-folded~="work"] .mode-work :is(.column, .corner) { display: none; }
 }
 
 /* The rail: one button per mode or page, a glyph with its word under it. The current one is the current place:
@@ -671,7 +672,35 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .sres-more { margin-top: 8px; }
 
 /* ------------------------------------------------------------------ the agent page */
-/* Its tabs, drawn as the files tabs are: ink and a 2 px underline for the current one, dim for the others; no counts. */
+/* The second column: the sort switch over every agent, in sections; a row is presence, name, model, busy. */
+.agent-sort { align-self: stretch; }
+.agent-sort .seg-btn { flex: 1 1 0; }
+.agent-list { display: flex; flex-direction: column; gap: 20px; }
+.agent-list .place-name { font-family: var(--font-mono); font-size: 13px; }
+.agent-list .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-list .busy { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--color-ink-dim); white-space: nowrap; }
+.agent-list .side-note, .agent-none { padding: 0 8px; font-size: 13px; color: var(--color-ink-dim); }
+/* The top-right cell: the chosen agent (its name in mono, 600; the facts dim) and its person's acts at the right. */
+.agent-head { display: flex; align-items: center; gap: 4px 8px; min-width: 0; margin: 0 0 0 8px; font: 400 14px/1.3 var(--font-ui); }
+.agent-head .agent-name { font-family: var(--font-mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+                          white-space: nowrap; }
+.agent-head .agent-facts { min-width: 0; font-size: 13px; color: var(--color-ink-dim); overflow: hidden;
+                           text-overflow: ellipsis; white-space: nowrap; }
+.agent-acts { display: flex; align-items: center; gap: 4px; flex: none; }
+.agent-acts:empty { display: none; }
+/* The page: the chosen agent's timeline, as a conversation (newest at the bottom), with the composer under it. */
+.agent-room > .room { grid-column: 1; grid-row: 1; }
+.tl-note { margin: 0; padding: 12px var(--gutter) 0; text-align: center; font-size: 12px; color: var(--color-ink-dim); }
+.tl-dir { font-size: 12px; color: var(--color-ink-dim); }
+.tl-place { font-size: 12px; color: var(--color-ink-dim); }
+/* A change of state is a quiet line between the messages, as a day is. */
+.tl-state { display: grid; grid-template-columns: 64px minmax(0, 1fr); padding: 4px var(--gutter) 4px 0; font-size: 13px;
+            color: var(--color-ink-dim); }
+.tl-state time { justify-self: end; padding-right: 12px; font: 400 12px/20px var(--font-mono); }
+.tl-state .tl-why { grid-column: 2; margin-top: 2px; padding: 6px 8px; background: var(--color-wash);
+                    border-radius: var(--r-micro); }
+.tl-owner { padding: 6px var(--gutter) 14px; font-size: 13px; color: var(--color-ink-dim); }
+/* The work page: its tabs, drawn as the files tabs are: ink and a 2 px underline for the current one, dim for the others; no counts. */
 .ag-tabs { display: flex; align-items: stretch; align-self: stretch; gap: 2px; min-width: 0; margin-left: 4px; }
 .ag-tab {
   position: relative; display: flex; align-items: center; padding: 0 12px; color: var(--color-ink-dim); font-weight: 500;
@@ -1307,7 +1336,11 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   }
   .right-close { display: inline-flex; }
   .bar-title { margin-left: 4px; }
-  /* The agent page: the tabs and the action as a round icon button; the scope named over the list. */
+  .agent-head .agent-facts { display: none; }
+  .agent-acts .btn { padding: 0 8px; }
+  .tl-state { grid-template-columns: 52px minmax(0, 1fr); }
+  .tl-state time { padding-right: 8px; }
+  /* The work page: the tabs and the action as a round icon button; the scope named over the list. */
   .ag-tabs { margin-left: 0; }
   .ag-tab { padding: 0 9px; }
   .ag-action { width: 32px; padding: 0; border-radius: var(--r-full); }

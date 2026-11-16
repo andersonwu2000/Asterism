@@ -3,9 +3,10 @@
 //   inverted pill), and outside private messages the private-messages button (#rail-dm) the same for private
 //   conversations, from the places frame.js reads on the pages' rhythm;
 // - each mode remembers its place: the chat button goes to the place the reader was last in (messages.js keeps it),
-//   the files page reopens its own tabs (viewer.js), the agent button returns to the tab and scope last shown
-//   (agentpage.js keeps it);
-// - on a wide screen, pressing the button of the mode one is in (chat, private messages, files, agent: [data-fold])
+//   the files page reopens its own tabs (viewer.js), the agent button returns to the agent last chosen (agentpage.js
+//   keeps it), the work button to the tab and scope last shown (workpage.js keeps it);
+// - on a wide screen, pressing the button of the mode one is in (chat, private messages, files, agent, work:
+//   [data-fold])
 //   folds that mode's left cells (the top-left cell and the second column) away or brings them back, remembered per
 //   mode in localStorage and applied before the first paint by the head script (data-folded on <html>);
 // - below 900 px the rail and the left cells live in the drawer (#nav) that #side-open opens: the top-left cell
@@ -33,16 +34,20 @@
   };
   if (chat && HERE !== "messages") chat.href = R.chatHref();
 
-  // The agent button: the address of the agent page last shown (its tab and scope).
-  R.agentKey = "asterism-agent-place:" + SLUG;
-  var agentButton = document.getElementById("rail-my");
-  if (agentButton && HERE !== "agent") {
-    var lastAgent = A.store.get(R.agentKey, null), agentBase = "/" + encodeURIComponent(SLUG) + "/agent";
-    if (typeof lastAgent === "string" && (lastAgent === agentBase || lastAgent.indexOf(agentBase + "/") === 0 ||
-                                          lastAgent.indexOf(agentBase + "?") === 0)) {
-      agentButton.href = lastAgent;
+  // The agent button returns to the agent last chosen on the agent page, the work button to the tab and scope last
+  // shown on the work page (each page keeps its address under its key). Only an address of that page is taken.
+  R.agentKey = "asterism-agent-chosen:" + SLUG;
+  R.workKey = "asterism-work-place:" + SLUG;
+  function returnTo(id, here, key, path) {
+    var button = document.getElementById(id);
+    if (!button || HERE === here) return;
+    var last = A.store.get(key, null), base = "/" + encodeURIComponent(SLUG) + path;
+    if (typeof last === "string" && (last === base || last.indexOf(base + "/") === 0 || last.indexOf(base + "?") === 0)) {
+      button.href = last;
     }
   }
+  returnTo("rail-my", "agent", R.agentKey, "/agent");
+  returnTo("rail-work", "work", R.workKey, "/work");
 
   function showOne(count, k) {
     if (!count) return;

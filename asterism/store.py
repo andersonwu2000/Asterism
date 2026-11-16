@@ -297,6 +297,18 @@ CREATE TABLE IF NOT EXISTS replays (
     PRIMARY KEY (scope, key)
 );
 CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
+CREATE TABLE IF NOT EXISTS agent_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- an agent's changes of state, for its timeline (timeline.py); kept since f6b
+    agent_id INTEGER NOT NULL,
+    state TEXT NOT NULL,           -- online, offline, task_given, task_taken, task_released, task_removed
+    reason TEXT,                   -- offline: why (presence.OFFLINE_BECAUSE)
+    task_id INTEGER,               -- a task change: the task's number
+    by_kind TEXT,                  -- a task change: who made it (person, agent; NULL: the system)
+    by_id INTEGER,
+    after_message INTEGER NOT NULL, -- the newest message id when it happened: the timeline puts it after that message
+    at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_states_agent ON agent_states(agent_id, after_message, id);
 CREATE TABLE IF NOT EXISTS upgrades (
     name TEXT PRIMARY KEY,         -- a one-time change of data (ADDED_PERMISSIONS) that was made, or found not needed
     at REAL NOT NULL

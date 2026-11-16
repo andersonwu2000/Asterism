@@ -1,16 +1,16 @@
-// Tasks (Asterism.tasks), on the messages pages and the agent page. The task table is read from /api/tasks every few
+// Tasks (Asterism.tasks), on the messages pages and the work page. The task table is read from /api/tasks every few
 // seconds. A task is given to an agent or to nobody, never to a person. In chat it is shown in the member list
 // (people.js), under each agent as its status: a task's text on one line, cut with an ellipsis; more than one task, or
-// a long one, folds under "n 項任務", opened in place. A locked task carries the quiet tag. The agent page's task tab
+// a long one, folds under "n 項任務", opened in place. A locked task carries the quiet tag. The work page's tasks tab
 // (tasktable.js) shows the same table by group, with the same acts and the same menu (T.menuItems), offered to a
-// person who may edit tasks (data-can-edit-tasks on #chat or #agent-page; the server decides each one): add a task
+// person who may edit tasks (data-can-edit-tasks on #chat or #work-page; the server decides each one): add a task
 // (to an agent, or to nobody in a chosen group), rewrite it in place, hand it to another agent of its group, lock or
 // unlock it, release it, remove it (in two steps). Each task has its own small menu (its "..." control, right click,
 // the context-menu key or Shift+F10), offered only where the page cannot already tell the answer is no; a refusal
 // shows the server's sentence at the task. A refresh waits while the reader is writing a task or has an act armed.
 "use strict";
 (function () {
-  var A = window.Asterism, root = document.getElementById("chat") || document.getElementById("agent-page");
+  var A = window.Asterism, root = document.getElementById("chat") || document.getElementById("work-page");
   if (!A || !root) return;
   var t = A.t, make = A.make;
   var SLUG = root.dataset.slug, ME = root.dataset.me, API = "/" + encodeURIComponent(SLUG) + "/api/";
@@ -185,9 +185,9 @@
   }
   T.openMenu = openMenu;
 
-  // The task tab of the agent page at a scope: `query` like "agent=a1" or "show=unheld".
+  // The tasks tab of the work page at a scope: `query` like "agent=a1" or "show=unheld".
   T.tableHref = function (query) {
-    return "/" + encodeURIComponent(SLUG) + "/agent/tasks" + (query ? "?" + query : "");
+    return "/" + encodeURIComponent(SLUG) + "/work" + (query ? "?" + query : "");
   };
 
   T.row = function (task) {

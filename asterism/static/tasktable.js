@@ -1,4 +1,4 @@
-// The agent page's tasks tab (#task-table; m1f5_agent_page_design.md section 3): the task table by group, from
+// The work page's tasks tab (#task-table; m1f5_agent_page_design.md section 3): the task table by group, from
 // /api/tasks (tasks.js) and the members (frame.js). A task is an agent's or nobody's.
 // - Scopes: all; my agents' (an agent of mine is responsible); assigned by me (I locked it); nobody's; one group. Any
 //   of them with ?agent={name} (a chip over the list, removable) and ?new=1 (the form for a new task open).
@@ -11,7 +11,7 @@
 //   checked), text. Escape closes it and the focus goes back to what opened it; Ctrl/Cmd+Enter adds.
 "use strict";
 (function () {
-  var A = window.Asterism, G = A && A.agentPage, view = document.getElementById("task-table");
+  var A = window.Asterism, G = A && A.workPage, view = document.getElementById("task-table");
   var T = A && A.tasks, S = A && A.side;
   if (!G || !view || !T || !S) return;
   var t = A.t, make = A.make;

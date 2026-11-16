@@ -6,7 +6,8 @@ page does nothing the API does not; the OAuth consent form is a plain form becau
 The look is DESIGN.md's: one stylesheet (/static/app.css) and no styles in the page. A page of a project sits in
 the project's frame, four cells beside the rail (#rail, rail.js): the top-left cell (#corner, one line over the
 second column), the second column (the channels #side in chat, kept current by frame.js; the conversations in private
-messages; the explorer #explorer in files; the scopes #agent-side on the agent page; the sections #settings-nav in
+messages; the explorer #explorer in files; the agents #agent-side on the agent page; the scopes #work-side on the
+work page; the sections #settings-nav in
 settings), the top-right cell (the page's title or tabs and its actions) and the page itself. The other pages are a
 simple centred column.
 """
@@ -126,7 +127,7 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
            styles: Iterable[str] = (), scripts: Iterable[str] = (), page_class: str = "",
            corner: str = "", column: str = "", bar: str = "") -> tuple[str, int]:
     """A page. With `frame` (a page of a project) it sits in the project's frame, `here` naming the current mode
-    (messages, dm, files, agent, settings): `corner` is the top-left cell, `column` the second column (an element of
+    (messages, dm, files, agent, work, settings): `corner` is the top-left cell, `column` the second column (an element of
     class "column"), `bar` the top-right cell after the drawer's button, `body` the page. Without, in a simple centred
     column. `styles` and `scripts`: further files under /static; the scripts load after base.js (and frame.js) and
     before app.js."""
@@ -259,14 +260,15 @@ def _repo_link(tr: Translator, repo: str) -> str:
 
 
 # The rail's buttons in their order: (page, glyph, word, full name, id). Members, groups and the project's settings
-# are reached from the project menu; agents, tasks and scheduled messages are the agent page's tabs.
+# are reached from the project menu; tasks and scheduled messages are the work page's tabs.
 RAIL = (("messages", "chat", "rail.chat", "nav.messages", "rail-chat"), ("dm", "dm", "rail.dm", "nav.dm", "rail-dm"),
-        ("files", "files", "rail.files", "nav.files", "rail-files"), ("agent", "my", "rail.my", "nav.my", "rail-my"))
+        ("files", "files", "rail.files", "nav.files", "rail-files"), ("agent", "my", "rail.my", "nav.my", "rail-my"),
+        ("work", "tasks", "rail.work", "nav.work", "rail-work"))
 # The modes whose second column the button of the mode one is in folds away (rail.js): (fold key, the column's id).
 FOLDS = {"messages": ("chat", "side"), "dm": ("dm", "side"), "files": ("files", "explorer"),
-         "agent": ("agent", "agent-side")}
+         "agent": ("agent", "agent-side"), "work": ("work", "work-side")}
 # The class of the frame for each mode (`here`): it names what folds and the second column's width.
-MODES = {"messages": "chat", "dm": "dm", "files": "files", "agent": "agent", "settings": "settings"}
+MODES = {"messages": "chat", "dm": "dm", "files": "files", "agent": "agent", "work": "work", "settings": "settings"}
 
 
 def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
@@ -799,59 +801,91 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
                            "repo.js", "local.js", "explorer.js", "viewer.js"])
 
 
-# The agent page's tabs: (tab, its address under /{slug}/agent, its word).
-AGENT_TABS = (("agents", "", "ag.tab.agents"), ("tasks", "/tasks", "ag.tab.tasks"),
-              ("schedules", "/schedules", "ag.tab.schedules"))
-
-
 def _action(tr: Translator, ident: str, label_key: str, attrs: str) -> str:
-    """The one action of the agent page's current tab, at the right of the top-right cell (a round icon button with
-    its name as label and tooltip below 900 px)."""
+    """The one action of a page's top-right cell, at its right (a round icon button with its name as label and
+    tooltip below 900 px)."""
     label = e(tr(label_key))
     return (f'<button type="button" id="{ident}" class="btn ag-action" aria-label="{label}" title="{label}" {attrs}>'
             f'<span class="plus" aria-hidden="true"></span><span class="ag-action-word">{label}</span></button>')
 
 
-def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str, view: dict[str, Any]) -> tuple[str, int]:
-    """The agent page (m1f5_agent_page_design.md): my agents, the task table and the scheduled messages as three tabs
-    at their own addresses, in the frame's four cells: the project menu top left, the current tab's scopes as the
-    second column (#agent-side, drawn by agentpage.js), the tabs (#agent-tabs) and the tab's one action top right,
-    the tab's list as the page. Each tab is drawn from the JSON API by its script (agents.js, tasktable.js,
-    schedules.js); the form for a new schedule (#schedule-form) is in the page only for who may create one."""
+# How the agent page's list is sorted: (key, its word).
+AGENT_SORTS = (("group", "agp.by_group"), ("owner", "agp.by_owner"))
+
+
+def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tuple[str, int]:
+    """The agent page (m1f6_contract.md section 10), in the frame's four cells: the project menu top left; every agent
+    of the project in the second column (#agent-list), sorted by group or by owner (#agent-sort); top right the chosen
+    agent (#agent-head: name, kind, owner, model, presence) with its person's acts (#agent-acts) and "invite agent";
+    the page is the chosen agent's timeline (#agent-timeline: its messages and changes of state, newest at the
+    bottom), with a composer (#tl-composer) that its own person writes to it with. agentpage.js draws all of it from
+    the members (frame.js) and the timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
     slug, mine = frame["slug"], set(frame["perms"])
-    base = f"/{q(slug)}/agent"
+    sorts = "".join(f'<button type="button" class="seg-btn" data-sort="{k}" aria-pressed="{"true" if k == "group" else "false"}">'
+                    f'{e(tr(key))}</button>' for k, key in AGENT_SORTS)
+    column = (f'<nav id="agent-side" class="column agent-side" aria-label="{e(tr("agp.list"))}"><div class="side-inner">'
+              f'<div id="agent-sort" class="seg agent-sort" role="group" aria-label="{e(tr("agp.sort"))}">{sorts}</div>'
+              f'<div id="agent-list" class="agent-list"></div></div></nav>')
+    invite = ""
+    if "manage_own_agents" in mine:
+        invite = _action(tr, "invite-agent", "ag.invite", 'data-act="invite-agent" aria-haspopup="dialog"')
+    bar = (f'<h1 id="agent-head" class="agent-head"></h1><span class="spacer"></span>'
+           f'<div id="agent-acts" class="agent-acts" role="group" aria-label="{e(tr("agp.acts"))}"></div>{invite}')
+    data = {"slug": slug, "me": person["name"]}
+    body = (f'<section id="agent-timeline" class="room timeline" aria-label="{e(tr("agp.timeline"))}" {_attrs(data)}>'
+            f'<div id="tl-scroller" class="scroller"><p id="tl-older" class="tl-note" hidden></p>'
+            f'<ol id="tl-list" class="messages" aria-live="polite"></ol></div>'
+            f'<form id="tl-composer" class="composer" hidden><div class="composer-box">'
+            f'<textarea id="tl-text" rows="1" maxlength="4000" aria-label="{e(tr("agp.input_label"))}"></textarea>'
+            f'<button class="btn primary send">{e(tr("msg.send"))}</button></div>'
+            f'<div class="out composer-out" id="tl-out" aria-live="polite"></div></form></section>')
+    return layout(tr, tr("agp.title"), body, person, frame, "agent", page_class="room-page agent-room",
+                  corner=_project_button(tr, frame), column=column, bar=bar,
+                  styles=["vendor/katex/katex.min.css"],
+                  scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
+                           "render.js", "paths.js", "people.js", "agentpage.js"])
+
+
+# The work page's tabs: (tab, its address under /{slug}/work, its word).
+WORK_TABS = (("tasks", "", "ag.tab.tasks"), ("schedules", "/schedules", "ag.tab.schedules"))
+
+
+def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str, view: dict[str, Any]) -> tuple[str, int]:
+    """The work page (m1f6_contract.md section 11; the tabs as m1f5_agent_page_design.md built them): the task table
+    and the scheduled messages as two tabs at their own addresses, in the frame's four cells: the project menu top
+    left, the current tab's scopes as the second column (#work-side, drawn by workpage.js), the tabs (#work-tabs) and
+    the tab's one action top right, the tab's list as the page. Each tab is drawn from the JSON API by its script
+    (tasktable.js, schedules.js); the form for a new schedule (#schedule-form) is in the page only for who may create
+    one."""
+    slug = frame["slug"]
+    base = f"/{q(slug)}/work"
     tabs = []
-    for k, path, key in AGENT_TABS:
+    for k, path, key in WORK_TABS:
         cur = ' aria-selected="true" aria-current="page"' if k == tab else ' aria-selected="false"'
         tabs.append(f'<a class="ag-tab" role="tab" href="{e(base + path)}" data-tab="{k}"{cur}>{e(tr(key))}</a>')
     action = ""
-    if tab == "agents" and "manage_own_agents" in mine:
-        action = _action(tr, "invite-agent", "ag.invite", 'data-act="invite-agent" aria-haspopup="dialog"')
-    elif tab == "tasks" and view["can_edit_tasks"]:
+    if tab == "tasks" and view["can_edit_tasks"]:
         action = _action(tr, "task-new", "task.add", 'aria-expanded="false"')
     elif tab == "schedules" and view["can_create"]:
         action = _action(tr, "schedule-new", "sch.new", 'aria-expanded="false" aria-controls="schedule-form"')
-    bar = (f'<nav id="agent-tabs" class="ag-tabs" role="tablist" aria-label="{e(tr("ag.tabs"))}">{"".join(tabs)}</nav>'
+    bar = (f'<nav id="work-tabs" class="ag-tabs" role="tablist" aria-label="{e(tr("ag.tabs"))}">{"".join(tabs)}</nav>'
            f'<span class="spacer"></span>{action}')
-    column = (f'<nav id="agent-side" class="column agent-side" aria-label="{e(tr("ag.scopes"))}">'
-              f'<div id="agent-scopes" class="side-inner"></div></nav>')
+    column = (f'<nav id="work-side" class="column agent-side" aria-label="{e(tr("ag.scopes"))}">'
+              f'<div id="work-scopes" class="side-inner"></div></nav>')
     data = {"slug": slug, "me": person["name"], "tab": tab, "can-edit-tasks": "1" if view["can_edit_tasks"] else "",
             "can-manage": "1" if view["can_manage"] else "", "can-create": "1" if view["can_create"] else ""}
-    if tab == "agents":
-        content = '<div id="agents-view" class="ag-view"></div>'
-        scripts = ["people.js", "tasks.js", "agentpage.js", "agents.js"]
-    elif tab == "tasks":
+    if tab == "tasks":
         content = '<div id="task-table" class="ag-view"></div>'
-        scripts = ["people.js", "tasks.js", "agentpage.js", "tasktable.js"]
+        scripts = ["people.js", "tasks.js", "workpage.js", "tasktable.js"]
     else:
         data.update({"places": view["places"], "min-every": view["min_every_s"]})
         form = '<form id="schedule-form" class="ag-form sch-form" hidden></form>' if view["can_create"] else ""
         content = f'{form}<div id="schedules" class="ag-view"></div>'
-        scripts = ["agentpage.js", "schedules.js"]
+        scripts = ["workpage.js", "schedules.js"]
     # Below 900 px the scope is out of sight in the drawer: the page starts with one line naming it, which opens it.
-    body = (f'<div id="agent-page" class="agent-page" {_attrs(data)}>'
+    body = (f'<div id="work-page" class="agent-page" {_attrs(data)}>'
             f'<div class="ag-read"><button type="button" id="scope-line" class="scope-line" aria-controls="nav" '
             f'aria-label="{e(tr("ag.scope_open"))}" hidden></button>{content}</div></div>')
     title = tr("ag.tab." + tab)
-    return layout(tr, title, body, person, frame, "agent", page_class="agent-main", corner=_project_button(tr, frame),
+    return layout(tr, title, body, person, frame, "work", page_class="agent-main", corner=_project_button(tr, frame),
                   column=column, bar=bar, scripts=scripts)

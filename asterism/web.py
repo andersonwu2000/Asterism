@@ -25,7 +25,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import (accounts, agents, assets, computers, config, downloads, files, messaging, oauth, pages, pins, projects,
-               replays, schedules, tasks, tools, upkeep, util)
+               replays, schedules, tasks, timeline, tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import LOCALES, Translator, pick_locale
 from .projects import Actor, Project
@@ -720,6 +720,13 @@ async def api_messages(request: Request) -> Any:
     return messaging.person_messages(pj, me, q.get("in"), q.get("before"), q.get("after"), q.get("limit"))
 
 
+async def api_agent_timeline(request: Request) -> Any:
+    """One agent's timeline (the agent page): its messages and changes of state, as far as the reader may read them."""
+    pj, actor = member_actor(request, request.path_params["slug"])
+    q = request.query_params
+    return timeline.timeline(pj, actor, request.path_params["name"], q.get("before"), q.get("limit"))
+
+
 async def api_search(request: Request) -> Any:
     """Search over the messages the person may read (people only; agents have no such tool): the channels they may
     read, and their private conversations with the project's read permission."""
@@ -1002,10 +1009,20 @@ async def dm_page(request: Request) -> Response:
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view, dm=name))
 
 
-def _agent_page(request: Request, tab: str) -> Response:
-    """The agent page at one of its tabs: agents (/{slug}/agent, and the former /{slug}/my), tasks
-    (/{slug}/agent/tasks) and scheduled messages (/{slug}/agent/schedules, and the former /{slug}/schedules). The
-    scope of a tab is in the query and is the page script's business."""
+async def agents_page(request: Request) -> Response:
+    """The agent page (/{slug}/agent, and the former /{slug}/my): every agent of the project and one agent's timeline.
+    Which agent is chosen is in the query and is the page script's business."""
+    ctx = _page_context(request, request.path_params["slug"])
+    if isinstance(ctx, Response):
+        return ctx
+    person, pj, actor = ctx
+    return html(pages.agent(tr_for(request), person, _frame(pj, actor)))
+
+
+def _work_page(request: Request, tab: str) -> Response:
+    """The work page at one of its tabs: tasks (/{slug}/work, and the former /{slug}/agent/tasks) and scheduled
+    messages (/{slug}/work/schedules, and the former /{slug}/agent/schedules and /{slug}/schedules). The scope of a
+    tab is in the query and is the page script's business."""
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
         return ctx
@@ -1020,19 +1037,15 @@ def _agent_page(request: Request, tab: str) -> Response:
                               "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
                           "agents": [r["name"] for r in pj.db.execute(
                               "SELECT name FROM agents WHERE person_id = ? ORDER BY name", (actor.person_id,))]}
-    return html(pages.agent(tr_for(request), person, _frame(pj, actor), tab, view))
-
-
-async def agents_page(request: Request) -> Response:
-    return _agent_page(request, "agents")
+    return html(pages.work(tr_for(request), person, _frame(pj, actor), tab, view))
 
 
 async def tasks_page(request: Request) -> Response:
-    return _agent_page(request, "tasks")
+    return _work_page(request, "tasks")
 
 
 async def schedules_page(request: Request) -> Response:
-    return _agent_page(request, "schedules")
+    return _work_page(request, "schedules")
 
 
 def _settings(request: Request, scope: str, section: str, channel: str | None = None) -> Response:
@@ -1210,6 +1223,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/agent", agents_page),
         Route("/{slug}/agent/tasks", tasks_page),
         Route("/{slug}/agent/schedules", schedules_page),
+        Route("/{slug}/work", tasks_page),
+        Route("/{slug}/work/schedules", schedules_page),
         Route("/{slug}/admin", admin_page),
         Route("/{slug}/settings", settings_page),
         Route("/{slug}/settings/{section}", settings_page),
@@ -1254,6 +1269,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),
         Route("/{slug}/api/search", api(api_search), methods=["GET"]),
+        Route("/{slug}/api/agents/{name}/timeline", api(api_agent_timeline), methods=["GET"]),
         Route("/{slug}/api/files/list", api(api_files_list), methods=["GET"]),
         Route("/{slug}/api/files/raw/{path:path}", api_files_raw, methods=["GET"]),
         Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),

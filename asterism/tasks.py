@@ -14,7 +14,8 @@ The rules, for every entrance:
   agent directly, whenever that agent's switch is on; it never locks, and a lock holds against it too.
 
 When a change is made by somebody other than the agent it concerns, the system tells that agent in the project's
-notice channel.
+notice channel. Every change of who holds a task is written into the timelines of the agents it concerns
+(timeline.note), whoever made it.
 Being responsible for a task is what makes an agent busy (presence.busy).
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from . import messaging, presence, projects, util
+from . import messaging, presence, projects, timeline, util
 from .errors import ApiError, bad_request, forbidden, not_found
 from .messaging import Member
 from .projects import Actor, Project
@@ -375,6 +376,7 @@ def _write(pj: Project, actor: Member, group_id: int, tid: int | None, before: S
             pj.db.execute("UPDATE tasks SET text = ?, responsible_kind = ?, responsible_id = ?, assigned_by = ? "
                           "WHERE id = ?", (*cols, tid))
     util.log("task_made" if before is None else "task_changed", project=pj.slug, task=tid, by=actor.name)
+    _note(pj, actor, tid, before, after)
     _tell(pj, actor, tid, _group_name(pj, group_id), before, after)
     return view(pj, pj.db.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone())
 
@@ -383,8 +385,22 @@ def _remove(pj: Project, actor: Member, row: sqlite3.Row, before: State) -> dict
     with pj.db:
         pj.db.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
     util.log("task_removed", project=pj.slug, task=row["id"], by=actor.name)
+    _note(pj, actor, row["id"], before, None)
     _tell(pj, actor, row["id"], _group_name(pj, row["group_id"]), before, None)
     return {"removed": row["id"]}
+
+
+def _note(pj: Project, actor: Member, tid: int, before: State | None, after: State | None) -> None:
+    """The changes of the responsible agents' state, for their timelines (timeline.note): the agent that holds the
+    task now was given it, or took it itself; the one that held it before released it (by itself or by somebody
+    else), or lost it with the task removed."""
+    def agent(s: State | None) -> Member | None:
+        return s.responsible if s is not None and s.responsible is not None and s.responsible.kind == "agent" else None
+    x, y = agent(before), agent(after)
+    if x is not None and x != y:
+        timeline.note(pj, x.id, "task_removed" if after is None else "task_released", task_id=tid, by=actor)
+    if y is not None and y != x:
+        timeline.note(pj, y.id, "task_taken" if y == actor else "task_given", task_id=tid, by=actor)
 
 
 def _tell(pj: Project, actor: Member, tid: int, group: str, before: State | None, after: State | None) -> None:
@@ -438,6 +454,7 @@ def members_changed(pj: Project, by: Actor) -> None:
     for r, before in told:
         if pj.db.execute("SELECT 1 FROM tasks WHERE id = ?", (r["id"],)).fetchone():
             util.log("task_changed", project=pj.slug, task=r["id"], by=actor.name)
+            _note(pj, actor, r["id"], before, State(r["text"], None, None))
             _tell(pj, actor, r["id"], _group_name(pj, r["group_id"]), before, State(r["text"], None, None))
 
 
