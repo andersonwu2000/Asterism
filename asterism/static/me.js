@@ -28,7 +28,11 @@
       var out = nameForm.querySelector(".out");
       out.textContent = "";
       var r = await A.request(API + "me/name", null, {name: nameForm.elements.name.value.trim()});
-      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) {
+        if (/^(invalid_name|conflict)$/.test(r.data.error)) A.fieldError(nameForm.elements.name, A.refusal("me.name", r.data));
+        else out.textContent = A.refusal("me.name", r.data);
+        return;
+      }
       window.location.reload();
     });
   }
@@ -40,7 +44,7 @@
       if (!b || b.getAttribute("aria-pressed") === "true") return;
       localeOut.textContent = "";
       var r = await A.request("/api/me/settings", null, {locale: b.dataset.locale});
-      if (!r.ok) { localeOut.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) { localeOut.textContent = A.refusal("me.locale", r.data); return; }
       window.location.reload();
     });
   }
@@ -73,8 +77,8 @@
       body[box.dataset.switch] = box.checked;
       out.textContent = "";
       var r = await A.request(API + "my/switches", null, body);
-      if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("mem.refused", r.data); return; }
-      say(out, t("set.saved"), true);
+      if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("grp.change", r.data); return; }
+      A.saved(out);
     });
   });
 

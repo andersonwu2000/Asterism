@@ -1,6 +1,7 @@
 """The task table: who does what. A task belongs to one group (fixed when it is made), has a text, and may have a
 responsible agent of that group: a task is given to an agent or to nobody, never to a person. A person who makes an
-agent responsible locks the task in their own name (`assigned_by`); an agent never locks. There is no status, done
+agent responsible locks the task in their own name (`assigned_by`); an agent never locks. A task keeps who posted it
+(a person or an agent) and when, and since when the agent responsible now holds it (f7). There is no status, done
 mark or history: a task that is done is removed.
 
 The rules, for every entrance:
@@ -94,7 +95,7 @@ def _group_name(pj: Project, group_id: int) -> str:
 
 
 def view(pj: Project, row: sqlite3.Row) -> dict[str, Any]:
-    """The task object; `online` only when an agent is responsible."""
+    """The task object, the same wherever it is given; `online` only when an agent is responsible."""
     who = _member(pj, row["responsible_kind"], row["responsible_id"])
     out: dict[str, Any] = {"id": row["id"], "group": _group_name(pj, row["group_id"]), "text": row["text"],
                            "responsible": who.name if who else None, "responsible_kind": who.kind if who else None}
@@ -102,6 +103,11 @@ def view(pj: Project, row: sqlite3.Row) -> dict[str, Any]:
         a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (who.id,)).fetchone()
         out["online"] = presence.is_online(pj.slug, a, pj.db)
     out["assigned_by"] = projects.person_name(pj, row["assigned_by"]) if row["assigned_by"] is not None else None
+    # Who posted it (a person or an agent; null when unknown, before f7, or no longer in the project), when, and since
+    # when the agent responsible now holds it (null while nobody does, or when unknown).
+    poster = _member(pj, row["posted_kind"], row["posted_id"])
+    out.update({"posted_by": poster.name if poster else None, "posted_at": util.iso(row["created"]),
+                "taken_at": util.iso(row["taken"]) if who else None})
     return out
 
 
@@ -137,7 +143,8 @@ def table(pj: Project, actor: Actor) -> dict[str, Any]:
             members.append({"name": a["name"], "kind": "agent", "online": presence.is_online(pj.slug, a, pj.db),
                             "busy": presence.busy(pj.db, a)})
         rows = pj.db.execute("SELECT * FROM tasks WHERE group_id = ? ORDER BY id", (g["id"],)).fetchall()
-        out.append({"name": g["name"], "kind": g["kind"], "members": members, "tasks": [view(pj, r) for r in rows]})
+        out.append({"name": g["name"], "kind": g["kind"], "members": members,
+                    "tasks": [view(pj, r) for r in rows]})
     return {"groups": out}
 
 
@@ -368,13 +375,19 @@ def _may_name(pj: Project, me: Member, now: Member | None, coordinates: bool) ->
 def _write(pj: Project, actor: Member, group_id: int, tid: int | None, before: State | None, after: State) -> dict[str, Any]:
     r = after.responsible
     cols = (after.text, r.kind if r else None, r.id if r else None, after.assigned_by)
+    t = util.now()
     with pj.db:
         if tid is None:
             tid = pj.db.execute("INSERT INTO tasks (group_id, text, responsible_kind, responsible_id, assigned_by, "
-                                "created) VALUES (?, ?, ?, ?, ?, ?)", (group_id, *cols, util.now())).lastrowid
+                                "created, posted_kind, posted_id, taken) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (group_id, *cols, t, actor.kind, actor.id, t if r else None)).lastrowid
         else:
             pj.db.execute("UPDATE tasks SET text = ?, responsible_kind = ?, responsible_id = ?, assigned_by = ? "
                           "WHERE id = ?", (*cols, tid))
+            if r is None:
+                pj.db.execute("UPDATE tasks SET taken = NULL WHERE id = ?", (tid,))
+            elif before is None or r != before.responsible:
+                pj.db.execute("UPDATE tasks SET taken = ? WHERE id = ?", (t, tid))
     util.log("task_made" if before is None else "task_changed", project=pj.slug, task=tid, by=actor.name)
     _note(pj, actor, tid, before, after)
     _tell(pj, actor, tid, _group_name(pj, group_id), before, after)
@@ -447,8 +460,8 @@ def members_changed(pj: Project, by: Actor) -> None:
     told = [(r, _state(pj, r)) for r in lost]
     with pj.db:
         pj.db.execute("DELETE FROM tasks WHERE group_id NOT IN (SELECT id FROM groups)")
-        pj.db.executemany("UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL "
-                          "WHERE id = ?", [(r["id"],) for r in lost])
+        pj.db.executemany("UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL, "
+                          "taken = NULL WHERE id = ?", [(r["id"],) for r in lost])
         pj.db.execute("UPDATE tasks SET assigned_by = NULL WHERE assigned_by IS NOT NULL "
                       "AND assigned_by NOT IN (SELECT person_id FROM people)")
     for r, before in told:

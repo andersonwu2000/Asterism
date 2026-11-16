@@ -12,6 +12,7 @@ project's read permission, as the member list.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from typing import Any
@@ -78,9 +79,16 @@ def _state_view(pj: Project, r: sqlite3.Row) -> dict[str, Any]:
     return out
 
 
-def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any) -> dict[str, Any]:
+def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only: Any = None) -> dict[str, Any]:
     """The newest `limit` items of the agent's timeline older than `before`, oldest first, and whether there are
-    older ones."""
+    older ones. `only` "concerns": of the messages, only those the agent sent, those that mention it and its private
+    conversation with the reader (the changes of state all the same).
+
+    Each event once: the system's message telling the agent of a change of its task is left out where the change is
+    one of its changes of state (written down just before that message was posted, so the message's id is the one
+    after the state's `after_message`)."""
+    if only not in (None, "", "concerns"):
+        raise bad_request("bad_request", "only is concerns, or nothing for everything.")
     me = messaging.person_member(pj, actor.person_id)
     messaging.require_read(pj, me)
     a = pj.db.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
@@ -94,6 +102,9 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any) -> d
     private = messaging.private_place(me, agent)
     # The agent's messages, each set from its own index (what it sent; what was delivered to it or it read in full;
     # its private conversation with the reader), then what the reader may read of them.
+    # Mentions are kept as a JSON list of names; a name is quoted there exactly as json.dumps writes it.
+    concerns = ("AND (m.sender_kind = 'agent' AND m.sender_id = ? OR m.place = ? OR instr(m.mentions, ?) > 0) "
+                if only == "concerns" else "")
     rows = pj.db.execute(
         f"SELECT m.* FROM messages m WHERE m.id IN ("
         f"SELECT id FROM messages WHERE sender_kind = 'agent' AND sender_id = ? "
@@ -101,8 +112,12 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any) -> d
         f"UNION SELECT message_id FROM levels WHERE reader_kind = 'agent' AND reader_id = ? AND seen IS NOT NULL "
         f"UNION SELECT id FROM messages WHERE place = ?) "
         f"AND m.id < ? AND (m.place IN ({','.join('?' * len(chans)) or 'NULL'}) OR m.place = ?) "
-        f"ORDER BY m.id DESC LIMIT ?",
-        (a["id"], a["id"], a["id"], private, below, *chans, private, n + 1)).fetchall()
+        f"AND NOT (m.sender_kind = 'system' AND m.notice IS NULL AND EXISTS (SELECT 1 FROM agent_states s "
+        f"WHERE s.agent_id = ? AND s.state IN ('task_given', 'task_taken', 'task_released', 'task_removed') "
+        f"AND s.after_message = m.id - 1)) "
+        f"{concerns}ORDER BY m.id DESC LIMIT ?",
+        (a["id"], a["id"], a["id"], private, below, *chans, private, a["id"],
+         *((a["id"], private, json.dumps(a["name"])) if concerns else ()), n + 1)).fetchall()
     states = pj.db.execute(
         "SELECT * FROM agent_states WHERE agent_id = ? AND (after_message < ? OR (after_message = ? AND id < ?)) "
         "ORDER BY after_message DESC, id DESC LIMIT ?", (a["id"], after_below, after_below, id_below, n + 1)).fetchall()

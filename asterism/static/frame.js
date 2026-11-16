@@ -1,7 +1,7 @@
 // The places of a project on every page of it (Asterism.side): /api/channels on the pages' rhythm (the rail counts
 // what is important from it; the messages pages read the places), the members from /api/members (the presence marks,
-// the member list, the profile cards), and the second column of chat (#side-channels: the channels, each with its
-// settings mark and menu: right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its
+// the member list, the profile cards), and the second column of chat (#side-channels: the channels, each with a small
+// lock when some members may not read it, its settings mark and menu: right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its
 // settings, create a channel) and of private messages (#dm-list: the conversations, newest first, and #dm-new, a
 // menu of the members one may write to privately). Every page of the project also tells the server it is open
 // (POST /api/presence at once and every few seconds, data-beat on the rail): that is a person's presence.
@@ -89,6 +89,14 @@
     return li;
   }
 
+  // A small lock after a channel's name: some members may not read it (a shape, not a colour; the words for readers).
+  function lockMark() {
+    var s = make("span", "lock-mark");
+    s.title = t("nav.restricted");
+    s.append(A.glyph("lock"), make("span", "vh", t("nav.restricted")));
+    return s;
+  }
+
   function privateItem(name, unread, important) {
     var who = S.directory[name], inner = [presence(who), make("span", "place-name", name)];
     if (who && who.kind === "agent" && who.owner === ME) inner.push(make("span", "note", t("nav.my_agent")));
@@ -114,6 +122,7 @@
         lists.channels.textContent = "";
         p.channels.forEach(function (c) {
           var inner = [make("span", "place-name", "#" + c.name)];
+          if (c.restricted) inner.push(lockMark());
           if (c.muted) inner.push(make("span", "note", t("nav.muted")));
           lists.channels.appendChild(item("#" + c.name, inner, c.unread, c.important, c.muted));
         });
@@ -218,18 +227,18 @@
 
   async function markRead(name) {
     var r = await A.request(API + "messages", {"in": "#" + name, limit: 1});
-    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.refused", r.data)); return; }
+    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.read", r.data)); return; }
     var msgs = r.data.messages || [], last = msgs.length ? msgs[msgs.length - 1].id : 0;
     if (last) {
       var done = await A.request(API + "read", null, {"in": "#" + name, upto: last});
-      if (!done.ok) { sayOnRow("#" + name, A.refusal("chan.refused", done.data)); return; }
+      if (!done.ok) { sayOnRow("#" + name, A.refusal("chan.read", done.data)); return; }
     }
     await S.refresh();
   }
 
   async function mute(name, muted) {
     var r = await A.request(API + "channels/" + encodeURIComponent(name) + "/mute", null, {muted: muted});
-    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.refused", r.data)); return; }
+    if (!r.ok) { sayOnRow("#" + name, A.refusal("chan.mute", r.data)); return; }
     await S.refresh();
   }
 

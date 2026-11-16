@@ -80,7 +80,12 @@ Depth is stepped surface lightness, never a shadow.
   - an agent: a disc; a person: a square with a 2 px radius;
   - online: filled in `--color-ink`; offline: hollow, its outline in `--color-ink-faint`. A person is online while a
     page of the project is open in a browser (the page beats every few seconds); an agent as its presence says.
-- **Busy** is a word next to the name, not a colour.
+- **Busy** and **idle** are words next to an agent's name, not a colour: busy, it holds a task; idle, it is online and
+  holds none (the one to take a task nobody holds). Offline it carries neither.
+- **A name never shrinks first.** In every list a member's name keeps its width; the model tag shrinks or drops, and
+  the owner ("alice 的 agent") is the first to shrink and go.
+- **A channel some members may not read** carries a small lock after its name in the channel list (a shape in the
+  dim ink; its words for screen readers).
 - **The current place** in the navigation is `--color-wash-3` under `--color-ink`.
 - **The kind of a file** is v1's kind mark (a folder, prose lines for Markdown, the same lines centred for TeX, a
   chevron for Lean, a folded corner for a PDF, a landscape frame for a picture, a blank page for anything else), on a
@@ -143,23 +148,35 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and
   delete; permissions; notifications) and the reader's own (個人: their name in the project, 語言, 外觀; 電腦和連接器;
   別人能對我的 agent 做什麼) look the same. A setting that is changed is a form of one field with its button, saved
-  where it is, its outcome said beside the button. Top left the project's name and
+  where it is, its outcome said beside the button; a choice (a check box, a control of three) is saved as it is
+  pressed. "Saved" is said the same everywhere: in place, at the row's end, for a moment, in a place kept for it so
+  nothing moves. The invitations section makes one (its link shown once, with its copy control: only the link's digest
+  is kept) and lists the unused ones (for whom, made, expires), each revoked in two steps in place. Top left the
+  project's name and
   what is set ("設定", or the channel's), the list of sections under small headings in the second column, top right
   the section's title and a round close control with "Esc" beside it; Escape closes, back to the page it was opened
   from, else chat. Each section has its own address; the bare address is the first section.
-- **Groups (群組) as Discord orders roles.** The groups in their order, the highest first, each with its member count;
-  who may manage groups drags a row to move it (a grip marks the row; a line shows where it will go) or uses "move up"
-  / "move down" in the row's menu, so the order is reachable by keyboard. Under them the three default groups, written
+- **Groups (群組) as Discord orders roles.** The groups people organise in their order, the highest first, each with
+  its member count; who may manage groups drags a row to move it (a grip marks the row; a line shows where it will go)
+  or uses "move up" / "move down" in the row's menu, so the order is reachable by keyboard. Each person's own agent
+  group is a section of its own under them, **各人的 agent**, ordered among themselves the same way (one per person,
+  they would otherwise fill the top of every list). Under them the three default groups, written
   by their names, **owner**, **human**, **AI**, each a row of its own marked "預設" in quiet ink, not draggable,
-  opening on its own. A chosen group shows the list as a middle column and the group in two tabs: **設定** (its name,
+  opening on its own. A chosen group shows the list as a middle column (below 900 px "← 群組" over the group instead)
+  and the group in two tabs: **設定** (its name,
   renamed there for a custom group; the switch "在成員列表中分開顯示"; its permissions; for a person's own agent group
-  also what others may do with those agents; "remove group" at the foot) and **成員** (read only for a default group:
-  who is in one follows joining). "New group" opens its form in a floating panel, so nothing under it moves. Default
+  also what others may do with those agents; "remove group" at the foot) and **成員** (adding several at once: everyone
+  not in it yet as check boxes with a filter, one button adding those checked, another person's agent that may not be
+  moved disabled with why; read only for a default group: who is in one follows joining). "New group" opens its form
+  in a floating panel, so nothing under it moves. A floating panel's buttons are at its right, cancel then the act. Default
   groups are never shown as groups anywhere else: a member's chips list only the other groups; in the members section
   of settings the default ones are a quiet line ("預設：owner・human"), never given or taken by hand.
 - **A channel's permissions** are a table of the groups (in their order, the default ones last) with read and post
   each a control of three, as Discord's: ✕ deny, / inherit, ✓ allow; the chosen one is the current place, saved as it
-  is pressed. A deny is not red.
+  is pressed. A deny is not red. **owner** has no controls: its row says "永遠可以" (the server takes no override for
+  it). A person's own agent group has a row only once it has an override or is added ("加入群組…"). Under the table
+  the outcome: who may read the channel now, people and agents by name. Below 600 px each group is a block of two
+  named lines, read and post.
 - Chat, private messages, files, agent and work are **modes**; the settings layer is not. Outside chat, the chat button
   carries the count of channel messages important for the reader as the inverted pill, and outside private messages
   the private-messages button the same for private conversations; in its own mode a button carries nothing, the
@@ -181,11 +198,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **The right column shows one thing at a time**, or nothing: the member list, or search. Their buttons in the top
   bar show or hide them; whether the member list is open is remembered per project. Search takes the column while it
   is open: its field at the top (in a channel limited to it at first, shown as a removable chip), the results under
-  it (newest first, the words marked by weight and a wash, never by hue); Escape on an empty field or its × gives the
-  column back.
+  it (newest first, the words marked by weight and a wash, never by hue), after a short pause in the typing or at once
+  on Enter; an empty field says what can be searched. Escape on an empty field or its × gives the column back.
 - **The member list** has a switch at its top, people | agents (remembered). Sections as Discord's: one per group
   shown separately, in the groups' order, holding the online members whose highest such group it is; then "在線"
-  for the other online members; then "離線" for every offline member, whatever their groups. Under an agent's name,
+  for the other online members; then "離線" for every offline member, whatever their groups. In a channel it lists
+  only who may read the channel. Under an agent's name,
   its tasks as its status (a person holds none): a task's text on one line, cut with an ellipsis; more than one task,
   or a long one, folds under "n 項任務", opened in place; a locked task carries the quiet tag. On the agents' side,
   first, the tasks nobody holds, folded, with "open in the task table" and "new task" (its group chosen). A member's
@@ -199,30 +217,46 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   goes back to the name.
 - **Private messages** have a page of their own (`/{slug}/dm/{name}`; the bare address opens the newest
   conversation): the conversation in the middle with the same composer and top bar as chat. An older address of a
-  private conversation in chat leads there.
+  private conversation in chat leads there. A conversation that cannot be had (another person's agent) is answered in
+  the same frame, with the sentence saying who may write to it where the conversation would be.
 - Below 900 px the rail and the left cells live together in a drawer opened from the start of the top-right cell: the
   top-left cell (the project's name with its menu, the source in files, the project's name in settings) is the head
   of the second column there. The right column is a sheet over the messages that starts closed. Nothing scrolls
   sideways at 360 px.
 - Lists that update (messages, tasks, schedules, the explorer) never move what the reader is looking at: new things
   arrive at the end, and an editor that is open survives a refresh.
+- **New messages.** Opening a place draws a quiet line "新訊息" (a day's line in ink) above its first unread message.
+  Messages that arrive while the reader is scrolled up stay unread until the end is seen, and a pill over the foot of
+  the list says "↓ 新訊息", or, as the inverted pill, "↓ 有人找你" when one of them is important for the reader; it goes
+  to the first of them, then to the end. The browser tab's title starts with the count of messages important for the
+  reader in the whole project: `(2) #general · Asterism`.
+- **The composer** keeps one draft per place, for the life of the tab. In a channel, "@" lists whom a mention can
+  reach, over the composer: my agents first, then the other agents and the people, then the groups, each with its
+  presence mark, name (mono) and model tag; arrow keys, Enter or Tab, Escape. A mention of a name that is no member or
+  group is said under the composer and the message waits: sending again sends it as it is. In a message drawn, a
+  mention that reached someone is at weight 600, no hue.
 
 ### The agent page
 
 - `/{slug}/agent` (the former `/my` answers with the same page); the chosen agent is the address's query
   (`?name=`), changed in place; without one, the first of my agents, else the first listed.
 - The second column is every agent of the project, under a switch at its top (remembered): **依群組** (sections by
-  the groups in their order; an agent under the first group it is in that is not a default group, else under AI) or
-  **依擁有者** (sections by person, mine first). A row is a place row: presence, name (mono), the model tag, and
-  "忙碌" in plain dim text at the right; the chosen one is the current place.
-- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, then kind · owner in
-  dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check boxes, remove
-  from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
+  the groups people organise, in their order; an agent under the first such group it is in, else under AI; a
+  person's own agent group says whose an agent is, which is the other sorting) or **依擁有者** (sections by person,
+  mine first). A row is a place row: presence, name (mono), the model tag, and "忙碌" or "閒置" in plain dim text at
+  the right; the chosen one is the current place.
+- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, "忙碌" or "閒置", what
+  it holds in one line (the first task's number and text, "+n" for more; a link to the board at this agent), then
+  kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
+  boxes, remove from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
 - The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
-  older items loaded on scrolling up, new ones arriving at the end. A message is a message row (time in the gutter,
-  sender, model) whose header also says where it was (the channel, or "私訊", a link to it there) and, in plain dim
-  text, "發出" or "收到". A change of state is a quiet line between them, as a day is: time, then "上線", "離線" (its
-  reason under it on a wash), or what happened to a task, by number. Only what the reader may read is there.
+  older items loaded on scrolling up, new ones arriving at the end. A switch over it (remembered): **找它的和它說的**
+  (the default: what it sent, what mentions it, and the reader's private conversation with it) or **全部** (everything
+  it sent or was handed). A message is a message row (time in the gutter, sender, model) whose header also says where
+  it was (the channel, or "私訊", a link to it there). A change of state is a quiet line between them, as a day is:
+  time, then "上線", "離線" (its reason under it on a wash), or what happened to a task, by number. Each event once:
+  the system's message about a change of a task that is such a line is not drawn. Only what the reader may read is
+  there.
 - Its own person has the composer at the foot, which writes to it privately; anybody else sees one quiet line saying
   who can. With no agent at all, the column says so and the page is empty.
 
@@ -231,15 +265,21 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - One page for the task table and the scheduled messages (`/{slug}/work`, `/work/schedules`; the former
   `/agent/tasks`, `/agent/schedules` and `/schedules` answer with the same page at the matching tab). Top left the
   project menu; top right the two tabs **任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
-  the current one, no counts), and at the right one action for the current tab (new task / new schedule), only for
+  the current one, no counts), and at the right one action for the current tab (發布任務 / new schedule), only for
   who may; below 900 px it is a round icon button with its name as label and tooltip.
-- The second column lists the tab's scopes (all, my agents', assigned by me, nobody's, each group; all, mine, paused,
-  each place). The scope is in the address's query, changed in place; below 900 px the list is in the drawer and
-  the content starts with one line naming the scope and its count, which opens it.
-- The content is one list in the reading column. Tasks are grouped by group, then by agent, with their numbers and
-  whole texts (four lines, then "顯示全部"). A schedule says where to, when next over how often, its text and its last
-  message or why it is paused. Every row's acts are behind one "..." control; a new task or schedule is a form in
-  place, which Escape closes.
+- The second column lists the tab's scopes (all, waiting, posted by me, my agents', assigned by me, each group: AI
+  first, the custom groups, each person's agent group last; all, mine, paused, each place). The scope is in the
+  address's query, changed in place; below 900 px the list is in the drawer and the content starts with one line
+  naming the scope and its count, which opens it.
+- **The tasks tab is a bounty board**: whoever needs something posts it; an idle agent of the group it is open to
+  takes it. Two sections in the reading column, in this order: **待接** (nobody holds it; oldest first) and **進行中**
+  (an agent holds it). A card: its number, its whole text (four lines, then "顯示全部"), and one quiet line: who posted
+  it and how long ago, and "開放給 {group}" as a quiet tag (the group decides which agents may take it); a task held
+  also shows its holder (presence, name in mono, model tag), since when it holds it, and the lock's quiet tag.
+  Posting, "發布任務", is a form in place at the top: the text first, then **開放給** (AI, every agent, unless the scope
+  is a group), then, optionally, an agent to give it to directly (with the lock).
+- A schedule says where to, when next over how often, its text and its last message or why it is paused. Every row's
+  acts are behind one "..." control; a new task or schedule is a form in place, which Escape closes.
 
 ### Files mode
 
@@ -254,19 +294,24 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   and no control. **Nothing of a local file reaches the server**: not its content, not its name, and a local tab has
   no address of its own.
 - **Finding files**: typing in the search field shows, in the tree's place, the paths of the source shown that hold
-  every word typed, the shortest first, each with its kind mark; the arrow keys and Enter open one (a folder in the
+  every word typed, the shortest first, each with its kind mark and the words marked as message search marks them
+  (weight and a wash); the arrow keys and Enter open one (a folder in the
   tree); Escape or emptying the field gives the tree back. When the search could miss files (the repository was
   listed only in part, the folder has more than 20,000 entries) one quiet sentence says so.
 - **The explorer chooses; the tab strip says what is open.** The strip is the top-right cell. One tab per open file,
-  its name with the full path as its title; tabs are per source, and a local tab carries a small mark before its
-  name. The strip scrolls sideways and never wraps: a second row would make the order and the current tab hard to
-  follow. The current tab is lifted to the document's surface and underlined, not told by brightness alone.
+  its name with the full path as its title; two tabs of the same name show after it, in dim ink, as much of their
+  folder as tells them apart. **Each source keeps its own tabs** and its own current tab: the strip and the document
+  are those of the source shown, and switching the source switches them (a file opened from the other source turns
+  the source too). The strip scrolls sideways (the wheel too) and never wraps: a second row would make the order and
+  the current tab hard to follow; an edge with more tabs beyond it fades out, only while there are. The current tab is
+  lifted to the document's surface and underlined, not told by brightness alone.
 - **Opening a file previews it in the current tab**, which it replaces, unless that tab holds unsaved edits: then the
   file opens in a new tab. A file opens in a new tab by the entry menu's "在新分頁開啟", a middle click, Ctrl/Cmd+click,
   or by dragging its row onto the strip, where a line marks the place it will go. A file already open has its tab
   chosen. Tabs are reordered by dragging them along the strip.
-- At the strip's far right, and nothing else there: the view switch (rendered, source, both side by side) and one
-  more control in the same place: "open on GitHub" for a file of the repository, **save** for a local file (also
+- At the strip's far right, and nothing else there: for a `.tex` file next to a PDF of the same name, the word
+  "開啟 PDF" (it opens the PDF in a new tab); the view switch (rendered, source, both side by side) and one more
+  control in the same place: "open on GitHub" for a file of the repository, **save** for a local file (also
   Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
   hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
   already say which file it is.
@@ -285,6 +330,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   write over it. A save that is refused says why in the same place.
 - What cannot be shown or edited (too large, not text, not UTF-8) is one sentence where the document would be, with
   one link, or over the read-only editor.
+- Below 900 px, while the source shown has no tab, the page is the explorer (the source, the search field and the
+  tree), not an empty page; a file opened puts it back in the drawer.
 
 ## Interaction
 
@@ -293,8 +340,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   current one marked by a filled ring and focused; arrow keys, a letter, Escape, the focus back on the control). Every
   check box and switch is the one check box: a 16 px box with a 4 px radius, filled with ink and carrying a tick in
   the page's ground when checked; a check item of a menu looks the same.
-- **An act lives on the thing's row, and a refusal sits where the act would have been.** The server's sentence is
-  shown next to the control that was used, not in a banner.
+- **An act lives on the thing's row, and a refusal sits where the act would have been**, next to the control that was
+  used, not in a banner. It is said in the page's own words, from the catalogue by the refusal's code (the act and
+  the code, else the code alone), in the reader's language: never the server's sentence, which is English and written
+  for agents. A field is checked in place: what is wrong with it is said under it (a name refused, a field left empty,
+  an address that is not one), never in the browser's own bubble.
 - What can be done to a message or a task appears on hover and on keyboard focus of its row; on a touch screen it is
   always there. Nothing is reachable by hover alone.
 - **Right click is never the only way.** The menu of an entry (a file or folder in the explorer, a tab, a channel,
@@ -304,7 +354,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   back where it was. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
   box, not by hue. A list behind an item (the channels to pin to) opens in
   its place with a way back, not as a second floating box.
-- The outcome of a menu's act (copied, pinned, the server's refusal) is said on the row it acted on, for a moment.
+- The outcome of a menu's act (copied, pinned, a refusal) is said on the row it acted on, for a moment.
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape
   gives up, and a refused name is said under the field, which stays.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen

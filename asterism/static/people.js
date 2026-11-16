@@ -4,7 +4,8 @@
 // - in chat and private messages, the member list in the right column (#member-panel): a switch at its top between
 //   people and agents (remembered), then sections as Discord's: one per group shown separately, in the groups'
 //   order, holding the online members whose highest such group it is; "online" for the other online members;
-//   "offline" for every offline member. Under each agent, its tasks (tasks.js; a person holds none), and on the
+//   "offline" for every offline member. In a channel only who may read it (its permissions' readers). A row keeps the
+//   name's width; an agent's busy or idle word stays by it, the owner note goes first. Under each agent, its tasks (tasks.js; a person holds none), and on the
 //   agents' side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
 //   control, right click, the context-menu key or Shift+F10 for the member's menu;
 // - a profile card (a popover: name, kind, presence, groups with x and +, an agent's tasks, and mention, private
@@ -111,6 +112,14 @@
     return R;
   };
 
+  // An agent's state as a word beside its name: busy (it holds a task), idle (online and holding none: the one to
+  // take a task nobody holds), nothing while offline or for a person.
+  P.stateWord = function (who, isAgent) {
+    if (!isAgent) return "";
+    if (who.busy) return t("nav.busy");
+    return who.online ? t("nav.idle") : "";
+  };
+
   // ------------------------------------------------------------------ the acts
 
   P.regroup = function (member, add, remove) {
@@ -121,7 +130,7 @@
   P.remove = function (who, isAgent, opener, after, done) {
     var kind = isAgent ? "agent" : "person";
     A.gone({title: t("gone." + kind + ".title", {name: who.name}), text: t("gone." + kind + ".text", {name: who.name}),
-            name: who.name, button: t("gone.member.button"), opener: opener, after: after,
+            name: who.name, button: t("gone.member.button"), opener: opener, after: after, act: "mem.remove",
             run: function () { return A.request(API + "members/" + encodeURIComponent(who.name) + "/remove", null, {}); },
             done: done});
   };
@@ -197,7 +206,7 @@
     return found.isAgent ? t("mem.agent_of", {owner: found.who.owner}) : t("people.person");
   }
   function after(r, out) {
-    if (r && !r.ok && out) out.textContent = A.refusal("mem.refused", r.data);
+    if (r && !r.ok && out) out.textContent = A.refusal("mem.regroup", r.data);
     return S.loadMembers();
   }
   function dirOf(found) {
@@ -231,7 +240,7 @@
     var sub = [];
     if (found) {
       sub.push(kindText(found), t(who.online ? "presence.online" : "presence.offline"));
-      if (found.isAgent && who.busy) sub.push(t("mem.busy"));
+      if (P.stateWord(who, found.isAgent)) sub.push(P.stateWord(who, found.isAgent));
     }
     names.appendChild(make("p", "card-sub", sub.join(" · ")));
     head.appendChild(names);
@@ -381,11 +390,12 @@
     b.appendChild(make("span", "prow-name" + (found.isAgent ? " mono" : ""), who.name));
     var model = found.isAgent ? A.modelTag(who.model) : null;
     if (model) b.appendChild(model);
-    var notes = [];
-    if (found.isAgent) notes.push(who.owner === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who.owner}));
-    if (found.isAgent && who.busy) notes.push(t("nav.busy"));
-    if (!found.isAgent && who.name === ME) notes.push(t("people.you"));
-    if (notes.length) b.appendChild(make("span", "prow-note", notes.join(" · ")));
+    // The name keeps its width; busy or idle stays beside it; the model tag shrinks, the owner goes first.
+    var state = P.stateWord(who, found.isAgent);
+    if (state) b.appendChild(make("span", "prow-state", state));
+    var note = found.isAgent ? (who.owner === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who.owner}))
+             : who.name === ME ? t("people.you") : "";
+    if (note) b.appendChild(make("span", "prow-note", note));
     var acts = A.button("row-acts");
     acts.appendChild(A.glyph("dots"));
     acts.setAttribute("aria-label", t("people.member_acts", {name: who.name}));
@@ -477,6 +487,9 @@
         if (u) body.appendChild(u);
       }
       var list = side === "agents" ? v.agents : v.people;
+      // In a channel, only who may read it (as Discord's member list); in a private conversation, everyone.
+      var may = readers.place === S.current && readers.names ? readers.names[side] : null;
+      if (may) list = list.filter(function (who) { return may.indexOf(who.name) >= 0; });
       sections(v, list, side === "agents").forEach(function (s) {
         var sec = make("section", "psec"), ul = make("ul", "plist");
         sec.appendChild(make("h3", "", s.title));
@@ -513,8 +526,26 @@
     if (T && T.busy()) return;
     drawList();
   }
+
+  // Who may read the channel open (its permissions answer it): read when the place changes and with the members.
+  var readers = {place: null, names: null};
+  async function loadReaders() {
+    var place = S.current;
+    if (!place || place.charAt(0) !== "#") { readers = {place: place, names: null}; return; }
+    var r = await A.request(API + "channels/" + encodeURIComponent(place.slice(1)) + "/permissions");
+    if (S.current !== place) return;
+    var names = r.ok && r.data.readers ? r.data.readers : null;
+    var same = readers.place === place && JSON.stringify(readers.names) === JSON.stringify(names);
+    readers = {place: place, names: names};
+    if (!same) redraw();
+  }
+  S.onChange(function () { if (readers.place !== S.current) loadReaders(); });
+  var setCurrent = S.setCurrent;
+  S.setCurrent = function (place) { setCurrent(place); loadReaders(); };
+
   if (T) T.onChange(function () { drawList(); });
   S.onMembers(function () {
+    loadReaders();
     redraw();
     // The card follows the data, unless an act is armed in it or a menu from it is open.
     if (shown && A.popup.isOpen(card) && !A.isArmed(card) && !document.querySelector(".menu.shown")) {

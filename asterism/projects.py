@@ -339,6 +339,33 @@ def readable_channels(pj: Project, kind: str, member_id: int) -> list[str]:
     return [n for n, have in channel_access(pj, kind, member_id).items() if "read" in have]
 
 
+def channel_readers(pj: Project, name: str) -> dict[str, list[str]]:
+    """Who may read a channel now: the people (in the order they joined) and the agents (by id), by name."""
+    people = [r["name"] for r in pj.db.execute("SELECT person_id, name FROM people ORDER BY joined, person_id")
+              if "read" in channel_access(pj, "person", r["person_id"]).get(name, set())]
+    agents = [r["name"] for r in pj.db.execute("SELECT id, name FROM agents ORDER BY id")
+              if "read" in channel_access(pj, "agent", r["id"]).get(name, set())]
+    return {"people": people, "agents": agents}
+
+
+def restricted_channels(pj: Project) -> set[str]:
+    """The channels a member of the project may not read because of the channel's own overrides (a channel without
+    any is read as the project's permissions say, the same for every channel)."""
+    over = {r["name"] for r in pj.db.execute("SELECT DISTINCT c.name FROM channel_overrides o "
+                                             "JOIN channels c ON c.id = o.channel_id")}
+    if not over:
+        return set()
+    out: set[str] = set()
+    members = [("person", r[0]) for r in pj.db.execute("SELECT person_id FROM people")] + \
+              [("agent", r[0]) for r in pj.db.execute("SELECT id FROM agents")]
+    for kind, mid in members:
+        have = channel_access(pj, kind, mid)
+        out |= {n for n in over if "read" not in have.get(n, set())}
+        if out == over:
+            break
+    return out
+
+
 def channel_overrides(pj: Project, channel_id: int) -> dict[str, dict[str, str]]:
     """Every group, in the groups' order, with its read and post in the channel: allow, deny or inherit."""
     rows = {(r["group_id"], r["perm"]): r["value"] for r in pj.db.execute(
@@ -361,6 +388,9 @@ def set_channel_overrides(pj: Project, actor: Actor, channel_id: int, body: Any)
         for p, v in perms.items():
             if p not in CHANNEL_PERMISSIONS or v not in OVERRIDES:
                 raise bad_request("bad_request", "A channel overrides read and post, each allow, deny or inherit.")
+            if _is_owner_group(g) and v != "inherit":
+                raise bad_request("bad_request", "The owner group always reads and posts in every channel; it takes "
+                                                 "no override.")
             writes.append((g["id"], p, v))
     name = pj.db.execute("SELECT name FROM channels WHERE id = ?", (channel_id,)).fetchone()["name"]
     pj.db.execute("BEGIN")
@@ -702,7 +732,38 @@ def create_invite(pj: Project, actor: Actor, github_login: Any) -> dict[str, str
         pj.db.execute("INSERT INTO invites (digest, github_login, created_by, created, expires) VALUES (?, ?, ?, ?, ?)",
                       (util.digest(code), github_login, actor.person_id, t, t + config.get().invite_ttl_s))
     util.log("invite_created", project=pj.slug, by=actor.person_id, for_login=github_login)
-    return {"url": f"{config.get().public_url}/join/{code}"}
+    return {"url": f"{config.get().public_url}/join/{code}", "id": util.digest(code)[:INVITE_ID_LEN]}
+
+
+INVITE_ID_LEN = 16
+
+
+def list_invites(pj: Project, actor: Actor) -> dict[str, Any]:
+    """The invitations not used and not expired, newest first. The link itself is not among them: only its digest is
+    kept, so it is shown once, when made. An invitation's id is the start of that digest (it tells nothing of the
+    link)."""
+    _person_only(actor)
+    require(pj, actor, "manage_members", "Seeing the invitations needs the manage_members permission.")
+    rows = pj.db.execute("SELECT * FROM invites WHERE used IS NULL AND expires >= ? ORDER BY created DESC",
+                         (util.now(),)).fetchall()
+    return {"invites": [{"id": r["digest"][:INVITE_ID_LEN], "github_login": r["github_login"],
+                         "created": util.iso(r["created"]), "expires": util.iso(r["expires"])} for r in rows]}
+
+
+def revoke_invite(pj: Project, actor: Actor, invite_id: Any) -> dict[str, Any]:
+    """An unused invitation no longer works: it is removed (manage_members)."""
+    _person_only(actor)
+    require(pj, actor, "manage_members", "Revoking an invitation needs the manage_members permission.")
+    if not isinstance(invite_id, str) or not re.fullmatch(f"[0-9a-f]{{{INVITE_ID_LEN}}}", invite_id):
+        raise not_found("There is no such invitation.")
+    rows = pj.db.execute("SELECT digest FROM invites WHERE substr(digest, 1, ?) = ? AND used IS NULL",
+                         (INVITE_ID_LEN, invite_id)).fetchall()
+    if len(rows) != 1:
+        raise not_found("There is no such invitation.")
+    with pj.db:
+        pj.db.execute("DELETE FROM invites WHERE digest = ?", (rows[0]["digest"],))
+    util.log("invite_revoked", project=pj.slug, by=actor.person_id)
+    return {"revoked": invite_id}
 
 
 def _invite(store: Store, code: str) -> tuple[Project, sqlite3.Row]:

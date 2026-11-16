@@ -2,12 +2,13 @@
 // seconds. A task is given to an agent or to nobody, never to a person. In chat it is shown in the member list
 // (people.js), under each agent as its status: a task's text on one line, cut with an ellipsis; more than one task, or
 // a long one, folds under "n 項任務", opened in place. A locked task carries the quiet tag. The work page's tasks tab
-// (tasktable.js) shows the same table by group, with the same acts and the same menu (T.menuItems), offered to a
-// person who may edit tasks (data-can-edit-tasks on #chat or #work-page; the server decides each one): add a task
-// (to an agent, or to nobody in a chosen group), rewrite it in place, hand it to another agent of its group, lock or
-// unlock it, release it, remove it (in two steps). Each task has its own small menu (its "..." control, right click,
-// the context-menu key or Shift+F10), offered only where the page cannot already tell the answer is no; a refusal
-// shows the server's sentence at the task. A refresh waits while the reader is writing a task or has an act armed.
+// (tasktable.js) shows the same table as a bounty board, with the same acts and the same menu (T.menuItems), offered
+// to a person who may edit tasks (data-can-edit-tasks on #chat or #work-page; the server decides each one): add a task
+// (to an agent, or to nobody in a chosen group, AI unless chosen otherwise), rewrite it in place, hand it to another
+// agent of its group, lock or unlock it, release it, remove it (in two steps). Each task has its own small menu (its
+// "..." control, right click, the context-menu key or Shift+F10), offered only where the page cannot already tell the
+// answer is no; a refusal shows the page's own sentence for its code at the task. A refresh waits while the reader is
+// writing a task or has an act armed.
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("chat") || document.getElementById("work-page");
@@ -101,10 +102,11 @@
   }
   T.load = load;
 
-  // An act on the table: its refusal at `out`, else the table again.
-  async function call(path, payload, out) {
+  // An act on the table: its refusal at `out` (the catalogue's sentence for its code, filled with `vars`), else the
+  // table again.
+  async function call(path, payload, out, vars) {
     var r = await A.request(API + path, null, payload);
-    if (!r.ok) { if (out) out.textContent = A.refusal("task.refused", r.data); return false; }
+    if (!r.ok) { if (out) out.textContent = A.refusal("task.refused", r.data, vars); return false; }
     T.last = "";
     await load(true);
     return true;
@@ -200,7 +202,7 @@
       text.title = task.text;
       li.appendChild(text);
       if (task.assigned_by) {
-        var tag = make("span", "tag", t("task.locked_short"));
+        var tag = make("span", "tag", t("tt.assigned_by", {name: task.assigned_by}));
         tag.title = t("task.locked", {name: task.assigned_by});
         li.appendChild(tag);
       }
@@ -268,9 +270,12 @@
     input.placeholder = t("task.text_label");
     input.dataset.key = "add-text:" + (member || "");
     input.setAttribute("aria-label", member ? t("task.add_for", {name: member}) : t("task.add"));
-    var pick = A.dropdown({label: t("task.group_for"), options: groups.map(function (g) {
-      return {value: g.name, label: T.groupLabel(g)};
-    }), value: (T.adding && T.adding.group) || undefined});
+    // Open to AI (every agent) unless chosen otherwise: a person's own agent group is never the silent default.
+    var start = (T.adding && T.adding.group) ||
+                (groups.some(function (g) { return g.name === "ai" && g.kind === "default"; }) ? "ai" : undefined);
+    var pick = A.dropdown({label: t("tt.open_to_label"), options: groups.map(function (g) {
+      return {value: g.name, label: g.name === "ai" && g.kind === "default" ? t("tt.all_agents") : T.groupLabel(g)};
+    }), value: start});
     var cancel = A.button("btn", t("task.cancel"), function () { T.adding = null; changed(); });
     var row = make("div", "row");
     row.append(make("button", "btn primary", t("task.add")), cancel);

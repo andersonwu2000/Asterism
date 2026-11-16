@@ -8,6 +8,15 @@
 // right.js, tasks.js, people.js and search.js. Asterism.chat lets the others put a mention into the composer and
 // open a place at one message (in the other mode's page when the place is there). All texts come from the page's
 // message catalogue.
+// New messages: opening a place draws a quiet line "new" above its first unread message (the read position the API
+// answers); messages that arrive while the reader is scrolled up (or the tab is hidden) are not marked read until the
+// end of the list is seen, and a pill over the foot of the list says so (inverted when one of them is important for
+// the reader) and goes to the first of them, then to the end. The browser tab's title starts with the count of
+// messages important for the reader in the whole project, from the frame's places.
+// The composer keeps one draft per place (sessionStorage: this tab's, gone with it). In a channel, typing "@" offers
+// the members (my agents first, then the other agents and the people, then the groups) as a list over the composer
+// (arrow keys, Enter or Tab, Escape); a mention of a name that is no member or group holds the message back once,
+// said under the composer, and sending again sends it as it is. A mention that reached someone is drawn in bold.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -15,7 +24,7 @@
   if (!root || !A || !A.renderText || !A.side) return;
   var t = A.t, make = A.make;
 
-  var SLUG = root.dataset.slug, MODE = root.dataset.mode === "dm" ? "dm" : "chat";
+  var SLUG = root.dataset.slug, MODE = root.dataset.mode === "dm" ? "dm" : "chat", ME = root.dataset.me || "";
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000;
   var LANG = document.documentElement.lang || undefined;
@@ -28,7 +37,11 @@
     text: document.getElementById("text"), out: document.getElementById("composer-out"),
     reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel")
   };
-  var state = {place: null, first: 0, last: 0, replyTo: null, places: {channels: [], "private": []}, busy: false};
+  // readAt: the read position when the place was opened, openedLast: its newest message then (the unread line goes
+  // above the first message between them); seenUpto: what was marked read; fresh: the first message that arrived
+  // while the end of the list was out of sight (0: none), freshImportant: one of those is important for the reader.
+  var state = {place: null, first: 0, last: 0, replyTo: null, places: {channels: [], "private": []}, busy: false,
+               readAt: 0, openedLast: 0, seenUpto: 0, fresh: 0, freshCount: 0, freshImportant: false};
 
   function get(path, params) { return A.request(API + path, params); }
   function post(path, body) { return A.request(API + path, null, body); }
@@ -53,8 +66,17 @@
                             : base + "/dm/" + encodeURIComponent(place) + at;
   }
 
-  A.side.onChange(function (places) { state.places = places; });
+  // The browser tab's title: "(n) place · Asterism", n the messages important for the reader in the whole project.
+  var TAIL = document.title.split(DOT).slice(-1)[0] || "";
+  A.side.onChange(function (places) { state.places = places; tabTitle(); });
   function loadPlaces() { return A.side.refresh(); }
+
+  function tabTitle() {
+    var p = state.places, n = 0;
+    (p.channels || []).concat(p["private"] || []).forEach(function (c) { n += Number(c.important) || 0; });
+    var title = (state.place ? state.place + DOT : "") + TAIL;
+    document.title = n ? "(" + n + ") " + title : title;
+  }
 
   // ------------------------------------------------------------------ folding
   //
@@ -203,10 +225,33 @@
     });
   }
 
-  // After every change of the list: fold the runs, mark the days, group the senders, fit the long messages.
+  function mine(m) { return m.from_kind === "person" && m.from === ME; }
+
+  // A quiet line "new" above the first message that was unread when the place was opened (not one of mine), after
+  // its day's line; above the folded row when that message is folded into a run.
+  function unreadLine() {
+    var old = el.list.querySelector("li.unread-line");
+    if (old) old.remove();
+    var first = messageRows().filter(function (li) {
+      var m = known.get(idOf(li));
+      return m.id > state.readAt && m.id <= state.openedLast && !mine(m);
+    })[0];
+    if (!first) return;
+    var anchor = first;
+    if (first.hidden && first.dataset.run) {
+      anchor = el.list.querySelector('li.fold[data-first="' + first.dataset.run + '"]') || first;
+    }
+    var row = make("li", "day unread-line", t("msg.new_line"));
+    row.setAttribute("role", "separator");
+    el.list.insertBefore(row, anchor);
+  }
+
+  // After every change of the list: fold the runs, mark the days and the first unread, group the senders, fit the
+  // long messages.
   function settle(added) {
     regroup();
     days();
+    unreadLine();
     authors();
     added.forEach(function (li) { if (li._fit) li._fit(); });
   }
@@ -272,7 +317,7 @@
     if (m.level === "important") meta.appendChild(make("span", "pill", t("msg.important")));
     body.appendChild(meta);
 
-    var box = A.renderText(m.text);
+    var box = A.renderText(m.text, {mentions: m.mentions});
     if (A.paths) A.paths.scan(box);
     body.appendChild(box);
     body.appendChild(clampable(li, box, m.id));
@@ -326,10 +371,83 @@
 
   function atBottom() { return el.scroll.scrollHeight - el.scroll.scrollTop - el.scroll.clientHeight < 40; }
   function toBottom() { el.scroll.scrollTop = el.scroll.scrollHeight; }
+  // Whether the reader sees the end of the list: the tab is shown and the list is at its foot.
+  function caughtUp() { return !document.hidden && atBottom(); }
+  // Scroll so that `row` is at the top of the list's view (a little under it).
+  function toTop(row) {
+    el.scroll.scrollTop += row.getBoundingClientRect().top - el.scroll.getBoundingClientRect().top - 8;
+  }
 
   async function markRead() {
-    if (state.last) await post("read", {"in": state.place, upto: state.last});
+    if (!state.last) return;
+    state.seenUpto = Math.max(state.seenUpto, state.last);
+    await post("read", {"in": state.place, upto: state.last});
   }
+
+  // ------------------------------------------------------------------ new messages out of sight
+  //
+  // The pill floats over the foot of the list (a line of no height between the list and the composer holds it).
+
+  var pill = A.button("news-pill", null, function () {
+    var row = state.fresh ? document.getElementById("m-" + state.fresh) : null;
+    if (row && row.hidden && row.dataset.run) {
+      row = el.list.querySelector('li.fold[data-first="' + row.dataset.run + '"]') || row;
+    }
+    // First to the first new message, unless it is already at the top; then to the end.
+    if (row && row.getBoundingClientRect().top > el.scroll.getBoundingClientRect().top + 16) toTop(row); else toBottom();
+    seen();
+  });
+  pill.hidden = true;
+  var pillLine = make("div", "news-line");
+  pillLine.appendChild(pill);
+  root.insertBefore(pillLine, el.form);
+
+  function drawPill() {
+    pill.hidden = !state.fresh;
+    if (!state.fresh) return;
+    pill.classList.toggle("important", state.freshImportant);
+    pill.textContent = t(state.freshImportant ? "msg.news_important" : "msg.news");
+    pill.setAttribute("aria-label", t(state.freshImportant ? "msg.news_important_label" : "msg.news_label",
+                                      {n: state.freshCount}));
+    pill.title = pill.getAttribute("aria-label");
+  }
+  function forgetFresh() {
+    state.fresh = 0;
+    state.freshCount = 0;
+    state.freshImportant = false;
+    drawPill();
+  }
+  // Messages appended while the end of the list is out of sight: the pill counts the others'.
+  function noteFresh(msgs) {
+    msgs.filter(function (m) { return !mine(m) && m.id > state.seenUpto; }).forEach(function (m) {
+      if (!state.fresh) state.fresh = m.id;
+      state.freshCount += 1;
+      if (m.level === "important") state.freshImportant = true;
+    });
+    drawPill();
+  }
+
+  // The end of the list came into sight: what is there is read now.
+  var marking = false;
+  async function seen() {
+    if (!state.place || !caughtUp()) return;
+    if (state.fresh) forgetFresh();
+    if (marking || state.busy || state.last <= state.seenUpto) return;
+    marking = true;
+    try {
+      await markRead();
+      await loadPlaces();
+    } finally {
+      marking = false;
+    }
+  }
+  var looking = false;
+  el.scroll.addEventListener("scroll", function () {
+    if (looking) return;
+    looking = true;
+    window.requestAnimationFrame(function () { looking = false; seen(); });
+  }, {passive: true});
+  document.addEventListener("visibilitychange", seen);
 
   async function loadOlder() {
     if (!state.first) return false;
@@ -409,13 +527,18 @@
     if (A.rail && MODE === "chat") A.store.set(A.rail.chatPlaceKey, place);
     state.first = 0;
     state.last = 0;
+    state.readAt = 0;
+    state.openedLast = 0;
+    state.seenUpto = 0;
+    forgetFresh();
     setReply(null);
     known.clear();
     el.list.textContent = "";
     el.out.textContent = "";
+    loadDraft();
     drawTitle(place);
     opened.forEach(function (fn) { fn(place); });
-    document.title = place + DOT + (document.title.split(DOT).slice(-1)[0] || "");
+    tabTitle();
     A.side.setCurrent(place);
     state.busy = true;
     try {
@@ -423,12 +546,20 @@
       var r = await get("messages", at ? {"in": place, before: at + 1, limit: PAGE} : {"in": place, limit: PAGE});
       var after = at && r.ok ? await get("messages", {"in": place, after: at, limit: PAGE}) : null;
       if (place !== state.place) return;
-      if (!r.ok) { el.out.textContent = A.errorText(r.data.error); return; }
-      var msgs = r.data.messages || [];
-      append(msgs.concat(after && after.ok ? after.data.messages || [] : []));
+      if (!r.ok) { el.out.textContent = A.refusal("msg.load", r.data); return; }
+      var msgs = r.data.messages || [], all = msgs.concat(after && after.ok ? after.data.messages || [] : []);
+      state.readAt = Number(r.data.read) || 0;
+      state.openedLast = all.reduce(function (n, m) { return Math.max(n, m.id); }, 0);
+      append(all);
       showEmpty();
       el.older.hidden = msgs.length < PAGE;
-      if (at) await jumpTo(at); else toBottom();
+      if (at) {
+        await jumpTo(at);
+      } else {
+        toBottom();
+        var line = el.list.querySelector("li.unread-line");          // the first unread above the view: start there
+        if (line && line.getBoundingClientRect().top < el.scroll.getBoundingClientRect().top) toTop(line);
+      }
       takeMention();
       await markRead();
       await loadPlaces();
@@ -442,6 +573,7 @@
     var v = el.text.value;
     el.text.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
     grow();
+    saveDraft();
     el.text.focus();
     el.text.setSelectionRange(el.text.value.length, el.text.value.length);
   }
@@ -478,7 +610,8 @@
         var bottom = atBottom();
         append(r.data.messages);
         if (bottom) toBottom();
-        await markRead();
+        // Read only when the reader sees them; otherwise the pill says they are there.
+        if (caughtUp()) await markRead(); else noteFresh(r.data.messages);
         await loadPlaces();
       }
     } finally {
@@ -521,33 +654,241 @@
   }
   grow();
 
+  // ------------------------------------------------------------------ drafts
+  //
+  // One per place, in sessionStorage: it belongs to this tab (two tabs on one place do not overwrite each other's),
+  // survives a reload and the move between chat's and private messages' pages, and is gone with the tab, so no
+  // unsent text stays behind in the browser. Refused storage keeps nothing; the page goes on.
+
+  var DRAFT = "asterism-draft:" + SLUG + ":";
+  function saveDraft() {
+    if (!state.place) return;
+    try {
+      if (el.text.value) sessionStorage.setItem(DRAFT + state.place, el.text.value);
+      else sessionStorage.removeItem(DRAFT + state.place);
+    } catch (err) { /* not kept */ }
+  }
+  function loadDraft() {
+    var v = "";
+    try { v = sessionStorage.getItem(DRAFT + state.place) || ""; } catch (err) { v = ""; }
+    el.text.value = v;
+    held = null;
+    atClose();
+    grow();
+  }
+
+  // ------------------------------------------------------------------ @ in the composer
+
+  // The server's rule for a mention: "@" not after a name's character, then the name's characters; a name that is
+  // nobody loses its trailing ".", "_" or "-" before it is given up.
+  var MENTION_RE = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
+  var AT_MAX = 12;
+  var atList = make("ul", "mention-list");
+  atList.id = "mention-list";
+  atList.setAttribute("role", "listbox");
+  atList.setAttribute("aria-label", t("msg.at_label"));
+  atList.hidden = true;
+  el.form.appendChild(atList);
+  el.text.setAttribute("aria-autocomplete", "list");
+  el.text.setAttribute("aria-controls", "mention-list");
+  el.text.setAttribute("aria-expanded", "false");
+  var at = {options: [], active: -1, start: -1, shut: -1};
+
+  // The "@name" being typed at the caret (a channel only: a private message mentions nobody), or null.
+  function atToken() {
+    if (!isChannel(state.place) || el.text.selectionStart !== el.text.selectionEnd) return null;
+    var caret = el.text.selectionStart, m = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]*)$/.exec(el.text.value.slice(0, caret));
+    return m ? {start: caret - m[2].length - 1, end: caret, query: m[2]} : null;
+  }
+
+  // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups.
+  function mentionable() {
+    var v = A.side.members, out = [];
+    if (v) {
+      var agents = v.agents || [];
+      agents.filter(function (a) { return a.owner === ME; }).forEach(function (a) {
+        out.push({name: a.name, kind: "agent", model: a.model, busy: a.busy, note: t("nav.my_agent")});
+      });
+      agents.filter(function (a) { return a.owner !== ME; }).forEach(function (a) {
+        out.push({name: a.name, kind: "agent", model: a.model, busy: a.busy,
+                  note: a.owner ? t("msg.agent_of", {owner: a.owner}) : t("msg.kind_agent")});
+      });
+      (v.people || []).filter(function (p) { return p.name !== ME; }).forEach(function (p) {
+        out.push({name: p.name, kind: "person", note: ""});
+      });
+      (v.groups || []).forEach(function (g) {
+        out.push({name: g.name, kind: "group",
+                  note: g.kind === "ownership" && g.owner ? t("group.ownership", {owner: g.owner}) : t("msg.at_group")});
+      });
+    } else {                              // before the members are read: the names the page came with
+      Object.keys(A.side.directory).forEach(function (n) {
+        var d = A.side.directory[n];
+        if (n !== ME) out.push({name: n, kind: d.kind, note: d.owner === ME ? t("nav.my_agent") : ""});
+      });
+    }
+    return out;
+  }
+
+  function atOption(o, i) {
+    var li = make("li", "mention-option");
+    li.id = "mention-opt-" + i;
+    li.setAttribute("role", "option");
+    if (o.kind === "group") li.appendChild(make("span", "mention-mark"));
+    else li.appendChild(A.side.presence(A.side.directory[o.name] || {kind: o.kind}));
+    li.appendChild(make("span", "mono mention-name", o.name));
+    var model = o.kind === "agent" ? A.modelTag(o.model) : null;
+    if (model) li.appendChild(model);
+    if (o.busy) li.appendChild(make("span", "dim", t("nav.busy")));
+    if (o.note) li.appendChild(make("span", "dim mention-note", o.note));
+    li.addEventListener("mousedown", function (ev) { ev.preventDefault(); atChoose(i); });
+    return li;
+  }
+
+  function atDraw() {
+    var tok = atToken();
+    if (!tok) at.shut = -1;                         // Escape shuts the list for that one name only
+    if (!tok || tok.start === at.shut) { atClose(); return; }
+    var q = tok.query.toLowerCase();
+    // Names starting with what was typed first, then names holding it; each in the order above.
+    var ranked = mentionable().map(function (o, i) {
+      var low = o.name.toLowerCase(), where = low.indexOf(q);
+      return {o: o, i: i, score: where === 0 ? 0 : where > 0 ? 1 : 2};
+    }).filter(function (x) { return x.score < 2; });
+    ranked.sort(function (a, b) { return a.score - b.score || a.i - b.i; });
+    at.options = ranked.slice(0, AT_MAX).map(function (x) { return x.o; });
+    if (!at.options.length) { atClose(); return; }
+    at.start = tok.start;
+    atList.textContent = "";
+    at.options.forEach(function (o, i) { atList.appendChild(atOption(o, i)); });
+    atList.hidden = false;
+    el.text.setAttribute("aria-expanded", "true");
+    atActive(0);
+  }
+
+  function atActive(i) {
+    at.active = i;
+    Array.prototype.forEach.call(atList.children, function (li, j) { li.setAttribute("aria-selected", String(j === i)); });
+    var li = atList.children[i];
+    if (li) {
+      el.text.setAttribute("aria-activedescendant", li.id);
+      li.scrollIntoView({block: "nearest"});
+    } else {
+      el.text.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  function atClose() {
+    if (atList.hidden) return;
+    atList.hidden = true;
+    at.options = [];
+    el.text.setAttribute("aria-expanded", "false");
+    el.text.removeAttribute("aria-activedescendant");
+  }
+
+  function atChoose(i) {
+    var o = at.options[i], tok = atToken();
+    if (!o || !tok) { atClose(); return; }
+    var v = el.text.value, put = "@" + o.name + " ";
+    el.text.value = v.slice(0, tok.start) + put + v.slice(tok.end).replace(/^ /, "");
+    var caret = tok.start + put.length;
+    el.text.setSelectionRange(caret, caret);
+    atClose();
+    grow();
+    saveDraft();
+    el.text.focus();
+  }
+
+  // The names mentioned in `text` that are no member or group (in a channel, once the members are known).
+  function unknownMentions(text) {
+    var v = A.side.members;
+    if (!v || !isChannel(state.place)) return [];
+    var names = new Set();
+    (v.people || []).concat(v.agents || [], v.groups || []).forEach(function (x) { names.add(x.name); });
+    var out = [], m;
+    MENTION_RE.lastIndex = 0;
+    while ((m = MENTION_RE.exec(text))) {
+      var cand = m[2];
+      while (cand && !names.has(cand) && /[._-]$/.test(cand)) cand = cand.slice(0, -1);
+      if (cand && !names.has(cand) && out.indexOf(cand) < 0) out.push(cand);
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ sending
+
+  var held = null;                        // the text held back once for a mention of nobody
+
   async function send() {
     var text = el.text.value;
     if (!text.trim() || !state.place) return;
+    var unknown = unknownMentions(text);
+    if (unknown.length && held !== text) {          // said in place; sending the same text again sends it
+      held = text;
+      el.out.textContent = t("msg.unknown_hold", {names: unknown.map(function (n) { return "@" + n; }).join(", ")});
+      return;
+    }
+    held = null;
     var body = {to: state.place, text: text};
     if (state.replyTo) body.reply_to = state.replyTo;
+    var place = state.place;
     var r = await post("messages", body);
-    if (!r.ok) { el.out.textContent = A.errorText(r.data.error); return; }
-    el.text.value = "";
-    grow();
-    setReply(null);
-    el.out.textContent = outcome(r.data.mentions);
+    if (!r.ok) { el.out.textContent = A.refusal("msg.send", r.data); return; }
+    if (place === state.place) {
+      el.text.value = "";
+      grow();
+      setReply(null);
+      el.out.textContent = outcome(r.data.mentions);
+    }
+    try { sessionStorage.removeItem(DRAFT + place); } catch (err) { /* nothing kept */ }
     await news();
     toBottom();
+    seen();
   }
 
   // ------------------------------------------------------------------ wiring
 
   el.text.addEventListener("keydown", function (ev) {
+    var composing = ev.isComposing || ev.keyCode === 229;
+    if (!atList.hidden && !composing) {             // the list of names: arrows move, Enter or Tab take, Escape shuts
+      var n = at.options.length;
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        atActive((at.active + (ev.key === "ArrowDown" ? 1 : n - 1)) % n);
+        return;
+      }
+      if ((ev.key === "Enter" && !ev.shiftKey) || ev.key === "Tab") {
+        ev.preventDefault();
+        atChoose(at.active < 0 ? 0 : at.active);
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        at.shut = at.start;
+        atClose();
+        return;
+      }
+    }
     // Enter sends; Shift+Enter is a new line; Enter that ends an input-method composition does neither.
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+    if (ev.key === "Enter" && !ev.shiftKey && !composing) {
       ev.preventDefault();
       send();
     } else if (ev.key === "Escape" && state.replyTo) {
       setReply(null);
     }
   });
-  el.text.addEventListener("input", grow);
+  el.text.addEventListener("input", function () {
+    grow();
+    saveDraft();
+    if (held !== null && el.text.value !== held) { held = null; el.out.textContent = ""; }
+    atDraw();
+  });
+  // The caret moved without typing: the list follows the name at the caret.
+  el.text.addEventListener("keyup", function (ev) {
+    if (/^(ArrowLeft|ArrowRight|Home|End)$/.test(ev.key)) atDraw();
+  });
+  el.text.addEventListener("click", atDraw);
+  el.text.addEventListener("blur", atClose);
   el.form.addEventListener("submit", function (ev) { ev.preventDefault(); send(); });
   el.replyCancel.addEventListener("click", function () { setReply(null); el.text.focus(); });
   el.older.addEventListener("click", loadOlder);

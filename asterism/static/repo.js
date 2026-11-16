@@ -4,7 +4,7 @@
 // GET /api/files/raw/<path>. Entries of type "other" recede and cannot be opened.
 // The explorer (explorer.js) and the tab strip (viewer.js) speak to it, and to a local folder (local.js), through one
 // small interface:
-//   id, state, message, on(what, fn)      what: "listing" (redraw the tree), "state", "changed" (a push)
+//   id, state, on(what, fn)               what: "listing" (redraw the tree), "state", "changed" (a push)
 //   listed(folder) -> entries | undefined, pending(folder), failed(folder), list(folder, fresh) -> Promise
 //   read(path) -> Promise of a document {status, kind, text, url, code, why}, release(doc)
 //   menuItems(entry, ui) -> the acts of an entry's menu
@@ -21,8 +21,7 @@
   var R = {
     id: "repo",
     ref: null, commit: null, stale: false,
-    state: "loading",            // loading | ok | not_connected | away (nothing could be listed)
-    message: ""                  // the server's sentence for not_connected / away
+    state: "loading"             // loading | ok | not_connected | away (nothing could be listed)
   };
   A.sources = A.sources || {};
   A.sources.repo = R;
@@ -34,10 +33,9 @@
   R.on = function (what, fn) { listeners[what].push(fn); };
   function emit(what) { listeners[what].forEach(function (fn) { fn(); }); }
 
-  function setState(state, message) {
-    if (R.state === state && R.message === (message || "")) return;
+  function setState(state) {
+    if (R.state === state) return;
     R.state = state;
-    R.message = message || "";
     emit("state");
   }
 
@@ -81,12 +79,12 @@
       }
       if (r.data.error === "not_connected") {
         listings.clear();
-        setState("not_connected", r.data.message);
+        setState("not_connected");
       } else if (r.status === 404) {                     // the folder is gone
         listings.delete(folder);
       } else {
         R.stale = true;
-        if (!listings.size) setState("away", r.data.message);
+        if (!listings.size) setState("away");
       }
       emit("listing");
       return null;

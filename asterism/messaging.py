@@ -999,8 +999,10 @@ def channels_view(pj: Project, me: Member) -> dict[str, Any]:
                                                   (me.kind, me.id))}
     from . import pins                  # pins builds on this module
     pinned = pins.by_channel(pj)
+    restricted = projects.restricted_channels(pj)
     channels = [{"name": n, "unread": counts.get("#" + n, (0, 0))[0], "important": counts.get("#" + n, (0, 0))[1],
-                 "muted": n in muted, "pins": pinned.get(n, [])} for n in channel_names(pj, me)]
+                 "muted": n in muted, "pins": pinned.get(n, []), "restricted": n in restricted}
+                for n in channel_names(pj, me)]
     mine = [r["place"] for r in pj.db.execute(
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
         "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))] if reads_private(pj, me) else []
@@ -1120,12 +1122,13 @@ def channel_permissions(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
     if name not in channel_names(pj, me):
         raise _no_channel(pj, "#" + name, me)
     c = pj.db.execute("SELECT id FROM channels WHERE name = ?", (name,)).fetchone()
-    return {"overrides": projects.channel_overrides(pj, c["id"])}
+    return {"overrides": projects.channel_overrides(pj, c["id"]), "readers": projects.channel_readers(pj, name)}
 
 
 def set_channel_permissions(pj: Project, actor: Actor, name: str, overrides: Any) -> dict[str, Any]:
     c = _manageable(pj, actor, name, "Changing a channel's permissions needs the manage_channels permission.")
-    return {"overrides": projects.set_channel_overrides(pj, actor, c["id"], overrides)}
+    return {"overrides": projects.set_channel_overrides(pj, actor, c["id"], overrides),
+            "readers": projects.channel_readers(pj, name)}
 
 
 def rename_channel(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, Any]:

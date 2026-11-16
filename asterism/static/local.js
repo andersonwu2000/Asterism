@@ -116,10 +116,10 @@
 
   // #local-restore: one press, and the browser decides whether to ask the reader.
   L.restore = async function () {
-    if (!dir) return {ok: false, message: t("local.gone")};
+    if (!dir) return {ok: false, message: A.errorText("local_gone")};
     var granted = false;
     try { granted = await permitted(dir, "read", true); } catch (err) { return refusal(err); }
-    if (!granted) return {ok: false, message: t("local.denied")};
+    if (!granted) return {ok: false, message: A.errorText("local_denied")};
     reset();
     setState("ok");
     await L.list("");
@@ -134,15 +134,17 @@
     setState("none");
   };
 
+  // A refusal by the browser, as an error code with the page's own sentence for it ("error.<code>"; an unknown one
+  // is said with its name).
   function refusal(err) {
     var name = err && err.name;
-    var key = name === "NotAllowedError" || name === "SecurityError" ? "local.denied"
-      : name === "NotFoundError" ? "local.gone"
-      : name === "InvalidModificationError" ? "local.not_empty"
-      : name === "TypeError" ? "local.bad_name"
-      : name === "QuotaExceededError" ? "local.full"
-      : null;
-    return {ok: false, message: key ? t(key) : t("local.failed", {code: name || "?"})};
+    var code = name === "NotAllowedError" || name === "SecurityError" ? "local_denied"
+      : name === "NotFoundError" ? "local_gone"
+      : name === "InvalidModificationError" ? "local_not_empty"
+      : name === "TypeError" ? "local_bad_name"
+      : name === "QuotaExceededError" ? "local_full"
+      : name || "";
+    return {ok: false, error: code, message: A.errorText(code)};
   }
 
   // ------------------------------------------------------------------ walking the folder
@@ -354,10 +356,10 @@
   // `doc` first and nothing is written when it changed: {conflict: true}. On success `doc` describes the disk again.
   L.save = async function (path, text, doc, force) {
     try {
-      if (!await writable()) return {ok: false, message: t("local.denied_write")};
+      if (!await writable()) return {ok: false, message: A.errorText("local_denied_write")};
       if (!force) {
         var moved = await L.changed(path, doc);
-        if (moved) return moved.gone ? {ok: false, gone: true, message: t("local.gone")} : {ok: false, conflict: true};
+        if (moved) return moved.gone ? {ok: false, gone: true, message: A.errorText("local_gone")} : {ok: false, conflict: true};
       }
       var bytes = encode(text, doc), h = await fileHandle(path);
       var w = await h.createWritable({keepExistingData: false});
@@ -385,9 +387,9 @@
   }
 
   async function change(folder, name, work) {
-    if (L.badName(name)) return {ok: false, message: t("local.bad_name")};
+    if (L.badName(name)) return {ok: false, message: A.errorText("local_bad_name")};
     try {
-      if (!await writable()) return {ok: false, message: t("local.denied_write")};
+      if (!await writable()) return {ok: false, message: A.errorText("local_denied_write")};
       if (await exists(folder, name)) return {ok: false, message: t("local.exists", {name: name})};
       await work(await folderHandle(folder));
     } catch (err) {
@@ -424,19 +426,20 @@
     return res;
   };
 
-  // A file, or a folder that is empty. Answers as A.gone expects: {ok} or {ok: false, data: {message}}.
+  // A file, or a folder that is empty. Answers as A.gone expects: {ok} or {ok: false, data: {error}}, the error's code
+  // said by the catalogue (A.refusal).
   L.remove = async function (path, isFolder) {
     var folder = parentOf(path);
     try {
-      if (!await writable()) return {ok: false, data: {message: t("local.denied_write")}};
+      if (!await writable()) return {ok: false, data: {error: "local_denied_write"}};
       var parent = await folderHandle(folder);
       if (isFolder) {
         var h = await parent.getDirectoryHandle(nameOf(path));
-        for await (var x of h.keys()) { if (x !== undefined) return {ok: false, data: {message: t("local.not_empty")}}; }
+        for await (var x of h.keys()) { if (x !== undefined) return {ok: false, data: {error: "local_not_empty"}}; }
       }
       await parent.removeEntry(nameOf(path));
     } catch (err) {
-      return {ok: false, data: {message: refusal(err).message}};
+      return {ok: false, data: {error: refusal(err).error}};
     }
     listings.delete(path);
     await L.list(folder, true);

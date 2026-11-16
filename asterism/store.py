@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -254,7 +255,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     responsible_kind TEXT,         -- person, agent; NULL: nobody is responsible
     responsible_id INTEGER,
     assigned_by INTEGER,           -- the person who locked it (only while an agent is responsible); NULL: not locked
-    created REAL NOT NULL
+    created REAL NOT NULL,         -- when it was posted
+    posted_kind TEXT,              -- who posted it: person, agent; NULL: unknown (posted before f7)
+    posted_id INTEGER,
+    taken REAL                     -- when the agent responsible now was given it or took it; NULL: nobody holds it,
+                                   -- or unknown (taken before f7)
 );
 CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
 CREATE TABLE IF NOT EXISTS pins (
@@ -335,6 +340,8 @@ ADDED_COLUMNS = {
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
     "people": [("last_beat", "REAL")],
+    # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then.
+    "tasks": [("posted_kind", "TEXT"), ("posted_id", "INTEGER"), ("taken", "REAL")],
     # Until f6 the system's notices went to #general, the channel every project was created with.
     "project": [("notice_channel", "INTEGER", "(SELECT id FROM channels WHERE name = 'general')")],
 }
@@ -367,6 +374,10 @@ DATA_FIXES = (
     # only ever held over an agent's task); nobody is told.
     ("tasks", "UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL "
               "WHERE responsible_kind = 'person'"),
+    # f7: the owner group takes no channel override (its people are never denied, so one had no effect but to
+    # mislead); one set before is dropped.
+    ("channel_overrides", "DELETE FROM channel_overrides WHERE group_id IN "
+                          "(SELECT id FROM groups WHERE kind = 'default' AND name = 'owner')"),
 )
 
 
@@ -402,21 +413,53 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
                     conn.execute("UPDATE groups SET permissions = ? WHERE id = ?",
                                  (json.dumps(json.loads(row[1]) + [p]), row[0]))
                 conn.execute("INSERT INTO upgrades (name, at) VALUES (?, ?)", (key, util.now()))
-        have = {r[1] for r in conn.execute("PRAGMA table_info(groups)")}
-        moved = [c for c in SWITCH_COLUMNS if c in have]
-        # The old switch columns are moved into the permissions once and then left in place, unread: the hub's
-        # SQLite (3.34) has no ALTER TABLE ... DROP COLUMN (3.35+).
-        if moved and not conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
+        _drop_switch_columns(conn)
+    for table, sql in DATA_FIXES:
+        if _has_table(conn, table):
+            conn.execute(sql)
+    conn.commit()
+
+
+def _drop_switch_columns(conn: sqlite3.Connection) -> None:
+    """A `groups` table that still has the old switch columns: the switches that are on are moved into the ownership
+    groups' permissions (unless an earlier start did that already, `switches_moved`), and the table is rebuilt without
+    the columns by copy, as SQLite's own procedure for a change ALTER TABLE cannot make (the hub's SQLite, 3.34, has
+    no DROP COLUMN, which came with 3.35): the table of today's schema is made under another name, every row copied
+    with its id (so memberships, tasks and channel overrides still point at their groups), the old table dropped and
+    the new one renamed. All of it is one transaction, with foreign keys off (a pragma that can only change outside
+    a transaction) and `foreign_key_check` empty before it commits; on any failure nothing is changed. A table
+    without the columns is left alone, so this happens once."""
+    have = [r[1] for r in conn.execute("PRAGMA table_info(groups)")]
+    moved = [c for c in SWITCH_COLUMNS if c in have]
+    if not moved:
+        return
+    body = re.search(r"CREATE TABLE IF NOT EXISTS groups \((.*?)\n\);", PROJECT_SCHEMA, re.S).group(1)
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
             for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
                                   f"WHERE kind = 'ownership'").fetchall():
                 perms = json.loads(r[1])
                 perms += [c for c in moved if r[c] and c not in perms]
                 conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
             conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
-    for table, sql in DATA_FIXES:
-        if _has_table(conn, table):
-            conn.execute(sql)
-    conn.commit()
+        conn.execute("DROP TABLE IF EXISTS groups_rebuilt")
+        conn.execute(f"CREATE TABLE groups_rebuilt ({body}\n)")
+        keep = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(groups_rebuilt)") if r[1] in have)
+        conn.execute(f"INSERT INTO groups_rebuilt ({keep}) SELECT {keep} FROM groups")
+        conn.execute("DROP TABLE groups")
+        conn.execute("ALTER TABLE groups_rebuilt RENAME TO groups")
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise sqlite3.IntegrityError(f"foreign keys broken by rebuilding groups: {broken[:5]}")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _open(path: Path, schema: str, added_columns: dict[str, list[tuple[str, ...]]]) -> sqlite3.Connection:

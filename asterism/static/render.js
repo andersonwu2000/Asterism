@@ -6,7 +6,8 @@
 // iframes/objects/forms, only http(s) and mailto links, which open with rel="noopener noreferrer"). Mathematics
 // ($...$, $$...$$) is taken out before Markdown sees it and drawn by KaTeX (trust off) into elements this script
 // creates.
-// - In a message, images become plain links and nothing is loaded.
+// - In a message, images become plain links and nothing is loaded; the mentions that reached someone (the names the
+//   caller gives) are marked as span.mention.
 // - In a file, links and images may also be relative: while DOMPurify still holds the document in its own inert
 //   copy, `opts.link(href)` turns a relative link into {href, path} (a file of the repository: no new tab, data-path
 //   marks it) or null (the link is dropped, its text stays), and `opts.image(src)` gives the address to load a
@@ -125,7 +126,14 @@
     return box;
   }
 
-  A.renderText = function (text) { return render(text, md, PURIFY, "text"); };
+  // `opts.mentions`: the names the message's mentions reached (the server's list); each "@name" of them outside code
+  // and links is drawn in bold.
+  A.renderText = function (text, opts) {
+    var box = render(text, md, PURIFY, "text");
+    var names = opts && opts.mentions;
+    if (names && names.length) markMentions(box, new Set(names));
+    return box;
+  };
 
   A.renderDoc = function (text, opts) {
     rewrite = opts;
@@ -138,6 +146,39 @@
     Array.prototype.forEach.call(box.querySelectorAll(":scope > p"), function (p) {
       var img = p.children.length === 1 && p.firstElementChild.tagName === "IMG";
       if (img && !p.textContent.trim()) p.classList.add("picture");
+    });
+  }
+
+  // "@name" as the server reads a mention: "@" not after a name's character, then the name's characters, trailing
+  // ".", "_" or "-" dropped until a name is found. Only names in `names` are marked; the text stays as it was.
+  var MENTION_RE = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
+  function markMentions(box, names) {
+    var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        return n.parentNode.closest("code, pre, a, .katex") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var nodes = [], n;
+    while ((n = walker.nextNode())) if (n.nodeValue.indexOf("@") >= 0) nodes.push(n);
+    nodes.forEach(function (node) {
+      var s = node.nodeValue, frag = document.createDocumentFragment(), at = 0, m, hit = false;
+      MENTION_RE.lastIndex = 0;
+      while ((m = MENTION_RE.exec(s))) {
+        var cand = m[2];
+        while (cand && !names.has(cand) && /[._-]$/.test(cand)) cand = cand.slice(0, -1);
+        if (!cand || !names.has(cand)) continue;
+        var from = m.index + m[1].length;
+        frag.appendChild(document.createTextNode(s.slice(at, from)));
+        var mark = document.createElement("span");
+        mark.className = "mention";
+        mark.textContent = "@" + cand;
+        frag.appendChild(mark);
+        at = from + 1 + cand.length;
+        hit = true;
+      }
+      if (!hit) return;
+      frag.appendChild(document.createTextNode(s.slice(at)));
+      node.parentNode.replaceChild(frag, node);
     });
   }
 

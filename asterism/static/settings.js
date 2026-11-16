@@ -8,18 +8,23 @@
 // - Project: overview (for who may change the project's settings: its name, repository and notice channel as forms,
 //   and "delete project", floating with the address typed), members (one table of people and agents: the non-default
 //   groups as chips, x to take one away; the default ones as a quiet line, never changed by hand; + gives or takes the
-//   other groups as check boxes; removal from the project), groups (the groups in their order, the highest first, with
-//   a filter and "new group", a floating panel: who may manage groups drags a row to move it, or moves it with "move
-//   up" / "move down" in the row's menu; under them the three default groups, owner, human and AI, each a row of its
-//   own marked "預設", not draggable; a chosen group, ?g= in the address, in two tabs: settings (its name, renamed in
-//   place for a custom group; "show separately in the member list"; its permissions; for a person's own agent group
-//   also what others may do with those agents; removal at the foot) and members (read only for a default group)),
-//   invitations (app.js).
+//   other groups as check boxes; removal from the project), groups (the groups people organise in their order, the
+//   highest first, then each person's own agent group in a section of its own, in their order among themselves; with
+//   a filter and "new group", a floating panel: who may manage groups drags a row to move it within its section, or
+//   moves it with "move up" / "move down" in the row's menu; under them the three default groups, owner, human and
+//   AI, each a row of its own marked "預設", not draggable; a chosen group, ?g= in the address, under "← 群組" on a
+//   narrow screen, in two tabs: settings (its name, renamed in place for a custom group; "show separately in the
+//   member list"; its permissions; for a person's own agent group also what others may do with those agents; removal
+//   at the foot) and members (adding several at once from a list of check boxes with a filter; read only for a default
+//   group)), invitations (a new one's link shown once with its copy control; the unused ones listed, each revoked in
+//   two steps).
 // - Channel: overview (rename; delete, floating, not for the notice channel), permissions (each group's read and post
-//   in the channel as three-state controls: deny, inherit, allow), notifications (my mute and my agents').
+//   in the channel as three-state controls: deny, inherit, allow; owner's row says it always can; a person's agent
+//   group only once added; under the table who may read the channel now), notifications (my mute and my agents').
 // - Me: me.js.
 // The data is /api/members (embedded at first, then read again every 15 s while nobody is mid-act). Only what the
-// reader may do is offered (Asterism.people's rules); a refusal shows the server's sentence where the act was.
+// reader may do is offered (Asterism.people's rules); a refusal shows the page's own sentence for its code where the
+// act was (under the field for a name refused); "saved" is said in place, at the row's end, for a moment.
 // Taking out of a group confirms in place; removing a group or a member floats.
 "use strict";
 (function () {
@@ -131,10 +136,10 @@
     return out;
   }
 
-  // After an act: its refusal where it was, else the data again.
+  // After an act on who is in which group: its refusal where it was (in the page's words), else the data again.
   function done(out) {
     return function (r) {
-      if (r && !r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (r && !r.ok) { out.textContent = A.refusal("mem.regroup", r.data); return; }
       load(true);
     };
   }
@@ -237,16 +242,26 @@
   }
 
   function plainGroups() { return view.groups.filter(function (g) { return !rules.isDefault(g); }); }
+  // The groups people organise, and each person's own agent group: two lists, each in its order; the person's agent
+  // groups come after the others (they say whose an agent is, one per person, and would otherwise fill the top).
+  function customGroups() { return plainGroups().filter(function (g) { return g.kind !== "ownership"; }); }
+  function agentGroups() { return plainGroups().filter(function (g) { return g.kind === "ownership"; }); }
+  function sameList(g) { return g.kind === "ownership" ? agentGroups() : customGroups(); }
   function mayOrder() { return rules.mine("manage_groups"); }
 
-  // A new order of the non-default groups: `name` moved to `to` (an index in the list).
+  // A new order of the non-default groups: `name` moved to `to` (an index in its own list); the other list keeps its
+  // order, after the custom groups.
   async function reorder(name, to, out) {
-    var names = plainGroups().map(function (g) { return g.name; }), from = names.indexOf(name);
+    var g = rules.group(name);
+    if (!g) return;
+    var names = sameList(g).map(function (x) { return x.name; }), from = names.indexOf(name);
     if (from < 0 || to < 0 || to >= names.length || to === from) return;
     names.splice(from, 1);
     names.splice(to, 0, name);
+    var rest = (g.kind === "ownership" ? customGroups() : agentGroups()).map(function (x) { return x.name; });
+    names = g.kind === "ownership" ? rest.concat(names) : names.concat(rest);
     var r = await A.request(API + "groups/order", null, {names: names});
-    if (!r.ok) { if (out) out.textContent = A.refusal("mem.refused", r.data); return; }
+    if (!r.ok) { if (out) out.textContent = A.refusal("mem.order", r.data); return; }
     if (out) out.textContent = t("mem.moved");
     await load(true);
     var again = list.querySelector('[data-key="gm:' + name.replace(/["\\]/g, "\\$&") + '"]');
@@ -256,7 +271,7 @@
   function groupMenu(g, b) {
     var items = [{label: t("mem.open_group"), run: function () { goGroup(g.name, true); }}];
     if (!rules.isDefault(g) && mayOrder() && !(groupFilter.value || "").trim()) {
-      var names = plainGroups().map(function (x) { return x.name; }), i = names.indexOf(g.name), out = orderOut;
+      var names = sameList(g).map(function (x) { return x.name; }), i = names.indexOf(g.name), out = orderOut;
       items.push({separator: true},
                  {label: t("mem.move_up"), disabled: i <= 0, run: function () { reorder(g.name, i - 1, out); }},
                  {label: t("mem.move_down"), disabled: i >= names.length - 1, run: function () { reorder(g.name, i + 1, out); }});
@@ -287,7 +302,8 @@
       });
     });
     li.addEventListener("dragover", function (ev) {
-      if (!dragging || dragging === g.name) return;
+      var from = dragging && rules.group(dragging);
+      if (!from || dragging === g.name || (from.kind === "ownership") !== (g.kind === "ownership")) return;
       ev.preventDefault();
       var r = li.getBoundingClientRect(), before = ev.clientY < r.top + r.height / 2;
       li.classList.toggle("drop-before", before);
@@ -300,7 +316,8 @@
       var before = li.classList.contains("drop-before");
       li.classList.remove("drop-before", "drop-after");
       if (!name || name === g.name) return;
-      var names = plainGroups().map(function (x) { return x.name; });
+      var names = sameList(g).map(function (x) { return x.name; });
+      if (names.indexOf(name) < 0) return;
       var to = names.indexOf(g.name) + (before ? 0 : 1);
       if (names.indexOf(name) < to) to -= 1;
       reorder(name, to, orderOut);
@@ -352,22 +369,30 @@
       list.appendChild(back);
     }
     function found(g) { return matches(rules.label(g), q) || matches(g.name, q); }
-    var gs = plainGroups().filter(found);
+    var gs = customGroups().filter(found), own = agentGroups().filter(found);
     var defaults = view.groups.filter(rules.isDefault).filter(function (g) {
       return found(g) || matches(t("mem.default"), q);
     });
-    if (!gs.length && !defaults.length) { if (q) list.appendChild(make("p", "dim", t("mem.no_match"))); return; }
+    if (!gs.length && !own.length && !defaults.length) { if (q) list.appendChild(make("p", "dim", t("mem.no_match"))); return; }
+    var order = mayOrder() && !q && !compact;
+    orderOut = make("p", "out");
+    orderOut.setAttribute("aria-live", "polite");
     if (gs.length) {
       var sec = make("section", "groups-sec"), ul = make("ul", "side-list groups-order");
       if (!compact) sec.appendChild(make("p", "groups-hint", t("mem.order_hint")));
-      var order = mayOrder() && !q && !compact;
       gs.forEach(function (g) { ul.appendChild(entry(g, compact, order)); });
       sec.appendChild(ul);
-      orderOut = make("p", "out");
-      orderOut.setAttribute("aria-live", "polite");
-      sec.appendChild(orderOut);
       list.appendChild(sec);
     }
+    // Each person's own agent group: a section of their own, still in their order among themselves.
+    if (own.length) {
+      var osec = make("section", "groups-sec groups-own"), oul = make("ul", "side-list groups-order");
+      osec.appendChild(make("h3", "groups-sub", t("mem.agent_groups")));
+      own.forEach(function (g) { oul.appendChild(entry(g, compact, order)); });
+      osec.appendChild(oul);
+      list.appendChild(osec);
+    }
+    list.appendChild(orderOut);
     // The default groups: each its own row under the ordered ones, never dragged.
     if (defaults.length) {
       var dl = make("ul", "side-list groups-defaults-list");
@@ -475,12 +500,19 @@
       out.textContent = "";
       if (name === g.name) return;
       var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {name: name});
-      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) {
+        if (/^(invalid_name|conflict)$/.test(r.data.error)) A.fieldError(input, A.refusal("grp.name", r.data));
+        else out.textContent = A.refusal("grp.change", r.data);
+        return;
+      }
       tabs[name] = tabs[g.name];
       window.history.replaceState(null, "", BASE + "/groups?g=" + encodeURIComponent(name));
       await load(true);
       var again = detail.querySelector('[data-key="gname:' + name.replace(/["\\]/g, "\\$&") + '"]');
-      if (again) again.focus();
+      if (again) {
+        again.focus();
+        A.saved(again.form && again.form.querySelector(".out"));
+      }
     });
     return form;
   }
@@ -504,16 +536,16 @@
     input.addEventListener("change", async function () {
       out.textContent = "";
       var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {separate: input.checked});
-      if (!r.ok) { input.checked = !input.checked; out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) { input.checked = !input.checked; out.textContent = A.refusal("grp.change", r.data); return; }
       g.separate = input.checked;
-      out.textContent = t("mem.saved");
+      A.saved(out);
     });
     return rows;
   }
 
   function removeGroup(g, opener) {
     A.gone({title: t("gone.group.title", {name: g.name}), text: t("gone.group.text", {name: g.name}), name: g.name,
-            button: t("gone.group.button"), opener: opener, after: groupFilter,
+            button: t("gone.group.button"), opener: opener, after: groupFilter, act: "grp.remove",
             run: function () { return A.request(API + "groups/" + encodeURIComponent(g.name) + "/remove", null, {}); },
             done: async function () {
               window.history.replaceState(null, "", BASE + "/groups");
@@ -557,11 +589,11 @@
       var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {permissions: want});
       if (!r.ok) {
         box.checked = !box.checked;
-        out.textContent = A.refusal("mem.refused", r.data);
+        out.textContent = A.refusal("grp.change", r.data);
         return;
       }
       g.permissions = r.data.permissions;      // the page's copy follows; the next reading redraws the rest
-      out.textContent = t("mem.saved");
+      A.saved(out);
     });
     return row;
   }
@@ -603,6 +635,80 @@
     return box;
   }
 
+  // Adding members to a group, several in one go: everyone not in it yet as a list of check boxes (people, then
+  // agents) with a filter, and one button that adds those checked. Another person's agent whose person keeps its groups
+  // closed is listed disabled, with why. What is checked survives the list being drawn again.
+  var picked = {};                                  // group -> {name: true}
+  function addBlock(g) {
+    var sec = make("section", "gd-adding"), mine = picked[g.name] = picked[g.name] || {};
+    var people = view.people.filter(function (x) { return x.groups.indexOf(g.name) < 0; });
+    var agents = view.agents.filter(function (x) { return x.groups.indexOf(g.name) < 0; });
+    var cands = people.map(function (x) { return [x, false]; }).concat(agents.map(function (x) { return [x, true]; }))
+      .filter(function (c) { return rules.mayAdd(c[0], c[1], g) || rules.closedToMe(c[0], c[1]); });
+    sec.appendChild(make("h3", "gd-sub", t("mem.add_heading")));
+    if (!cands.length) { sec.appendChild(make("p", "dim", t("mem.add_none"))); return sec; }
+    Object.keys(mine).forEach(function (n) {
+      if (!cands.some(function (c) { return c[0].name === n && rules.mayAdd(c[0], c[1], g); })) delete mine[n];
+    });
+    var list = make("div", "perm-list gd-pick"), out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    var go = A.button("btn primary", "");
+    go.dataset.key = "gadd-go:" + g.name;
+    function count() {
+      var n = Object.keys(mine).length;
+      go.textContent = n ? t("mem.add_n", {n: n}) : t("mem.add");
+      go.disabled = !n;
+    }
+    var filter = filterField("gaddf:" + g.name, t("mem.filter_add"), function () {
+      var q = filter.value.trim().toLowerCase();
+      Array.prototype.forEach.call(list.children, function (r) { r.hidden = !matches(r.dataset.name, q); });
+    });
+    cands.forEach(function (c, i) {
+      var who = c[0], isAgent = c[1], ok = rules.mayAdd(who, isAgent, g);
+      var row = make("div", "perm-row"), box = make("input"), text = make("label", "perm-text");
+      box.type = "checkbox";
+      box.id = "gadd-" + i;
+      box.checked = !!mine[who.name];
+      box.disabled = !ok;
+      box.dataset.key = "gadd:" + g.name + ":" + who.name;
+      text.htmlFor = box.id;
+      text.append(make("span", "perm-name" + (isAgent ? " mono" : ""), who.name),
+                  make("span", "perm-hint", isAgent ? (ok ? t("mem.agent_of", {owner: who.owner})
+                                                          : t("mem.closed_add", {owner: who.owner}))
+                                                    : t("mem.kind_person")));
+      row.dataset.name = (who.name + " " + (who.owner || "")).toLowerCase();
+      row.append(box, text);
+      box.addEventListener("change", function () {
+        if (box.checked) mine[who.name] = true; else delete mine[who.name];
+        count();
+      });
+      list.appendChild(row);
+    });
+    go.addEventListener("click", async function () {
+      var names = Object.keys(mine);
+      go.disabled = true;
+      out.textContent = "";
+      for (var i = 0; i < names.length; i++) {
+        var r = await P.regroup(names[i], [g.name], []);
+        if (!r.ok) { out.textContent = names[i] + ": " + A.refusal("mem.regroup", r.data); break; }
+        delete mine[names[i]];
+      }
+      await load(true);
+      var again = detail.querySelector('[data-key="gadd-go:' + g.name.replace(/["\\]/g, "\\$&") + '"]');
+      if (again) {
+        var said = again.parentNode.querySelector(".out");
+        if (out.textContent && said) said.textContent = out.textContent; else A.saved(said);
+      }
+    });
+    count();
+    var row = make("div", "row form-acts");
+    row.append(out, go);
+    var top = make("div", "set-filter");
+    top.appendChild(filter);
+    sec.append(top, list, row);
+    return sec;
+  }
+
   function membersTab(g) {
     var box = make("div", "gd-tab"), m = rules.inGroup(g.name);
     var ul = make("ul", "mlist");
@@ -610,27 +716,9 @@
       var q = filter.value.trim().toLowerCase();
       Array.prototype.forEach.call(ul.children, function (li) { if (li.dataset.name) li.hidden = !matches(li.dataset.name, q); });
     });
+    if (g.kind !== "ownership" && !rules.isDefault(g)) box.appendChild(addBlock(g));
     var top = make("div", "gd-add");
     top.appendChild(filter);
-    if (g.kind !== "ownership") {
-      var cands = view.people.filter(function (x) { return x.groups.indexOf(g.name) < 0 && rules.mayAdd(x, false, g); })
-        .map(function (x) { return [x, false]; })
-        .concat(view.agents.filter(function (x) { return x.groups.indexOf(g.name) < 0 && rules.mayAdd(x, true, g); })
-          .map(function (x) { return [x, true]; }));
-      if (cands.length) {
-        var addOut = make("span", "out");
-        addOut.setAttribute("aria-live", "polite");
-        var sel = A.dropdown({label: t("mem.add_label", {group: rules.label(g)}), options: cands.map(function (c) {
-          return {value: c[0].name, label: c[1] ? c[0].name + " (" + t("mem.agent_of", {owner: c[0].owner}) + ")" : c[0].name};
-        })});
-        sel.button.dataset.key = "gadd:" + g.name;
-        var add = A.button("btn", t("mem.add"), async function () {
-          done(addOut)(await P.regroup(sel.value, [g.name], []));
-        });
-        add.dataset.key = "gadd-go:" + g.name;
-        top.append(sel.el, add, addOut);
-      }
-    }
     box.appendChild(top);
     if (rules.isDefault(g)) box.appendChild(make("p", "dim", t("mem.members_readonly")));
     m.people.map(function (x) { return [x, false]; }).concat(m.agents.map(function (x) { return [x, true]; }))
@@ -661,7 +749,21 @@
     return box;
   }
 
+  // "← 群組" over an opened group, for a narrow screen, where the list is not beside it.
+  function backLink() {
+    var back = make("a", "gd-back", t("mem.back_groups"));
+    back.href = BASE + "/groups";
+    back.dataset.key = "gd-back";
+    back.addEventListener("click", function (ev) {
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+      ev.preventDefault();
+      goGroup("", false);
+    });
+    return back;
+  }
+
   function drawGroup(g) {
+    detail.appendChild(backLink());
     var head = make("header", "gd-head"), h = make("h2", "gd-title", rules.label(g));
     h.id = "gd-title";
     if (rules.label(g) !== g.name) h.appendChild(make("small", "", g.name));
@@ -759,7 +861,11 @@
       var perms = Array.prototype.filter.call(form.querySelectorAll('input[name="perm"]'), function (b) { return b.checked; })
         .map(function (b) { return b.value; });
       var r = await A.request(API + "groups", null, {name: name, permissions: perms});
-      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) {
+        if (/^(invalid_name|conflict)$/.test(r.data.error)) A.fieldError(form.elements.name, A.refusal("grp.name", r.data));
+        else out.textContent = A.refusal("grp.create", r.data);
+        return;
+      }
       out.textContent = "";
       form.reset();
       reveal(false);
@@ -779,9 +885,14 @@
       body[field] = (f.elements[field].value || "").trim();
       out.textContent = "";
       var r = await A.request(API + "project", null, body);
-      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) {
+        var input = f.elements[field];
+        if (input && input.type !== "hidden" && /^invalid_/.test(r.data.error)) A.fieldError(input, A.refusal("set.project", r.data));
+        else out.textContent = A.refusal("set.project", r.data);
+        return;
+      }
       if (field === "name") { window.location.reload(); return; }       // the name is in the frame too
-      out.textContent = t("set.saved");
+      A.saved(out);
     });
   });
   var dropProject = document.getElementById("project-delete");
@@ -805,7 +916,12 @@
       out.textContent = "";
       if (name === CHANNEL) return;
       var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL), null, {name: name});
-      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (!r.ok) {
+        if (/^(bad_request|conflict)$/.test(r.data.error)) {
+          A.fieldError(renameForm.elements.name, A.refusal("chan.rename", r.data, {name: name}));
+        } else out.textContent = A.refusal("chan.rename", r.data, {name: name});
+        return;
+      }
       window.location.replace("/" + encodeURIComponent(SLUG) + "/channels/" + encodeURIComponent(r.data.name) + "/settings");
     });
   }
@@ -822,10 +938,14 @@
   // ------------------------------------------------------------------ a channel: permissions
   //
   // One row per group (the groups' order, the default ones last), and for read and for post a control of three:
-  // deny (✕), inherit (/), allow (✓). Each press is saved at once; a refusal shows on the row and the control goes back.
+  // deny (✕), inherit (/), allow (✓). Each press is saved at once, "saved" said at the row's end; a refusal shows
+  // there and the control stays as it was. The owner group takes no override: its row says it always can. Each
+  // person's own agent group has a row only once it has an override or was added here ("加入群組…"). Under the table,
+  // the outcome: who may read the channel now, people and agents.
 
   var permBox = document.getElementById("channel-perms");
-  var STATES = [["deny", "\u2715"], ["inherit", "/"], ["allow", "\u2713"]];
+  var STATES = [["deny", "✕"], ["inherit", "/"], ["allow", "✓"]];
+  var overrides = null, readers = null, shownGroups = {}, savedKey = null;
 
   function tri(group, perm, value, can, out) {
     var seg = make("div", "tri");
@@ -847,8 +967,11 @@
         body[group] = one;
         out.textContent = "";
         var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/permissions", null, {overrides: body});
-        if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+        if (!r.ok) { out.textContent = A.refusal("chan.perms", r.data, {channel: CHANNEL}); return; }
         overrides = r.data.overrides;
+        readers = r.data.readers || readers;
+        shownGroups[group] = true;
+        savedKey = group;
         drawPerms();
         var again = permBox.querySelector('[data-key="' + b.dataset.key.replace(/["\\]/g, "\\$&") + '"]');
         if (again) again.focus();
@@ -865,7 +988,48 @@
     return seg;
   }
 
-  var overrides = null;
+  function overridden(name) {
+    var o = overrides[name];
+    return !!o && (o.read !== "inherit" || o.post !== "inherit");
+  }
+  // The rows shown: every group but a person's own agent group, which only once it has an override or was added.
+  function rowGroups() {
+    return view.groups.filter(function (g) { return g.kind !== "ownership" || overridden(g.name) || shownGroups[g.name]; });
+  }
+
+  function addGroupControl(can) {
+    var hidden = view.groups.filter(function (g) { return rowGroups().indexOf(g) < 0; });
+    if (!can || !hidden.length) return null;
+    var b = A.button("btn quiet chan-perm-add", t("chan.perm.add"));
+    b.dataset.key = "chan-perm-add";
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    b.addEventListener("click", function () {
+      A.menu({label: t("chan.perm.add"), anchor: b}, hidden.map(function (g) {
+        return {label: rules.label(g), run: function () {
+          shownGroups[g.name] = true;
+          drawPerms();
+          var first = permBox.querySelector('[data-key="tri:' + g.name.replace(/["\\]/g, "\\$&") + ':read:inherit"]');
+          if (first) first.focus();
+        }};
+      }), b);
+    });
+    return b;
+  }
+
+  // Who may read the channel now, as the server says after the last change.
+  function outcome() {
+    var p = make("p", "chan-readers");
+    p.setAttribute("aria-live", "polite");
+    if (!readers) return p;
+    var names = readers.people.concat(readers.agents);
+    p.appendChild(make("span", "chan-readers-head", t("chan.perm.readers", {n: names.length})));
+    readers.people.forEach(function (n) { p.appendChild(make("span", "chan-reader", n)); });
+    readers.agents.forEach(function (n) { p.appendChild(make("span", "chan-reader mono", n)); });
+    if (!names.length) p.appendChild(make("span", "dim", t("chan.perm.nobody")));
+    return p;
+  }
+
   function drawPerms() {
     if (!permBox || !overrides) return;
     var can = permBox.dataset.can === "1";
@@ -876,30 +1040,135 @@
       [t("chan.perm.group"), t("chan.perm.read"), t("chan.perm.post"), ""].forEach(function (h) { hr.appendChild(make("th", "", h)); });
       head.appendChild(hr);
       var tb = make("tbody");
-      view.groups.forEach(function (g) {
+      rowGroups().forEach(function (g) {
         var o = overrides[g.name] || {read: "inherit", post: "inherit"}, tr = make("tr"), out = make("span", "out");
         out.setAttribute("aria-live", "polite");
         var name = make("td", "chan-perm-group");
         name.appendChild(make("span", g.kind === "custom" ? "mono" : "", rules.label(g)));
         if (rules.isDefault(g)) name.appendChild(make("span", "default-mark", t("mem.default")));
-        var read = make("td"), post = make("td"), note = make("td");
-        read.appendChild(tri(g.name, "read", o.read, can, out));
-        post.appendChild(tri(g.name, "post", o.post, can, out));
+        var note = make("td", "chan-perm-out");
         note.appendChild(out);
-        tr.append(name, read, post, note);
+        if (g.kind === "default" && g.name === "owner") {
+          var always = make("td", "chan-perm-always", t("chan.perm.always"));
+          always.colSpan = 2;
+          tr.className = "chan-perm-owner";
+          tr.append(name, always, note);
+        } else {
+          var read = make("td", "chan-perm-cell"), post = make("td", "chan-perm-cell");
+          read.dataset.label = t("chan.perm.read");
+          post.dataset.label = t("chan.perm.post");
+          read.appendChild(tri(g.name, "read", o.read, can, out));
+          post.appendChild(tri(g.name, "post", o.post, can, out));
+          tr.append(name, read, post, note);
+        }
+        if (savedKey === g.name) A.saved(out);
         tb.appendChild(tr);
       });
+      savedKey = null;
       tbl.append(head, tb);
       wrap.appendChild(tbl);
       permBox.appendChild(wrap);
+      var add = addGroupControl(can);
+      if (add) permBox.appendChild(add);
+      permBox.appendChild(outcome());
     });
   }
   async function loadPerms() {
     if (!permBox) return;
     var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/permissions");
-    if (!r.ok) { permBox.textContent = A.refusal("mem.refused", r.data); return; }
+    if (!r.ok) { permBox.textContent = A.refusal("chan.perms", r.data, {channel: CHANNEL}); return; }
     overrides = r.data.overrides;
+    readers = r.data.readers || null;
     drawPerms();
+  }
+
+  // ------------------------------------------------------------------ the project: invitations
+  //
+  // A new invitation shows its link once, with its copy control (the server keeps only its digest); the unused ones
+  // are listed under it: who it is for, made when, until when, and "revoke" (two steps, in place). A link made here
+  // keeps its copy control on its row while the page is open; after a reload it is listed without it (to share it
+  // again, revoke it and make a new one).
+
+  var inviteForm = document.getElementById("invite-form"), invitesBox = document.getElementById("invites-list");
+  var madeLinks = {};                                // invitation id -> its link, made on this page
+  var LANG = document.documentElement.lang || undefined;
+
+  function when(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString(LANG, {month: "short", day: "numeric", hour: "2-digit",
+                                                            minute: "2-digit", hour12: false});
+  }
+
+  async function loadInvites() {
+    if (!invitesBox) return;
+    var r = await A.request(API + "invites");
+    if (!r.ok) { invitesBox.textContent = A.refusal("admin.invites", r.data); return; }
+    A.keepFocus(invitesBox, function () { drawInvites(r.data.invites || []); });
+  }
+
+  function drawInvites(list) {
+    invitesBox.textContent = "";
+    if (!list.length) { invitesBox.appendChild(make("p", "dim", t("admin.no_unused"))); return; }
+    var ul = make("ul", "ag-list");
+    list.forEach(function (inv) {
+      var li = make("li", "ag-item invite-item"), line = make("div", "ag-line");
+      line.appendChild(make("span", "ag-name" + (inv.github_login ? " mono" : ""),
+                            inv.github_login ? inv.github_login : t("admin.for_anyone")));
+      li.appendChild(line);
+      li.appendChild(make("div", "ag-meta", t("admin.invite_times", {created: when(inv.created), expires: when(inv.expires)})));
+      var acts = make("div", "invite-acts");
+      if (madeLinks[inv.id]) {
+        var copy = A.button("btn", t("invite.copy"), async function () {
+          var ok = await A.copy(madeLinks[inv.id]);
+          copy.textContent = t(ok ? "invite.copied" : "invite.copy_failed");
+          setTimeout(function () { copy.textContent = t("invite.copy"); }, 2000);
+        });
+        copy.dataset.key = "icopy:" + inv.id;
+        acts.appendChild(copy);
+      }
+      var out = make("span", "out");
+      out.setAttribute("aria-live", "polite");
+      var revoke = A.button("btn", t("admin.revoke"));
+      revoke.dataset.key = "irevoke:" + inv.id;
+      revoke.addEventListener("click", async function () {
+        if (!A.twoStep(revoke, t("admin.confirm_revoke"))) return;
+        var r = await A.request(API + "invites/" + encodeURIComponent(inv.id) + "/revoke", null, {});
+        if (!r.ok) { out.textContent = A.refusal("admin.revoke", r.data); return; }
+        delete madeLinks[inv.id];
+        loadInvites();
+      });
+      acts.append(out, revoke);
+      li.appendChild(acts);
+      ul.appendChild(li);
+    });
+    invitesBox.appendChild(ul);
+  }
+
+  if (inviteForm) {
+    inviteForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var out = inviteForm.querySelector(".out"), made = document.getElementById("invite-made");
+      var go = inviteForm.querySelector("button:not([type=button])"), input = inviteForm.elements.github_login;
+      var login = input.value.trim();
+      out.textContent = "";
+      go.disabled = true;
+      try {
+        var r = await A.request(API + "invites", null, login ? {github_login: login} : {});
+        if (!r.ok) {
+          if (r.data.error === "invalid_login") A.fieldError(input, A.refusal("admin.invite", r.data));
+          else out.textContent = A.refusal("admin.invite", r.data);
+          return;
+        }
+        if (r.data.id) madeLinks[r.data.id] = r.data.url;
+        made.textContent = "";
+        made.append(make("p", "", t("admin.invite_made")), A.copyLine(r.data.url));
+        made.hidden = false;
+        input.value = "";
+        loadInvites();
+      } finally {
+        go.disabled = false;
+      }
+    });
   }
 
   // ------------------------------------------------------------------ a channel: notifications
@@ -911,8 +1180,8 @@
       if (box.dataset.mute) body.agent = box.dataset.mute;
       out.textContent = "";
       var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/mute", null, body);
-      if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("mem.refused", r.data); return; }
-      out.textContent = t("msg.saved");
+      if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("chan.mute", r.data); return; }
+      A.saved(out);
     });
   });
 
@@ -921,5 +1190,6 @@
   show(sectionFromPath(), false);
   markMember();
   loadPerms();
+  loadInvites();
   if (SCOPE === "project") setInterval(function () { load(false); }, EVERY_MS);
 })();

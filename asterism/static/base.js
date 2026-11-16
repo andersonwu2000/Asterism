@@ -21,9 +21,13 @@
   A.errorText = function (code) {
     return MSG["error." + code] || (MSG["error.generic"] || "{code}").replace("{code}", code || "?");
   };
-  // A refusal in the server's words after the catalogue's prefix, or the catalogue's sentence for its code.
-  A.refusal = function (prefixKey, data) {
-    return data && data.message ? A.t(prefixKey, {message: data.message}) : A.errorText(data && data.error);
+  // A refusal in the page's own words, never the server's sentence (that is English, written for agents): the
+  // catalogue's sentence for the act and the error's code ("<act>.<code>", e.g. "chan.rename.conflict"), else the
+  // one for the code alone ("error.<code>"), else the generic one naming the code. `vars` fill the sentence.
+  A.refusal = function (act, data, vars) {
+    var code = (data && data.error) || "";
+    var key = MSG[act + "." + code] ? act + "." + code : MSG["error." + code] ? "error." + code : "error.generic";
+    return A.t(key, Object.assign({code: code || "?"}, vars || {}));
   };
 
   A.make = function (tag, cls, text) {
@@ -109,6 +113,46 @@
     else delete unanswered[what];
     return {ok: out.ok, status: out.status, data: out.data};
   };
+
+  // ------------------------------------------------------------------ saying it where it happened
+
+  // "Saved" beside the control that saved, for a moment (the same everywhere).
+  A.saved = function (out) {
+    if (!out) return;
+    var text = A.t("set.saved");
+    out.textContent = text;
+    setTimeout(function () { if (out.textContent === text) out.textContent = ""; }, 2500);
+  };
+
+  // A field's own message under it (the browser's bubble is never shown): `text` empty clears it. It is cleared as
+  // soon as the field is changed.
+  A.fieldError = function (input, text) {
+    var holder = input.closest(".field, .ag-field, label") || input.parentNode;
+    var note = holder.querySelector(":scope > .field-error");
+    if (!note) {
+      note = A.make("small", "field-error");
+      note.id = "fe-" + Math.random().toString(36).slice(2);
+      note.setAttribute("aria-live", "polite");
+      holder.appendChild(note);
+      input.addEventListener("input", function () { note.textContent = ""; input.removeAttribute("aria-invalid"); });
+    }
+    note.textContent = text || "";
+    if (text) { input.setAttribute("aria-invalid", "true"); input.setAttribute("aria-describedby", note.id); }
+    else input.removeAttribute("aria-invalid");
+  };
+  // Every form checks its fields in place: the browser's own bubble ("Please enter a URL") is held back and the
+  // catalogue's sentence shown under the field instead: the field's data-invalid key, else one for what is wrong.
+  document.addEventListener("invalid", function (ev) {
+    var input = ev.target;
+    if (!input || !input.validity) return;
+    ev.preventDefault();
+    var v = input.validity, key = input.dataset.invalid ||
+      (v.valueMissing ? "form.required" : v.typeMismatch && input.type === "url" ? "form.url" :
+       v.tooLong || v.tooShort ? "form.length" : "form.invalid");
+    A.fieldError(input, A.t(key));
+    var form = input.form, first = form && form.querySelector(":invalid");
+    if (first === input) input.focus();
+  }, true);
 
   // ------------------------------------------------------------------ two steps, in place
   //
@@ -201,7 +245,7 @@
         if (opts.done) opts.done(res);
         return;
       }
-      out.textContent = A.refusal("gone.refused", res && res.data);
+      out.textContent = A.refusal(opts.act || "gone", res && res.data);
       go.disabled = !armed();
       input.focus();
     });

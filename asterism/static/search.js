@@ -1,17 +1,18 @@
 // Search over messages. The search icon of the top bar (#search-open) opens search in the right column
 // (#search-results, right.js): the field (#search-input) at its top, the results under it. Typing offers the filters
-// as suggestions (#search-suggest: from: a member, in: a channel or a private conversation); Enter searches. In a
-// channel the search starts limited to it, shown as a chip (#search-chip) that can be removed. The results are newest
-// first, with the words marked; a result opens its place at that message (Asterism.chat.openAt). Escape clears the
-// field, and on an empty field closes search and gives the right column back, as the x does. It speaks only
-// /api/search.
+// as suggestions (#search-suggest: from: a member, in: a channel or a private conversation); the search runs after a
+// short pause in the typing (a filter still being typed waits for its end), and at once on Enter. An empty field
+// says what can be searched. In a channel the search starts limited to it, shown as a chip (#search-chip) that can
+// be removed. The results are newest first, with the words marked; a result opens its place at that message
+// (Asterism.chat.openAt). Escape clears the field, and on an empty field closes search and gives the right column
+// back, as the x does. A refusal is said in the page's words by its code. It speaks only /api/search.
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("chat");
   var input = document.getElementById("search-input");
   if (!A || !root || !input || !A.right || !A.chat) return;
   var t = A.t, make = A.make;
-  var SLUG = root.dataset.slug, API = "/" + encodeURIComponent(SLUG) + "/api/", PAGE = 25;
+  var SLUG = root.dataset.slug, API = "/" + encodeURIComponent(SLUG) + "/api/", PAGE = 25, TYPING_MS = 250;
   var LANG = document.documentElement.lang || undefined, DOT = " · ";
   var FILTERS = ["from:", "in:"];          // the filters' syntax (as Discord's and Slack's), not interface text
   var chip = document.getElementById("search-chip"), chipText = chip.querySelector(".search-chip-text");
@@ -126,6 +127,7 @@
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
     suggest();
+    later();
   }
 
   // ------------------------------------------------------------------ the results
@@ -194,19 +196,43 @@
     }
   }
 
-  async function run(next) {
+  // What an empty field shows: what can be searched.
+  function hint() {
+    summary.textContent = "";
+    body.textContent = "";
+    body.appendChild(make("p", "dim search-hint", t("srch.hint")));
+  }
+
+  // The search after a pause in the typing.
+  var timer = 0;
+  function later() {
+    clearTimeout(timer);
+    timer = setTimeout(function () { run(false, true); }, TYPING_MS);
+  }
+
+  // A new search (`next` false) or the next page of the one on show. `typing`: run by the pause in the typing: a
+  // filter still being typed at the end is left out, and the limit to the channel alone searches nothing.
+  async function run(next, typing) {
     var s = shown;
     if (next && !s) return;
     if (!next) {
-      var typed = parse(input.value), params = {limit: PAGE};
+      clearTimeout(timer);
+      var text = input.value, tok = lastToken();
+      if (typing && /^(from|in):/i.test(tok.text)) text = text.slice(0, tok.start);
+      var typed = parse(text), params = {limit: PAGE};
       if (typed.words.length) params.q = typed.words.join(" ");
       if (typed.from) params.from = typed.from;
       if (typed["in"]) params["in"] = typed["in"];
       else if (!chip.hidden) params["in"] = scope.place;
+      if (typing && !params.q && !typed.from && !typed["in"]) {
+        if (!input.value.trim()) { shown = null; hint(); }
+        return;
+      }
       if (!params.q && !params.from && !params["in"]) return;
+      if (typing && s && JSON.stringify(s.params) === JSON.stringify(params)) return;     // nothing new typed
       s = shown = {params: params, words: typed.words.map(function (w) { return w.toLowerCase(); }), results: [], more: false};
       summary.textContent = t("srch.searching");
-      body.textContent = "";
+      if (!typing) body.textContent = "";             // while typing, the last results stay until the new ones come
       A.right.show("search");
     }
     var ask = Object.assign({}, s.params);
@@ -229,11 +255,11 @@
 
   // Empty the field and the results; `close`: also close search, the right column going back to what it showed.
   function clear(close) {
+    clearTimeout(timer);
     shown = null;
     input.value = "";
     hideSuggestions();
-    summary.textContent = "";
-    body.textContent = "";
+    hint();
     var place = A.chat.place();
     if (place !== scope.place) { scope.place = place; scope.removed = false; }
     syncChip();
@@ -249,7 +275,7 @@
   // ------------------------------------------------------------------ wiring
 
   input.addEventListener("focus", suggest);
-  input.addEventListener("input", suggest);
+  input.addEventListener("input", function () { suggest(); later(); });
   input.addEventListener("blur", hideSuggestions);
   input.addEventListener("keydown", function (ev) {
     var open = !list.hidden && options.length;
@@ -280,5 +306,6 @@
   });
   A.right.onShow(function (now) {
     if (now !== "search" && shown) { shown = null; summary.textContent = ""; body.textContent = ""; }
+    if (now === "search" && !shown && !input.value.trim()) hint();
   });
 })();

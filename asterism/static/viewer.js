@@ -1,19 +1,25 @@
 // Files mode, the tab strip (#file-tabs) and the document (#file-view), Asterism.viewer.
-// The strip says what is open; the explorer chooses. Tabs are per source (the repository, repo.js, or the local
-// folder, local.js): the same path can be open from both, and a local tab carries a mark saying so. One tab per open
-// file (its name, the full path as its title, a close control; a middle click also closes); it scrolls sideways and
-// never wraps; the arrow keys move between tabs and Delete closes one. A tab with unsaved changes carries a filled
-// disc after its name and says so in its name for assistive technology; closing it, or leaving the page, asks first.
+// The strip says what is open; the explorer chooses. Each source (the repository, repo.js, or the local folder,
+// local.js) keeps its own tabs and its own active tab: the strip and the document show those of the source the
+// explorer shows, and switching the source switches them (a file opened from the other source turns the explorer
+// to it). One tab per open file (its name, the full path as its title, a close control; a middle click also
+// closes); two tabs of the same name also show, quietly after it, as much of their folder as tells them apart. The
+// strip scrolls sideways (the wheel scrolls it too) and never wraps; an edge with more tabs beyond it fades out. The
+// arrow keys move between tabs and Delete closes one. A tab with unsaved changes carries a filled disc after its name
+// and says so in its name for assistive technology; closing it, or leaving the page, asks first.
 // Opening a file shows it in the current tab (a preview: what was there goes) unless that tab has unsaved changes,
 // or the file is asked for in a new tab (the explorer's "open in a new tab", a middle click, Ctrl/Cmd+click, a row
 // dragged onto the strip, dropped where its marker shows); a file already open only has its tab chosen. Tabs are
 // moved by dragging them along the strip.
-// At the strip's far right: the view switch (#view-switch: rendered, source, or source on the left with the
-// rendering on the right; what makes no sense for the file is disabled) and one more control: "open on GitHub"
-// (#file-github) for a file of the repository, save (#file-save, also Ctrl+S / Cmd+S) for a local one.
-// The tabs, the active one and the view chosen per kind of file are kept in localStorage; the address names the
-// active file of the repository (a local tab has no address: nothing of it reaches the server). Local tabs come back
-// when access to the folder is restored.
+// At the strip's far right: for a .tex file next to a PDF of the same name, "open PDF" (#file-pdf, in a new tab);
+// the view switch (#view-switch: rendered, source, or source on the left with the rendering on the right; what makes
+// no sense for the file is disabled) and one more control: "open on GitHub" (#file-github) for a file of the
+// repository, save (#file-save, also Ctrl+S / Cmd+S) for a local one.
+// Below 900 px, while the source shown has no tab, the explorer is drawn in the page instead of the drawer, so the
+// page is the tree, not an empty page; it goes back into the drawer when a file opens.
+// The tabs, each source's active one and the view chosen per kind of file are kept in localStorage; the address
+// names the active file of the repository while the repository is shown (a local tab has no address: nothing of it
+// reaches the server). Local tabs come back when access to the folder is restored.
 // A document is shown by its kind: Markdown rendered (render.js) in a reading column, pictures as pictures (an SVG
 // too, never inlined), a PDF in the browser's own viewer in a frame, anything else as one sentence and a link. The
 // source view is the editor (editor.js) for both sources: read only for the repository, editable for a local text
@@ -21,7 +27,7 @@
 // overwritten silently: saving compares first, and the reader chooses in place. A file read again (the disk moved, or
 // the repository has a new head) replaces what is shown only when it differs (apply): the same bytes redraw nothing,
 // new text goes into the open editor and the rendering in place, keeping the scroll and the selection.
-// Each tab carries the kind mark of its file (A.kindMark), and a local one the mark of the local folder before it.
+// Each tab carries the kind mark of its file (A.kindMark).
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("files"), E = A && A.explorer, S = A && A.sources;
@@ -33,27 +39,33 @@
   var R = S.repo, L = S.local;
   var el = {tabs: document.getElementById("file-tabs"), view: document.getElementById("file-view"),
             sw: document.getElementById("view-switch"), github: document.getElementById("file-github"),
-            save: document.getElementById("file-save"), status: document.getElementById("explorer-status")};
+            save: document.getElementById("file-save"), pdf: document.getElementById("file-pdf"),
+            status: document.getElementById("explorer-status"), explorer: document.getElementById("explorer"),
+            nav: document.getElementById("nav")};
   var MODES = {markdown: ["rendered", "source", "split"], text: ["source"], image: ["rendered"], pdf: ["rendered"]};
 
   var V = A.viewer = {};
   // {source, path, key, status: idle|loading|ok|gone|too_large|unavailable|not_connected|error|closed, doc, editor,
   //  dirty, conflict, said, snap, scroll, pics: Map(path -> object URL)}
-  var tabs = [];
-  var active = null;             // the key of the active tab
+  var tabs = [];                 // the tabs of both sources; the strip shows those of the source shown (E.shown)
+  var actives = {repo: null, local: null};     // the key of each source's active tab
   var waiting = [], waitingActive = null;      // local tabs of an earlier visit, until access returns
   var views = A.store.get(VIEW_KEY, {}) || {};
+  var turning = false;           // this script turns the explorer to another source (it draws the strip itself)
+  var narrow = window.matchMedia("(max-width: 899.98px)");
 
   function keyOf(source, path) { return source + ":" + path; }
   function nameOf(path) { return path.slice(path.lastIndexOf("/") + 1); }
   function find(key) { for (var i = 0; i < tabs.length; i++) if (tabs[i].key === key) return tabs[i]; return null; }
+  function strip(source) { return tabs.filter(function (x) { return x.source === source; }); }
+  function current() { return find(actives[E.shown]); }
   function tabFor(source, path) {
     return {source: source, path: path, key: keyOf(source, path), status: "idle", doc: null, editor: null, dirty: false,
             conflict: false, said: "", pics: new Map()};
   }
   function save() {
     A.store.set(TABS_KEY, {tabs: tabs.map(function (x) { return {s: x.source, p: x.path}; }).concat(waiting),
-                           active: active || waitingActive});
+                           actives: {repo: actives.repo, local: actives.local || waitingActive}});
   }
   function editable(tab) { return !!(tab && tab.source === "local" && tab.status === "ok" && tab.doc && tab.doc.editable); }
 
@@ -63,7 +75,7 @@
   V.open = function (source, path, opts) {
     opts = opts || {};
     if (!S[source] || !A.splitPath(path)) return;
-    var key = keyOf(source, path), cur = find(active), at = typeof opts.at === "number" ? opts.at : null;
+    var key = keyOf(source, path), cur = find(actives[source]), at = typeof opts.at === "number" ? opts.at : null;
     if (find(key)) {
       if (at !== null) move(key, at);
     } else if (!opts.newTab && at === null && cur && !cur.dirty) {
@@ -71,35 +83,55 @@
       release(cur);
       tabs.splice(tabs.indexOf(cur), 1, tabFor(source, path));
     } else {
-      var i = at !== null ? at : cur ? tabs.indexOf(cur) + 1 : tabs.length;
-      tabs.splice(Math.max(0, Math.min(i, tabs.length)), 0, tabFor(source, path));
+      var list = strip(source);
+      place(source, at !== null ? at : cur ? list.indexOf(cur) + 1 : list.length, tabFor(source, path));
     }
-    activate(key, true, true);
+    activate(source, key, true);
   };
 
-  // A tab moved to the place `to` (an index of the strip before the move).
+  // A tab put at the place `i` of its source's strip.
+  function place(source, i, tab) {
+    var list = strip(source);
+    i = Math.max(0, Math.min(i, list.length));
+    var at = i < list.length ? tabs.indexOf(list[i]) : list.length ? tabs.indexOf(list[list.length - 1]) + 1 : tabs.length;
+    tabs.splice(at, 0, tab);
+  }
+
+  // A tab moved to the place `to` (an index of its strip before the move).
   function move(key, to) {
-    var tab = find(key), from = tabs.indexOf(tab);
-    if (from < 0) return;
-    tabs.splice(from, 1);
+    var tab = find(key);
+    if (!tab) return;
+    var from = strip(tab.source).indexOf(tab);
+    tabs.splice(tabs.indexOf(tab), 1);
     if (to > from) to -= 1;
-    tabs.splice(Math.max(0, Math.min(to, tabs.length)), 0, tab);
+    place(tab.source, to, tab);
     save();
     drawTabs(false);
   }
 
-  // `chosen`: the reader chose this tab (or it is the one restored), so the explorer shows its source too.
-  function activate(key, focusTab, chosen) {
-    var tab = find(key);
-    active = tab ? key : null;
+  // `key` (or null) becomes the active tab of `source`, and that source is shown.
+  function activate(source, key, focusTab) {
+    actives[source] = find(key) ? key : null;
+    if (source !== E.shown) {
+      turning = true;
+      try { E.show(source); } finally { turning = false; }
+    }
+    showSource(focusTab);
+  }
+
+  // The strip and the document of the source shown, with its active tab (the explorer has turned to it).
+  function showSource(focusTab) {
+    var tab = current();
     save();
     var where = tab && tab.source === "repo" ? A.fileHref(SLUG, tab.path) : A.fileHref(SLUG, "").replace(/\/$/, "");
     if (window.location.pathname !== where || window.location.hash) history.replaceState(null, "", where);
-    E.setCurrent(tab ? tab.source : E.shown, tab ? tab.path : null, !!chosen);
+    E.setCurrent(E.shown, tab ? tab.path : null);
     drawTabs(focusTab);
+    placeExplorer();
     if (tab && tab.status === "idle") load(tab);
     else { draw(); follow(tab); if (tab && tab.stale) refresh(tab); }
   }
+  E.on("source", function () { if (!turning) showSource(false); });
 
   function release(tab) {
     if (tab.doc) S[tab.source].release(tab.doc);
@@ -110,14 +142,15 @@
   }
 
   function close(key) {
-    var tab = find(key), i = tabs.indexOf(tab);
-    if (i < 0) return;
+    var tab = find(key);
+    if (!tab) return;
+    var source = tab.source, list = strip(source), i = list.indexOf(tab);
     if (shownTab === tab) shownTab = null;
     release(tab);
-    tabs.splice(i, 1);
-    var next = key === active ? (tabs[i] || tabs[i - 1] || null) : find(active);
+    tabs.splice(tabs.indexOf(tab), 1);
+    var next = key === actives[source] ? (list[i + 1] || list[i - 1] || null) : find(actives[source]);
     var hadFocus = el.tabs.contains(document.activeElement);
-    activate(next ? next.key : null, false);
+    activate(source, next ? next.key : null, false);
     if (hadFocus) {
       var b = next && tabButton(next.key);
       (b || el.view).focus();
@@ -137,28 +170,37 @@
     return w && w.querySelector("[role=tab]");
   }
 
-  var SVG = "http://www.w3.org/2000/svg";
-  function localGlyph() {
-    var svg = document.createElementNS(SVG, "svg");
-    svg.setAttribute("class", "tab-source");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("focusable", "false");
-    var p = document.createElementNS(SVG, "path");
-    p.setAttribute("d", "M5 5h14v10H5zM3 19h18");
-    svg.appendChild(p);
-    return svg;
+  // Tabs of the same name told apart: for each, the end of its folder, one segment more until they all differ (a
+  // file at the top has none). key -> the words shown after the name.
+  function hints(list) {
+    var out = new Map(), byName = new Map();
+    list.forEach(function (x) {
+      var n = nameOf(x.path);
+      if (!byName.has(n)) byName.set(n, []);
+      byName.get(n).push(x);
+    });
+    byName.forEach(function (same) {
+      if (same.length < 2) return;
+      var folders = same.map(function (x) { return x.path.split("/").slice(0, -1); });
+      var deepest = Math.max.apply(null, folders.map(function (f) { return f.length; }));
+      function tail(f, k) { return f.slice(Math.max(0, f.length - k)).join("/"); }
+      var k = 1;
+      while (k < deepest && new Set(folders.map(function (f) { return tail(f, k); })).size < same.length) k += 1;
+      same.forEach(function (x, i) { var h = tail(folders[i], k); if (h) out.set(x.key, h); });
+    });
+    return out;
   }
 
   function drawTabs(focusTab) {
     var hadFocus = el.tabs.contains(document.activeElement);
+    var list = strip(E.shown), active = actives[E.shown], told = hints(list);
     el.tabs.textContent = "";
-    tabs.forEach(function (x, i) {
-      var name = nameOf(x.path), local = x.source === "local";
+    list.forEach(function (x, i) {
+      var name = nameOf(x.path), local = x.source === "local", hint = told.get(x.key);
       var wrap = make("div", "tab" + (x.status === "gone" ? " gone" : "") + (local ? " local" : "") + (x.dirty ? " dirty" : ""));
       wrap.dataset.key = x.key;
       wrap.setAttribute("role", "presentation");
-      var b = A.button("tab-btn", null, function () { activate(x.key, true, true); });
+      var b = A.button("tab-btn", null, function () { activate(x.source, x.key, true); });
       b.setAttribute("role", "tab");
       b.id = "tab-" + i;
       b.setAttribute("aria-selected", String(x.key === active));
@@ -168,10 +210,10 @@
       var said = local ? t(x.dirty ? "files.tab_local_unsaved" : "files.tab_local", {name: shown})
                        : x.dirty ? t("files.tab_unsaved", {name: shown}) : null;
       b.title = (local ? t("files.local_path", {path: x.path}) : x.path) + (x.dirty ? " · " + t("files.unsaved") : "");
-      if (said) b.setAttribute("aria-label", said);
-      if (local) b.appendChild(localGlyph());
+      if (said) b.setAttribute("aria-label", said + (hint ? " " + hint : ""));
       b.appendChild(A.kindMark(x.path, false));
       b.appendChild(make("span", "tab-name", shown));
+      if (hint) b.appendChild(make("span", "tab-hint", hint));
       if (x.dirty) {
         var dot = make("span", "tab-dirty");
         dot.setAttribute("aria-hidden", "true");
@@ -204,12 +246,45 @@
     var cur = active && tabButton(active);
     if (cur) {
       el.view.setAttribute("aria-labelledby", cur.id);
-      cur.parentNode.scrollIntoView({block: "nearest", inline: "nearest"});
-      if (focusTab && hadFocus) cur.focus();
+      if (focusTab && hadFocus) cur.focus({preventScroll: true});
     } else {
       el.view.removeAttribute("aria-labelledby");
     }
+    reveal();
   }
+
+  // ------------------------------------------------------------------ an overflowing strip
+  //
+  // An edge with more tabs beyond it fades out (only while there are); the wheel scrolls the strip sideways. The
+  // current tab is kept in view clear of a faded edge (when the strip is drawn or changes its width).
+
+  var FADE_PX = 40;              // as wide as the fade in the stylesheet
+  function edges() {
+    var s = el.tabs, beyond = s.scrollWidth - s.clientWidth - s.scrollLeft;
+    s.classList.toggle("fade-start", s.scrollLeft > 1);
+    s.classList.toggle("fade-end", beyond > 1);
+  }
+  function reveal() {
+    var s = el.tabs, b = actives[E.shown] && tabButton(actives[E.shown]);
+    if (b && s.scrollWidth > s.clientWidth) {
+      var r = b.parentNode.getBoundingClientRect(), box = s.getBoundingClientRect();
+      var room = Math.min(FADE_PX, Math.max(0, (box.width - r.width) / 2));
+      if (r.left < box.left + room) s.scrollLeft -= box.left + room - r.left;
+      else if (r.right > box.right - room) s.scrollLeft += r.right - (box.right - room);
+    }
+    edges();
+  }
+  el.tabs.addEventListener("scroll", edges, {passive: true});
+  if (typeof ResizeObserver === "function") new ResizeObserver(reveal).observe(el.tabs);
+  else window.addEventListener("resize", reveal);
+  el.tabs.addEventListener("wheel", function (ev) {
+    var s = el.tabs;
+    if (ev.ctrlKey || s.scrollWidth <= s.clientWidth || Math.abs(ev.deltaX) >= Math.abs(ev.deltaY)) return;
+    var unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? s.clientWidth : 1;
+    var before = s.scrollLeft;
+    s.scrollLeft += ev.deltaY * unit;
+    if (s.scrollLeft !== before) ev.preventDefault();
+  }, {passive: false});
 
   // ------------------------------------------------------------------ dropping on the strip
   //
@@ -272,7 +347,7 @@
     if (j === null) return;
     ev.preventDefault();
     var to = list[j].parentNode.dataset.key;
-    activate(to, false, true);
+    activate(E.shown, to, false);
     var again = tabButton(to);
     if (again) again.focus();
   });
@@ -297,7 +372,7 @@
       }
     }
     if (tab.status === "gone") drawTabs(false);
-    if (tab.key === active) { draw(true); follow(tab); }
+    if (current() === tab) { draw(true); follow(tab); }
   }
 
   // After a push: a file of the repository that is gone says so on its tab; the others are read again quietly, the
@@ -323,7 +398,7 @@
       }
     });
     drawTabs(false);
-    var cur = find(active);
+    var cur = current();
     if (!cur || cur.source !== "repo") return;
     if (cur.status === "gone") draw(true);
     else if (cur.status === "idle") load(cur);
@@ -338,17 +413,18 @@
       waiting = [];
       var back = waitingActive;
       waitingActive = null;
-      if (back && find(back) && (!active || !find(active))) activate(back, false, true); else { drawTabs(false); save(); }
+      if (!find(actives.local)) actives.local = back && find(back) ? back : null;
+      if (E.shown === "local") showSource(false); else save();
     } else if (L.state === "none") {
       waiting = [];
       waitingActive = null;
-      var before = active;
-      tabs.filter(function (x) { return x.source === "local"; }).forEach(function (x) {
+      actives.local = null;
+      strip("local").forEach(function (x) {
         if (shownTab === x) shownTab = null;
         release(x);
         tabs.splice(tabs.indexOf(x), 1);
       });
-      if (before && !find(before)) activate(tabs[0] ? tabs[0].key : null, false); else { drawTabs(false); save(); draw(); }
+      if (E.shown === "local") showSource(false); else save();
     }
   });
   L.on("moved", function (m) {
@@ -357,7 +433,7 @@
     var was = tab.key;
     tab.path = m.to;
     tab.key = keyOf("local", m.to);
-    if (active === was) { active = tab.key; E.setCurrent("local", m.to); }
+    if (actives.local === was) { actives.local = tab.key; if (E.shown === "local") E.setCurrent("local", m.to); }
     save();
     drawTabs(false);
   });
@@ -389,7 +465,7 @@
         tab.doc = null;
         tab.status = "gone";
         drawTabs(false);
-        if (tab.key === active) draw(true);
+        if (current() === tab) draw(true);
         return;
       }
       apply(tab, moved.doc);
@@ -436,7 +512,7 @@
       src.release(old);
       tab.doc = doc;
       if (tab.editor) { tab.editor.setText(doc.text); settle(tab); }
-      if (tab.key === active && shownTab === tab && modeOf(tab) !== "source") refreshRendering(tab);
+      if (current() === tab && shownTab === tab && modeOf(tab) !== "source") refreshRendering(tab);
       return;
     }
     src.release(old);
@@ -444,10 +520,10 @@
     tab.doc = doc;
     tab.status = doc.status;
     if (tab.status === "gone") drawTabs(false);
-    if (tab.key === active) draw(true);
+    if (current() === tab) draw(true);
   }
-  setInterval(function () { if (!document.hidden) follow(find(active)); }, WATCH_MS);
-  window.addEventListener("focus", function () { follow(find(active)); });
+  setInterval(function () { if (!document.hidden) follow(current()); }, WATCH_MS);
+  window.addEventListener("focus", function () { follow(current()); });
 
   // The editor holds what the disk holds now: nothing is unsaved.
   function settle(tab) {
@@ -500,11 +576,11 @@
 
   el.save.addEventListener("click", function () {
     if (el.save.getAttribute("aria-disabled") === "true") return;
-    saveTab(find(active));
+    saveTab(current());
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.defaultPrevented || !(ev.ctrlKey || ev.metaKey) || ev.altKey || (ev.key !== "s" && ev.key !== "S")) return;
-    var tab = find(active);
+    var tab = current();
     if (!editable(tab)) return;
     ev.preventDefault();
     saveTab(tab);
@@ -530,18 +606,44 @@
       b.setAttribute("aria-disabled", String(!can));
       b.setAttribute("aria-pressed", String(can && b.dataset.view === mode));
     });
-    var local = tab ? tab.source === "local" : E.shown === "local";
+    var local = E.shown === "local";
     el.github.hidden = local;
     el.save.hidden = !local;
     var gh = tab && !local ? R.githubUrl(tab.path, false) : null;
     if (gh) { el.github.href = gh; el.github.removeAttribute("aria-disabled"); }
     else { el.github.removeAttribute("href"); el.github.setAttribute("aria-disabled", "true"); }
     el.save.setAttribute("aria-disabled", String(!(editable(tab) && (tab.dirty || tab.conflict))));
+    var pdf = pdfOf(tab);
+    if (el.pdf) {
+      el.pdf.hidden = !pdf;
+      el.pdf.title = pdf ? t("files.open_pdf_title", {name: nameOf(pdf)}) : "";
+    }
   }
-  E.on("source", function () { drawTools(find(active)); });
+
+  // The PDF of the same name next to a .tex file, as its folder is listed (asked for when it is not), or null.
+  function pdfOf(tab) {
+    if (!tab || !/\.tex$/i.test(tab.path)) return null;
+    var slash = tab.path.lastIndexOf("/"), folder = slash < 0 ? "" : tab.path.slice(0, slash), s = S[tab.source];
+    var want = tab.path.slice(0, -4) + ".pdf", entries = s.listed(folder);
+    if (!entries) {
+      if (!tab.askedFolder && !s.pending(folder)) { tab.askedFolder = true; s.list(folder); }   // once per tab
+      return null;
+    }
+    var same = entries.filter(function (x) { return x.type === "file" && x.path.toLowerCase() === want.toLowerCase(); });
+    var exact = same.filter(function (x) { return x.path === want; })[0] || same[0];
+    return exact ? exact.path : null;
+  }
+  if (el.pdf) {
+    el.pdf.addEventListener("click", function () {
+      var tab = current(), pdf = pdfOf(tab);
+      if (pdf) V.open(tab.source, pdf, {newTab: true});
+    });
+  }
+  R.on("listing", function () { if (E.shown === "repo") drawTools(current()); });
+  L.on("listing", function () { if (E.shown === "local") drawTools(current()); });
 
   el.sw.addEventListener("click", function (ev) {
-    var b = ev.target.closest("[data-view]"), tab = find(active);
+    var b = ev.target.closest("[data-view]"), tab = current();
     if (!b || b.getAttribute("aria-disabled") === "true" || !tab) return;
     views[tab.doc.kind] = b.dataset.view;
     A.store.set(VIEW_KEY, views);
@@ -565,9 +667,9 @@
   }
 
   function draw(force) {
-    var tab = find(active), mode = modeOf(tab);
+    var tab = current(), mode = modeOf(tab);
     drawTools(tab);
-    var repoSide = tab ? tab.source === "repo" : E.shown === "repo";
+    var repoSide = E.shown === "repo";
     var key = JSON.stringify([tab ? tab.key : E.shown, tab && tab.status, tab && tab.doc && tab.doc.kind, mode,
                               tab && tab.conflict, tab && tab.said, repoSide ? R.state : ""]);
     if (!force && key === drawn) return;
@@ -578,7 +680,7 @@
     el.view.className = "file-view";
     shownTab = tab;
     if (repoSide && (R.state === "not_connected" || (tab && tab.status === "not_connected"))) {
-      var box = note(R.message || A.errorText("not_connected"));
+      var box = note(A.errorText("not_connected"));
       if (CAN_MANAGE) box.appendChild(make("p", "dim", t("files.not_connected_manage")));
       return;
     }
@@ -589,7 +691,7 @@
     }
     if (tab.status === "loading" || tab.status === "idle") {
       // No spinner unless it takes a while; the area keeps its size meanwhile.
-      slow = setTimeout(function () { if (find(active) === tab && tab.status === "loading") note(t("files.loading")).classList.add("quiet"); }, SLOW_MS);
+      slow = setTimeout(function () { if (current() === tab && tab.status === "loading") note(t("files.loading")).classList.add("quiet"); }, SLOW_MS);
       return;
     }
     if (tab.status === "gone") {
@@ -622,7 +724,7 @@
       img.alt = nameOf(tab.path);
       img.src = doc.url;                   // an SVG too: a picture, never inlined, so nothing in it runs
       if (tab.source === "repo") {
-        img.addEventListener("error", function () { tab.status = "idle"; if (find(active) === tab) load(tab); }, {once: true});
+        img.addEventListener("error", function () { tab.status = "idle"; if (current() === tab) load(tab); }, {once: true});
       }
       pic.appendChild(img);
       el.view.appendChild(pic);
@@ -705,7 +807,7 @@
           var was = tab.dirty;
           tab.dirty = editable(tab) && ed.dirty();
           if (was !== tab.dirty) { drawTabs(false); drawTools(tab); }
-          if (tab.key === active && modeOf(tab) === "split") {
+          if (current() === tab && modeOf(tab) === "split") {
             clearTimeout(tab.renderTimer);
             tab.renderTimer = setTimeout(function () { refreshRendering(tab); }, RENDER_PAUSE_MS);
           }
@@ -721,7 +823,7 @@
   // The rendering beside the editor (or alone) follows the text: the new one takes the old one's place, where the
   // reader had scrolled to, and the focus stays where it is.
   function refreshRendering(tab) {
-    if (tab.key !== active || shownTab !== tab) return;
+    if (current() !== tab || shownTab !== tab) return;
     var scroll = el.view.querySelector(".doc-scroll");
     if (!scroll) return;
     var top = scroll.scrollTop, fresh = renderDoc(tab);
@@ -825,9 +927,34 @@
   });
   var wanted = root.dataset.path;
   if (wanted && A.splitPath(wanted) && !find(keyOf("repo", wanted))) tabs.push(tabFor("repo", wanted));
-  var keptActive = typeof kept.active === "string" ? kept.active : null;
-  if (keptActive && keptActive.indexOf("local:") === 0 && !wanted) waitingActive = keptActive;
-  var first = wanted ? keyOf("repo", wanted) : keptActive && find(keptActive) ? keptActive : waitingActive ? null : (tabs[0] && tabs[0].key) || null;
+  var keptActives = kept.actives && typeof kept.actives === "object" ? kept.actives : {};
+  if (typeof kept.active === "string") {                  // a page of before kept one active tab for both sources
+    keptActives[kept.active.indexOf("local:") === 0 ? "local" : "repo"] = kept.active;
+  }
+  if (typeof keptActives.local === "string" && keptActives.local.indexOf("local:") === 0) waitingActive = keptActives.local;
+  var firstRepo = strip("repo")[0];
+  actives.repo = wanted ? keyOf("repo", wanted)
+    : typeof keptActives.repo === "string" && find(keptActives.repo) ? keptActives.repo : firstRepo ? firstRepo.key : null;
   E.start();
-  activate(first, false, true);
+  activate(wanted ? "repo" : E.shown, actives[wanted ? "repo" : E.shown], false);
+
+  // ------------------------------------------------------------------ below 900 px: the tree when nothing is open
+  //
+  // While the source shown has no tab (and the document has nothing else to say), the explorer is drawn in the page
+  // (before the document, which is hidden), so files mode is never an empty page; a file opened goes back to the
+  // drawer. The drawer then holds the rail only.
+
+  function placeExplorer() {
+    if (!el.explorer || !el.nav) return;
+    var away = E.shown === "repo" && (R.state === "not_connected" || R.state === "away");
+    var here = narrow.matches && !current() && !away;
+    if ((el.explorer.parentNode === root) === here) return;
+    var hadFocus = el.explorer.contains(document.activeElement);
+    if (here) root.insertBefore(el.explorer, el.view); else el.nav.appendChild(el.explorer);
+    root.classList.toggle("tree-here", here);
+    if (hadFocus && !here) el.view.focus({preventScroll: true});
+  }
+  if (narrow.addEventListener) narrow.addEventListener("change", placeExplorer);
+  R.on("state", placeExplorer);
+  placeExplorer();
 })();

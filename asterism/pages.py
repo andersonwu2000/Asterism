@@ -86,13 +86,15 @@ GLYPHS = {
     "sliders": '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/>'
                '<circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>',
     "burger": '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    # A channel some members may not read.
+    "lock": '<rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V8.5a3 3 0 0 1 6 0V11"/>',
     "dots": '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
     "grip": '<circle cx="9" cy="7" r="1"/><circle cx="15" cy="7" r="1"/><circle cx="9" cy="12" r="1"/>'
             '<circle cx="15" cy="12" r="1"/><circle cx="9" cy="17" r="1"/><circle cx="15" cy="17" r="1"/>',
 }
 
 # The glyphs the page scripts draw (A.glyph clones them from this template).
-SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip")
+SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip", "lock")
 
 
 def glyph(name: str, size: int = 20, extra: str = "") -> str:
@@ -308,11 +310,18 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
             f'<div class="rail-foot">{reader}</div></nav>')
 
 
+def _lock_mark(tr: Translator) -> str:
+    """A small lock after a channel's name: some members may not read it (frame.js draws the same)."""
+    return (f'<span class="lock-mark" title="{e(tr("nav.restricted"))}">{glyph("lock", 12)}'
+            f'<span class="vh">{e(tr("nav.restricted"))}</span></span>')
+
+
 def _side(tr: Translator, f: dict[str, Any]) -> str:
     """Chat's second column: the channels (frame.js keeps them current). The project's name is in the top-left cell."""
     slug, places = f["slug"], f["places"]
     channels = "".join(
         _place_link(tr, slug, "#" + c["name"], f'<span class="place-name">#{e(c["name"])}</span>'
+                    + (_lock_mark(tr) if c.get("restricted") else "")
                     + (f'<span class="note">{e(tr("nav.muted"))}</span>' if c["muted"] else ""),
                     c["unread"], c["important"], c["muted"]) for c in places["channels"])
     plus_channel = ""
@@ -430,13 +439,13 @@ def home(tr: Translator, person: dict[str, Any] | None, projects: list[dict[str,
         body = f'<p>{e(tr("home.no_projects"))}</p>'
     # Anyone signed in makes a project (it lives on this server); app.js sends the form and opens the new project.
     body += (f'<details class="new-project" id="new-project"><summary class="btn">{e(tr("home.new"))}</summary>'
-             f'<form class="stack" data-api="/api/projects" data-goto="slug">'
+             f'<form class="stack" data-api="/api/projects" data-goto="slug" data-refusal="home.new">'
              f'<label class="field"><span>{e(tr("home.new_name"))}</span><input name="name" required maxlength="80" '
              f'autocomplete="off"></label>'
              f'<label class="field"><span>{e(tr("home.new_slug"))}</span><input name="slug" required minlength="2" '
              f'maxlength="40" pattern="[a-z0-9][a-z0-9\\-]{{1,39}}" autocomplete="off" spellcheck="false" '
-             f'autocapitalize="off"><span class="dim">{e(tr("home.new_slug_hint"))}</span></label>'
-             f'<label class="field"><span>{e(tr("home.new_repo"))}</span><input name="repo" type="url" '
+             f'autocapitalize="off" data-invalid="error.invalid_slug"><span class="dim">{e(tr("home.new_slug_hint"))}</span></label>'
+             f'<label class="field"><span>{e(tr("home.new_repo"))}</span><input name="repo" type="url" data-invalid="error.invalid_repo" '
              f'placeholder="https://github.com/owner/name" autocomplete="off" spellcheck="false">'
              f'<span class="dim">{e(tr("home.new_repo_hint"))}</span></label>'
              f'<div class="row"><button class="btn primary">{e(tr("home.new_create"))}</button>'
@@ -484,7 +493,7 @@ SETTINGS = {"project": (("set.group.project", ("overview",)), ("set.group.people
             "me": (("set.group.me", ("profile", "computers", "agents")),)}
 THEMES = ("dark", "light", "system")
 REQUIRED_40, REQUIRED_80 = ' required maxlength="40"', ' required maxlength="80"'
-REPO_INPUT = ' type="url" placeholder="https://github.com/owner/name"'
+REPO_INPUT = ' type="url" placeholder="https://github.com/owner/name" data-invalid="error.invalid_repo"'
 
 
 def settings_sections(scope: str, can_invite: bool) -> list[str]:
@@ -534,11 +543,16 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
                             f'<div id="members-table"></div>')
         parts["groups"] = _groups_section(tr, mine, permissions)
         if "invites" in sections:
+            # A new invitation (its link shown once, with its copy control), then the unused ones (settings.js).
             parts["invites"] = (f'<p class="dim">{e(tr("admin.invite_hint"))}</p>'
-                                f'<form class="stack" data-api="/{q(slug)}/api/invites" data-show="url"><label class="field">'
-                                f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login" autocomplete="off"></label>'
-                                f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button></div>'
-                                f'<p><code class="out" data-out></code></p></form>')
+                                f'<form class="stack set-form" id="invite-form"><label class="field">'
+                                f'<span>{e(tr("admin.invite_login"))}</span><input name="github_login" maxlength="39" '
+                                f'autocomplete="off" spellcheck="false" autocapitalize="off"></label>'
+                                f'<div class="row"><button class="btn primary">{e(tr("admin.invite_button"))}</button>'
+                                f'<span class="out" aria-live="polite"></span></div>'
+                                f'<div id="invite-made" class="panel-result" hidden></div></form>'
+                                f'<h3 class="set-sub">{e(tr("admin.unused"))}</h3>'
+                                f'<div id="invites-list" class="invites-list"></div>')
     else:
         name = channel["name"]
         can = "manage_channels" in mine
@@ -678,9 +692,9 @@ def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> 
                   f'<label class="field"><span>{e(tr("mem.create_name"))}</span><input name="name" required maxlength="40" '
                   f'autocomplete="off" spellcheck="false" autocapitalize="off"></label>'
                   f'<fieldset class="perm-set"><legend>{e(tr("mem.create_perms"))}</legend>{boxes}</fieldset>'
-                  f'<div class="row"><button class="btn primary">{e(tr("mem.create"))}</button>'
+                  f'<div class="row form-acts"><span class="out" data-out aria-live="polite"></span>'
                   f'<button type="button" class="btn" data-dismiss>{e(tr("mem.cancel"))}</button>'
-                  f'<span class="out" data-out aria-live="polite"></span></div></form></dialog>')
+                  f'<button class="btn primary">{e(tr("mem.create"))}</button></div></form></dialog>')
     label = e(tr("mem.filter"))
     return (f'<div id="groups-root" class="groups-page">'
             f'<nav id="groups" class="groups-list" aria-label="{e(tr("mem.list_label"))}"><div class="groups-head">'
@@ -717,14 +731,21 @@ def _tool(tr: Translator, ident: str, icon: str, label_key: str, attrs: str, inn
 
 
 def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any],
-             dm: str | None = None) -> tuple[str, int]:
+             dm: str | None = None, refused: tuple[str, int] | None = None) -> tuple[str, int]:
     """Chat (`dm` None) and private messages (`dm` the other member's name, "" for none chosen yet): the project menu
     in the top-left cell, the channels or the conversations under it, the place's name (which opens its settings or
     the other member's card), the member list toggle and the search icon in the top-right cell, the chosen place in
     the middle, and the right column showing one thing at a time (the member list with each agent's tasks, or
     search). The second column's lists are the frame's (frame.js); the page scripts keep the rest current through the
     JSON API (messages.js, tasks.js, people.js, search.js; right.js decides what the right column shows). What the
-    scripts need is in data- attributes."""
+    scripts need is in data- attributes. `refused` (a sentence and a status): a private conversation that cannot be
+    had, answered in the same frame with the sentence in the place of the conversation and nothing to write with."""
+    if refused is not None:
+        said, status = refused
+        bar = f'<h1 class="place-title"><span class="place-btn mono">{e(dm)}</span></h1><span class="spacer"></span>'
+        body = f'<section class="room room-refused"><p class="refused-note" role="alert">{e(said)}</p></section>'
+        return layout(tr, tr("dm.title"), body, person, frame, "dm", status=status, page_class="room-page",
+                      corner=_project_button(tr, frame), column=_dm_side(tr, frame), bar=bar)
     data = {"slug": frame["slug"], "me": person["name"], "mode": "chat" if dm is None else "dm",
             "place": dm or "", "can-edit-tasks": "1" if view["can_edit_tasks"] else ""}
     room = (f'<div id="chat" class="room" {_attrs(data)}>'
@@ -773,8 +794,8 @@ VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), (
 
 def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: str, max_bytes: int) -> tuple[str, int]:
     """Files mode: the repository's files and a local folder's, using the whole page. A shell: the source in the
-    top-left cell, the explorer (the second column), the tab strip with the view switch in the top-right cell and the
-    document are drawn by explorer.js and viewer.js, from the files API (repo.js) and from the reader's own folder in
+    top-left cell, the explorer (the second column), the tab strip with "open PDF" (a .tex file's) and the view switch
+    in the top-right cell and the document are drawn by explorer.js and viewer.js, from the files API (repo.js) and from the reader's own folder in
     the browser (local.js; nothing of it reaches the server). `path` is the file the address names ("" for none);
     `max_bytes`: a larger file is not shown here (the server does not fetch it)."""
     data = {"slug": frame["slug"], "path": path, "repo": frame["repo"], "can-pin": "1" if frame["can_create"] else "",
@@ -785,6 +806,7 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
     bar = (f'<h1 class="vh">{e(tr("files.title"))}</h1>'
            f'<div id="file-tabs" class="file-tabs" role="tablist" aria-label="{e(tr("files.tabs"))}"></div>'
            f'<div class="file-tools" role="group" aria-label="{e(tr("files.tools"))}">'
+           f'<button type="button" id="file-pdf" class="btn file-pdf" hidden>{e(tr("files.open_pdf"))}</button>'
            f'<div id="view-switch" class="view-switch" role="group" aria-label="{e(tr("files.view"))}">{views}</div>'
            f'<a id="file-github" class="icon-btn" aria-label="{github}" title="{github}" target="_blank" '
            f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a>'
@@ -818,7 +840,8 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
     of the project in the second column (#agent-list), sorted by group or by owner (#agent-sort); top right the chosen
     agent (#agent-head: name, kind, owner, model, presence) with its person's acts (#agent-acts) and "invite agent";
     the page is the chosen agent's timeline (#agent-timeline: its messages and changes of state, newest at the
-    bottom), with a composer (#tl-composer) that its own person writes to it with. agentpage.js draws all of it from
+    bottom; #tl-filter: what concerns it, or everything), with a composer (#tl-composer) that its own person writes to
+    it with. agentpage.js draws all of it from
     the members (frame.js) and the timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
     slug, mine = frame["slug"], set(frame["perms"])
     sorts = "".join(f'<button type="button" class="seg-btn" data-sort="{k}" aria-pressed="{"true" if k == "group" else "false"}">'
@@ -832,7 +855,11 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
     bar = (f'<h1 id="agent-head" class="agent-head"></h1><span class="spacer"></span>'
            f'<div id="agent-acts" class="agent-acts" role="group" aria-label="{e(tr("agp.acts"))}"></div>{invite}')
     data = {"slug": slug, "me": person["name"]}
+    filters = "".join(f'<button type="button" class="seg-btn" data-filter="{k}" '
+                      f'aria-pressed="{"true" if k == "concerns" else "false"}">{e(tr("agp.filter." + k))}</button>'
+                      for k in ("concerns", "all"))
     body = (f'<section id="agent-timeline" class="room timeline" aria-label="{e(tr("agp.timeline"))}" {_attrs(data)}>'
+            f'<div id="tl-filter" class="seg tl-filter" role="group" aria-label="{e(tr("agp.filter"))}">{filters}</div>'
             f'<div id="tl-scroller" class="scroller"><p id="tl-older" class="tl-note" hidden></p>'
             f'<ol id="tl-list" class="messages" aria-live="polite"></ol></div>'
             f'<form id="tl-composer" class="composer" hidden><div class="composer-box">'
@@ -865,7 +892,7 @@ def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str
         tabs.append(f'<a class="ag-tab" role="tab" href="{e(base + path)}" data-tab="{k}"{cur}>{e(tr(key))}</a>')
     action = ""
     if tab == "tasks" and view["can_edit_tasks"]:
-        action = _action(tr, "task-new", "task.add", 'aria-expanded="false"')
+        action = _action(tr, "task-new", "tt.post_task", 'aria-expanded="false"')
     elif tab == "schedules" and view["can_create"]:
         action = _action(tr, "schedule-new", "sch.new", 'aria-expanded="false" aria-controls="schedule-form"')
     bar = (f'<nav id="work-tabs" class="ag-tabs" role="tablist" aria-label="{e(tr("ag.tabs"))}">{"".join(tabs)}</nav>'

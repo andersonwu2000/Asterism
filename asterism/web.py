@@ -431,6 +431,16 @@ async def api_invites(request: Request) -> Any:
     return projects.create_invite(pj, actor, (await body_json(request)).get("github_login"))
 
 
+async def api_invites_list(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.list_invites(pj, actor)
+
+
+async def api_invite_revoke(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.revoke_invite(pj, actor, request.path_params["iid"])
+
+
 async def api_groups(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     b = await body_json(request)
@@ -724,7 +734,7 @@ async def api_agent_timeline(request: Request) -> Any:
     """One agent's timeline (the agent page): its messages and changes of state, as far as the reader may read them."""
     pj, actor = member_actor(request, request.path_params["slug"])
     q = request.query_params
-    return timeline.timeline(pj, actor, request.path_params["name"], q.get("before"), q.get("limit"))
+    return timeline.timeline(pj, actor, request.path_params["name"], q.get("before"), q.get("limit"), q.get("only"))
 
 
 async def api_search(request: Request) -> Any:
@@ -999,14 +1009,27 @@ async def dm_page(request: Request) -> Response:
         return ctx
     person, pj, actor = ctx
     name = request.path_params.get("name", "")
+    tr = tr_for(request)
+    me = messaging.person_member(pj, actor.person_id)
     try:
-        messaging.require_read(pj, messaging.person_member(pj, actor.person_id))
-        if name:
-            messaging.resolve_place(pj, messaging.person_member(pj, actor.person_id), name)
+        messaging.require_read(pj, me)
     except ApiError as e:
         return page_error(request, e, person)
     view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
-    return html(pages.messages(tr_for(request), person, _frame(pj, actor), view, dm=name))
+    if name:
+        # A conversation that cannot be had is answered inside the frame, saying who may have it (m1f7 section 4).
+        try:
+            messaging.resolve_place(pj, me, name)
+        except ApiError as e:
+            other = messaging.member_by_name(pj, name)
+            if e.status == 403 and other is not None and other.kind == "agent":
+                said = tr("dm.refused_agent", name=other.name, owner=projects.person_name(pj, other.person_id))
+            elif e.status in (403, 404):
+                said = tr("dm.refused_none", name=name) if other is None else tr("error.forbidden")
+            else:
+                return page_error(request, e, person)
+            return html(pages.messages(tr, person, _frame(pj, actor), view, dm=name, refused=(said, e.status)))
+    return html(pages.messages(tr, person, _frame(pj, actor), view, dm=name))
 
 
 async def agents_page(request: Request) -> Response:
@@ -1243,6 +1266,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/me/name", api(api_my_name), methods=["POST"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
+        Route("/{slug}/api/invites", api(api_invites_list), methods=["GET"]),
+        Route("/{slug}/api/invites/{iid}/revoke", api(api_invite_revoke), methods=["POST"]),
         Route("/{slug}/api/groups", api(api_groups, 201), methods=["POST"]),
         Route("/{slug}/api/groups/order", api(api_group_order), methods=["POST"]),
         Route("/{slug}/api/groups/{name}", api(api_group_change), methods=["POST"]),

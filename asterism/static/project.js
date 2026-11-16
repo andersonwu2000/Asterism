@@ -102,8 +102,8 @@
     var form = make("form", "stack"), out = make("p", "out"), result = make("div", "panel-result");
     out.setAttribute("role", "status");
     form.append(make("p", "dim", t("admin.invite_hint")), field("admin.invite_login", "github_login", {maxlength: "39"}));
-    var row = make("div", "row"), go = make("button", "btn primary", t("admin.invite_button"));
-    row.appendChild(go);
+    var row = make("div", "row form-acts"), go = make("button", "btn primary", t("admin.invite_button"));
+    row.append(A.button("btn", t("pm.cancel"), function () { panel.dialog.close(); }), go);
     form.append(row, out, result);
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
@@ -111,7 +111,7 @@
       go.disabled = true;
       try {
         var r = await A.request(API + "invites", null, payload);
-        out.textContent = r.ok ? "" : A.errorText(r.data.error);
+        out.textContent = r.ok ? "" : A.refusal("admin.invite", r.data);
         result.textContent = "";
         if (r.ok) result.append(make("p", "", t("pm.people_link")), A.copyLine(r.data.url));
       } finally {
@@ -134,7 +134,7 @@
       makeLink.disabled = true;
       try {
         var r = await A.request(makeLink.dataset.api, null, {});
-        out.textContent = r.ok ? "" : A.errorText(r.data.error);
+        out.textContent = r.ok ? "" : A.refusal("invite.agent", r.data);
         if (r.ok) { A.showInvite(result, r.data); result.hidden = false; }
       } finally {
         makeLink.disabled = false;
@@ -146,13 +146,19 @@
     var form = make("form", "stack"), out = make("p", "out");
     out.setAttribute("role", "status");
     form.appendChild(field("msg.channel_name", "name", {required: "", maxlength: "40"}));
-    var row = make("div", "row");
-    row.appendChild(make("button", "btn primary", t("msg.new_channel")));
+    var row = make("div", "row form-acts");
+    row.append(A.button("btn", t("pm.cancel"), function () { panel.dialog.close(); }),
+               make("button", "btn primary", t("msg.new_channel")));
     form.append(row, out);
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
-      var r = await A.request(API + "channels", null, {name: form.elements.name.value.trim().replace(/^#/, "")});
-      if (!r.ok) { out.textContent = A.errorText(r.data.error); return; }
+      var name = form.elements.name.value.trim().replace(/^#/, "");
+      var r = await A.request(API + "channels", null, {name: name});
+      if (!r.ok) {
+        if (/^(bad_request|conflict)$/.test(r.data.error)) A.fieldError(form.elements.name, A.refusal("chan.create", r.data, {name: name}));
+        else out.textContent = A.refusal("chan.create", r.data, {name: name});
+        return;
+      }
       panel.opener = null;
       panel.dialog.close();
       if (A.rail) A.rail.closeDrawer(false);

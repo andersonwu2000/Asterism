@@ -7,10 +7,14 @@
 //   first of my agents, else the first listed. The rail's agent button returns to it. Top right (#agent-head): its
 //   presence, name, model, kind and owner; at the right its acts where the reader may (its groups as check boxes, and
 //   removing it from the project, floating), and "invite agent".
-// - The page: its timeline, as a conversation: every message it sent or was handed that the reader may read, with
-//   where it was and whether it was sent or received, and its changes of state (online, offline with the reason, a
-//   task given, taken, released or removed) as quiet lines between them; newest at the bottom, older ones loaded on
-//   scrolling up, new ones asked for every few seconds (the reader's place is kept: new things arrive at the end).
+//   By group, a person's own agent groups are passed over (they say whose an agent is: that is the other sorting).
+//   Beside a name, busy (it holds a task) or idle (online, holding none). Top right also what it holds, in one line.
+// - The page: its timeline, as a conversation: the messages that concern it (it sent them, they name it, or they are
+//   the reader's private conversation with it; #tl-filter, remembered) or every message it sent or was handed, that
+//   the reader may read, with where it was, and its changes of state (online, offline with the reason, a task given,
+//   taken, released or removed) as quiet lines between them, each event once (the server leaves out the system's
+//   message about a change of task that is such a line); newest at the bottom, older ones loaded on scrolling up, new
+//   ones asked for every few seconds (the reader's place is kept: new things arrive at the end).
 // - Its own person talks to it here: the composer (#tl-composer) sends a private message to it. Anybody else sees the
 //   timeline with one quiet line instead (only its person and that person's agents write to an agent privately).
 "use strict";
@@ -35,6 +39,9 @@
   root.appendChild(owner);
 
   var sort = A.store.get(SORT_KEY, "group") === "owner" ? "owner" : "group";
+  var FILTER_KEY = "asterism-agent-filter:" + SLUG, filterBox = document.getElementById("tl-filter");
+  var filter = A.store.get(FILTER_KEY, "concerns") === "all" ? "all" : "concerns";
+  var tasks = [];                  // the project's tasks (/api/tasks), for the chosen agent's in the top-right cell
   var chosen = "";                 // the agent shown
   var gen = 0;                     // a new choice makes the answers for the earlier one stale
   var entries = [];                // the timeline's items shown, oldest first
@@ -69,12 +76,14 @@
       });
       return out;
     }
+    // By group: the groups people organise (a person's own agent group says only whose an agent is: that is the other
+    // sorting), in their order; an agent under the first such group it is in, else under AI.
     var placed = {};
     v.groups.forEach(function (g) {
-      if (R.isDefault(g)) return;
+      if (R.isDefault(g) || g.kind === "ownership") return;
       var here = list.filter(function (a) {
         if (placed[a.name]) return false;
-        var first = R.plainOf(a)[0];
+        var first = R.plainOf(a).filter(function (x) { return x.kind !== "ownership"; })[0];
         return !!first && first.name === g.name;
       });
       here.forEach(function (a) { placed[a.name] = true; });
@@ -94,7 +103,8 @@
     link.append(S.presence({kind: "agent", online: !!a.online}), make("span", "place-name", a.name));
     var model = A.modelTag(a.model);
     if (model) link.appendChild(model);
-    if (a.busy) link.appendChild(make("span", "busy", t("nav.busy")));
+    var state = P.stateWord(a, true);
+    if (state) link.appendChild(make("span", "busy", state));
     li.appendChild(link);
     return li;
   }
@@ -144,9 +154,12 @@
     el.head.appendChild(make("span", "agent-name", a.name));
     var model = A.modelTag(a.model);
     if (model) el.head.appendChild(model);
+    var state = P.stateWord(a, true);
+    if (state) el.head.appendChild(make("span", "agent-state", state));
+    var doing = taskLine(a.name);
+    if (doing) el.head.appendChild(doing);
     var kind = A.MSG["kind." + a.kind] ? t("kind." + a.kind) : a.kind;
-    el.head.appendChild(make("span", "agent-facts", [kind, ownerWord(a), a.busy ? t("nav.busy") : ""]
-      .filter(Boolean).join(" · ")));
+    el.head.appendChild(make("span", "agent-facts", [kind, ownerWord(a)].join(" · ")));
     if (!R) return;
     var boxes = P.groupItems(R, a, true, function () {});
     if (boxes.length) {
@@ -174,9 +187,39 @@
     }
   }
 
+  // What the agent holds, in one line after its name: the first task's number and text (cut with an ellipsis), "+n"
+  // for more, a link to the board at this agent; nothing when it holds none.
+  function taskLine(name) {
+    var mine = tasks.filter(function (x) { return x.responsible === name; });
+    if (!mine.length) return null;
+    var a = make("a", "agent-tasks");
+    a.href = "/" + encodeURIComponent(SLUG) + "/work?agent=" + encodeURIComponent(name);
+    a.dataset.key = "agent-tasks";
+    a.title = mine.map(function (x) { return x.id + " " + x.text; }).join("\n");
+    a.append(make("span", "mono", String(mine[0].id)), make("span", "agent-task-text", mine[0].text));
+    if (mine.length > 1) a.appendChild(make("span", "agent-task-more", t("agp.more_tasks", {n: mine.length - 1})));
+    a.setAttribute("aria-label", t("agp.tasks_label", {n: mine.length, text: mine[0].text}));
+    return a;
+  }
+  var tasksRaw = "";
+  async function loadTasks() {
+    var r = await A.request(API + "tasks");
+    if (!r.ok) return;
+    var seen = {}, out = [];
+    (r.data.groups || []).forEach(function (g) {
+      g.tasks.forEach(function (x) { if (!seen[x.id]) { seen[x.id] = true; out.push(x); } });
+    });
+    out.sort(function (x, y) { return x.id - y.id; });
+    var raw = JSON.stringify(out);
+    if (raw === tasksRaw) return;
+    tasksRaw = raw;
+    tasks = out;
+    A.keepFocus(el.head.parentNode, drawHead);
+  }
+
   // A refusal of an act on the agent, said under the timeline (where the composer's outcome or the quiet line is).
   function refused(data) {
-    var text = A.refusal("ag.refused", data);
+    var text = A.refusal("mem.regroup", data);
     if (el.form.hidden) { owner.hidden = false; owner.textContent = text; } else el.out.textContent = text;
   }
 
@@ -231,9 +274,9 @@
       var model = A.modelTag(m.model);
       if (model) meta.appendChild(model);
     }
-    meta.append(placeLink(m), make("span", "tl-dir", t(x.dir === "sent" ? "agp.sent" : "agp.received")));
+    meta.appendChild(placeLink(m));
     body.appendChild(meta);
-    var box = A.renderText(m.text);
+    var box = A.renderText(m.text, {mentions: m.mentions});
     if (A.paths) A.paths.scan(box);
     body.appendChild(box);
     li.append(gutter, body);
@@ -282,6 +325,7 @@
 
   function ask(params) {
     params.limit = PAGE;
+    if (filter === "concerns") params.only = "concerns";
     return A.request(API + "agents/" + encodeURIComponent(chosen) + "/timeline", params);
   }
 
@@ -404,6 +448,27 @@
   });
   S.loadMembers();
   setInterval(news, EVERY_MS);
+  loadTasks();
+  setInterval(loadTasks, EVERY_MS);
+
+  // The timeline's filter (#tl-filter, remembered): what concerns the agent (what it said, what names it, the private
+  // conversation with the reader), or everything it was handed.
+  function drawFilter() {
+    Array.prototype.forEach.call(filterBox.querySelectorAll("[data-filter]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.filter === filter));
+    });
+  }
+  if (filterBox) {
+    drawFilter();
+    filterBox.addEventListener("click", function (ev) {
+      var b = ev.target.closest && ev.target.closest("[data-filter]");
+      if (!b || b.dataset.filter === filter) return;
+      filter = b.dataset.filter === "all" ? "all" : "concerns";
+      A.store.set(FILTER_KEY, filter);
+      drawFilter();
+      if (chosen) start(chosen);
+    });
+  }
 
   // ------------------------------------------------------------------ the composer
 
@@ -418,7 +483,7 @@
     var text = el.text.value;
     if (!text.trim() || !chosen) return;
     var r = await A.request(API + "messages", null, {to: chosen, text: text});
-    if (!r.ok) { el.out.textContent = A.refusal("ag.refused", r.data); return; }
+    if (!r.ok) { el.out.textContent = A.refusal("agp.send", r.data); return; }
     el.text.value = "";
     el.out.textContent = "";
     grow();

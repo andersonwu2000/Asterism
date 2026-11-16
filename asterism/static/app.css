@@ -409,6 +409,9 @@ td .muted, td small { color: var(--color-ink-dim); }
 .place.unread { color: var(--color-ink); font-weight: 600; }
 .place[aria-current] { background: var(--color-wash-3); color: var(--color-ink); }
 .place-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A channel some members may not read: a small lock after its name, in the dim ink. */
+.lock-mark { display: inline-flex; flex: none; margin-left: -2px; color: var(--color-ink-dim); }
+.lock-mark .glyph { width: 12px; height: 12px; }
 .place .count, .place .pill, .place .note { margin-left: auto; }
 .place .note + .count, .place .note + .pill { margin-left: 4px; }
 .place .count { font-size: 12px; font-weight: 400; color: var(--color-ink-dim); }
@@ -510,6 +513,11 @@ td .muted, td small { color: var(--color-ink-dim); }
 .day { display: flex; align-items: center; gap: 12px; margin: 18px var(--gutter) 6px; font-size: 12px; font-weight: 500;
        color: var(--color-ink-dim); }
 .day::before, .day::after { content: ""; flex: 1; height: 1px; background: var(--color-edge); }
+/* The first message unread when the place was opened: a day's line in ink, its rule stronger. */
+.day.unread-line { color: var(--color-ink); font-weight: 600; }
+.day.unread-line::before, .day.unread-line::after { background: var(--color-edge-strong); }
+/* A mention that reached someone: weight, no hue. */
+.text .mention { font-weight: 600; }
 
 /* A message row: a time gutter on the left, the body beside it. Later messages of one sender share one header. */
 .msg {
@@ -617,6 +625,32 @@ td .muted, td small { color: var(--color-ink-dim); }
 .composer-box .send { flex: none; height: 34px; border-radius: var(--r-control); }
 .composer-out { padding: 6px 6px 0; }
 .composer-out:empty { display: none; }
+/* New messages below the view: a pill over the foot of the list, held by a line of no height; inverted only when
+   one of them is important for the reader. */
+.news-line { position: relative; height: 0; z-index: 3; }
+.news-pill {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); min-height: 28px; padding: 0 12px;
+  border-radius: var(--r-full); font-size: 12px; font-weight: 600; white-space: nowrap;
+  background: var(--color-surface-3); color: var(--color-ink); border: 1px solid var(--color-edge-strong);
+  transition: none;                     /* it comes with the news, not with an act of the reader: no motion */
+}
+.news-pill.important { background: var(--color-loud); color: var(--color-bg); border-color: var(--color-loud); }
+.news-pill.important:hover { background-image: none; }
+/* The names to mention: a list floating over the composer, as the search's suggestions. */
+.composer { position: relative; }
+.mention-list {
+  position: absolute; bottom: calc(100% - 2px); left: var(--gutter); z-index: 35; width: min(380px, calc(100% - 2 * var(--gutter)));
+  max-height: min(320px, 50vh); overflow-y: auto; list-style: none; margin: 0; padding: 6px;
+  background: var(--color-surface-3); border: 1px solid var(--color-edge-strong); border-radius: var(--r-container);
+}
+.mention-option { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 8px; border-radius: var(--r-micro);
+                  color: var(--color-ink); font-size: 13px; cursor: pointer; min-width: 0; }
+.mention-option:hover, .mention-option[aria-selected="true"] { background: var(--color-wash-2); }
+.mention-option[aria-selected="true"] { outline: 2px solid var(--color-ink); outline-offset: -2px; }
+.mention-name { flex: none; }
+.mention-option .dim { font-size: 12px; white-space: nowrap; }
+.mention-option .model-tag, .mention-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mention-mark { flex: none; width: 10px; height: 10px; }
 
 /* The right column: one panel at a time (the task table, the member list, search results), or none. */
 /* A task's acts float just above its row, as a message's do, so showing them moves nothing under the pointer. */
@@ -634,11 +668,14 @@ td .muted, td small { color: var(--color-ink-dim); }
   text-align: left;
 }
 .prow-btn:hover { background: var(--color-wash-2); background-image: none; }
-.prow-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Names never shrink first (m1f7): the name keeps its width, busy or idle stays beside it, the model tag shrinks, and
+   the owner (the note at the right) shrinks first and goes. */
+.prow-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prow-name.mono { font-size: 13px; }
-.prow-btn .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.prow-note { margin-left: auto; font-size: 12px; color: var(--color-ink-dim); white-space: nowrap; overflow: hidden;
-             text-overflow: ellipsis; min-width: 0; }
+.prow-btn .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow-state { flex: none; font-size: 12px; color: var(--color-ink-dim); white-space: nowrap; }
+.prow-note { flex: 0 1000 auto; margin-left: auto; font-size: 12px; color: var(--color-ink-dim); white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* A profile card. */
 .card-head { display: flex; align-items: flex-start; gap: 10px; }
@@ -670,22 +707,33 @@ td .muted, td small { color: var(--color-ink-dim); }
 .sres-text { overflow-wrap: anywhere; color: var(--color-ink-dim); }
 mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 600; border-radius: 3px; padding: 0 1px; }
 .sres-more { margin-top: 8px; }
+.search-hint { margin: 8px 4px; font-size: 13px; max-width: 46ch; }
 
 /* ------------------------------------------------------------------ the agent page */
 /* The second column: the sort switch over every agent, in sections; a row is presence, name, model, busy. */
 .agent-sort { align-self: stretch; }
 .agent-sort .seg-btn { flex: 1 1 0; }
 .agent-list { display: flex; flex-direction: column; gap: 20px; }
-.agent-list .place-name { font-family: var(--font-mono); font-size: 13px; }
+.agent-list .place-name { flex: none; max-width: 100%; font-family: var(--font-mono); font-size: 13px; }
 .agent-list .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-list .busy { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--color-ink-dim); white-space: nowrap; }
 .agent-list .side-note, .agent-none { padding: 0 8px; font-size: 13px; color: var(--color-ink-dim); }
 /* The top-right cell: the chosen agent (its name in mono, 600; the facts dim) and its person's acts at the right. */
 .agent-head { display: flex; align-items: center; gap: 4px 8px; min-width: 0; margin: 0 0 0 8px; font: 400 14px/1.3 var(--font-ui); }
-.agent-head .agent-name { font-family: var(--font-mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis;
-                          white-space: nowrap; }
-.agent-head .agent-facts { min-width: 0; font-size: 13px; color: var(--color-ink-dim); overflow: hidden;
+.agent-head .agent-name { flex: none; max-width: 60%; font-family: var(--font-mono); font-weight: 600; overflow: hidden;
+                          text-overflow: ellipsis; white-space: nowrap; }
+.agent-head .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-head .agent-state { flex: none; font-size: 13px; color: var(--color-ink-dim); white-space: nowrap; }
+.agent-head .agent-facts { flex: 0 1000 auto; min-width: 0; font-size: 13px; color: var(--color-ink-dim); overflow: hidden;
                            text-overflow: ellipsis; white-space: nowrap; }
+/* What the agent holds, in one line: the first task's number and text, "+n" for more; a link to the board. */
+.agent-tasks { display: flex; align-items: baseline; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 28rem;
+               font-size: 13px; color: var(--color-ink-dim); text-decoration: none; white-space: nowrap; }
+.agent-tasks:hover { color: var(--color-ink); }
+.agent-tasks .mono { flex: none; font-size: 12px; }
+.agent-task-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-task-more { flex: none; }
+.tl-filter { align-self: center; margin: 10px var(--gutter) 0; }
 .agent-acts { display: flex; align-items: center; gap: 4px; flex: none; }
 .agent-acts:empty { display: none; }
 /* The page: the chosen agent's timeline, as a conversation (newest at the bottom), with the composer under it. */
@@ -775,6 +823,25 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .tt-task > .out, .tt-task > .tremove, .tt-task > .tedit { grid-column: 2 / -1; }
 .tt-task > .tremove { justify-self: start; min-height: 26px; font-size: 12px; }
 .tt-empty { padding: 4px 4px 4px 22px; font-size: 13px; color: var(--color-ink-dim); }
+/* The bounty board (m1f7): 待接 then 進行中; a card's quiet line (who posted it, when, the group it is open to as a
+   quiet tag) and, for a task held, the holder (presence, name, model, since when, the lock). */
+h2.tt-gname { margin: 0; font-size: 14px; }
+.tt-meta, .tt-holder { grid-column: 2 / 4; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0;
+                       font-size: 12px; color: var(--color-ink-dim); }
+.tt-meta { margin-top: 2px; }
+.tt-meta .tt-open { margin-left: 4px; }
+.tt-holder { margin-top: 4px; font-size: 13px; }
+.tt-holder .tt-agent { flex: none; color: var(--color-ink); font-weight: 600; font-size: 13px; }
+.tt-holder .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-since { font-size: 12px; }
+/* A form's acts at its right: the outcome, then cancel, then the act (the same order in every floating panel). */
+.form-acts { justify-content: flex-end; }
+.form-acts > .out { margin-right: auto; }
+.ag-hint { font-size: 12px; color: var(--color-ink-dim); }
+/* A field's own message, under it (the browser's bubble is never shown). */
+.field-error { display: block; margin-top: 2px; font-size: 13px; color: var(--color-ink); }
+.field-error:empty { display: none; }
+[aria-invalid="true"] { border-color: var(--color-ink-dim); }
 /* A form in place (a new task, a new or changed schedule). */
 .ag-form { display: grid; gap: 10px; margin: 0 0 20px; padding: 14px; background: var(--color-surface-2);
            border: 1px solid var(--color-edge); border-radius: var(--r-container); }
@@ -950,6 +1017,38 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .tri-btn[aria-checked="true"] { background: var(--color-wash-3); color: var(--color-ink); }
 .tri-btn:disabled { cursor: default; }
 .chan-perm-table .out:empty { display: none; }
+.chan-perm-out { width: 7em; white-space: nowrap; color: var(--color-ink-dim); }
+.chan-perm-out .out { color: var(--color-ink-dim); }
+/* The owner group takes no override: its row says it always can, in the dim ink, where the controls would be. */
+.chan-perm-always { color: var(--color-ink-dim); font-size: 13px; }
+.chan-perm-add { margin: 2px 0 0; }
+/* The outcome: who may read the channel now. */
+.chan-readers { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 14px 0 0; font-size: 13px; }
+.chan-readers-head { color: var(--color-ink-dim); }
+.chan-reader.mono { font-size: 12px; }
+/* Invitations: the unused ones, each with when it was made and until when, and its acts. */
+.invite-item { grid-template-columns: minmax(0, 1fr) auto; }
+.invite-acts { grid-column: 2; grid-row: 1 / 3; align-self: center; display: flex; align-items: center; gap: 6px; }
+.invite-acts .out:empty { display: none; }
+#invite-made { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+#invite-made[hidden] { display: none; }
+#invite-made p { margin: 0; }
+/* Adding several members to a group in one go. */
+.gd-adding { margin: 0 0 18px; }
+.gd-adding .gd-sub { margin-top: 0; }
+.gd-pick { max-height: 18rem; overflow-y: auto; }
+.gd-adding .form-acts { margin-top: 8px; }
+.gd-adding .form-acts .out:empty { display: none; }
+/* Each person's own agent group, a section of its own under the ordered groups. */
+.groups-sub { margin: 10px 0 2px; padding: 0 8px; font-size: 12px; font-weight: 600; color: var(--color-ink-dim); }
+.groups-list > .out { padding: 0 8px; }
+.groups-list > .out:empty { display: none; }
+/* "← 群組" over an opened group: only where the list is not beside it. */
+.gd-back { display: none; align-self: flex-start; font-size: 13px; color: var(--color-ink-dim); text-decoration: none; }
+.gd-back:hover { color: var(--color-ink); }
+/* A private conversation that cannot be had: the sentence where the conversation would be. */
+.room-refused { align-items: center; justify-content: center; padding: 24px var(--gutter); }
+.refused-note { max-width: 36rem; margin: 0; text-align: center; color: var(--color-ink-dim); }
 
 /* The all-projects page: a new project, folded until asked for. */
 .new-project { margin-top: 24px; }
@@ -984,7 +1083,10 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .perm-text { display: flex; flex-direction: column; min-width: 0; }
 .perm-name { font-weight: 500; }
 .perm-hint { font-size: 13px; color: var(--color-ink-dim); }
-.perm-row .out { font-size: 13px; }
+/* "Saved" at the row's right end, in a place kept for it: saying it never pushes the rows under it (m1f7). */
+.perm-row { position: relative; }
+.perm-row:has(.out) { padding-right: 7.5em; }
+.perm-row .out { position: absolute; top: 10px; right: 12px; font-size: 13px; color: var(--color-ink-dim); white-space: nowrap; }
 .perm-row.unheld .perm-name { color: var(--color-ink-dim); }
 .perm-row input:disabled + .perm-text .perm-name { color: var(--color-ink-dim); }
 .fieldset-plain { border: 0; padding: 0; margin: 0; min-width: 0; }
@@ -1118,10 +1220,20 @@ a.path-link > code { text-decoration: inherit; }
 .tab.dragging { opacity: 0.5; }
 .tab.drop-before::before { content: ""; position: absolute; top: 6px; bottom: 2px; left: -2px; border-left: 2px solid var(--color-ink); }
 .file-tabs.drop-end::after { content: ""; flex: none; margin: 6px 0 2px; border-left: 2px solid var(--color-ink); }
-/* A local tab says so by a small mark before its name; unsaved changes are a filled disc after it (shape, not hue). */
+/* Unsaved changes are a filled disc after the name (shape, not hue). Two tabs of the same name show, quietly after it,
+   as much of their folder as tells them apart. */
 .tab-btn { display: inline-flex; align-items: center; gap: 6px; }
-.tab-source { flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8;
-              stroke-linecap: round; stroke-linejoin: round; }
+.tab-hint { min-width: 0; max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            font-size: 12px; color: var(--color-ink-dim); }
+/* An edge of the strip with more tabs beyond it fades out (set by viewer.js only while there are). */
+.file-tabs.fade-start { -webkit-mask-image: linear-gradient(to right, transparent, currentColor 40px);
+                        mask-image: linear-gradient(to right, transparent, currentColor 40px); }
+.file-tabs.fade-end { -webkit-mask-image: linear-gradient(to left, transparent, currentColor 40px);
+                      mask-image: linear-gradient(to left, transparent, currentColor 40px); }
+.file-tabs.fade-start.fade-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, currentColor 40px, currentColor calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, transparent, currentColor 40px, currentColor calc(100% - 40px), transparent);
+}
 .tab-dirty { flex: none; width: 8px; height: 8px; border-radius: var(--r-full); background: currentColor; }
 .tab-close {
   flex: none; width: 24px; height: 24px; min-height: 24px; margin-right: 6px; padding: 0; border: 0;
@@ -1136,6 +1248,13 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 .file-tools .icon-btn[aria-pressed="true"] { background: var(--color-wash-3); color: var(--color-ink); }
 .file-tools [aria-disabled="true"] { color: var(--color-ink-faint); cursor: default; background: transparent; }
 .file-tools [aria-disabled="true"]:hover { background: transparent; color: var(--color-ink-faint); }
+/* A .tex file next to its PDF: "open PDF", a word before the view switch. */
+.file-pdf { min-height: 30px; margin-right: 6px; padding: 0 10px; font-size: 13px; white-space: nowrap; }
+/* Below 900 px with no tab in the source shown, the explorer is the page (viewer.js moves it here). */
+.files.tree-here > .file-view { display: none; }
+.files.tree-here > .explorer { flex: 1; width: auto; max-width: none; min-height: 0; height: auto; margin: 0; padding: 0;
+                               display: flex; flex-direction: column; border-right: 0; }
+.files.tree-here > .explorer > .side-inner { flex: 1 1 auto; min-height: 0; height: auto; }
 
 /* The document: the whole area. Prose keeps to the reading column; tables, code, formulas and pictures may widen. */
 .file-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface-2); }
@@ -1355,6 +1474,8 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   .tt-task > .row-acts { grid-column: 3; grid-row: 1; }
   .groups-page.has-detail { grid-template-columns: minmax(0, 1fr); }
   .groups-page.has-detail .groups-list { display: none; }
+  .gd-back { display: inline-flex; }
+  .tt-meta, .tt-holder { grid-column: 2 / -1; }
   .msg { grid-template-columns: 52px minmax(0, 1fr); }
   .msg .gutter { padding-right: 8px; }
 }
@@ -1370,6 +1491,18 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 }
 @media (max-width: 600px) {
   .members-table th:nth-child(2), .members-table td:nth-child(2) { display: none; }
+  /* A channel's permissions on a narrow screen: each group a block of two lines, read and post, each named. */
+  .chan-perm-table, .chan-perm-table tbody { display: block; }
+  .chan-perm-table thead { display: none; }
+  .chan-perm-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; padding: 8px 10px; }
+  .chan-perm-table tr + tr { border-top: 1px solid var(--color-edge); }
+  .chan-perm-table td { display: block; padding: 0; border: 0; }
+  .chan-perm-group { grid-column: 1; white-space: normal; }
+  .chan-perm-out { grid-column: 2; grid-row: 1; width: auto; text-align: right; }
+  .chan-perm-cell, .chan-perm-always { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+  .chan-perm-cell::before { content: attr(data-label); min-width: 3em; font-size: 12px; color: var(--color-ink-dim); }
+  .invite-item { grid-template-columns: minmax(0, 1fr); }
+  .invite-acts { grid-column: 1; grid-row: auto; }
 }
 
 /* Touch screens: the acts are always there, under what they act on. */

@@ -1,12 +1,13 @@
 // Files mode, the explorer (#explorer, Asterism.explorer): two sources of files (the top-left cell's dropdown
 // #source-switch: 公共, the project's repository, repo.js; 私人, a folder of the reader's own computer, local.js) and
 // the tree of the source shown. Both sources answer the same small interface (see repo.js), so the tree, the keyboard
-// and the entry menu are one for both. A file opens in the current tab, or in a new one (viewer.js): by the entry
-// menu's "open in a new tab", a middle click, Ctrl/Cmd+click, or dragging the row onto the tab strip.
+// and the entry menu are one for both. Each source keeps its own tabs (viewer.js listens to "source" and shows the
+// strip and the document of the source shown). A file opens in the current tab, or in a new one (viewer.js): by the
+// entry menu's "open in a new tab", a middle click, Ctrl/Cmd+click, or dragging the row onto the tab strip.
 // Above the tree, the files menu (#files-menu: for the local source "open folder", "restore access" when the browser
 // must be asked again, and "forget folder", two steps in place; for the repository, the repository on GitHub) and the
-// search field (#files-search): typing shows, in the tree's place, the paths of the source shown that hold every word
-// (the arrow keys and Enter open one); Escape or emptying the field gives the tree back.
+// search field (#files-search): typing shows, in the tree's place, the paths of the source shown that hold every word,
+// the words marked in each (the arrow keys and Enter open one); Escape or emptying the field gives the tree back.
 // The local folder, once open, is one folder at the top of its tree, shown and handled like any folder (its name,
 // folding, its entry menu). With no folder open the local source is one control (#local-open); a folder kept from an
 // earlier visit is one control that restores access (#local-restore); in a browser without the File System Access
@@ -214,10 +215,9 @@
     var row = rowOf(path);
     if (row) row.scrollIntoView({block: "nearest"});
   };
-  // `follow`: the explorer turns to the file's source (the reader chose the file's tab).
-  E.setCurrent = function (id, path, follow) {
+  // The file shown (the active tab of the source shown, viewer.js), marked in its tree.
+  E.setCurrent = function (id, path) {
     E.current = path ? {source: id, path: path} : null;
-    if (path && follow && id !== E.shown) E.show(id);
     if (path) E.reveal(id, path, false); else draw();
   };
   // A folder opened from elsewhere (a link in a document, the file search).
@@ -524,7 +524,7 @@
     if (!asked || asked.busy) return;
     var name = askInput.value.trim(), was = asked;
     if (L.badName(name)) {
-      was.refusal = t("local.bad_name");
+      was.refusal = t("error.local_bad_name");
       el.status.textContent = was.refusal;
       draw();
       return;
@@ -627,7 +627,27 @@
       el.search.setAttribute("aria-expanded", String(on && found.length > 0));
     }
 
-    function show(paths, sentence) {
+    // The path with every place a word typed occurs in it (without regard to case) marked.
+    function marked(path, typed) {
+      var low = path.toLowerCase(), hit = new Array(path.length).fill(false);
+      typed.forEach(function (w) {
+        for (var at = low.indexOf(w); at >= 0; at = low.indexOf(w, at + 1)) {
+          for (var k = at; k < at + w.length; k++) hit[k] = true;
+        }
+      });
+      var span = make("span", "find-path"), i = 0;
+      while (i < path.length) {
+        var j = i;
+        while (j < path.length && hit[j] === hit[i]) j++;
+        if (hit[i]) span.appendChild(make("mark", null, path.slice(i, j)));
+        else span.appendChild(document.createTextNode(path.slice(i, j)));
+        i = j;
+      }
+      return span;
+    }
+
+    function show(paths, sentence, q) {
+      var typed = words(q || "");
       found = paths;
       el.found.textContent = "";
       paths.forEach(function (p, i) {
@@ -636,7 +656,7 @@
         li.setAttribute("role", "option");
         li.title = p.path;
         li.appendChild(A.kindMark(p.path, p.type === "dir"));
-        li.appendChild(make("span", "find-path", p.path));
+        li.appendChild(marked(p.path, typed));
         li.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
         li.addEventListener("click", function (ev) { choose(i, ev.ctrlKey || ev.metaKey); });
         li.addEventListener("auxclick", function (ev) { if (ev.button === 1) { ev.preventDefault(); choose(i, true); } });
@@ -662,7 +682,7 @@
         if (!paths.length) said.push(t("files.find_none"));
         else if (paths.length >= FIND_MOST) said.push(t("files.find_more", {n: FIND_MOST}));
         if (r.data.complete === false) said.push(t("files.find_partial"));
-        show(paths, said.join(" "));
+        show(paths, said.join(" "), q);
         return;
       }
       if (L.state !== "ok") { show([], t("files.find_no_folder")); return; }
@@ -678,7 +698,7 @@
       if (!hits.length) notes.push(t("files.find_none"));
       else if (hits.length > FIND_MOST) notes.push(t("files.find_more", {n: FIND_MOST}));
       if (walked.cut) notes.push(t("files.find_cut"));
-      show(hits.slice(0, FIND_MOST), notes.join(" "));
+      show(hits.slice(0, FIND_MOST), notes.join(" "), q);
     }
 
     // The tree again; `empty` also empties the field.
