@@ -107,8 +107,6 @@ def test_channels_are_renamed_and_deleted_for_good(w):
     assert r.status_code == 200, r.text
     assert "renamed" in channels_of(w.bob) and "scratch" not in channels_of(w.bob)
     assert any("[p3]" in m["text"] for m in w.bob.read("#renamed"))
-    assert w.alice.c.post(f"/{SLUG}/api/channels/general", json={"name": "lobby"}).status_code == 409
-    assert w.alice.c.post(f"/{SLUG}/api/channels/general/delete").status_code == 409
     assert w.carol.c.post(f"/{SLUG}/api/channels/renamed/delete").status_code == 403
     assert w.alice.c.post(f"/{SLUG}/api/channels/renamed/delete").status_code == 200
     assert "renamed" not in channels_of(w.bob)
@@ -194,3 +192,17 @@ def test_the_theme_is_a_personal_setting_not_a_rail_button(w):
     rail = page.split('id="rail"', 1)[1].split("</nav>", 1)[0]
     assert 'id="theme-toggle"' not in rail
     assert w.alice.c.get(f"/{SLUG}/me").status_code == 200, "the personal settings layer has an address"
+
+
+def test_general_is_a_channel_like_the_others_and_notices_go_where_the_project_says(w):
+    assert w.alice.c.post(f"/{SLUG}/api/channels", json={"name": "lobby"}).status_code == 201
+    assert w.alice.c.post(f"/{SLUG}/api/channels/general", json={"name": "town"}).status_code == 200
+    assert w.alice.c.post(f"/{SLUG}/api/channels/town/delete").status_code == 409, "the notice channel stays until another is chosen"
+    assert w.carol.c.post(f"/{SLUG}/api/project", json={"notice_channel": "#lobby"}).status_code == 403
+    assert w.alice.c.post(f"/{SLUG}/api/project", json={"notice_channel": "#nowhere"}).status_code in (400, 404)
+    assert w.alice.c.post(f"/{SLUG}/api/project", json={"notice_channel": "#lobby"}).status_code == 200
+    assert w.alice.c.post(f"/{SLUG}/api/channels/town/delete").status_code == 200
+    r = w.alice.c.post(f"/{SLUG}/api/tasks", json={"group": "ai", "text": "where is it told [p5]", "responsible": "a2"})
+    assert r.status_code == 201, r.text
+    told = [m for m in w.alice.read("#lobby") if m["from_kind"] == "system" and "[p5]" in m["text"]]
+    assert told, "the task change is announced in the notice channel"
