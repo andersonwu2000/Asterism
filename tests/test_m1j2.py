@@ -666,7 +666,8 @@ def test_the_program_has_the_task_tools(exe, v, home):
     m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-tk-1")
     try:
         schema = m.tools["task_update"]["inputSchema"]
-        assert set(schema["properties"]) == {"id", "group", "title", "body", "responsible", "update_every_h", "done", "remove"} \n            and not schema.get("required")
+        assert set(schema["properties"]) == {"id", "group", "title", "body", "responsible", "update_every_h", "done", "remove"}
+        assert not schema.get("required")
         assert not m.tools["tasks"]["inputSchema"].get("properties")
         assert not m.tool("register", name="tara")[1]
         made, bad = m.tool("task_update", group="alice-agents", text="Through the program [tk1]", responsible="tara")
