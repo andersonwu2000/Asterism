@@ -75,3 +75,30 @@ def test_files_mode_has_a_source_dropdown_and_a_search_field_above_the_tree(t):
     assert left.index('id="files-menu"') < left.index('id="files-search"') < left.index('id="explorer-tree"'), \
         "the menu, then the search field, then the tree"
     assert 'aria-haspopup="menu"' in page.split('id="source-switch"', 1)[1][:400], "the source is a dropdown menu"
+
+
+# ------------------------------------------------------------------ the agent page (m1f5_agent_page_design.md)
+
+def test_the_agent_page_has_three_tabs_at_their_own_addresses(t):
+    for path, tab in (("/agent", "agents"), ("/agent/tasks", "tasks"), ("/agent/schedules", "schedules"),
+                      ("/my", "agents"), ("/schedules", "schedules")):
+        r = t.alice.c.get(f"/{SLUG}{path}")
+        assert r.status_code == 200, path
+        assert 'id="agent-tabs"' in r.text and 'role="tablist"' in r.text, path
+        assert f'data-tab="{tab}"' in r.text, f"{path} opens the {tab} tab"
+    page = t.alice.c.get(f"/{SLUG}/agent").text
+    assert 'id="invite-agent"' in page, "inviting an agent is the agents tab's action"
+
+
+def test_the_rail_has_one_agent_button_for_agents_tasks_and_schedules(t):
+    page = t.alice.c.get(f"/{SLUG}").text
+    rail = page.split('id="rail"', 1)[1].split("</nav>", 1)[0]
+    assert f'href="/{SLUG}/agent"' in rail
+    assert f'href="/{SLUG}/schedules"' not in rail and f'href="/{SLUG}/my"' not in rail
+
+
+def test_my_agents_say_which_computer_or_connector_they_came_through(t):
+    my = t.alice.c.get(f"/{SLUG}/api/my").json()
+    ids = {c["id"] for c in my["credentials"]}
+    bound = [a for a in my["agents"] if a["name"] in ("a1", "a2")]
+    assert bound and all(a.get("credential") in ids for a in bound), my["agents"]

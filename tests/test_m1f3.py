@@ -96,7 +96,7 @@ def test_the_rail_leads_to_chat_private_files_schedules_and_my_agents_only(s):
     page = s.alice.c.get(f"/{SLUG}").text
     rail = page.split('id="rail"', 1)[1].split("</nav>", 1)[0]
     assert f'href="/{SLUG}/members"' not in rail and f'href="/{SLUG}/admin"' not in rail and "/settings" not in rail
-    for href in (f'/{SLUG}/dm', f'/{SLUG}/files', f'/{SLUG}/schedules', f'/{SLUG}/my'):
+    for href in (f'/{SLUG}/dm', f'/{SLUG}/files', f'/{SLUG}/agent'):     # f5: one agent page for agents, tasks, schedules
         assert href in rail, href
 
 
