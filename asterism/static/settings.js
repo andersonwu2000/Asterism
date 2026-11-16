@@ -5,15 +5,19 @@
 //   the drawer, as every second column.
 // - The close control (#settings-close) and Escape go back to the page the layer was opened from (project.js keeps
 //   it), else to chat.
-// - Project: members (one table of people and agents: the non-default groups as chips, x to take one away; the
-//   default ones as a quiet line; + gives or takes any group, the default ones too, as check boxes; removal from the
-//   project), groups (the groups in their order, the highest first, with a filter and "new group": who may manage
-//   groups drags a row to move it, or moves it with "move up" / "move down" in the row's menu; under them the three
-//   default groups, owner, human and AI, each a row of its own marked "預設", not draggable; a chosen group, ?g= in the
-//   address, in tabs: display (its name and "show separately in the member list"), permissions, members; a default
-//   group: its permissions (fixed) and members; a person's agents: display, members and that person's switches),
+// - Project: overview (for who may change the project's settings: its name, repository and notice channel as forms,
+//   and "delete project", floating with the address typed), members (one table of people and agents: the non-default
+//   groups as chips, x to take one away; the default ones as a quiet line, never changed by hand; + gives or takes the
+//   other groups as check boxes; removal from the project), groups (the groups in their order, the highest first, with
+//   a filter and "new group", a floating panel: who may manage groups drags a row to move it, or moves it with "move
+//   up" / "move down" in the row's menu; under them the three default groups, owner, human and AI, each a row of its
+//   own marked "預設", not draggable; a chosen group, ?g= in the address, in two tabs: settings (its name, renamed in
+//   place for a custom group; "show separately in the member list"; its permissions; for a person's own agent group
+//   also what others may do with those agents; removal at the foot) and members (read only for a default group)),
 //   invitations (app.js).
-// - Channel: notifications (my mute and my agents').
+// - Channel: overview (rename; delete, floating, not for the notice channel), permissions (each group's read and post
+//   in the channel as three-state controls: deny, inherit, allow), notifications (my mute and my agents').
+// - Me: me.js.
 // The data is /api/members (embedded at first, then read again every 15 s while nobody is mid-act). Only what the
 // reader may do is offered (Asterism.people's rules); a refusal shows the server's sentence where the act was.
 // Taking out of a group confirms in place; removing a group or a member floats.
@@ -25,7 +29,7 @@
   var SLUG = layer.dataset.slug, SCOPE = layer.dataset.scope, BASE = layer.dataset.base, CHANNEL = layer.dataset.channel;
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var CATALOGUE = A.parseJSON(layer.dataset.catalogue, []), MANAGEMENT = A.parseJSON(layer.dataset.management, []);
-  var SWITCHES = ["others_mention", "others_channel", "others_assign", "others_regroup"];
+  var SWITCHES = A.parseJSON(layer.dataset.switches, []);
   var EVERY_MS = 15000;
   var view = A.parseJSON(layer.dataset.view, null), last = JSON.stringify(view), rules = P.rules(view);
   var nav = document.getElementById("settings-nav"), heading = document.getElementById("settings-title");
@@ -420,17 +424,69 @@
     return rules.mine("manage_groups") || (g.kind === "ownership" && g.owner === view.me.name);
   }
 
-  function displayTab(g) {
+  function settingsTab(g) {
     var box = make("div", "gd-tab");
-    var facts = make("dl", "set-facts");
-    facts.append(make("dt", "", t("set.name")), make("dd", "set-name mono", g.name));
-    if (rules.label(g) !== g.name) facts.append(make("dt", "", t("mem.list_label")), make("dd", "", rules.label(g)));
-    facts.append(make("dt", "", t("mem.members")), make("dd", "", t("mem.count_label", {n: rules.count(g.name)})));
-    box.appendChild(facts);
+    box.appendChild(nameBlock(g));
     box.appendChild(make("p", "dim", g.kind === "ownership" ? t("mem.kind.ownership", {owner: g.owner})
                                                             : t("mem.kind." + g.kind, {name: g.name})));
-    box.appendChild(make("p", "dim", g.kind === "custom" ? t("mem.rename_none") : t("mem.name_fixed")));
-    // Show separately: one switch, saved as it changes.
+    if (!rules.isDefault(g)) box.appendChild(separateRow(g));
+    box.appendChild(make("h3", "gd-sub", t("mem.perms_heading")));
+    box.appendChild(permsBlock(g));
+    if (g.kind === "ownership") box.appendChild(agentPermsBlock(g));
+    if (g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions)) {
+      var sec = make("section", "gd-sec danger-zone");
+      sec.appendChild(make("h3", "", t("mem.remove_group")));
+      sec.appendChild(make("p", "", t("mem.remove_group_hint", {name: g.name})));
+      var b = A.button("btn danger", t("mem.remove_group"));
+      b.dataset.key = "grm:" + g.name;
+      b.addEventListener("click", function () { removeGroup(g, b); });
+      sec.appendChild(b);
+      box.appendChild(sec);
+    }
+    return box;
+  }
+
+  // The group's name: a custom group's renamed in place by who may manage groups; the others' fixed.
+  function nameBlock(g) {
+    if (g.kind !== "custom" || !rules.mine("manage_groups")) {
+      var facts = make("dl", "set-facts");
+      facts.append(make("dt", "", t("set.name")), make("dd", "set-name mono", g.name));
+      if (rules.label(g) !== g.name) facts.append(make("dt", "", t("mem.list_label")), make("dd", "", rules.label(g)));
+      facts.append(make("dt", "", t("mem.members")), make("dd", "", t("mem.count_label", {n: rules.count(g.name)})));
+      return facts;
+    }
+    var form = make("form", "stack set-form"), label = make("label", "field"), input = make("input");
+    input.name = "name";
+    input.value = g.name;
+    input.required = true;
+    input.maxLength = 40;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "off");
+    input.dataset.key = "gname:" + g.name;
+    label.append(make("span", "", t("set.name")), input);
+    var row = make("div", "row"), go = make("button", "btn", t("mem.rename")), out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    row.append(go, out);
+    form.append(label, make("p", "dim", t("mem.rename_hint")), row);
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var name = input.value.trim();
+      out.textContent = "";
+      if (name === g.name) return;
+      var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {name: name});
+      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      tabs[name] = tabs[g.name];
+      window.history.replaceState(null, "", BASE + "/groups?g=" + encodeURIComponent(name));
+      await load(true);
+      var again = detail.querySelector('[data-key="gname:' + name.replace(/["\\]/g, "\\$&") + '"]');
+      if (again) again.focus();
+    });
+    return form;
+  }
+
+  // Show separately: one switch, saved as it changes.
+  function separateRow(g) {
     var rows = make("div", "perm-list"), row = make("div", "perm-row"), input = make("input");
     input.type = "checkbox";
     input.id = "sep-" + g.name;
@@ -452,18 +508,7 @@
       g.separate = input.checked;
       out.textContent = t("mem.saved");
     });
-    box.appendChild(rows);
-    if (g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions)) {
-      var sec = make("section", "gd-sec");
-      sec.appendChild(make("h3", "", t("mem.remove_group")));
-      sec.appendChild(make("p", "", t("mem.remove_group_hint", {name: g.name})));
-      var b = A.button("btn", t("mem.remove_group"));
-      b.dataset.key = "grm:" + g.name;
-      b.addEventListener("click", function () { removeGroup(g, b); });
-      sec.appendChild(b);
-      box.appendChild(sec);
-    }
-    return box;
+    return rows;
   }
 
   function removeGroup(g, opener) {
@@ -476,19 +521,30 @@
             }});
   }
 
+  // Who may set a group's permissions: owner's never (it holds every one); a person's own agent group only that
+  // person; any other group who may manage groups and holds what it carries.
+  function permsEditable(g) {
+    if (g.kind === "default" && g.name === "owner") return false;
+    if (g.kind === "ownership") return g.owner === view.me.name;
+    return rules.mine("manage_groups") && rules.holdsAll(g.permissions);
+  }
+  // Everything a group may carry, in the catalogue's order: a person's own agent group also the four of its own.
+  function carried(g) { return g.kind === "ownership" ? CATALOGUE.concat(SWITCHES) : CATALOGUE; }
+
   function permRow(g, p, editable) {
     var row = make("div", "perm-row"), box = make("input"), id = "perm-" + p;
+    var own = SWITCHES.indexOf(p) >= 0;          // one of the four only a person's own agent group carries
     box.type = "checkbox";
     box.id = id;
     box.checked = g.permissions.indexOf(p) >= 0;
-    box.disabled = !editable || !rules.mine(p);
+    box.disabled = !editable || (!own && !rules.mine(p));
     box.dataset.key = "perm:" + g.name + ":" + p;
     var text = make("label", "perm-text");
     text.htmlFor = id;
     text.append(make("span", "perm-name", t("perm." + p)), make("span", "perm-hint", t("perm_hint." + p)));
     var out = make("span", "out");
     out.setAttribute("aria-live", "polite");
-    if (editable && !rules.mine(p)) {
+    if (editable && !own && !rules.mine(p)) {
       row.classList.add("unheld");
       text.appendChild(make("span", "perm-hint", t("mem.perm_unheld")));
     }
@@ -496,7 +552,7 @@
     row.append(box, text);
     row.dataset.text = (t("perm." + p) + " " + t("perm_hint." + p) + " " + p).toLowerCase();
     box.addEventListener("change", async function () {
-      var want = CATALOGUE.filter(function (x) { return x === p ? box.checked : g.permissions.indexOf(x) >= 0; });
+      var want = carried(g).filter(function (x) { return x === p ? box.checked : g.permissions.indexOf(x) >= 0; });
       out.textContent = "";
       var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {permissions: want});
       if (!r.ok) {
@@ -510,12 +566,13 @@
     return row;
   }
 
-  function permsTab(g) {
-    var box = make("div", "gd-tab"), editable = g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions);
+  function permsBlock(g) {
+    var box = make("div", "gd-perms"), editable = permsEditable(g);
     box.appendChild(make("p", "dim", t("mem.perms_hint")));
-    var why = g.kind === "default" ? "mem.perms_fixed" : !rules.mine("manage_groups") ? "mem.perms_readonly" :
-              !rules.holdsAll(g.permissions) ? "mem.perms_not_mine" : null;
-    if (why) box.appendChild(make("p", "dim", t(why)));
+    var why = g.kind === "default" && g.name === "owner" ? "mem.perms_fixed"
+              : g.kind === "ownership" ? (editable ? null : "mem.perms_own_only")
+              : !rules.mine("manage_groups") ? "mem.perms_readonly" : !rules.holdsAll(g.permissions) ? "mem.perms_not_mine" : null;
+    if (why) box.appendChild(make("p", "dim", t(why, {owner: g.owner || ""})));
     var plain = make("div", "perm-list"), manage = make("div", "perm-list");
     var mgmt = [make("h3", "gd-sub", t("mem.management")), make("p", "dim", t("mem.management_hint")), manage];
     var filter = filterField("pfilter:" + g.name, t("mem.filter_perms"), function () {
@@ -533,6 +590,16 @@
     });
     box.appendChild(plain);
     mgmt.forEach(function (n) { box.appendChild(n); });
+    return box;
+  }
+
+  // A person's own agent group: what others may do with that person's agents, set only by that person.
+  function agentPermsBlock(g) {
+    var box = make("div", "gd-perms"), editable = g.owner === view.me.name;
+    box.append(make("h3", "gd-sub", t("mem.agent_perms")), make("p", "dim", t("mem.agent_perms_hint", {owner: g.owner})));
+    var list = make("div", "perm-list");
+    SWITCHES.forEach(function (p) { list.appendChild(permRow(g, p, editable)); });
+    box.appendChild(list);
     return box;
   }
 
@@ -565,6 +632,7 @@
       }
     }
     box.appendChild(top);
+    if (rules.isDefault(g)) box.appendChild(make("p", "dim", t("mem.members_readonly")));
     m.people.map(function (x) { return [x, false]; }).concat(m.agents.map(function (x) { return [x, true]; }))
       .forEach(function (c) {
         var who = c[0], isAgent = c[1], li = memberLine(who, isAgent), out;
@@ -593,38 +661,6 @@
     return box;
   }
 
-  function switchesTab(g) {
-    var box = make("div", "gd-tab"), self = g.owner === view.me.name;
-    box.appendChild(make("p", "dim", self ? t("mem.switches_own") : t("mem.switches_other", {owner: g.owner})));
-    var rows = make("div", "perm-list");
-    SWITCHES.forEach(function (k) {
-      var row = make("div", "perm-row"), input = make("input"), id = "sw-" + k;
-      input.type = "checkbox";
-      input.id = id;
-      input.checked = !!(g.switches && g.switches[k]);
-      input.disabled = !self;
-      input.dataset.key = "sw:" + k;
-      var text = make("label", "perm-text"), out = make("span", "out");
-      text.htmlFor = id;
-      out.setAttribute("aria-live", "polite");
-      text.append(make("span", "perm-name", self ? t("switch." + k) : t("mem.sw." + k, {owner: g.owner})), out);
-      row.append(input, text);
-      input.addEventListener("change", async function () {
-        var body = {};
-        body[k] = input.checked;
-        out.textContent = "";
-        var r = await A.request(API + "my/switches", null, body);
-        if (!r.ok) { input.checked = !input.checked; out.textContent = A.refusal("mem.refused", r.data); return; }
-        g.switches = g.switches || {};
-        g.switches[k] = input.checked;
-        out.textContent = t("mem.saved");
-      });
-      rows.appendChild(row);
-    });
-    box.appendChild(rows);
-    return box;
-  }
-
   function drawGroup(g) {
     var head = make("header", "gd-head"), h = make("h2", "gd-title", rules.label(g));
     h.id = "gd-title";
@@ -632,10 +668,8 @@
     head.appendChild(h);
     if (rules.isDefault(g)) head.appendChild(make("p", "", t("mem.default_hint")));
     detail.appendChild(head);
-    // A default group: its own permissions (fixed) and its members; it has no display settings.
-    var kinds = g.kind === "ownership" ? [["display", displayTab], ["members", membersTab], ["switches", switchesTab]]
-              : rules.isDefault(g) ? [["perms", permsTab], ["members", membersTab]]
-              : [["display", displayTab], ["perms", permsTab], ["members", membersTab]];
+    // Two tabs for every group: its settings (name, display, permissions, removal) and its members.
+    var kinds = [["settings", settingsTab], ["members", membersTab]];
     tabsOf(g.name, kinds.map(function (k) { return [k[0], function () { return k[1](g); }, t("mem.tab." + k[0])]; }));
   }
 
@@ -707,19 +741,18 @@
 
   // ---- making a group
 
+  // The form floats over the page (a modal panel), so neither the list nor the group shown moves.
   var form = document.getElementById("group-create"), opener = document.getElementById("group-create-open");
+  var panel = document.getElementById("group-create-panel");
   function reveal(show) {
-    form.hidden = !show;
+    if (show) { panel.showModal(); form.elements.name.focus(); } else if (panel.open) panel.close();
     opener.setAttribute("aria-expanded", String(show));
-    groupsRoot.classList.toggle("creating", show);
-    if (show) form.elements.name.focus(); else opener.focus();
   }
-  if (form && opener) {
-    opener.addEventListener("click", function () { reveal(form.hidden); });
+  if (form && opener && panel) {
+    opener.addEventListener("click", function () { reveal(!panel.open); });
     form.querySelector("[data-dismiss]").addEventListener("click", function () { reveal(false); });
-    form.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); reveal(false); }
-    });
+    panel.querySelector("[data-close]").addEventListener("click", function () { reveal(false); });
+    panel.addEventListener("close", function () { opener.setAttribute("aria-expanded", "false"); opener.focus(); });
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
       var out = form.querySelector("[data-out]"), name = form.elements.name.value.trim();
@@ -729,13 +762,144 @@
       if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
       out.textContent = "";
       form.reset();
-      form.hidden = true;
-      groupsRoot.classList.remove("creating");
-      opener.setAttribute("aria-expanded", "false");
+      reveal(false);
       window.history.pushState(null, "", BASE + "/groups?g=" + encodeURIComponent(r.data.name));
       await load(true);
       detail.focus();
     });
+  }
+
+  // ------------------------------------------------------------------ the project: overview
+
+  Array.prototype.forEach.call(layer.querySelectorAll("form[data-project-field]"), function (f) {
+    var field = f.dataset.projectField, out = f.querySelector(".out");
+    f.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var body = {};
+      body[field] = (f.elements[field].value || "").trim();
+      out.textContent = "";
+      var r = await A.request(API + "project", null, body);
+      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      if (field === "name") { window.location.reload(); return; }       // the name is in the frame too
+      out.textContent = t("set.saved");
+    });
+  });
+  var dropProject = document.getElementById("project-delete");
+  if (dropProject) {
+    dropProject.addEventListener("click", function () {
+      var slug = dropProject.dataset.slug;
+      A.gone({title: t("gone.project.title", {name: slug}), text: t("gone.project.text"), name: slug,
+              button: t("gone.project.button"), opener: dropProject,
+              run: function () { return A.request(API + "project/delete", null, {confirm: slug}); },
+              done: function () { window.location.href = "/"; }});
+    });
+  }
+
+  // ------------------------------------------------------------------ a channel: overview
+
+  var renameForm = document.getElementById("channel-rename");
+  if (renameForm) {
+    renameForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var out = renameForm.querySelector(".out"), name = renameForm.elements.name.value.trim().replace(/^#/, "");
+      out.textContent = "";
+      if (name === CHANNEL) return;
+      var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL), null, {name: name});
+      if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+      window.location.replace("/" + encodeURIComponent(SLUG) + "/channels/" + encodeURIComponent(r.data.name) + "/settings");
+    });
+  }
+  var dropChannel = document.getElementById("channel-delete");
+  if (dropChannel) {
+    dropChannel.addEventListener("click", function () {
+      A.gone({title: t("gone.channel.title", {name: CHANNEL}), text: t("gone.channel.text", {name: CHANNEL}), name: null,
+              button: t("gone.channel.button"), opener: dropChannel,
+              run: function () { return A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/delete", null, {}); },
+              done: function () { window.location.href = "/" + encodeURIComponent(SLUG); }});
+    });
+  }
+
+  // ------------------------------------------------------------------ a channel: permissions
+  //
+  // One row per group (the groups' order, the default ones last), and for read and for post a control of three:
+  // deny (✕), inherit (/), allow (✓). Each press is saved at once; a refusal shows on the row and the control goes back.
+
+  var permBox = document.getElementById("channel-perms");
+  var STATES = [["deny", "\u2715"], ["inherit", "/"], ["allow", "\u2713"]];
+
+  function tri(group, perm, value, can, out) {
+    var seg = make("div", "tri");
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-label", t("chan.perm.label", {group: rules.labelOf(group), perm: t("chan.perm." + perm)}));
+    STATES.forEach(function (st) {
+      var b = A.button("tri-btn tri-" + st[0], st[1]);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(st[0] === value));
+      b.setAttribute("aria-label", t("chan.perm." + st[0]));
+      b.title = t("chan.perm." + st[0]);
+      b.tabIndex = st[0] === value ? 0 : -1;
+      b.disabled = !can;
+      b.dataset.key = "tri:" + group + ":" + perm + ":" + st[0];
+      b.addEventListener("click", async function () {
+        if (b.getAttribute("aria-checked") === "true") return;
+        var body = {}, one = {};
+        one[perm] = st[0];
+        body[group] = one;
+        out.textContent = "";
+        var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/permissions", null, {overrides: body});
+        if (!r.ok) { out.textContent = A.refusal("mem.refused", r.data); return; }
+        overrides = r.data.overrides;
+        drawPerms();
+        var again = permBox.querySelector('[data-key="' + b.dataset.key.replace(/["\\]/g, "\\$&") + '"]');
+        if (again) again.focus();
+      });
+      seg.appendChild(b);
+    });
+    seg.addEventListener("keydown", function (ev) {
+      var all = Array.prototype.slice.call(seg.children), i = all.indexOf(document.activeElement);
+      var j = ev.key === "ArrowRight" ? i + 1 : ev.key === "ArrowLeft" ? i - 1 : -9;
+      if (i < 0 || j === -9 || j < 0 || j >= all.length) return;
+      ev.preventDefault();
+      all[j].click();
+    });
+    return seg;
+  }
+
+  var overrides = null;
+  function drawPerms() {
+    if (!permBox || !overrides) return;
+    var can = permBox.dataset.can === "1";
+    A.keepFocus(permBox, function () {
+      permBox.textContent = "";
+      if (!can) permBox.appendChild(make("p", "dim", t("chan.perm.readonly")));
+      var wrap = make("div", "table-wrap"), tbl = make("table", "chan-perm-table"), head = make("thead"), hr = make("tr");
+      [t("chan.perm.group"), t("chan.perm.read"), t("chan.perm.post"), ""].forEach(function (h) { hr.appendChild(make("th", "", h)); });
+      head.appendChild(hr);
+      var tb = make("tbody");
+      view.groups.forEach(function (g) {
+        var o = overrides[g.name] || {read: "inherit", post: "inherit"}, tr = make("tr"), out = make("span", "out");
+        out.setAttribute("aria-live", "polite");
+        var name = make("td", "chan-perm-group");
+        name.appendChild(make("span", g.kind === "custom" ? "mono" : "", rules.label(g)));
+        if (rules.isDefault(g)) name.appendChild(make("span", "default-mark", t("mem.default")));
+        var read = make("td"), post = make("td"), note = make("td");
+        read.appendChild(tri(g.name, "read", o.read, can, out));
+        post.appendChild(tri(g.name, "post", o.post, can, out));
+        note.appendChild(out);
+        tr.append(name, read, post, note);
+        tb.appendChild(tr);
+      });
+      tbl.append(head, tb);
+      wrap.appendChild(tbl);
+      permBox.appendChild(wrap);
+    });
+  }
+  async function loadPerms() {
+    if (!permBox) return;
+    var r = await A.request(API + "channels/" + encodeURIComponent(CHANNEL) + "/permissions");
+    if (!r.ok) { permBox.textContent = A.refusal("mem.refused", r.data); return; }
+    overrides = r.data.overrides;
+    drawPerms();
   }
 
   // ------------------------------------------------------------------ a channel: notifications
@@ -756,5 +920,6 @@
 
   show(sectionFromPath(), false);
   markMember();
+  loadPerms();
   if (SCOPE === "project") setInterval(function () { load(false); }, EVERY_MS);
 })();

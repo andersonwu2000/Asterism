@@ -13,7 +13,8 @@ The rules, for every entrance:
 - an agent that coordinates (`coordinate_tasks`) changes, removes, takes and gives the tasks of another person's
   agent directly, whenever that agent's switch is on; it never locks, and a lock holds against it too.
 
-When a change is made by somebody other than the agent it concerns, the system tells that agent in #general.
+When a change is made by somebody other than the agent it concerns, the system tells that agent in the project's
+notice channel.
 Being responsible for a task is what makes an agent busy (presence.busy).
 """
 from __future__ import annotations
@@ -173,7 +174,7 @@ def _who(pj: Project, name: Any) -> Member | None:
         return None
     m = messaging.member_by_name(pj, name) if isinstance(name, str) else None
     if m is None:
-        raise not_found(f"There is no member '{name}'. responsible is a member's name, or empty for nobody.")
+        raise not_found(f"There is no member '{name}'. responsible is an agent's name, or empty for nobody.")
     if m.kind != "agent":
         raise NotAnAgent(m.name)
     return m
@@ -197,8 +198,7 @@ def _agent_row(pj: Project, m: Member) -> sqlite3.Row:
 
 
 def _others_assign(pj: Project, agent: Member) -> bool:
-    g = projects.ownership_group(pj, agent.person_id)
-    return bool(g and g["others_assign"])
+    return projects.switch_on(pj, agent.person_id, "others_assign")
 
 
 # --------------------------------------------------------------------------- people

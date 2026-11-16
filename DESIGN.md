@@ -15,8 +15,9 @@ settled; where it is silent, choose the quieter option.
   - **Code and mathematics** keep whatever colour their renderer gives them. Code is the one sanctioned use of
     hue: the editor's highlighting colours keywords, declared names, types, strings, numbers and attributes with
     the six muted `--color-syn-*` tokens (defined for both ends like every token); comments are `--color-ink-dim`.
-  - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. Nothing else is red:
-    not errors, not warnings, not "remove" before it is armed.
+  - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. The one control
+    that opens such a destruction from a settings page (delete the project, a channel, a group) is outlined in it,
+    its word in `--color-destruct-ink`, never filled. Nothing else is red: not errors, not warnings, not a deny.
 
 ## Two ends of one scale
 
@@ -24,7 +25,8 @@ There is a dark end and a light end, and every rule here holds on both, because 
 surfaces still rise toward the reader, the ink still runs loudest to quietest.
 
 - The choice is one attribute on `<html>`, `data-theme="dark"` or `"light"`, set before first paint, kept in
-  localStorage, defaulting to the system preference. The reader can switch it from the navigation.
+  localStorage, defaulting to the system preference. The reader chooses dark, light or the system's in their personal
+  settings (外觀); pages outside a project keep a switch in their header.
 - **No rule outside the token block may name a colour.** Not `#fff`, not `black`, not `rgba(...)`. A literal that reads
   on one end is invisible on the other.
 
@@ -46,6 +48,7 @@ The tokens (dark end first, then light):
 | `--color-ink-faint` | `#67696f` | `#85878e` | marks and rules only: too quiet for a sentence |
 | `--color-loud` | `#f4f5f8` | `#101014` | what asks for the reader: the ground of an inverted pill |
 | `--color-destruct` | `#a33a35` | `#a33a35` | the one red |
+| `--color-destruct-ink` | `#e0807a` | `#a33a35` | the word of the control that opens a destruction |
 | `--color-syn-keyword` | `#de8e9f` | `#a33e52` | code: keywords, TeX commands |
 | `--color-syn-name` | `#8ab6dd` | `#2f6392` | code: declared names |
 | `--color-syn-type` | `#82c0ae` | `#1f7a63` | code: types and sorts, TeX environments |
@@ -106,6 +109,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   titles, nothing smaller than 18 px.
 - The files are under `static/vendor/fonts/` (Latin subsets). Chinese falls through to the reader's system fonts:
   `"PingFang TC", "Microsoft JhengHei", "Noto Sans TC"` after each Latin face.
+- **A page never draws in a fallback face and then swaps.** The page's files (stylesheet, scripts, fonts) are asked
+  for at addresses that name their content (`?v=`) and kept by the browser, so changing pages takes the fonts from its
+  cache before the first paint; the display face and the body face are also preloaded for the first visit.
 - Body 14 px on a 1.5 line; secondary 13 px; the smallest text is 12 px and it is never a sentence.
 - Text against its ground is at least 4.5:1. `--color-ink-faint` does not reach that: it is for marks.
 
@@ -118,8 +124,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   through the top line, and the top line's rule runs under both top cells. Chat, private messages, files, the agent
   page and the settings layer all have them.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, private messages, files, agent. No divider between them. At its foot the theme switch and the reader
-  (sign-out is reached from there). The current one is the current place; hover washes the glyph's tile only, so the
+  chat, private messages, files, agent. No divider between them. At its foot the reader, whose menu opens the
+  personal settings (設定), all projects and sign-out. The current one is the current place; hover washes the glyph's tile only, so the
   word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
 - **Folding**: in a mode (chat, private messages, files, agent), pressing the button of the mode one is already in
   folds both left cells (the top-left cell and the second column) away on a wide screen, and again brings them back;
@@ -133,8 +139,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   channel's name) is asked in one floating panel over the dimmed page, which Escape and a click outside close; the
   answer (a link with its copy control) shows in that panel. The agent page's "invite agent" opens the same panel.
   Files mode has no project name and no project menu.
-- **Settings are one layer in the four cells** (the rail stays): the project's settings (overview; people: members,
-  groups, invitations) and one channel's (overview, notifications) look the same. Top left the project's name and
+- **Settings are one layer in the four cells** (the rail stays): the project's settings (overview: name, repository,
+  notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and
+  delete; permissions; notifications) and the reader's own (個人: their name in the project, 語言, 外觀; 電腦和連接器;
+  別人能對我的 agent 做什麼) look the same. A setting that is changed is a form of one field with its button, saved
+  where it is, its outcome said beside the button. Top left the project's name and
   what is set ("設定", or the channel's), the list of sections under small headings in the second column, top right
   the section's title and a round close control with "Esc" beside it; Escape closes, back to the page it was opened
   from, else chat. Each section has its own address; the bare address is the first section.
@@ -142,11 +151,15 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   who may manage groups drags a row to move it (a grip marks the row; a line shows where it will go) or uses "move up"
   / "move down" in the row's menu, so the order is reachable by keyboard. Under them the three default groups, written
   by their names, **owner**, **human**, **AI**, each a row of its own marked "預設" in quiet ink, not draggable,
-  opening on its own: its permissions (fixed) and its members. A chosen group shows the list as a middle column and
-  the group in tabs: display (its name and the switch "在成員列表中分開顯示"), permissions, members; a person's agents:
-  display, members and that person's switches. Default groups are never shown as groups anywhere else: a member's
-  chips list only the other groups; in the members section of settings the default ones are a quiet line
-  ("預設：owner・human"), and the + there offers every group, the default ones too, as check boxes.
+  opening on its own. A chosen group shows the list as a middle column and the group in two tabs: **設定** (its name,
+  renamed there for a custom group; the switch "在成員列表中分開顯示"; its permissions; for a person's own agent group
+  also what others may do with those agents; "remove group" at the foot) and **成員** (read only for a default group:
+  who is in one follows joining). "New group" opens its form in a floating panel, so nothing under it moves. Default
+  groups are never shown as groups anywhere else: a member's chips list only the other groups; in the members section
+  of settings the default ones are a quiet line ("預設：owner・human"), never given or taken by hand.
+- **A channel's permissions** are a table of the groups (in their order, the default ones last) with read and post
+  each a control of three, as Discord's: ✕ deny, / inherit, ✓ allow; the chosen one is the current place, saved as it
+  is pressed. A deny is not red.
 - Chat, private messages, files and agent are **modes**; the settings layer is not. Outside chat, the chat button
   carries the count of channel messages important for the reader as the inverted pill, and outside private messages
   the private-messages button the same for private conversations; in its own mode a button carries nothing, the
@@ -281,12 +294,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
   ("移除任務 12") and a second press does it; moving away disarms it. No browser dialogs.
 - **A destruction that cannot be undone floats**: a centred panel over a dimmed page, its button armed only when the
-  thing's name is typed, and that button is the one red. Escape and a click outside close it.
+  thing's name is typed (a channel's deletion asks without typing), and that button is the one red. Escape and a click
+  outside close it.
 - Focus is always visible. Motion is short (120–180 ms), only on what the reader just did, and off under
   `prefers-reduced-motion`.
 
 ## Copy
 
 - Quiet, one sentence. Say what happens next, not what the system did inside.
-- Interface text is Traditional Chinese, from the message catalogue. What agents read stays English and is not this
-  file's business.
+- Interface text is Traditional Chinese or English, as the reader chose (else the browser's language), from the
+  message catalogue, which holds both for every key. What agents read stays English and is not this file's business.
+- The browser tab's icon is v1's mark (`static/favicon.svg`).

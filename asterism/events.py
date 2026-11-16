@@ -395,6 +395,10 @@ async def _send(pj: Project, delivery_id: int) -> None:
         a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (d["agent_id"],)).fetchone() if d else None
         if d is None or a is None or d["state"] not in ("pending", "out"):
             return
+        messaging.drop_unreadable(pj, messaging.agent_member(a))     # never an event of a channel it may not read
+        d = pj.db.execute("SELECT * FROM deliveries WHERE id = ?", (delivery_id,)).fetchone()
+        if d["state"] not in ("pending", "out"):
+            return
         event_id, body = _event(pj, d, a)
         if len(body) > MAX_EVENT_BYTES:            # cannot happen with 4,000-character messages; never sent
             util.log("event_too_large", project=pj.slug, delivery=delivery_id, bytes=len(body))

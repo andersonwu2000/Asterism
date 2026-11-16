@@ -25,7 +25,7 @@
   var chat = document.getElementById("rail-chat");
   var counts = {chat: document.getElementById("rail-chat-count"), dm: document.getElementById("rail-dm-count")};
 
-  // Where the chat button goes: the place last open in chat, else the project's address (#general).
+  // Where the chat button goes: the place last open in chat, else the project's address (its first channel).
   R.chatHref = function () {
     var place = A.store.get(R.chatPlaceKey, null);
     var base = "/" + encodeURIComponent(SLUG);

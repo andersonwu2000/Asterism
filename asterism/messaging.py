@@ -4,7 +4,8 @@ A place is a channel ('#name') or a private conversation between two members. Ev
 sent, one row per reader with its level for that reader; nothing recomputes it later. An agent that should
 hear a message (level important or normal) gets a delivery record; a poll (its session's or its computer's)
 hands deliveries out and they are acknowledged. An important message handed over to an agent starts a follow-up that the background
-task (upkeep) turns into reminders until the agent answers it. The system posts notices in #general when an
+task (upkeep) turns into reminders until the agent answers it. The system posts notices in the project's notice
+channel (projects.notice_channel, #general unless the project chose another) when an
 agent goes online or offline, and messages when somebody else changes an agent's task (tasks.py). A schedule's
 run (schedules.py) goes through the same path as a person's message, with its own level for every reader.
 Everything lives in the project's database; memory only holds what wakes a
@@ -54,6 +55,20 @@ class Member:
     @property
     def key(self) -> str:
         return f"{self.kind}:{self.id}"
+
+
+def actor_of(me: Member) -> Actor:
+    return Actor(me.person_id, me.id if me.kind == "agent" else None)
+
+
+def reads_private(pj: Project, me: Member) -> bool:
+    """Private conversations follow the project's read permission (a channel follows its own, channel_access)."""
+    return "read" in projects.permissions(pj, actor_of(me))
+
+
+def require_read(pj: Project, me: Member) -> None:
+    """Without the project's read permission a member sees no private conversation and no member list."""
+    projects.require(pj, actor_of(me), "read", "Reading the project needs the read permission.")
 
 
 def person_member(pj: Project, person_id: int) -> Member:
@@ -113,23 +128,45 @@ def _private_refusal(pj: Project, me: Member, other: Member) -> str:
             f"agents write to it privately. Mention @{other.name} in a channel instead.")
 
 
-def channel_names(pj: Project) -> list[str]:
+def channel_names(pj: Project, me: Member | None = None) -> list[str]:
+    """The channels in their order; with `me`, only those `me` may read (any other does not exist for `me`)."""
+    if me is not None:
+        return projects.readable_channels(pj, me.kind, me.id)
     return [r["name"] for r in pj.db.execute("SELECT name FROM channels ORDER BY id")]
 
 
-def _no_channel(pj: Project, place: str) -> ApiError:
+def readable(pj: Project, me: Member) -> set[str]:
+    """The channel places ('#name') `me` may read."""
+    return {"#" + n for n in channel_names(pj, me)}
+
+
+def may_post_in(pj: Project, me: Member, place: str) -> bool:
+    """Whether `me` may post in a place: a channel by its own post, a private conversation by the project's."""
+    if place.startswith("#"):
+        return "post" in projects.channel_access(pj, me.kind, me.id).get(place[1:], set())
+    return "post" in projects.permissions(pj, actor_of(me))
+
+
+def may_post_anywhere(pj: Project, me: Member) -> bool:
+    """Whether `me` may post somewhere at all (the project's post, or a channel that grants it)."""
+    return "post" in projects.permissions(pj, actor_of(me)) or any(
+        "post" in have for have in projects.channel_access(pj, me.kind, me.id).values())
+
+
+def _no_channel(pj: Project, place: str, me: Member | None = None) -> ApiError:
     return not_found(f"There is no channel '{place}'. The channels are: "
-                     + ", ".join("#" + n for n in channel_names(pj)) + ".")
+                     + ", ".join("#" + n for n in channel_names(pj, me)) + ".")
 
 
 def resolve_place(pj: Project, me: Member, where: Any) -> tuple[str, Member | None]:
     """The place `where` names for `me`: '#name' is a channel, anything else a member for a private
-    conversation. Returns (place key, the other member or None)."""
+    conversation. Returns (place key, the other member or None). A channel `me` may not read is answered as one that
+    does not exist."""
     if not isinstance(where, str) or not where:
         raise bad_request("bad_request", "Name the place: a channel as #name, or a member's name for a private conversation.")
     if where.startswith("#"):
-        if not pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (where[1:],)).fetchone():
-            raise _no_channel(pj, where)
+        if where[1:] not in channel_names(pj, me):
+            raise _no_channel(pj, where, me)
         return where, None
     other = member_by_name(pj, where)
     if other is None:
@@ -143,13 +180,17 @@ def resolve_place(pj: Project, me: Member, where: Any) -> tuple[str, Member | No
     return private_place(me, other), other
 
 
-def _visible(row: sqlite3.Row | None, me: Member) -> bool:
-    return bool(row) and (row["place"].startswith("#") or _other_key(row["place"], me) is not None)
+def _visible(pj: Project, row: sqlite3.Row | None, me: Member) -> bool:
+    if not row:
+        return False
+    if row["place"].startswith("#"):
+        return row["place"][1:] in channel_names(pj, me)
+    return _other_key(row["place"], me) is not None and reads_private(pj, me)
 
 
 def _message(pj: Project, me: Member, mid: Any, what: str) -> sqlite3.Row:
     row = pj.db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
-    if not _visible(row, me):
+    if not _visible(pj, row, me):
         raise not_found(f"There is no message {mid} you can read{what}.")
     return row
 
@@ -307,9 +348,11 @@ def check_text(text: Any) -> str:
 
 
 def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict[str, Any]:
-    """Post a message. An agent's reply at hop 3, 5, 7... is held back once with the reply-chain reminder."""
-    actor = Actor(sender.person_id, sender.id if sender.kind == "agent" else None)
-    projects.require(pj, actor, "post", "Posting messages needs the post permission.")
+    """Post a message. An agent's reply at hop 3, 5, 7... is held back once with the reply-chain reminder. Posting
+    in a channel follows that channel's post (channel_access: an override may grant it or take it away); in a private
+    conversation, the project's."""
+    if not may_post_anywhere(pj, sender):
+        raise forbidden("Posting messages needs the post permission.")
     text = check_text(text)
     rid = _int(reply_to, "reply_to")
     orig = _message(pj, sender, rid, " to reply to") if rid is not None else None
@@ -329,6 +372,8 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
         if orig is not None and orig["place"] != place:
             raise bad_request("bad_request", f"Message {rid} is in another place. Leave out `to` to answer it "
                                              f"where it is.")
+    if not may_post_in(pj, sender, place):
+        raise forbidden("Posting messages needs the post permission.")
     hop = orig["hop"] + 1 if sender.kind == "agent" and orig is not None else 0
     if sender.kind == "agent" and hop >= 3 and hop % 2 == 1:
         with pj.db:
@@ -421,12 +466,15 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     place of mentions and of what the agent is doing (_scheduled_level)."""
     s = config.get()
     channel = place.startswith("#")
+    shut: set[str] = set()              # members who may not read the channel: no level, nothing delivered
     if channel:
         readers = [Member("person", r["person_id"], r["person_id"], r["name"])
                    for r in pj.db.execute("SELECT * FROM people ORDER BY person_id")]
         agent_rows = {a["id"]: a for a in pj.db.execute("SELECT * FROM agents ORDER BY id")}
         readers += [agent_member(a) for a in agent_rows.values()]
         readers = [r for r in readers if r != sender]
+        shut = {r.key for r in readers if place[1:] not in channel_names(pj, r)}
+        readers = [r for r in readers if r.key not in shut]
     else:
         other = _member_by_key(pj, _other_key(place, sender) or "")
         readers = [other] if other else []
@@ -440,7 +488,7 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
         "SELECT DISTINCT sender_id FROM messages WHERE sender_kind = 'agent' AND place = ? AND sent >= ? AND id != ?",
         (place, t - s.recent_speaker_s, mid))} if channel else set()
     asker = orig["sender_id"] if orig is not None and orig["sender_kind"] == "agent" and _asked(pj, orig, sender) else None
-    switches: dict[int, sqlite3.Row] = {}
+    switches: dict[int, dict[str, bool]] = {}
     online: dict[int, bool] = {}
     levels: dict[str, str] = {}
     woken: list[int] = []
@@ -455,21 +503,20 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
             a = agent_rows[r.id]
             online[r.id] = presence.is_online(pj.slug, a, pj.db)
             if r.person_id not in switches:
-                switches[r.person_id] = projects.ownership_group(pj, r.person_id)
+                switches[r.person_id] = projects.switches(pj, r.person_id)
             sw = switches[r.person_id]
             own = sender.kind != "system" and sender.person_id == r.person_id
             heard = channel and not mentioned and r.key not in muted and online[r.id] and r.id in recent \
                 and not presence.busy(pj.db, a)
             if fixed is not None:
-                level = _scheduled_level(fixed, r.key in muted, own, bool(sw is not None and sw["others_mention"]),
-                                         bool(sw is not None and sw["others_channel"]))
+                level = _scheduled_level(fixed, r.key in muted, own, sw["others_mention"], sw["others_channel"])
             elif own and (mentioned or not channel):
                 level = "important"
-            elif not own and mentioned and sw is not None and sw["others_mention"]:
+            elif not own and mentioned and sw["others_mention"]:
                 level = "important"
             elif asker == r.id:
                 level = "normal"
-            elif heard and (own or (sw is not None and sw["others_channel"])):
+            elif heard and (own or sw["others_channel"]):
                 level = "normal"
             else:
                 level = "muted"
@@ -495,11 +542,15 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
         if kind == "member":
             if target.key in levels:             # the sender mentioning itself gets no entry
                 results.append({"name": name, "result": outcome(target.key)})
+            elif target.key in shut:             # a mention in a channel the member may not read does not reach it
+                results.append({"name": name, "result": "closed"})
         else:
             counts = {"woken": 0, "offline": 0, "closed": 0, "notified": 0}
             for key in _group_member_keys(pj, [target["id"]]):
                 if key in levels:
                     counts[outcome(key)] += 1
+                elif key in shut:
+                    counts["closed"] += 1
             results.append({"name": name, "group": True, **counts})
     return results, woken
 
@@ -544,12 +595,12 @@ def _waiting_for(pj: Project, a: sqlite3.Row) -> set[str]:
 
 
 def post_notice(pj: Project, a: sqlite3.Row, online: bool, text: str, assigners: set[int]) -> int:
-    """The notice of a change of the agent's presence, from the system in #general; `text` lists its tasks and
+    """The notice of a change of the agent's presence, from the system in the notice channel; `text` lists its tasks and
     `assigners` are the people who locked one of them. The changes that may move the work around are an agent
     that is responsible for a task going offline and one that is responsible for none coming online. Levels:
     - important: whoever waits for the agent's answer, and the people in `assigners`, when it goes offline;
     - normal, for a change that may move the work around: those close to it (_close_to) who have not muted
-      #general, an agent only while it is busy itself (presence.busy);
+      the notice channel, an agent only while it is busy itself (presence.busy);
     - muted: everyone else, and every other change.
     Agents that are online get it as a delivery of kind notice; the agent itself gets nothing. Hop 0 and no
     mentions: it never counts as speaking."""
@@ -557,7 +608,7 @@ def post_notice(pj: Project, a: sqlite3.Row, online: bool, text: str, assigners:
     waiting = set() if online else _waiting_for(pj, a) | {f"person:{p}" for p in assigners}
     moves = online != presence.busy(pj.db, a)
     muted = {f"{r['member_kind']}:{r['member_id']}" for r in pj.db.execute(
-        "SELECT member_kind, member_id FROM mutes WHERE channel = 'general'")}
+        "SELECT member_kind, member_id FROM mutes WHERE channel = ?", (projects.notice_channel(pj),))}
 
     def level(r: Member, row: sqlite3.Row | None) -> str:
         if r.key in waiting:
@@ -568,7 +619,7 @@ def post_notice(pj: Project, a: sqlite3.Row, online: bool, text: str, assigners:
 
 
 def post_from_system(pj: Project, text: str, agents: dict[int, str]) -> int:
-    """An ordinary message from the system in #general (hop 0, no mentions) to the agents in `agents` (agent id
+    """An ordinary message from the system in the notice channel (hop 0, no mentions) to the agents in `agents` (agent id
     -> level, important or normal); muted for every other reader. It is delivered like any message: an
     important one is kept for an agent that is offline and followed up until it is answered."""
     return _post_system(pj, text, lambda r, row: agents.get(r.id, "muted") if r.kind == "agent" else "muted",
@@ -576,19 +627,21 @@ def post_from_system(pj: Project, text: str, agents: dict[int, str]) -> int:
 
 
 def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: int | None = None) -> int:
-    """Write a message from the system in #general with each reader's level, level_of(member, agent row or None),
+    """Write a message from the system in the notice channel, for those who may read it, with each reader's level, level_of(member, agent row or None),
     and the agents' deliveries: a notice only to agents that are online, a message as _distribute does."""
     t = util.now()
+    place = "#" + projects.notice_channel(pj)
     readers: list[tuple[Member, sqlite3.Row | None]] = [
         (Member("person", r["person_id"], r["person_id"], r["name"]), None)
         for r in pj.db.execute("SELECT * FROM people ORDER BY person_id")]
     readers += [(agent_member(x), x) for x in pj.db.execute("SELECT * FROM agents WHERE id != ? ORDER BY id",
                                                              (-1 if without is None else without,))]
+    readers = [(r, row) for r, row in readers if place[1:] in channel_names(pj, r)]
     woken: list[int] = []
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
-                            "reply_to, hop, mentions, sent, notice) VALUES ('#general', 'system', NULL, NULL, 'system', "
-                            "?, NULL, 0, '[]', ?, ?)", (text, t, 1 if notice else None)).lastrowid
+                            "reply_to, hop, mentions, sent, notice) VALUES (?, 'system', NULL, NULL, 'system', "
+                            "?, NULL, 0, '[]', ?, ?)", (place, text, t, 1 if notice else None)).lastrowid
         levels = []
         for r, row in readers:
             level = level_of(r, row)
@@ -605,7 +658,7 @@ def _post_system(pj: Project, text: str, level_of: Any, notice: bool, without: i
                               "VALUES (?, 'message', ?, 'pending', ?, ?)", (r.id, mid, "push" if online else "return", t))
                 woken.append(r.id)
         pj.db.executemany("INSERT INTO levels (message_id, reader_kind, reader_id, level) VALUES (?, ?, ?, ?)", levels)
-    util.log("message_sent", project=pj.slug, id=mid, **{"in": "#general"}, **{"from": "system"}, hop=0)
+    util.log("message_sent", project=pj.slug, id=mid, **{"in": place}, **{"from": "system"}, hop=0)
     for aid in woken:
         notify(pj.slug, aid)
     return mid
@@ -670,11 +723,49 @@ def delivery_view(pj: Project, d: sqlite3.Row, me: Member) -> dict[str, Any]:
     return {"delivery": d["id"], "kind": d["kind"], "message": m, "frame": frame(m, d["kind"] == "notice")}
 
 
+def _shut(pj: Project, me: Member) -> list[str]:
+    """The channel places `me` may not read (since a change of permissions, or never)."""
+    return sorted({"#" + n for n in channel_names(pj)} - readable(pj, me))
+
+
+def _hidden(pj: Project, me: Member) -> tuple[str, list[Any]]:
+    """An SQL condition on `m.place` (with its arguments) that leaves out what `me` may not read: the channels it may
+    not read and, without the project's read permission, every private conversation."""
+    sql, args = "", []
+    shut = _shut(pj, me)
+    if shut:
+        sql += f" AND m.place NOT IN ({','.join('?' * len(shut))})"
+        args += shut
+    if not reads_private(pj, me):
+        sql += " AND m.place NOT LIKE 'p:%'"
+    return sql, args
+
+
+def drop_unreadable(pj: Project, me: Member) -> None:
+    """An agent is never handed, nor reminded about, a message it may not read: what waits for it in a channel it may
+    not read (or, without the project's read permission, in a private conversation) is dropped and its follow-ups end
+    (a change of permissions took the place away after the message came)."""
+    if me.kind != "agent":
+        return
+    shut = _shut(pj, me)
+    gone = [f"place IN ({','.join('?' * len(shut))})"] if shut else []
+    if not reads_private(pj, me):
+        gone.append("place LIKE 'p:%'")
+    if not gone:
+        return
+    inside = f"SELECT id FROM messages WHERE {' OR '.join(gone)}"
+    with pj.db:
+        pj.db.execute(f"UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND state IN ('pending', 'out') "
+                      f"AND message_id IN ({inside})", (util.now(), me.id, *shut))
+        pj.db.execute(f"DELETE FROM followups WHERE agent_id = ? AND message_id IN ({inside})", (me.id, *shut))
+
+
 def hand_out(pj: Project, me: Member) -> list[dict[str, Any]]:
     """What a poll (its session's or its computer's) hands out now: new deliveries, and those handed out once
     and not acknowledged in time (same id). They stay open until acknowledged. One handed out twice is left to
     the background task, which makes the agent offline (`unanswered`). When it holds messages kept while the
     agent was offline (`how` return) and more is unread than it carries, the last of them says how much."""
+    drop_unreadable(pj, me)
     t = util.now()
     rows = pj.db.execute("SELECT * FROM deliveries WHERE agent_id = ? AND (state = 'pending' OR "
                          "(state = 'out' AND attempts < 2 AND handed_out <= ?)) ORDER BY id",
@@ -751,7 +842,8 @@ def ack(pj: Project, me: Member, ids: Any) -> dict[str, Any]:
 
 
 def take_for_wait(pj: Project, me: Member) -> list[dict[str, Any]]:
-    rows = pj.db.execute("SELECT * FROM deliveries WHERE agent_id = ? AND kind = 'message' AND state IN ('pending', 'out') "
+    drop_unreadable(pj, me)
+    rows =pj.db.execute("SELECT * FROM deliveries WHERE agent_id = ? AND kind = 'message' AND state IN ('pending', 'out') "
                          "ORDER BY message_id", (me.id,)).fetchall()
     if not rows:
         return []
@@ -793,6 +885,9 @@ def _unread_rows(pj: Project, me: Member, place: str | None = None, limit: int |
     args: list[Any] = [me.kind, me.id]
     if me.kind == "agent":
         sql += " AND " + _NOT_HANDED
+    hidden, more = _hidden(pj, me)
+    sql += hidden
+    args += more
     if important:
         sql += " AND l.level = 'important'"
     if place is not None:
@@ -813,7 +908,9 @@ def _counts(pj: Project, me: Member) -> dict[str, tuple[int, int]]:
            "WHERE l.reader_kind = ? AND l.reader_id = ? AND l.message_id > coalesce(r.upto, 0)")
     if me.kind == "agent":
         sql += " AND " + _NOT_HANDED
-    return {r["place"]: (r["n"], r["k"] or 0) for r in pj.db.execute(sql + " GROUP BY m.place", (me.kind, me.id))}
+    hidden, more = _hidden(pj, me)
+    return {r["place"]: (r["n"], r["k"] or 0)
+            for r in pj.db.execute(sql + hidden + " GROUP BY m.place", (me.kind, me.id, *more))}
 
 
 def unread(pj: Project, me: Member) -> list[dict[str, Any]]:
@@ -878,6 +975,8 @@ def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, l
             raise bad_request("bad_request", "Say which place to read: `in` is a #channel or a member's name; "
                                              "or pass `id` to read one message.")
         place, _ = resolve_place(pj, me, where)
+        if not place.startswith("#"):
+            require_read(pj, me)
         if older is not None:
             rows = list(reversed(pj.db.execute("SELECT * FROM messages WHERE place = ? AND id < ? ORDER BY id DESC "
                                                "LIMIT ?", (place, older, n)).fetchall()))
@@ -893,16 +992,18 @@ def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, l
 # --------------------------------------------------------------------------- people
 
 def channels_view(pj: Project, me: Member) -> dict[str, Any]:
+    """The channels `me` may read with their unread counts, mutes and pins, and `me`'s private conversations (with the
+    project's read permission)."""
     counts = _counts(pj, me)
     muted = {r["channel"] for r in pj.db.execute("SELECT channel FROM mutes WHERE member_kind = ? AND member_id = ?",
                                                   (me.kind, me.id))}
     from . import pins                  # pins builds on this module
     pinned = pins.by_channel(pj)
     channels = [{"name": n, "unread": counts.get("#" + n, (0, 0))[0], "important": counts.get("#" + n, (0, 0))[1],
-                 "muted": n in muted, "pins": pinned.get(n, [])} for n in channel_names(pj)]
+                 "muted": n in muted, "pins": pinned.get(n, [])} for n in channel_names(pj, me)]
     mine = [r["place"] for r in pj.db.execute(
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
-        "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))]
+        "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))] if reads_private(pj, me) else []
     names: dict[str, str] = {}
     private = [{"with": _place_for(pj, p, me, names), "unread": counts.get(p, (0, 0))[0],
                 "important": counts.get(p, (0, 0))[1]} for p in mine]
@@ -911,6 +1012,8 @@ def channels_view(pj: Project, me: Member) -> dict[str, Any]:
 
 def person_messages(pj: Project, me: Member, where: Any, before: Any, after: Any, limit: Any) -> dict[str, Any]:
     place, _ = resolve_place(pj, me, where)
+    if not place.startswith("#"):
+        require_read(pj, me)
     b, a, n = _int(before, "before"), _int(after, "after"), _limit(limit)
     if a is not None:
         sql, args = "SELECT * FROM messages WHERE place = ? AND id > ?", [place, a]
@@ -934,7 +1037,7 @@ def _fold(text: Any) -> Any:
 
 
 def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any, limit: Any) -> dict[str, Any]:
-    """The messages `me` may read (every channel, and the private conversations `me` is part of) whose text holds
+    """The messages `me` may read (the channels `me` may read, and the private conversations `me` is part of) whose text holds
     every word of `q` without regard to case, in the place `where` names (as resolve_place) and from the member
     named `sender` (or 'system'), older than the message `before`; newest first, at most `limit` (1 to 100) and
     whether there are more."""
@@ -948,10 +1051,12 @@ def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any
     if not 1 <= n <= SEARCH_MAX:
         raise bad_request("bad_request", f"limit is 1 to {SEARCH_MAX}.")
     older = _int(before, "before")
-    # A channel, or a private place whose two member keys include mine.
-    sql = ("SELECT * FROM messages WHERE (substr(place, 1, 1) = '#' OR "
+    # A channel `me` may read, or a private place whose two member keys include mine.
+    mine = sorted(readable(pj, me))
+    private = f"|{me.key}|" if reads_private(pj, me) else "|nobody|"
+    sql = (f"SELECT * FROM messages WHERE (place IN ({','.join('?' * len(mine)) or 'NULL'}) OR "
            "(substr(place, 1, 2) = 'p:' AND instr('|' || substr(place, 3) || '|', ?) > 0))")
-    args: list[Any] = [f"|{me.key}|"]
+    args: list[Any] = [*mine, private]
     if where is not None:
         place, _ = resolve_place(pj, me, where)
         sql += " AND place = ?"
@@ -976,6 +1081,7 @@ def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any
 
 
 def mark_read(pj: Project, me: Member, where: Any, upto: Any) -> dict[str, Any]:
+    """Move the read position of a place `me` may read; it never moves backward."""
     place, _ = resolve_place(pj, me, where)
     n = _int(upto, "upto", required=True)
     _move_read(pj, me, place, n)
@@ -999,6 +1105,82 @@ def create_channel(pj: Project, actor: Actor, name: Any) -> dict[str, Any]:
     return {"name": name}
 
 
+def _manageable(pj: Project, actor: Actor, name: str, need: str) -> sqlite3.Row:
+    """The channel `name` for a person with manage_channels who may read it (else it does not exist for them)."""
+    projects.require(pj, actor, "manage_channels", need)
+    me = person_member(pj, actor.person_id)
+    if name not in channel_names(pj, me):
+        raise _no_channel(pj, "#" + name, me)
+    return pj.db.execute("SELECT * FROM channels WHERE name = ?", (name,)).fetchone()
+
+
+def channel_permissions(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
+    """Every group with its read and post in the channel (allow, deny, inherit), for a member who may read it."""
+    me = person_member(pj, actor.person_id)
+    if name not in channel_names(pj, me):
+        raise _no_channel(pj, "#" + name, me)
+    c = pj.db.execute("SELECT id FROM channels WHERE name = ?", (name,)).fetchone()
+    return {"overrides": projects.channel_overrides(pj, c["id"])}
+
+
+def set_channel_permissions(pj: Project, actor: Actor, name: str, overrides: Any) -> dict[str, Any]:
+    c = _manageable(pj, actor, name, "Changing a channel's permissions needs the manage_channels permission.")
+    return {"overrides": projects.set_channel_overrides(pj, actor, c["id"], overrides)}
+
+
+def rename_channel(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, Any]:
+    """A channel gets a new name and keeps everything: its messages, read positions, mutes, pins, overrides and the
+    schedules that post there. Texts that wrote '#old' stay as written."""
+    c = _manageable(pj, actor, name, "Renaming channels needs the manage_channels permission.")
+    if isinstance(new, str) and new.startswith("#"):
+        new = new[1:]
+    if not isinstance(new, str) or not CHANNEL_RE.fullmatch(new):
+        raise bad_request("bad_request", "A channel name is 1 to 40 lower-case letters, digits or '-', starting "
+                                         "with a letter or digit.")
+    if new == name:
+        return {"name": name}
+    if pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (new,)).fetchone():
+        raise conflict(f"The channel #{new} exists already.")
+    old_place, new_place = "#" + name, "#" + new
+    with pj.db:
+        pj.db.execute("UPDATE channels SET name = ? WHERE id = ?", (new, c["id"]))
+        pj.db.execute("UPDATE messages SET place = ? WHERE place = ?", (new_place, old_place))
+        pj.db.execute("UPDATE reads SET place = ? WHERE place = ?", (new_place, old_place))
+        pj.db.execute("UPDATE mutes SET channel = ? WHERE channel = ?", (new, name))
+        pj.db.execute("UPDATE pins SET channel = ? WHERE channel = ?", (new, name))
+        pj.db.execute("UPDATE schedules SET place = ?, to_name = ? WHERE place = ?", (new_place, new_place, old_place))
+    util.log("channel_renamed", project=pj.slug, channel=new, was=name, by=actor.person_id)
+    return {"name": new}
+
+
+def delete_channel(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
+    """Delete a channel at once and for good: its messages (with every reader's record of them, their deliveries and
+    follow-ups), its overrides, mutes, pins, read positions and the schedules that post there. The notice channel
+    stays until the project chooses another."""
+    c = _manageable(pj, actor, name, "Deleting channels needs the manage_channels permission.")
+    if projects.notice_channel(pj) == name:
+        raise conflict(f"#{name} is where the project's notices go. Choose another notice channel in the project's "
+                       f"settings first.")
+    place = "#" + name
+    inside = "SELECT id FROM messages WHERE place = ?"
+    with pj.db:
+        for sql in (f"DELETE FROM levels WHERE message_id IN ({inside})",
+                    f"DELETE FROM deliveries WHERE message_id IN ({inside})",
+                    f"DELETE FROM followups WHERE message_id IN ({inside})",
+                    f"DELETE FROM chain_reminders WHERE reply_to IN ({inside})",
+                    "DELETE FROM reads WHERE place = ?",
+                    "DELETE FROM schedules WHERE place = ?",
+                    "DELETE FROM messages WHERE place = ?"):
+            pj.db.execute(sql, (place,))
+        pj.db.execute("DELETE FROM pins WHERE channel = ?", (name,))
+        pj.db.execute("DELETE FROM mutes WHERE channel = ?", (name,))
+        pj.db.execute("DELETE FROM channel_overrides WHERE channel_id = ?", (c["id"],))
+        pj.db.execute("DELETE FROM channels WHERE id = ?", (c["id"],))
+    util.log("channel_deleted", project=pj.slug, channel=name, by=actor.person_id)
+    presence.kick()
+    return {"deleted": name}
+
+
 def agent_mutes(pj: Project, person_id: int) -> dict[str, list[str]]:
     """channel -> the person's agents that muted it."""
     out: dict[str, list[str]] = {}
@@ -1009,8 +1191,8 @@ def agent_mutes(pj: Project, person_id: int) -> dict[str, list[str]]:
 
 
 def set_mute(pj: Project, actor: Actor, channel: str, muted: Any, agent: Any) -> dict[str, Any]:
-    if not pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (channel,)).fetchone():
-        raise _no_channel(pj, "#" + channel)
+    if channel not in channel_names(pj, person_member(pj, actor.person_id)):
+        raise _no_channel(pj, "#" + channel, person_member(pj, actor.person_id))
     if not isinstance(muted, bool):
         raise bad_request("bad_request", "muted must be true or false.")
     kind, mid = "person", actor.person_id

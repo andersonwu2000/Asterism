@@ -27,6 +27,7 @@
   --color-ink-faint: #67696f;
   --color-loud: #f4f5f8;
   --color-destruct: #a33a35;
+  --color-destruct-ink: #e0807a;
   /* Code is the one place hue is allowed (DESIGN: ink): muted, for the source view's tokenizers. */
   --color-syn-keyword: #de8e9f;
   --color-syn-name: #8ab6dd;
@@ -53,6 +54,7 @@
   --color-ink-faint: #85878e;
   --color-loud: #101014;
   --color-destruct: #a33a35;
+  --color-destruct-ink: #a33a35;
   --color-syn-keyword: #a33e52;
   --color-syn-name: #2f6392;
   --color-syn-type: #1f7a63;
@@ -79,6 +81,7 @@
     --color-ink-faint: #85878e;
     --color-loud: #101014;
     --color-destruct: #a33a35;
+    --color-destruct-ink: #a33a35;
     --color-syn-keyword: #a33e52;
     --color-syn-name: #2f6392;
     --color-syn-type: #1f7a63;
@@ -830,6 +833,12 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .btn.destruct:not(:disabled) { color: var(--color-surface-3); }
 }
+/* What opens such a destruction (delete the project, a channel, a group): outlined in the red, its word in the red's
+   ink, never filled; the filled red stays the armed button of the floating confirmation. */
+.btn.danger { color: var(--color-destruct-ink); border-color: var(--color-destruct); background: transparent; }
+.danger-zone { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--color-edge); max-width: 70ch; }
+.danger-zone > h3 { margin: 0 0 6px; }
+.danger-zone > p { font-size: 13px; }
 
 /* ------------------------------------------------------------------ the settings layer */
 /* The frame's four cells: the project's name and what is set top left, the sections under it, the section's title and
@@ -855,7 +864,7 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 
 /* Groups: a list with a filter and "new group"; a chosen group shows the list as a middle column and the group in tabs. */
 .groups-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-.groups-page.has-detail, .groups-page.creating { grid-template-columns: 220px minmax(0, 1fr); }
+.groups-page.has-detail { grid-template-columns: 220px minmax(0, 1fr); }
 .groups-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .groups-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .groups-head .btn .plus { transform: scale(0.8); }
@@ -870,8 +879,8 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .groups-back::before { content: ""; width: 6px; height: 6px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
                        transform: rotate(45deg); margin: 0 2px 0 4px; }
 .group-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; max-width: 760px; }
-.groups-page:not(.has-detail):not(.creating) .group-main { display: none; }
-.group-create { display: flex; flex-direction: column; gap: 12px; }
+.groups-page:not(.has-detail) .group-main { display: none; }
+.group-create .perm-set { max-height: 50dvh; overflow-y: auto; }
 .group-detail:focus { outline: none; }
 .gd-head { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; }
 .gd-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
@@ -892,6 +901,33 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .gd-sec > h3 { margin: 0 0 8px; }
 .gd-sec > p { color: var(--color-ink-dim); font-size: 13px; max-width: 70ch; }
 .gd-sub { margin: 16px 0 6px; }
+.gd-perms { display: flex; flex-direction: column; }
+
+/* Forms of the settings: one field, its hint and its button, each form apart. */
+.set-form { margin: 0 0 20px; }
+.set-sub { margin: 20px 0 8px; }
+.set-sec .seg { display: inline-flex; }
+
+/* A channel's permissions: per group, read and post, each a control of three (deny ✕, inherit /, allow ✓). */
+.chan-perm-table td { vertical-align: middle; }
+.chan-perm-group { white-space: nowrap; }
+.chan-perm-group .default-mark { margin-left: 8px; font-size: 12px; color: var(--color-ink-dim); }
+.tri { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--color-edge); border-radius: var(--r-control); }
+.tri-btn {
+  min-width: 30px; min-height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-micro); background: transparent;
+  color: var(--color-ink-faint); font: 600 13px/1 var(--font-ui);
+}
+.tri-btn:hover:not(:disabled) { background: var(--color-wash-2); color: var(--color-ink); }
+.tri-btn[aria-checked="true"] { background: var(--color-wash-3); color: var(--color-ink); }
+.tri-btn:disabled { cursor: default; }
+.chan-perm-table .out:empty { display: none; }
+
+/* The all-projects page: a new project, folded until asked for. */
+.new-project { margin-top: 24px; }
+.new-project > summary { list-style: none; display: inline-flex; }
+.new-project > summary::-webkit-details-marker { display: none; }
+.new-project[open] > summary { margin-bottom: 16px; }
+.new-project .field .dim { font-size: 12px; }
 .gd-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
 .gd-add .out { flex-basis: 100%; }
 .gd-add .out:empty { display: none; }
@@ -1284,7 +1320,7 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   .tt-task { grid-template-columns: 28px minmax(0, 1fr) 24px; padding-left: 4px; }
   .tt-task > .tag { grid-column: 2; grid-row: 2; justify-self: start; }
   .tt-task > .row-acts { grid-column: 3; grid-row: 1; }
-  .groups-page.has-detail, .groups-page.creating { grid-template-columns: minmax(0, 1fr); }
+  .groups-page.has-detail { grid-template-columns: minmax(0, 1fr); }
   .groups-page.has-detail .groups-list { display: none; }
   .msg { grid-template-columns: 52px minmax(0, 1fr); }
   .msg .gutter { padding-right: 8px; }

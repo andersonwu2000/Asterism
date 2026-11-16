@@ -20,7 +20,7 @@ from .errors import bad_request, conflict, forbidden, not_found
 from .messaging import Member
 from .projects import Actor, Project
 
-NEEDS = ("create_schedule", "post")
+NEEDS = ("create_schedule",)   # and post where it posts: a channel's own (an override may grant it), else the project's
 CONTENT = ("to", "text", "level", "start_at", "every_s")
 
 
@@ -38,7 +38,10 @@ def view(pj: Project, r: sqlite3.Row) -> dict[str, Any]:
 
 def listing(pj: Project, actor: Actor) -> dict[str, Any]:
     projects.require(pj, actor, "read", "Reading the project needs the read permission.")
-    return {"schedules": [view(pj, r) for r in pj.db.execute("SELECT * FROM schedules ORDER BY id")]}
+    shut = {"#" + n for n in messaging.channel_names(pj)} \
+        - messaging.readable(pj, messaging.person_member(pj, actor.person_id))
+    return {"schedules": [view(pj, r) for r in pj.db.execute("SELECT * FROM schedules ORDER BY id")
+                          if r["place"] not in shut]}
 
 
 def _row(pj: Project, sid: int) -> sqlite3.Row:
@@ -80,6 +83,8 @@ def _every(v: Any) -> int | None:
 def _place(pj: Project, creator: Member, to: Any) -> tuple[str, str]:
     """(the place key, `to` as shown) for a place the creator could post to now; the refusals of posting."""
     place, other = messaging.resolve_place(pj, creator, to)
+    if not messaging.may_post_in(pj, creator, place):
+        raise forbidden("Posting messages needs the post permission.")
     return place, (place if other is None else other.name)
 
 
@@ -95,18 +100,26 @@ def _cannot_run(pj: Project, r: sqlite3.Row) -> str | None:
         return "permission"
     place = r["place"]
     if place.startswith("#"):
-        ok = pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (place[1:],)).fetchone() is not None
+        if pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (place[1:],)).fetchone() is None:
+            return "target"
+        # The channel is there, but its permissions no longer let the creator read or post in it.
+        ok = {"read", "post"} <= projects.channel_access(pj, "person", creator.id).get(place[1:], set())
+        return None if ok else "permission"
     else:
         other = messaging._member_by_key(pj, messaging._other_key(place, creator) or "")
-        ok = other is not None and messaging.may_talk_privately(creator, other)
-    return None if ok else "target"
+        if other is None or not messaging.may_talk_privately(creator, other):
+            return "target"
+        return None if messaging.may_post_in(pj, creator, place) else "permission"
 
 
 def _why(pj: Project, r: sqlite3.Row, because: str) -> str:
     name = projects.person_name(pj, r["person_id"])
+    if because == "permission" and set(NEEDS) <= projects.person_permissions(pj, r["person_id"]):
+        return (f"Schedule {r['id']} cannot run: the permissions of {r['to_name']} no longer let {name} post there. "
+                f"Remove it, give it another `to`, or let {name} post in {r['to_name']} first.")
     if because == "permission":
-        return (f"Schedule {r['id']} cannot run: {name} no longer holds the create_schedule and post permissions. "
-                f"Remove it, or give {name} those permissions first.")
+        return (f"Schedule {r['id']} cannot run: {name} no longer holds the create_schedule permission. "
+                f"Remove it, or give {name} that permission first.")
     return (f"Schedule {r['id']} cannot run: {name} can no longer post to {r['to_name']}. Give it another `to` in the "
             f"same request to resume it.")
 
@@ -128,7 +141,6 @@ def _after_run(start: float, every: int, t: float) -> float:
 
 def create(pj: Project, actor: Actor, body: dict[str, Any]) -> dict[str, Any]:
     projects.require(pj, actor, "create_schedule", "Scheduling messages needs the create_schedule permission.")
-    projects.require(pj, actor, "post", "Posting messages needs the post permission.")
     creator = messaging.person_member(pj, actor.person_id)
     place, to = _place(pj, creator, body.get("to"))
     text = messaging.check_text(body.get("text"))

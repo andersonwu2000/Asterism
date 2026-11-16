@@ -52,6 +52,11 @@ def _remind(pj: Project, f, t: float) -> None:
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (f["agent_id"],)).fetchone()
     if a is None:
         return
+    # Never a reminder about a message of a channel the agent may no longer read: that follow-up ends.
+    messaging.drop_unreadable(pj, messaging.agent_member(a))
+    if not pj.db.execute("SELECT 1 FROM followups WHERE agent_id = ? AND message_id = ?",
+                         (f["agent_id"], f["message_id"])).fetchone():
+        return
     if not presence.is_online(pj.slug, a, pj.db):
         with pj.db:
             pj.db.execute("UPDATE followups SET period = ?, due = ? WHERE agent_id = ? AND message_id = ?",

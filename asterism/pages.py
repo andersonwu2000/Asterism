@@ -19,6 +19,7 @@ import urllib.parse
 from html import escape
 from typing import Any, Iterable
 
+from . import assets
 from .i18n import Translator
 from .projects import SWITCHES
 
@@ -116,6 +117,10 @@ def dropdown(tr: Translator, name: str, options: list[tuple[str, str]], label: s
             f'<input type="hidden" name="{e(name)}" value="{e(cur)}"{" data-list" if data_list else ""}></span>')
 
 
+# The display face (the project's name) and the body face: on every page, before anything is drawn.
+PRELOAD_FONTS = ("fraunces-latin-wght-normal.woff2", "inter-latin-400-normal.woff2")
+
+
 def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None = None,
            frame: dict[str, Any] | None = None, here: str = "", status: int = 200,
            styles: Iterable[str] = (), scripts: Iterable[str] = (), page_class: str = "",
@@ -126,9 +131,12 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     column. `styles` and `scripts`: further files under /static; the scripts load after base.js (and frame.js) and
     before app.js."""
     msgs = e(json.dumps(tr.js_messages(), ensure_ascii=False))
-    links = "".join(f'<link rel="stylesheet" href="/static/{e(x)}">' for x in styles)
+    links = "".join(f'<link rel="stylesheet" href="{e(assets.url(x))}">' for x in styles)
     shared = ["base.js"] + (["frame.js", "rail.js", "project.js"] if frame else [])
-    tags = "".join(f'<script src="/static/{e(x)}"></script>' for x in [*shared, *scripts, "app.js"])
+    tags = "".join(f'<script src="{e(assets.url(x))}"></script>' for x in [*shared, *scripts, "app.js"])
+    # The faces every page draws first, asked for at once (the stylesheet names the same addresses).
+    preload = "".join(f'<link rel="preload" href="{e(assets.url("vendor/fonts/" + x))}" as="font" type="font/woff2" '
+                      f'crossorigin>' for x in PRELOAD_FONTS)
     if frame:
         mode = MODES.get(here, here)
         # The top bar is two cells of the frame's grid on a wide screen (rail.js moves the top-left one into the
@@ -152,8 +160,8 @@ def layout(tr: Translator, title: str, body: str, person: dict[str, Any] | None 
     html = (f'<!doctype html><html lang="{e(tr.locale)}"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<script>{THEME_SCRIPT}</script>'
-            f'<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
-            f'<link rel="stylesheet" href="/static/app.css">{links}'
+            f'<link rel="icon" href="{e(assets.url("favicon.svg"))}" type="image/svg+xml">'
+            f'<link rel="stylesheet" href="{e(assets.url("app.css"))}">{preload}{links}'
             f'<title>{e(tr("page.title", title=title, app=tr("app.name")))}</title></head>'
             f'<body class="{cls}" data-msg="{msgs}">{main}{tags}</body></html>')
     return html, status
@@ -262,8 +270,8 @@ MODES = {"messages": "chat", "dm": "dm", "files": "files", "agent": "agent", "se
 
 
 def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
-    """The fixed rail on the far left of every page of a project: the top-level buttons, then the theme switch and
-    the reader. rail.js keeps the counts of important messages on the chat and private-messages buttons, where each
+    """The fixed rail on the far left of every page of a project: the top-level buttons, then the reader, whose menu
+    opens the personal settings (the theme is one of them) and signs out. rail.js keeps the counts of important messages on the chat and private-messages buttons, where each
     mode last was, and folds the second column when the button of the mode one is in is pressed again."""
     slug, me = f["slug"], (person["name"] if person else "")
     items = []
@@ -288,13 +296,14 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
     reader = (f'<button type="button" id="rail-me" class="rail-me" popovertarget="me-menu" '
               f'aria-label="{e(tr("rail.me", name=me))}" title="{e(me)}"><span aria-hidden="true">{e(initial)}</span></button>'
               f'<div id="me-menu" class="me-menu" popover><p class="me-name">{e(me)}</p>'
+              f'<a class="me-row" id="me-settings" href="/{e(q(slug))}/me">{e(tr("rail.settings"))}</a>'
               f'<a class="me-row" href="/">{e(tr("rail.home"))}</a>'
               f'<form method="post" action="/logout"><button class="me-row">{e(tr("nav.logout"))}</button></form></div>')
     return (f'<nav id="rail" class="rail" aria-label="{e(tr("rail.label"))}" {_attrs(data)}>'
             f'<button type="button" id="side-close" class="icon-btn nav-close" aria-label="{e(tr("nav.close"))}">'
             f'<span class="cross" aria-hidden="true"></span></button>'
             f'<ul class="rail-list">{"".join(items)}</ul>'
-            f'<div class="rail-foot">{_theme_button(tr)}{reader}</div></nav>')
+            f'<div class="rail-foot">{reader}</div></nav>')
 
 
 def _side(tr: Translator, f: dict[str, Any]) -> str:
@@ -417,6 +426,19 @@ def home(tr: Translator, person: dict[str, Any] | None, projects: list[dict[str,
         body = f'<h2>{e(tr("home.projects"))}</h2><ul class="cards">{items}</ul>'
     else:
         body = f'<p>{e(tr("home.no_projects"))}</p>'
+    # Anyone signed in makes a project (it lives on this server); app.js sends the form and opens the new project.
+    body += (f'<details class="new-project" id="new-project"><summary class="btn">{e(tr("home.new"))}</summary>'
+             f'<form class="stack" data-api="/api/projects" data-goto="slug">'
+             f'<label class="field"><span>{e(tr("home.new_name"))}</span><input name="name" required maxlength="80" '
+             f'autocomplete="off"></label>'
+             f'<label class="field"><span>{e(tr("home.new_slug"))}</span><input name="slug" required minlength="2" '
+             f'maxlength="40" pattern="[a-z0-9][a-z0-9\\-]{{1,39}}" autocomplete="off" spellcheck="false" '
+             f'autocapitalize="off"><span class="dim">{e(tr("home.new_slug_hint"))}</span></label>'
+             f'<label class="field"><span>{e(tr("home.new_repo"))}</span><input name="repo" type="url" '
+             f'placeholder="https://github.com/owner/name" autocomplete="off" spellcheck="false">'
+             f'<span class="dim">{e(tr("home.new_repo_hint"))}</span></label>'
+             f'<div class="row"><button class="btn primary">{e(tr("home.new_create"))}</button>'
+             f'<span class="out" data-out aria-live="polite"></span></div></form></details>')
     return layout(tr, tr("home.title"), body, person)
 
 
@@ -456,7 +478,11 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
 
 # The sections of the settings layer, under their small headings: (scope -> ((heading, (section, ...)), ...)).
 SETTINGS = {"project": (("set.group.project", ("overview",)), ("set.group.people", ("members", "groups", "invites"))),
-            "channel": (("set.group.channel", ("overview", "notifications")),)}
+            "channel": (("set.group.channel", ("overview", "permissions", "notifications")),),
+            "me": (("set.group.me", ("profile", "computers", "agents")),)}
+THEMES = ("dark", "light", "system")
+REQUIRED_40, REQUIRED_80 = ' required maxlength="40"', ' required maxlength="80"'
+REPO_INPUT = ' type="url" placeholder="https://github.com/owner/name"'
 
 
 def settings_sections(scope: str, can_invite: bool) -> list[str]:
@@ -466,9 +492,9 @@ def settings_sections(scope: str, can_invite: bool) -> list[str]:
 
 def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scope: str, section: str,
              view: dict[str, Any], permissions: list[str], management: Iterable[str],
-             channel: dict[str, Any] | None = None) -> tuple[str, int]:
-    """Project settings (scope "project") and one channel's settings (scope "channel") as one layer in the frame's
-    four cells: the project's name and what is set in the top-left cell, the list of sections (#settings-nav) as the
+             channel: dict[str, Any] | None = None, me: dict[str, Any] | None = None) -> tuple[str, int]:
+    """Project settings (scope "project"), one channel's settings (scope "channel") and the reader's own settings
+    (scope "me", `me`: their name, GitHub login and /api/my) as one layer in the frame's four cells: the project's name and what is set in the top-left cell, the list of sections (#settings-nav) as the
     second column, the section's title (#settings-title) and the close control (#settings-close, also Escape) in the
     top-right cell, the section as the page. `section` "" is the bare address: the first section. settings.js
     switches sections in place (each has its address), draws members, groups, mutes and pins from the JSON API starting
@@ -477,7 +503,8 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
     slug = frame["slug"]
     mine = view["me"]["permissions"]
     sections = settings_sections(scope, frame["can_admin"])
-    base = f"/{q(slug)}/settings" if scope == "project" else channel_settings_href(slug, channel["name"])
+    base = {"project": f"/{q(slug)}/settings", "me": f"/{q(slug)}/me"}.get(scope) \
+        or channel_settings_href(slug, channel["name"])
     current = section or sections[0]
     nav = []
     for heading, names in SETTINGS[scope]:
@@ -488,13 +515,17 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
                 rows.append(f'<li><a class="place" href="{e(base)}/{x}" data-section="{x}"{cur}>{e(tr("set." + x))}</a></li>')
         nav.append(f'<section class="side-sec"><div class="side-head"><h2>{e(tr(heading))}</h2></div>'
                    f'<ul class="side-list">{"".join(rows)}</ul></section>')
-    what = tr("set.settings") if scope == "project" else tr("set.channel_title", name=channel["name"])
-    title = tr("set.project_title") if scope == "project" else tr("set.channel_title", name=channel["name"])
-    parts = {}
     if scope == "project":
-        parts["overview"] = (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name">{e(frame["name"])}</dd>'
-                             f'<dt>{e(tr("set.repo"))}</dt><dd>{_repo_link(tr, frame["repo"])}</dd></dl>'
-                             f'<p class="dim">{e(tr("set.overview_readonly"))}</p>')
+        what, title = tr("set.settings"), tr("set.project_title")
+    elif scope == "me":
+        what, title = tr("set.me"), tr("set.me_title")
+    else:
+        what = title = tr("set.channel_title", name=channel["name"])
+    parts = {}
+    if scope == "me":
+        parts.update(_me_sections(tr, slug, me))
+    elif scope == "project":
+        parts["overview"] = _project_overview(tr, frame, "project_settings" in mine)
         parts["members"] = (f'<p class="dim">{e(tr("mem.all_hint"))}</p>'
                             f'<div class="set-filter"><input id="members-filter" type="search" placeholder="{e(tr("mem.filter_members"))}" '
                             f'aria-label="{e(tr("mem.filter_members"))}" autocomplete="off" spellcheck="false"></div>'
@@ -508,8 +539,10 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
                                 f'<p><code class="out" data-out></code></p></form>')
     else:
         name = channel["name"]
-        parts["overview"] = (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name mono">#{e(name)}</dd></dl>'
-                             f'<p class="dim">{e(tr("set.channel_readonly"))}</p>')
+        can = "manage_channels" in mine
+        parts["overview"] = _channel_overview(tr, name, can, channel["notices"])
+        parts["permissions"] = (f'<p class="dim">{e(tr("chan.perm.hint"))}</p>'
+                                f'<div id="channel-perms" class="chan-perms" data-can="{"1" if can else ""}"></div>')
         boxes = [(tr("msg.mute_me"), "", channel["muted"])]
         boxes += [(tr("msg.mute_agent", name=a), a, a in channel["agent_mutes"]) for a in frame["agents"]]
         rows = "".join(f'<div class="perm-row"><input type="checkbox" id="mute-{i}" data-mute="{e(a)}"{" checked" if on else ""}>'
@@ -523,7 +556,8 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
         f'<h2 id="set-h-{x}" class="vh">{e(tr("set." + x))}</h2>{parts[x]}</section>' for x in sections)
     close = e(tr("set.close"))
     data = {"slug": slug, "scope": scope, "section": section, "base": base, "view": view, "catalogue": permissions,
-            "management": sorted(management), **({"channel": channel["name"]} if channel else {})}
+            "management": sorted(management), "switches": list(SWITCHES),
+            **({"channel": channel["name"]} if channel else {}), **({"my": me["my"]} if me else {})}
     corner = (f'<p class="corner-title"><span class="corner-name">{e(frame["name"])}</span>'
               f'<span class="corner-word">{e(what)}</span></p>')
     column = (f'<nav id="settings-nav" class="column settings-nav" aria-label="{e(tr("set.sections"))}">'
@@ -536,13 +570,93 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
     body = (f'<div id="settings-layer" class="settings-layer" {_attrs(data)}>'
             f'<div class="settings-body">{body_secs}</div></div>')
     return layout(tr, title, body, person, frame, "settings", page_class="settings-page",
-                  scripts=["people.js", "settings.js"], corner=corner, column=column, bar=bar)
+                  scripts=["people.js", "settings.js"] + (["me.js"] if scope == "me" else []),
+                  corner=corner, column=column, bar=bar)
+
+
+def _field(tr: Translator, label_key: str, name: str, value: str, extra: str = "") -> str:
+    return (f'<label class="field"><span>{e(tr(label_key))}</span><input name="{e(name)}" value="{e(value)}" '
+            f'autocomplete="off" spellcheck="false" autocapitalize="off"{extra}></label>')
+
+
+def _save_row(tr: Translator, key: str = "set.save") -> str:
+    return (f'<div class="row"><button class="btn">{e(tr(key))}</button>'
+            f'<span class="out" aria-live="polite"></span></div>')
+
+
+def _project_overview(tr: Translator, frame: dict[str, Any], can: bool) -> str:
+    """The project's name, its repository and where the notices go. For who may change the project's settings each is
+    a form (settings.js sends it), and a red "delete project" opens the floating confirmation with the address typed."""
+    notice = frame["notice_channel"]
+    if not can:
+        repo = _repo_link(tr, frame["repo"]) if frame["repo"] else e(tr("set.no_repo"))
+        return (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name">{e(frame["name"])}</dd>'
+                f'<dt>{e(tr("set.repo"))}</dt><dd>{repo}</dd>'
+                f'<dt>{e(tr("set.notice_channel"))}</dt><dd class="mono">{e(notice)}</dd></dl>'
+                f'<p class="dim">{e(tr("set.overview_readonly"))}</p>')
+    options = [("#" + c["name"], "#" + c["name"]) for c in frame["places"]["channels"]]
+    return (f'<form class="stack set-form" data-project-field="name">'
+            f'{_field(tr, "set.name", "name", frame["name"], REQUIRED_80)}{_save_row(tr)}</form>'
+            f'<form class="stack set-form" data-project-field="repo">'
+            f'{_field(tr, "set.repo", "repo", frame["repo"], REPO_INPUT)}'
+            f'<p class="dim">{e(tr("set.repo_hint"))}</p>{_save_row(tr)}</form>'
+            f'<form class="stack set-form" data-project-field="notice_channel">'
+            f'<div class="field"><span>{e(tr("set.notice_channel"))}</span>'
+            f'{dropdown(tr, "notice_channel", options, tr("set.notice_channel"), notice)}</div>'
+            f'<p class="dim">{e(tr("set.notice_hint"))}</p>{_save_row(tr)}</form>'
+            f'<section class="danger-zone"><h3>{e(tr("set.delete_project"))}</h3>'
+            f'<p class="dim">{e(tr("set.delete_project_hint"))}</p>'
+            f'<button type="button" class="btn danger" id="project-delete" data-slug="{e(frame["slug"])}">'
+            f'{e(tr("set.delete_project"))}</button></section>')
+
+
+def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> str:
+    """A channel's name. For who may manage channels: a form to rename it, and a red "delete channel" (floating
+    confirmation), except for the notice channel, which stays until the project chooses another."""
+    if not can:
+        return (f'<dl class="set-facts"><dt>{e(tr("set.name"))}</dt><dd class="set-name mono">#{e(name)}</dd></dl>'
+                f'<p class="dim">{e(tr("set.channel_readonly"))}</p>')
+    gone = (f'<p class="dim">{e(tr("chan.delete_notice"))}</p>' if notices else
+            f'<p class="dim">{e(tr("chan.delete_hint"))}</p>'
+            f'<button type="button" class="btn danger" id="channel-delete">{e(tr("chan.delete"))}</button>')
+    return (f'<form class="stack set-form" id="channel-rename">'
+            f'{_field(tr, "set.name", "name", name, REQUIRED_40)}'
+            f'<p class="dim">{e(tr("chan.rename_hint"))}</p>{_save_row(tr, "chan.rename")}</form>'
+            f'<section class="danger-zone"><h3>{e(tr("chan.delete"))}</h3>{gone}</section>')
+
+
+def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str]:
+    """The reader's own settings: their name in this project, the language and the look of the pages (profile); their
+    computers and connectors (me.js draws them from /api/my); what others may do with their agents (the four
+    permissions of their own agent group, each saved as it changes)."""
+    langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
+                    f'aria-pressed="{"true" if loc == tr.locale else "false"}">{e(tr("me.lang." + loc))}</button>'
+                    for loc in ("zh-TW", "en"))
+    themes = "".join(f'<button type="button" class="seg-btn" data-theme-choice="{x}" aria-pressed="false">'
+                     f'{e(tr("me.theme." + x))}</button>' for x in THEMES)
+    profile = (f'<form class="stack set-form" id="me-name">'
+               f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
+               f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
+               f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
+               f'<h3 class="set-sub">{e(tr("me.lang"))}</h3>'
+               f'<div class="seg" role="group" id="me-locale" aria-label="{e(tr("me.lang"))}">{langs}</div>'
+               f'<p class="out" id="me-locale-out" aria-live="polite"></p>'
+               f'<h3 class="set-sub">{e(tr("me.theme"))}</h3>'
+               f'<div class="seg" role="group" id="me-theme" aria-label="{e(tr("me.theme"))}">{themes}</div>')
+    sw = me["my"]["switches"]
+    rows = "".join(f'<div class="perm-row"><input type="checkbox" id="me-sw-{k}" data-switch="{k}"{" checked" if sw.get(k) else ""}>'
+                   f'<label class="perm-text" for="me-sw-{k}"><span class="perm-name">{e(tr("switch." + k))}</span>'
+                   f'<span class="perm-hint">{e(tr("perm_hint." + k))}</span><span class="out" aria-live="polite"></span>'
+                   f'</label></div>' for k in SWITCHES)
+    agents = (f'<p class="dim">{e(tr("my.switches_hint"))}</p><div class="perm-list" id="me-switches">{rows}</div>'
+              f'<p><a href="/{e(q(slug))}/settings/groups?g={e(q(me["name"] + "-agents"))}">{e(tr("ag.group_settings"))}</a></p>')
+    return {"profile": profile, "computers": '<div id="me-computers"></div>', "agents": agents}
 
 
 def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:
     """Groups, as a list with a filter and "new group" (#groups); a chosen group (?g= in the address) is drawn in
-    #group-detail, with the list as a middle column. The form to make a group (#group-create) is here only for a
-    person who may manage groups, offering only what they hold."""
+    #group-detail, with the list as a middle column. The form to make a group (#group-create, in a floating panel so
+    nothing under it moves) is here only for a person who may manage groups, offering only what they hold."""
     can_make = "manage_groups" in mine
     plus = create = ""
     if can_make:
@@ -553,20 +667,25 @@ def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> 
             f'<span class="perm-text"><span class="perm-name">{e(tr("perm." + p))}</span>'
             f'<span class="perm-hint">{e(tr("perm_hint." + p))}</span></span></label>'
             for p in permissions if p in mine)
-        create = (f'<form id="group-create" class="card group-create" hidden><h2>{e(tr("mem.new_group"))}</h2>'
+        close = e(tr("pm.close"))
+        create = (f'<dialog id="group-create-panel" class="panel" closedby="any" aria-labelledby="group-create-title">'
+                  f'<div class="panel-head"><h2 id="group-create-title" class="panel-title">{e(tr("mem.new_group"))}</h2>'
+                  f'<button type="button" class="icon-btn" data-close aria-label="{close}" title="{close}">'
+                  f'<span class="cross" aria-hidden="true"></span></button></div>'
+                  f'<form id="group-create" class="panel-body group-create">'
                   f'<label class="field"><span>{e(tr("mem.create_name"))}</span><input name="name" required maxlength="40" '
                   f'autocomplete="off" spellcheck="false" autocapitalize="off"></label>'
                   f'<fieldset class="perm-set"><legend>{e(tr("mem.create_perms"))}</legend>{boxes}</fieldset>'
                   f'<div class="row"><button class="btn primary">{e(tr("mem.create"))}</button>'
                   f'<button type="button" class="btn" data-dismiss>{e(tr("mem.cancel"))}</button>'
-                  f'<span class="out" data-out aria-live="polite"></span></div></form>')
+                  f'<span class="out" data-out aria-live="polite"></span></div></form></dialog>')
     label = e(tr("mem.filter"))
     return (f'<div id="groups-root" class="groups-page">'
             f'<nav id="groups" class="groups-list" aria-label="{e(tr("mem.list_label"))}"><div class="groups-head">'
             f'<input id="groups-filter" type="search" placeholder="{label}" aria-label="{label}" autocomplete="off" '
             f'spellcheck="false">{plus}</div><div id="groups-body"></div></nav>'
-            f'<div class="group-main">{create}<section id="group-detail" class="group-detail" tabindex="-1"></section></div>'
-            f'</div>')
+            f'<div class="group-main"><section id="group-detail" class="group-detail" tabindex="-1"></section></div>'
+            f'</div>{create}')
 
 
 def switch_boxes(tr: Translator, values: dict[str, bool]) -> str:

@@ -67,7 +67,7 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "task_update",
      "description": ("Create, change or remove a task. Without `id`: create one in `group` with `text`. With `id`: "
-                     "change its `text`, set `responsible` (your own name to claim it, another member's name to hand it "
+                     "change its `text`, set `responsible` (your own name to claim it, another agent's name to hand it "
                      "over, an empty string for nobody), or pass remove=true when it is done. Agents settle among "
                      "themselves who does what; nobody has to approve."),
      "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}, "group": {"type": "string"},

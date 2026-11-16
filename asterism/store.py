@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS people (
     name TEXT NOT NULL UNIQUE,
     github_id TEXT NOT NULL UNIQUE,
     github_login TEXT NOT NULL,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    locale TEXT                    -- the language the person chose for the pages; NULL: the browser's
 );
 CREATE TABLE IF NOT EXISTS web_sessions (
     digest TEXT PRIMARY KEY,
@@ -66,7 +67,8 @@ CREATE TABLE IF NOT EXISTS project (
     repo TEXT NOT NULL,
     owner_login TEXT NOT NULL,     -- the GitHub login that becomes the owner on first sign-in
     owner_person INTEGER,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    notice_channel INTEGER         -- the channel (id) the system's notices go to; NULL: the first channel
 );
 CREATE TABLE IF NOT EXISTS people (
     person_id INTEGER PRIMARY KEY, -- id in the accounts database
@@ -78,12 +80,8 @@ CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,            -- default, ownership, custom
-    permissions TEXT NOT NULL,     -- JSON list
+    permissions TEXT NOT NULL,     -- JSON list; an ownership group's: what others may do with its person's agents
     owner_person INTEGER,          -- ownership groups only
-    others_mention INTEGER NOT NULL DEFAULT 0,
-    others_channel INTEGER NOT NULL DEFAULT 0,
-    others_assign INTEGER NOT NULL DEFAULT 0,
-    others_regroup INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL,
     position INTEGER,              -- the order of the non-default groups (lower is higher); NULL for default groups
     separate INTEGER NOT NULL DEFAULT 0   -- 1: its online members are a section of their own in the member list
@@ -161,10 +159,16 @@ CREATE TABLE IF NOT EXISTS computer_sessions (
 CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,     -- without the '#'
-    created_by INTEGER,            -- person id; NULL for #general
+    created_by INTEGER,            -- person id; NULL for the channel the project was created with
     created REAL NOT NULL
 );
-INSERT OR IGNORE INTO channels (name, created) VALUES ('general', CAST(strftime('%s', 'now') AS REAL));
+CREATE TABLE IF NOT EXISTS channel_overrides (
+    channel_id INTEGER NOT NULL,   -- a group's read or post in one channel: allow or deny (no row: inherit)
+    group_id INTEGER NOT NULL,
+    perm TEXT NOT NULL,            -- read, post
+    value TEXT NOT NULL,           -- allow, deny
+    PRIMARY KEY (channel_id, group_id, perm)
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     place TEXT NOT NULL,           -- '#name' for a channel; 'p:<kind>:<id>|<kind>:<id>' (sorted) for a private one
@@ -293,11 +297,19 @@ CREATE TABLE IF NOT EXISTS replays (
     PRIMARY KEY (scope, key)
 );
 CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
+CREATE TABLE IF NOT EXISTS upgrades (
+    name TEXT PRIMARY KEY,         -- a one-time change of data (ADDED_PERMISSIONS) that was made, or found not needed
+    at REAL NOT NULL
+);
 """
 
 
 # Columns added after a table first shipped: a database made by an earlier version gets them when opened.
-# The optional third item fills the new column of the rows that existed before (an SQL expression).
+# The optional third item fills the new column of the rows that existed before (an SQL expression). The accounts
+# database and a project's have their own lists.
+ACCOUNTS_ADDED_COLUMNS = {
+    "people": [("locale", "TEXT")],
+}
 ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
                ("model", "TEXT")],
@@ -311,6 +323,8 @@ ADDED_COLUMNS = {
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
     "people": [("last_beat", "REAL")],
+    # Until f6 the system's notices went to #general, the channel every project was created with.
+    "project": [("notice_channel", "INTEGER", "(SELECT id FROM channels WHERE name = 'general')")],
 }
 
 # Indexes on such added columns: made after the columns, since the schema script runs before them.
@@ -320,8 +334,15 @@ ADDED_INDEXES = {
 
 
 # Permissions a default group gained after it shipped: a database made by an earlier version gives them to that
-# group when opened (custom groups are never touched).
-ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks"]}
+# group, once (custom groups are never touched). Once, since f6: people set the permissions of human and ai, so a
+# permission taken away must not come back at the next start. Each (group, permission) is written down in `upgrades`
+# when given, or when the database has no such group yet (it is made with the permissions of today).
+ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks", "manage_channels"]}
+
+# The four switches of an ownership group were columns until f6; since then they are permissions of that group, kept
+# in its JSON list. A database made by an earlier version has the switches that were on moved into the list, and the
+# columns dropped, when opened.
+SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_regroup")
 
 
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened.
@@ -337,10 +358,14 @@ DATA_FIXES = (
 )
 
 
-def _upgrade(conn: sqlite3.Connection) -> None:
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+
+
+def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, ...]]]) -> None:
     for table in DROPPED_TABLES:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
-    for table, cols in ADDED_COLUMNS.items():
+    for table, cols in added_columns.items():
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         if not have:
             continue
@@ -353,27 +378,41 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
             for sql in statements:
                 conn.execute(sql)
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'groups'").fetchone():
+    if _has_table(conn, "groups") and _has_table(conn, "upgrades"):
         for gname, perms in ADDED_PERMISSIONS.items():
-            row = conn.execute("SELECT id, permissions FROM groups WHERE kind = 'default' AND name = ?", (gname,)).fetchone()
-            if row is None:
-                continue
-            have = json.loads(row[1])
-            missing = [p for p in perms if p not in have]
-            if missing:
-                conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(have + missing), row[0]))
+            for p in perms:
+                key = f"permission:{gname}:{p}"
+                if conn.execute("SELECT 1 FROM upgrades WHERE name = ?", (key,)).fetchone():
+                    continue
+                row = conn.execute("SELECT id, permissions FROM groups WHERE kind = 'default' AND name = ?",
+                                   (gname,)).fetchone()
+                if row is not None and p not in json.loads(row[1]):
+                    conn.execute("UPDATE groups SET permissions = ? WHERE id = ?",
+                                 (json.dumps(json.loads(row[1]) + [p]), row[0]))
+                conn.execute("INSERT INTO upgrades (name, at) VALUES (?, ?)", (key, util.now()))
+        have = {r[1] for r in conn.execute("PRAGMA table_info(groups)")}
+        moved = [c for c in SWITCH_COLUMNS if c in have]
+        if moved:
+            for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
+                                  f"WHERE kind = 'ownership'").fetchall():
+                perms = json.loads(r[1])
+                perms += [c for c in moved if r[c] and c not in perms]
+                conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
+            conn.commit()
+            for c in moved:
+                conn.execute(f"ALTER TABLE groups DROP COLUMN {c}")
     for table, sql in DATA_FIXES:
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+        if _has_table(conn, table):
             conn.execute(sql)
     conn.commit()
 
 
-def _open(path: Path, schema: str) -> sqlite3.Connection:
+def _open(path: Path, schema: str, added_columns: dict[str, list[tuple[str, ...]]]) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(schema)
-    _upgrade(conn)
+    _upgrade(conn, added_columns)
     return conn
 
 
@@ -387,7 +426,7 @@ class Store:
 
     def accounts(self) -> sqlite3.Connection:
         if self._accounts is None:
-            self._accounts = _open(self.data / "accounts.db", ACCOUNTS_SCHEMA)
+            self._accounts = _open(self.data / "accounts.db", ACCOUNTS_SCHEMA, ACCOUNTS_ADDED_COLUMNS)
         return self._accounts
 
     def project_path(self, slug: str) -> Path:
@@ -403,7 +442,7 @@ class Store:
             path = self.project_path(slug)
             if not path.is_file():
                 return None
-            conn = self._projects[slug] = _open(path, PROJECT_SCHEMA)
+            conn = self._projects[slug] = _open(path, PROJECT_SCHEMA, ADDED_COLUMNS)
         return conn
 
     def slugs(self) -> list[str]:
@@ -413,12 +452,23 @@ class Store:
         tmp = self.projects_dir / f".{slug}.db.part"
         if tmp.exists():
             tmp.unlink()
-        return _open(tmp, PROJECT_SCHEMA), tmp
+        return _open(tmp, PROJECT_SCHEMA, ADDED_COLUMNS), tmp
 
     def publish_project_db(self, conn: sqlite3.Connection, tmp: Path, slug: str) -> None:
         conn.commit()
         conn.close()
         os.replace(tmp, self.project_path(slug))
+
+    def drop_project(self, slug: str) -> None:
+        """Delete a project's database for good: its connection is closed and its file, with SQLite's side files,
+        removed. The project does not exist from then on."""
+        conn = self._projects.pop(slug, None)
+        if conn is not None:
+            conn.close()
+        path = self.project_path(slug)
+        for p in [path] + [path.with_name(path.name + x) for x in ("-wal", "-shm", "-journal")]:
+            if p.exists():
+                p.unlink()
 
     def close(self) -> None:
         for c in [self._accounts, *self._projects.values()]:

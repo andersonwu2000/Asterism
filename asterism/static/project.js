@@ -176,7 +176,7 @@
   // ------------------------------------------------------------------ where a settings layer was opened from
 
   var SETTINGS = new RegExp("^/" + encodeURIComponent(SLUG).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
-                            "/(settings(/|$)|channels/[^/]+/settings(/|$)|members$|admin$)");
+                            "/(settings(/|$)|channels/[^/]+/settings(/|$)|me(/|$)|members$|admin$)");
   P.isSettings = function (path) { return SETTINGS.test(path); };
   function remember() {
     try { sessionStorage.setItem(P.fromKey, window.location.pathname + window.location.search + window.location.hash); }

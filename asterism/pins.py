@@ -51,9 +51,11 @@ def short(pj: Project) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
-def _channel(pj: Project, name: str) -> str:
-    if not pj.db.execute("SELECT 1 FROM channels WHERE name = ?", (name,)).fetchone():
-        raise messaging._no_channel(pj, "#" + name)
+def _channel(pj: Project, actor: Actor, name: str) -> str:
+    """A channel the person may read (any other does not exist for them)."""
+    me = messaging.person_member(pj, actor.person_id)
+    if name not in messaging.channel_names(pj, me):
+        raise messaging._no_channel(pj, "#" + name, me)
     return name
 
 
@@ -73,7 +75,7 @@ def _path(v: Any) -> str:
 
 def add(pj: Project, actor: Actor, channel: str, body: dict[str, Any]) -> dict[str, Any]:
     _may_pin(pj, actor)
-    _channel(pj, channel)
+    _channel(pj, actor, channel)
     path, mid = body.get("path"), body.get("message")
     if (path is None) == (mid is None):
         raise bad_request("bad_request", 'Pin one thing: {"path": "<a file of the repository>"} or {"message": <id>}.')
@@ -104,7 +106,7 @@ def add(pj: Project, actor: Actor, channel: str, body: dict[str, Any]) -> dict[s
 
 def remove(pj: Project, actor: Actor, channel: str, pid: int) -> dict[str, Any]:
     _may_pin(pj, actor)
-    _channel(pj, channel)
+    _channel(pj, actor, channel)
     with pj.db:
         gone = pj.db.execute("DELETE FROM pins WHERE id = ? AND channel = ?", (pid, channel)).rowcount
     if not gone:

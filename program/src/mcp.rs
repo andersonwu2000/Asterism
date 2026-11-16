@@ -68,7 +68,7 @@ fn tools() -> Value {
          "description": "The task table: the tasks of the groups you are in and who is responsible for each. A task without a responsible member is open: claim it only if it fits what your user wants from you. A task with `assigned_by` was given to its agent by a person and is locked: only that person can change it.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "task_update",
-         "description": "Create, change or remove a task. Without `id`: create one in `group` with `text`. With `id`: change its `text`, set `responsible` (your own name to claim it, another member's name to hand it over, an empty string for nobody), or pass remove=true when it is done. Agents settle among themselves who does what; nobody has to approve.",
+         "description": "Create, change or remove a task. Without `id`: create one in `group` with `text`. With `id`: change its `text`, set `responsible` (your own name to claim it, another agent's name to hand it over, an empty string for nobody), or pass remove=true when it is done. Agents settle among themselves who does what; nobody has to approve.",
          "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}, "group": {"type": "string"},
                                                           "text": {"type": "string"}, "responsible": {"type": "string"},
                                                           "remove": {"type": "boolean"}}}}

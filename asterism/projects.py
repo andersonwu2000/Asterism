@@ -6,6 +6,7 @@ repeats a rule. A function that needs a permission takes an Actor and checks it 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -15,17 +16,22 @@ from .errors import bad_request, conflict, forbidden, gone, not_found
 from .store import Store
 
 PERMISSIONS = ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents",
-               "edit_tasks", "coordinate_tasks", "manage_members", "manage_groups", "project_settings"]
-MANAGEMENT = {"manage_members", "manage_groups", "project_settings"}
+               "edit_tasks", "coordinate_tasks", "manage_members", "manage_groups", "manage_channels", "project_settings"]
+MANAGEMENT = {"manage_members", "manage_groups", "manage_channels", "project_settings"}
 DEFAULT_GROUPS = [
     ("owner", PERMISSIONS),
     ("human", ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents", "edit_tasks"]),
     ("ai", ["read", "post", "edit_tasks"]),
 ]
-# The four switches of a person's ownership group.
+# The four permissions only a person's own agent group (ownership) carries, set only by that person: what others may
+# do with that person's agents (until f6 they were called its switches, and the API still sets them that way too).
 SWITCHES = ("others_mention", "others_channel", "others_assign", "others_regroup")
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
+# What a channel may override per group, and how (no row: inherit).
+CHANNEL_PERMISSIONS = ("read", "post")
+OVERRIDES = ("allow", "deny", "inherit")
+PROJECT_REPO_RE = re.compile(r"https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,15 @@ def open_project(store: Store, slug: str) -> Project:
     return Project(store, slug, db)
 
 
+def notice_channel(pj: Project) -> str:
+    """The channel (its name, without '#') the system's notices go to: the one the project chose, else its first
+    channel. A project always keeps at least one channel (the notice channel cannot be deleted)."""
+    r = pj.db.execute("SELECT c.name FROM project p JOIN channels c ON c.id = p.notice_channel WHERE p.id = 1").fetchone()
+    if r is None:
+        r = pj.db.execute("SELECT name FROM channels ORDER BY id LIMIT 1").fetchone()
+    return r["name"] if r else ""
+
+
 def info(pj: Project) -> dict[str, str]:
     r = pj.row()
     return {"name": r["name"], "slug": r["slug"], "repo": r["repo"]}
@@ -64,24 +79,102 @@ def info(pj: Project) -> dict[str, str]:
 # --------------------------------------------------------------------------- creating a project (admin)
 
 def create_project(store: Store, slug: str, name: str, repo: str, owner_login: str) -> None:
+    """A new project's database: the default groups and one channel, #general, where the notices go. The account
+    with the GitHub login `owner_login` becomes its owner the first time it turns up (member)."""
     if not util.valid_slug(slug):
         raise ValueError("the slug must match [a-z0-9][a-z0-9-]{0,39} and not be a reserved word")
     if not name.strip():
         raise ValueError("the name must not be empty")
     if not util.GITHUB_LOGIN_RE.fullmatch(owner_login):
         raise ValueError("the owner must be a GitHub login")
-    if not repo.startswith(("https://", "http://")):
+    if repo and not repo.startswith(("https://", "http://")):
         raise ValueError("the repo must be an address (https://...)")
     if store.project(slug) is not None:
         raise ValueError(f"the project '{slug}' exists already")
     conn, tmp = store.new_project_db(slug)
     t = util.now()
-    conn.execute("INSERT INTO project (id, slug, name, repo, owner_login, created) VALUES (1, ?, ?, ?, ?, ?)",
-                 (slug, name.strip(), repo, owner_login, t))
+    cid = conn.execute("INSERT INTO channels (name, created) VALUES ('general', ?)", (t,)).lastrowid
+    conn.execute("INSERT INTO project (id, slug, name, repo, owner_login, created, notice_channel) "
+                 "VALUES (1, ?, ?, ?, ?, ?, ?)", (slug, name.strip(), repo, owner_login, t, cid))
     for gname, perms in DEFAULT_GROUPS:
         conn.execute("INSERT INTO groups (name, kind, permissions, created) VALUES (?, 'default', ?, ?)",
                      (gname, json.dumps(perms), t))
     store.publish_project_db(conn, tmp, slug)
+
+
+PROJECT_NAME_MAX = 80
+SLUG_RULE = ("The address is 2 to 40 lower-case letters, digits or '-', starting with a letter or digit, and not one of "
+             "the server's own words (" + ", ".join(sorted(util.RESERVED_SLUGS)) + ").")
+REPO_RULE = "The repository is an address https://github.com/{owner}/{name}, or empty for none."
+
+
+def _project_name(v: Any) -> str:
+    if not isinstance(v, str) or not v.strip() or len(v.strip()) > PROJECT_NAME_MAX:
+        raise bad_request("invalid_name", f"The project's name is 1 to {PROJECT_NAME_MAX} characters.")
+    return v.strip()
+
+
+def _repo(v: Any) -> str:
+    if v is None or v == "":
+        return ""
+    if not isinstance(v, str) or not PROJECT_REPO_RE.fullmatch(v.strip().removesuffix(".git").rstrip("/")):
+        raise bad_request("invalid_repo", REPO_RULE)
+    return v.strip().removesuffix(".git").rstrip("/")
+
+
+def new_project(store: Store, person: sqlite3.Row, body: dict[str, Any]) -> dict[str, Any]:
+    """Anyone signed in makes a project (it lives on this server); they are its owner, in owner and human."""
+    slug = body.get("slug")
+    if not isinstance(slug, str) or len(slug) < 2 or not util.valid_slug(slug):
+        raise bad_request("invalid_slug", SLUG_RULE)
+    name, repo = _project_name(body.get("name")), _repo(body.get("repo"))
+    if store.project(slug) is not None:
+        raise conflict(f"The address '{slug}' is taken. Choose another.")
+    create_project(store, slug, name, repo, person["github_login"])
+    pj = open_project(store, slug)
+    member(pj, person)                 # the creator turns up at once and becomes the owner
+    util.log("project_created", project=slug, by=person["id"])
+    return {"project": info(pj)}
+
+
+def change_project(pj: Project, actor: Actor, body: dict[str, Any]) -> dict[str, Any]:
+    """Rename the project, set or change its repository, choose the channel the notices go to (project_settings)."""
+    _person_only(actor)
+    require(pj, actor, "project_settings", "Changing the project needs the project_settings permission.")
+    if not {"name", "repo", "notice_channel"} & set(body):
+        raise bad_request("bad_request", "Say what to change: name, repo or notice_channel.")
+    cols: dict[str, Any] = {}
+    if "name" in body:
+        cols["name"] = _project_name(body["name"])
+    if "repo" in body:
+        cols["repo"] = _repo(body["repo"])
+    if "notice_channel" in body:
+        where = body["notice_channel"]
+        name = where[1:] if isinstance(where, str) and where.startswith("#") else where
+        c = pj.db.execute("SELECT id FROM channels WHERE name = ?", (name,)).fetchone() if isinstance(name, str) else None
+        if c is None:
+            raise not_found(f"There is no channel '{where}'.")
+        cols["notice_channel"] = c["id"]
+    sets = ", ".join(f"{k} = ?" for k in cols)          # keys are this function's own column names
+    with pj.db:
+        pj.db.execute(f"UPDATE project SET {sets} WHERE id = 1", tuple(cols.values()))
+    util.log("project_changed", project=pj.slug, what=sorted(cols), by=actor.person_id)
+    return {"project": dict(info(pj), notice_channel="#" + notice_channel(pj))}
+
+
+def delete_project(pj: Project, actor: Actor, confirm: Any) -> None:
+    """Delete the project and everything in it, at once and for good. Its credentials stop working (their polls are
+    ended first; afterwards a credential for it is refused as a revoked one) and so do its connectors' tokens. The
+    caller removes the database (Store.drop_project) once the ended polls have let go of it."""
+    _person_only(actor)
+    require(pj, actor, "project_settings", "Deleting the project needs the project_settings permission.")
+    if confirm != pj.slug:
+        raise bad_request("bad_request", f"To delete the project, send confirm with its address, '{pj.slug}'.")
+    _revoke(pj, "1 = 1", ())
+    with pj.accounts:
+        pj.accounts.execute("DELETE FROM oauth_tokens WHERE slug = ?", (pj.slug,))
+        pj.accounts.execute("DELETE FROM oauth_codes WHERE slug = ?", (pj.slug,))
+    util.log("project_deleted", project=pj.slug, by=actor.person_id)
 
 
 # --------------------------------------------------------------------------- names
@@ -112,6 +205,34 @@ def describe_holder(pj: Project, holder: tuple[str, sqlite3.Row]) -> str:
     return f"'{row['name']}' is a group in this project"
 
 
+def set_name(pj: Project, actor: Actor, new: Any) -> dict[str, Any]:
+    """A person's name in this project (their GitHub login does not change): the name rules, and no other person,
+    agent or group of the project holds it. Everything that shows the person uses it from then on, the senders of
+    their past messages included; their own agent group follows it ('<name>-agents'). Mentions written with the old
+    name stay as they were written."""
+    _person_only(actor)
+    check_name(new)
+    if new.lower().endswith(OWNERSHIP_SUFFIX):
+        raise conflict(f"Names ending in '{OWNERSHIP_SUFFIX}' are kept for each person's own group. Choose another name.")
+    me = pj.db.execute("SELECT * FROM people WHERE person_id = ?", (actor.person_id,)).fetchone()
+    own = ownership_group(pj, actor.person_id)
+    for n, mine in ((new, ("person", actor.person_id)), (new + OWNERSHIP_SUFFIX, ("group", own["id"] if own else None))):
+        holder = name_holder(pj, n)
+        if holder and (holder[0], holder[1]["person_id" if holder[0] == "person" else "id"]) != mine:
+            raise conflict(describe_holder(pj, holder) + ". Choose another name.")
+    old = me["name"]
+    with pj.db:
+        pj.db.execute("UPDATE people SET name = ? WHERE person_id = ?", (new, actor.person_id))
+        pj.db.execute("UPDATE messages SET sender_name = ? WHERE sender_kind = 'person' AND sender_id = ?",
+                      (new, actor.person_id))
+        pj.db.execute("UPDATE schedules SET to_name = ? WHERE to_name = ? AND place LIKE 'p:%' AND "
+                      "instr('|' || substr(place, 3) || '|', ?) > 0", (new, old, f"|person:{actor.person_id}|"))
+        if own:
+            pj.db.execute("UPDATE groups SET name = ? WHERE id = ?", (new + OWNERSHIP_SUFFIX, own["id"]))
+    util.log("person_renamed", project=pj.slug, person=actor.person_id)
+    return {"name": new}
+
+
 def person_name(pj: Project, person_id: int) -> str:
     r = pj.db.execute("SELECT name FROM people WHERE person_id = ?", (person_id,)).fetchone()
     return r["name"] if r else "a former member"
@@ -132,10 +253,15 @@ def groups_of(pj: Project, kind: str, member_id: int) -> list[sqlite3.Row]:
                          "WHERE m.member_kind = ? AND m.member_id = ? ORDER BY g.id", (kind, member_id)).fetchall()
 
 
+def _is_owner_group(g: sqlite3.Row) -> bool:
+    return g["kind"] == "default" and g["name"] == "owner"
+
+
 def _perms(rows: Iterable[sqlite3.Row]) -> set[str]:
+    """The union of the groups' permissions; `owner` always holds every permission, whatever its row says."""
     out: set[str] = set()
     for g in rows:
-        out.update(json.loads(g["permissions"]))
+        out.update(PERMISSIONS if _is_owner_group(g) else json.loads(g["permissions"]))
     return out
 
 
@@ -159,6 +285,104 @@ def permissions(pj: Project, actor: Actor) -> set[str]:
 def require(pj: Project, actor: Actor, perm: str, message: str) -> None:
     if perm not in permissions(pj, actor):
         raise forbidden(message)
+
+
+# --------------------------------------------------------------------------- channel permissions
+
+def _overrides(pj: Project) -> dict[str, dict[int, dict[str, str]]]:
+    """channel name -> group id -> permission -> allow | deny (what is not there inherits)."""
+    out: dict[str, dict[int, dict[str, str]]] = {}
+    for r in pj.db.execute("SELECT c.name, o.group_id, o.perm, o.value FROM channel_overrides o "
+                           "JOIN channels c ON c.id = o.channel_id"):
+        out.setdefault(r["name"], {}).setdefault(r["group_id"], {})[r["perm"]] = r["value"]
+    return out
+
+
+def channel_access(pj: Project, kind: str, member_id: int) -> dict[str, set[str]]:
+    """channel name -> what of read and post a member (person or agent) holds there, as Discord's channel overrides:
+    from the member's project permissions, an override that allows one to any of the member's groups grants it there,
+    even one the member lacks in the project; one that denies it to any of them takes it away, unless another allows
+    it (allow wins over deny among the groups). People in `owner` are never denied. An agent never holds in a channel
+    what its person does not hold there."""
+    names = [r["name"] for r in pj.db.execute("SELECT name FROM channels ORDER BY id")]
+    if kind == "person":
+        groups = groups_of(pj, "person", member_id)
+        base = person_permissions(pj, member_id) & set(CHANNEL_PERMISSIONS)
+        exempt, cap = any(_is_owner_group(g) for g in groups), None
+    else:
+        a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (member_id,)).fetchone()
+        if a is None:
+            return {n: set() for n in names}
+        groups = groups_of(pj, "agent", member_id)
+        base = agent_permissions(pj, a) & set(CHANNEL_PERMISSIONS)
+        exempt, cap = False, channel_access(pj, "person", a["person_id"])
+    over = _overrides(pj)
+    out: dict[str, set[str]] = {}
+    for n in names:
+        have = set(base)
+        o = over.get(n, {})
+        if o:
+            for p in CHANNEL_PERMISSIONS:
+                said = {o.get(g["id"], {}).get(p) for g in groups}
+                if "allow" in said:
+                    have.add(p)
+                elif "deny" in said and not exempt:
+                    have.discard(p)
+        if cap is not None:
+            have &= cap.get(n, set())
+        out[n] = have
+    return out
+
+
+def readable_channels(pj: Project, kind: str, member_id: int) -> list[str]:
+    """The channels (names, in their order) a member may read; any other does not exist for that member."""
+    return [n for n, have in channel_access(pj, kind, member_id).items() if "read" in have]
+
+
+def channel_overrides(pj: Project, channel_id: int) -> dict[str, dict[str, str]]:
+    """Every group, in the groups' order, with its read and post in the channel: allow, deny or inherit."""
+    rows = {(r["group_id"], r["perm"]): r["value"] for r in pj.db.execute(
+        "SELECT group_id, perm, value FROM channel_overrides WHERE channel_id = ?", (channel_id,))}
+    return {g["name"]: {p: rows.get((g["id"], p), "inherit") for p in CHANNEL_PERMISSIONS} for g in ordered_groups(pj)}
+
+
+def set_channel_overrides(pj: Project, actor: Actor, channel_id: int, body: Any) -> dict[str, dict[str, str]]:
+    """Set what the groups named in `body` ({group: {"read"|"post": "allow"|"deny"|"inherit"}}) hold in a channel;
+    what is not named stays as it is (manage_channels). Refused if afterwards nobody could read the channel."""
+    _person_only(actor)
+    require(pj, actor, "manage_channels", "Changing a channel's permissions needs the manage_channels permission.")
+    if not isinstance(body, dict) or not all(isinstance(v, dict) for v in body.values()):
+        raise bad_request("bad_request", 'overrides is {"<group>": {"read": "allow" | "deny" | "inherit", "post": ...}}.')
+    writes = []
+    for gname, perms in body.items():
+        g = group_by_name(pj, gname)
+        if g is None:
+            raise not_found(f"There is no group '{gname}'.")
+        for p, v in perms.items():
+            if p not in CHANNEL_PERMISSIONS or v not in OVERRIDES:
+                raise bad_request("bad_request", "A channel overrides read and post, each allow, deny or inherit.")
+            writes.append((g["id"], p, v))
+    name = pj.db.execute("SELECT name FROM channels WHERE id = ?", (channel_id,)).fetchone()["name"]
+    pj.db.execute("BEGIN")
+    try:
+        for gid, p, v in writes:
+            if v == "inherit":
+                pj.db.execute("DELETE FROM channel_overrides WHERE channel_id = ? AND group_id = ? AND perm = ?",
+                              (channel_id, gid, p))
+            else:
+                pj.db.execute("INSERT OR REPLACE INTO channel_overrides (channel_id, group_id, perm, value) "
+                              "VALUES (?, ?, ?, ?)", (channel_id, gid, p, v))
+        people = [r["person_id"] for r in pj.db.execute("SELECT person_id FROM people")]
+        if not any("read" in channel_access(pj, "person", pid).get(name, set()) for pid in people):
+            raise conflict(f"Then nobody could read #{name}. Leave at least one group able to read it.")
+    except BaseException:
+        pj.db.rollback()
+        raise
+    pj.db.commit()
+    util.log("channel_permissions_set", project=pj.slug, channel=name, by=actor.person_id)
+    from . import presence             # presence builds on this module
+    presence.kick()                    # deliveries of a channel no longer readable are dropped on the way out
+    return channel_overrides(pj, channel_id)
 
 
 def _person_only(actor: Actor) -> None:
@@ -202,24 +426,28 @@ def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, 
     return {"name": name, "kind": "custom", "permissions": perms}
 
 
-def _check_permissions(perms: Any) -> list[str]:
-    """A list of permission names from the catalogue, returned in the catalogue's order."""
-    if not isinstance(perms, list) or not all(isinstance(p, str) and p in PERMISSIONS for p in perms):
-        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS))
-    return [p for p in PERMISSIONS if p in perms]
+def _check_permissions(perms: Any, own: bool = False) -> list[str]:
+    """A list of permission names from the catalogue, returned in the catalogue's order; with `own` (a person's own
+    agent group) also the four of what others may do with that person's agents, which no other group carries."""
+    allowed = PERMISSIONS + list(SWITCHES) if own else PERMISSIONS
+    if not isinstance(perms, list) or not all(isinstance(p, str) and p in allowed for p in perms):
+        why = "" if own else (" (" + ", ".join(SWITCHES) + " are carried only by a person's own agent group)")
+        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS) + why)
+    return [p for p in allowed if p in perms]
 
 
 def _custom_group(pj: Project, actor: Actor, name: str, need: str) -> sqlite3.Row:
-    """The custom group `name`, for a person with manage_groups; default and ownership groups are fixed."""
+    """The custom group `name`, for a person with manage_groups; default and ownership groups keep their names and
+    stay."""
     _person_only(actor)
     require(pj, actor, "manage_groups", need)
     g = group_by_name(pj, name)
     if not g:
         raise not_found(f"There is no group '{name}'.")
     if g["kind"] == "default":
-        raise conflict(f"'{name}' is one of the project's default groups; its permissions are fixed and it stays.")
+        raise conflict(f"'{name}' is one of the project's default groups; it keeps its name and stays.")
     if g["kind"] == "ownership":
-        raise conflict(f"'{name}' holds the agents of one person and follows ownership; it cannot be changed or removed.")
+        raise conflict(f"'{name}' holds the agents of one person and follows ownership; it keeps its name and stays.")
     return g
 
 
@@ -245,35 +473,64 @@ def order_groups(pj: Project, actor: Actor, names: Any) -> dict[str, Any]:
 
 
 def change_group_settings(pj: Project, actor: Actor, name: str, body: dict[str, Any]) -> dict[str, Any]:
-    """Change a group: its permissions (custom groups, change_group), whether it is shown separately in the member
-    list, or both. Showing separately: a custom group for who may manage groups; a person's own agent group for that
-    person or who may manage groups; never a default group."""
-    if "separate" not in body:
-        return change_group(pj, actor, name, body.get("permissions"))
-    separate = body["separate"]
-    if not isinstance(separate, bool):
-        raise bad_request("invalid_request", "separate must be true or false.")
+    """Change a group: its name (custom groups, rename_group), its permissions (change_group), whether it is shown
+    separately in the member list, or several of these. Showing separately: a custom group for who may manage groups;
+    a person's own agent group for that person or who may manage groups; never a default group."""
+    if not {"name", "permissions", "separate"} & set(body):
+        raise bad_request("invalid_request", "Say what to change: name, permissions or separate.")
+    out: dict[str, Any] = {}
+    if "separate" in body:
+        separate = body["separate"]
+        if not isinstance(separate, bool):
+            raise bad_request("invalid_request", "separate must be true or false.")
+        _person_only(actor)
+        g = group_by_name(pj, name)
+        if not g:
+            raise not_found(f"There is no group '{name}'.")
+        if g["kind"] == "default":
+            raise conflict(f"'{name}' is one of the project's default groups; it is never shown as a group of its own.")
+        if g["kind"] == "custom" or g["owner_person"] != actor.person_id:
+            require(pj, actor, "manage_groups", "Changing groups needs the manage_groups permission.")
+    if "permissions" in body:
+        out = change_group(pj, actor, name, body["permissions"])
+    if "separate" in body:
+        with pj.db:
+            pj.db.execute("UPDATE groups SET separate = ? WHERE name = ?", (int(body["separate"]), name))
+        util.log("group_changed", project=pj.slug, group=name, separate=body["separate"], by=actor.person_id)
+        out["separate"] = body["separate"]
+    if "name" in body:
+        out.update(rename_group(pj, actor, name, body["name"]))
+    g = group_by_name(pj, out.get("name", name))
+    return {"name": g["name"], "kind": g["kind"], "permissions": _stored(g), **out}
+
+
+def _stored(g: sqlite3.Row) -> list[str]:
+    """A group's permissions as shown: owner's are every permission, whatever its row says."""
+    return list(PERMISSIONS) if _is_owner_group(g) else json.loads(g["permissions"])
+
+
+def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, Any]:
+    """Set the permissions of a group. Takes effect at once: permissions are read from the groups on every request.
+    - a custom group, `human` and `ai` (as Discord's @everyone): manage_groups, and nobody gives or takes away a
+      permission they do not hold themselves;
+    - `owner` always holds every permission and is not changed;
+    - a person's own agent group: only that person sets it; besides the ordinary permissions (its agents still never
+      hold more than their person) it alone carries the four of what others may do with that person's agents."""
     _person_only(actor)
     g = group_by_name(pj, name)
     if not g:
         raise not_found(f"There is no group '{name}'.")
-    if g["kind"] == "default":
-        raise conflict(f"'{name}' is one of the project's default groups; it is never shown as a group of its own.")
-    if g["kind"] == "custom" or g["owner_person"] != actor.person_id:
+    if g["kind"] == "ownership":
+        if g["owner_person"] != actor.person_id:
+            raise forbidden(f"'{name}' holds the agents of {person_name(pj, g['owner_person'])}; only they set what others "
+                            f"may do with their agents.")
+        perms = _check_permissions(perms, own=True)
+    else:
         require(pj, actor, "manage_groups", "Changing groups needs the manage_groups permission.")
-    out = change_group(pj, actor, name, body.get("permissions")) if "permissions" in body else         {"name": name, "kind": g["kind"], "permissions": json.loads(g["permissions"])}
-    with pj.db:
-        pj.db.execute("UPDATE groups SET separate = ? WHERE id = ?", (int(separate), g["id"]))
-    util.log("group_changed", project=pj.slug, group=name, separate=separate, by=actor.person_id)
-    return dict(out, separate=separate)
-
-
-def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, Any]:
-    """Set the permissions of a custom group. Takes effect at once: permissions are read from the groups on
-    every request. Nobody gives or takes away a permission they do not hold themselves."""
-    g = _custom_group(pj, actor, name, "Changing groups needs the manage_groups permission.")
-    perms = _check_permissions(perms)
-    touched, mine = set(json.loads(g["permissions"])) | set(perms), permissions(pj, actor)
+        if _is_owner_group(g):
+            raise conflict(f"'{name}' always holds every permission; it is not changed.")
+        perms = _check_permissions(perms)
+    touched, mine = set(json.loads(g["permissions"])) | set(perms), permissions(pj, actor) | set(SWITCHES)
     missing = [p for p in PERMISSIONS if p in touched and p not in mine]
     if missing:
         raise forbidden(f"'{name}' carries or would carry permissions you do not hold ({', '.join(missing)}), "
@@ -281,7 +538,23 @@ def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, 
     with pj.db:
         pj.db.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), g["id"]))
     util.log("group_changed", project=pj.slug, group=name, permissions=perms, by=actor.person_id)
-    return {"name": name, "kind": "custom", "permissions": perms}
+    return {"name": name, "kind": g["kind"], "permissions": perms}
+
+
+def rename_group(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, Any]:
+    """A custom group gets a new name (the rules of a new group's name); default and agent groups keep theirs. Old
+    messages that mentioned the old name stay as they were written."""
+    g = _custom_group(pj, actor, name, "Renaming groups needs the manage_groups permission.")
+    check_name(new)
+    if new.lower().endswith(OWNERSHIP_SUFFIX):
+        raise conflict(f"Names ending in '{OWNERSHIP_SUFFIX}' are kept for each person's own group. Choose another name.")
+    holder = name_holder(pj, new)
+    if holder and not (holder[0] == "group" and holder[1]["id"] == g["id"]):
+        raise conflict(describe_holder(pj, holder) + ". Choose another name.")
+    with pj.db:
+        pj.db.execute("UPDATE groups SET name = ? WHERE id = ?", (new, g["id"]))
+    util.log("group_renamed", project=pj.slug, group=new, was=name, by=actor.person_id)
+    return {"name": new}
 
 
 def remove_group(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
@@ -298,6 +571,7 @@ def remove_group(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
                        f"keep it).")
     with pj.db:
         pj.db.execute("DELETE FROM group_members WHERE group_id = ?", (g["id"],))
+        pj.db.execute("DELETE FROM channel_overrides WHERE group_id = ?", (g["id"],))
         pj.db.execute("DELETE FROM groups WHERE id = ?", (g["id"],))
     util.log("group_removed", project=pj.slug, group=name, by=actor.person_id)
     _members_changed(pj, actor)
@@ -325,6 +599,9 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
             raise not_found(f"There is no group '{gname}'.")
         if g["kind"] == "ownership":
             raise conflict(f"'{gname}' holds the agents of one person and follows ownership; it cannot be edited.")
+        if g["kind"] == "default":
+            raise conflict(f"'{gname}' is one of the project's default groups: who is in it follows joining, never a "
+                           f"hand. Limit or widen what its members hold through its permissions or a group of your own.")
         groups[gname] = g
     mine = permissions(pj, actor)
     agent = pj.db.execute("SELECT * FROM agents WHERE name = ?", (target,)).fetchone()
@@ -338,7 +615,7 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
                     raise forbidden(f"You can give your agent only groups you are in yourself; you are not in '{gname}'.")
         else:
             require(pj, actor, "manage_groups", "Changing another person's agent needs the manage_groups permission.")
-            if not ownership_group(pj, agent["person_id"])["others_regroup"]:
+            if not switch_on(pj, agent["person_id"], "others_regroup"):
                 raise forbidden(f"{person_name(pj, agent['person_id'])} has not allowed others to change the groups of their agents.")
             _no_escalation(groups.values(), mine)
     elif person:
@@ -509,7 +786,7 @@ def group_list(pj: Project) -> list[dict[str, Any]]:
     out = []
     position = 0
     for g in ordered_groups(pj):
-        item: dict[str, Any] = {"name": g["name"], "kind": g["kind"], "permissions": json.loads(g["permissions"])}
+        item: dict[str, Any] = {"name": g["name"], "kind": g["kind"], "permissions": _stored(g)}
         if g["kind"] == "default":
             item["default"] = True
         else:
@@ -518,7 +795,8 @@ def group_list(pj: Project) -> list[dict[str, Any]]:
             position += 1
         if g["kind"] == "ownership":
             item["owner"] = owners.get(g["owner_person"], "")
-            item["switches"] = {k: bool(g[k]) for k in SWITCHES}     # what others may do with that person's agents
+            # What others may do with that person's agents: its permissions, also by name.
+            item["switches"] = {k: k in item["permissions"] for k in SWITCHES}
         out.append(item)
     return out
 
@@ -533,23 +811,33 @@ def members_view(pj: Project, actor: Actor) -> dict[str, Any]:
 
 
 def switches(pj: Project, person_id: int) -> dict[str, bool]:
+    """What others may do with the person's agents: the permissions of the person's own agent group."""
     g = ownership_group(pj, person_id)
-    return {k: bool(g[k]) for k in SWITCHES}
+    have = set(json.loads(g["permissions"])) if g else set()
+    return {k: k in have for k in SWITCHES}
+
+
+def switch_on(pj: Project, person_id: int, which: str) -> bool:
+    return switches(pj, person_id)[which]
 
 
 def set_switches(pj: Project, actor: Actor, values: Any) -> dict[str, Any]:
-    """Only the person themselves sets the switches of their own group."""
+    """Only the person themselves sets what others may do with their agents (the permissions of their own group)."""
     _person_only(actor)
     if not isinstance(values, dict) or not set(values) <= set(SWITCHES) \
             or not all(isinstance(v, bool) for v in values.values()):
         raise bad_request("invalid_switches", "Send any of " + ", ".join(SWITCHES) + " as true or false.")
-    if values:
-        cols = ", ".join(f"{k} = ?" for k in values)       # keys were checked against SWITCHES above
-        with pj.db:
-            pj.db.execute(f"UPDATE groups SET {cols} WHERE kind = 'ownership' AND owner_person = ?",
-                          (*[int(v) for v in values.values()], actor.person_id))
-        util.log("switches_set", project=pj.slug, person=actor.person_id, switches=values)
+    _set_switches(pj, actor, values, ownership_group(pj, actor.person_id))
     return {"switches": switches(pj, actor.person_id)}
+
+
+def _set_switches(pj: Project, actor: Actor, values: dict[str, bool], g: sqlite3.Row) -> dict[str, Any]:
+    if values:
+        now = {**switches(pj, actor.person_id), **values}
+        perms = [p for p in json.loads(g["permissions"]) if p not in SWITCHES] + [k for k in SWITCHES if now[k]]
+        with pj.db:
+            pj.db.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), g["id"]))
+        util.log("switches_set", project=pj.slug, person=actor.person_id, switches=values)
 
 
 def credential_view(c: sqlite3.Row) -> dict[str, Any]:
@@ -647,6 +935,7 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
         pj.db.execute("DELETE FROM group_members WHERE member_kind = 'person' AND member_id = ?", (pid,))
         if own:
             pj.db.execute("DELETE FROM group_members WHERE group_id = ?", (own["id"],))
+            pj.db.execute("DELETE FROM channel_overrides WHERE group_id = ?", (own["id"],))
             pj.db.execute("DELETE FROM groups WHERE id = ?", (own["id"],))
         pj.db.execute("DELETE FROM superseded WHERE person_id = ?", (pid,))
         pj.db.execute("DELETE FROM schedules WHERE person_id = ?", (pid,))     # a person's schedules go with them

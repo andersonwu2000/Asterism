@@ -180,9 +180,11 @@
     form.append(title, text, field, out, row);
     d.appendChild(form);
     document.body.appendChild(d);
-    gone = {dialog: d, title: title, text: text, ask: ask, input: input, out: out, cancel: cancel, go: go, opts: null};
+    gone = {dialog: d, title: title, text: text, field: field, ask: ask, input: input, out: out, cancel: cancel, go: go,
+            opts: null};
 
-    function armed() { return !!gone.opts && input.value === gone.opts.name; }
+    // Armed when the name is typed; a confirmation without typing (opts.name null) is armed at once.
+    function armed() { return !!gone.opts && (gone.opts.name === null || input.value === gone.opts.name); }
     input.addEventListener("input", function () { go.disabled = !armed() || gone.running; });
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
@@ -230,14 +232,15 @@
     g.running = false;
     g.title.textContent = opts.title;
     g.text.textContent = opts.text;
-    g.ask.textContent = A.t("gone.type", {name: opts.name});
+    g.field.hidden = opts.name === null;
+    g.ask.textContent = opts.name === null ? "" : A.t("gone.type", {name: opts.name});
     g.input.value = "";
     g.out.textContent = "";
     g.cancel.textContent = A.t("gone.cancel");
     g.go.textContent = opts.button;
-    g.go.disabled = true;
+    g.go.disabled = opts.name !== null;
     g.dialog.showModal();
-    g.input.focus();
+    (opts.name === null ? g.cancel : g.input).focus();
   };
 
   // ------------------------------------------------------------------ small shared things
@@ -790,18 +793,26 @@
   document.addEventListener("click", function (ev) {
     var b = ev.target.closest && ev.target.closest("#theme-toggle");
     if (!b) return;
-    var to = now() === "dark" ? "light" : "dark";
-    try { localStorage.setItem(KEY, to); } catch (err) { /* kept for this page only */ }
-    set(to);
+    A.theme.choose(now() === "dark" ? "light" : "dark");
   });
-  if (window.matchMedia) {
-    var light = window.matchMedia("(prefers-color-scheme: light)");
-    var follow = function () { if (stored() !== "dark" && stored() !== "light") set(light.matches ? "light" : "dark"); };
-    if (light.addEventListener) light.addEventListener("change", follow);
-  }
+  var light = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  function system() { return light && light.matches ? "light" : "dark"; }
+  function follow() { if (stored() !== "dark" && stored() !== "light") set(system()); }
+  if (light && light.addEventListener) light.addEventListener("change", follow);
   window.addEventListener("storage", function (ev) {
-    if (ev.key === KEY && (ev.newValue === "dark" || ev.newValue === "light")) set(ev.newValue);
+    if (ev.key !== KEY) return;
+    if (ev.newValue === "dark" || ev.newValue === "light") set(ev.newValue); else set(system());
   });
+  // The reader's choice (the personal settings): dark, light, or the system's ("system": nothing is stored).
+  A.theme = {
+    choice: function () { var s = stored(); return s === "dark" || s === "light" ? s : "system"; },
+    choose: function (choice) {
+      try {
+        if (choice === "dark" || choice === "light") localStorage.setItem(KEY, choice); else localStorage.removeItem(KEY);
+      } catch (err) { /* kept for this page only */ }
+      set(choice === "dark" || choice === "light" ? choice : system());
+    }
+  };
   label();
   A.wireDropdowns(document);
 })();

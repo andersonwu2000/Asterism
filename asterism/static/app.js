@@ -1,5 +1,6 @@
 // Sends forms marked data-api to the JSON API: the answer's data-show field into the form's [data-out], else on to
-// data-next, else the page again; a refusal in the form's [data-out].
+// data-next, else to the address the field named by data-goto names (/{value}), else the page again; a refusal in the
+// form's [data-out].
 // All texts come from the page's message catalogue (body data-msg); this file holds none.
 "use strict";
 (function () {
@@ -29,10 +30,12 @@
     ev.preventDefault();
     var submitter = ev.submitter || form.querySelector("button:not([type=button])");
     var out = form.querySelector("[data-out]");
-    var res = await post(form.dataset.api, collect(form, submitter));
+    var body = collect(form, submitter);
+    var res = await post(form.dataset.api, body);
     if (!res.ok) { if (out) out.textContent = A.errorText(res.data.error); return; }
     if (form.dataset.show && out) out.textContent = res.data[form.dataset.show] || "";
     else if (form.dataset.next) window.location.href = form.dataset.next;
+    else if (form.dataset.goto) window.location.href = "/" + encodeURIComponent(body[form.dataset.goto] || "");
     else window.location.reload();
   });
 })();

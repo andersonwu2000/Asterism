@@ -62,9 +62,10 @@
     };
     R.plainOf = function (who) { return R.ordered(who).filter(function (g) { return !R.isDefault(g); }); };
     R.defaultsOf = function (who) { return R.ordered(who).filter(R.isDefault); };
-    // May the reader put `who` into, or take it out of, the group `g`?
+    // May the reader put `who` into, or take it out of, the group `g`? Never a default group (who is in one follows
+    // joining) nor a person's own agent group (it follows ownership).
     R.mayRegroup = function (who, isAgent, g) {
-      if (!g || g.kind === "ownership") return false;
+      if (!g || g.kind === "ownership" || R.isDefault(g)) return false;
       if (isAgent && who.owner === view.me.name) return true;           // one's own agent: groups one is in (adding)
       if (!mine("manage_groups") || !holdsAll(g.permissions)) return false;
       if (isAgent) {

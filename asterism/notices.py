@@ -1,5 +1,5 @@
 """Changes of an agent's presence: holding it offline (`unanswered`, `silent`), bringing it back, and the one
-notice per change that the system posts in #general.
+notice per change that the system posts in the project's notice channel.
 
 sync() compares what presence says now with what was last announced (agents.announced, kept in the
 database so a restart neither repeats nor loses a change) and posts the notice when they differ. It is

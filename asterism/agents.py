@@ -49,7 +49,11 @@ def credential_caller(store: Store, slug: str, credential: str | None, session: 
                       kind: str | None, model: str | None = None) -> Caller:
     """A call of the per-session agent API: the credential says which person, the session header which session.
     A model header that is not 1 to 64 of [A-Za-z0-9._:/-] is ignored, never refused."""
-    pj = projects.open_project(store, slug)
+    try:
+        pj = projects.open_project(store, slug)
+    except ApiError:
+        # A project that is gone (deleted) takes its credentials with it: refused as a revoked one.
+        raise invalid_credential() from None
     if not credential:
         raise invalid_credential()
     c = pj.db.execute("SELECT * FROM credentials WHERE digest = ? AND revoked IS NULL",
@@ -107,11 +111,13 @@ def whoami(c: Caller) -> dict[str, Any]:
         out["note"] = NOT_REGISTERED
     if "read" in projects.permissions(pj, actor):
         out.update(projects.people_and_agents(pj))
-        pinned = pins.short(pj)
-        out["channels"] = [{"name": n, "pins": pinned.get(n, [])} for n in messaging.channel_names(pj)]
     else:
-        out.update(people=[], agents=[], channels=[],
-                   note="This agent lacks the read permission, so the member list is hidden.")
+        out.update(people=[], agents=[], note="This agent lacks the read permission, so the member list is hidden.")
+    # Only the channels the agent may read, which a channel's override may grant without the project's read (an
+    # unregistered session: those its person may read).
+    pinned = pins.short(pj)
+    who = messaging.agent_member(a) if a else messaging.person_member(pj, c.person_id)
+    out["channels"] = [{"name": n, "pins": pinned.get(n, [])} for n in messaging.channel_names(pj, who)]
     return out
 
 

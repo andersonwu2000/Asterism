@@ -26,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 import urllib.parse
@@ -467,6 +468,15 @@ def cache_root() -> Path:
 
 def _cache_dir(slug: str) -> Path:
     return cache_root() / slug
+
+
+def forget(slug: str) -> None:
+    """A project was deleted: what is known and kept of its repository goes with it."""
+    for key in [k for k in _states if k[0] == slug]:
+        del _states[key]
+    folder = _cache_dir(slug)
+    if folder.is_dir():
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def _touch(path: Path) -> None:

@@ -15,7 +15,6 @@ import re
 import sqlite3
 import time
 import urllib.parse
-from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from starlette.applications import Starlette
@@ -25,16 +24,15 @@ from starlette.responses import (FileResponse, HTMLResponse, JSONResponse, Plain
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import (accounts, agents, computers, config, downloads, files, messaging, oauth, pages, pins, projects, replays,
-               schedules, tasks, tools, upkeep, util)
+from . import (accounts, agents, assets, computers, config, downloads, files, messaging, oauth, pages, pins, projects,
+               replays, schedules, tasks, tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
-from .i18n import Translator, pick_locale
+from .i18n import LOCALES, Translator, pick_locale
 from .projects import Actor, Project
 from .store import Store
 
 SESSION_COOKIE = "asterism_session"
 LOGIN_COOKIE = "asterism_login"
-STATIC = Path(__file__).resolve().parent / "static"
 
 _store: Store | None = None
 
@@ -47,7 +45,9 @@ def store() -> Store:
 # --------------------------------------------------------------------------- request helpers
 
 def tr_for(request: Request) -> Translator:
-    return Translator(pick_locale(request.headers.get("accept-language")))
+    """The pages' language: the one the signed-in person chose, else the browser's."""
+    person = signed_in(request)
+    return Translator(pick_locale(person["locale"] if person else None, request.headers.get("accept-language")))
 
 
 def signed_in(request: Request):
@@ -170,7 +170,8 @@ async def idempotent(request: Request, slug: str, raw_key: str,
     done = _running[name] = asyncio.Event()
     try:
         resp = await answer(request)
-        if resp.status_code < 500:
+        # Kept with the project, unless the request deleted it (then there is nothing to keep it in).
+        if resp.status_code < 500 and store().project(slug) is db:
             replays.keep(db, scope, key, request.url.path, body, resp.status_code, bytes(resp.body))
     finally:
         del _running[name]
@@ -269,6 +270,17 @@ async def me(request: Request) -> Any:
     return {"signed_in": True, "person": accounts.public(require_person(request))}
 
 
+async def api_my_settings(request: Request) -> Any:
+    """A person's own settings, for every project: the language of the pages."""
+    person = require_person(request)
+    return accounts.set_settings(store().accounts(), person["id"], await body_json(request), LOCALES)
+
+
+async def api_projects_create(request: Request) -> Any:
+    """Anyone signed in makes a project."""
+    return projects.new_project(store(), require_person(request), await body_json(request))
+
+
 # --------------------------------------------------------------------------- static
 
 STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
@@ -277,13 +289,21 @@ STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; char
 
 
 async def static_file(request: Request) -> Response:
-    """The pages' scripts, styles and the vendored libraries. Types are fixed here (the system's guesses
-    differ between machines, and the browser refuses a script of the wrong type)."""
-    path = (STATIC / request.path_params["path"]).resolve()
-    ctype = STATIC_TYPES.get(path.suffix)
-    if ctype is None or not path.is_relative_to(STATIC) or not path.is_file():
+    """The pages' scripts, styles, fonts and the vendored libraries. Types are fixed here (the system's guesses
+    differ between machines, and the browser refuses a script of the wrong type). An address that names the file's
+    present content (?v=, assets.url) is kept by the browser for good; any other is checked again each time, by its
+    ETag (assets.py says why: the flash on changing pages)."""
+    path = assets.resolve(request.path_params["path"])
+    ctype = STATIC_TYPES.get(path.suffix) if path else None
+    if ctype is None:
         return Response("not found", status_code=404, media_type="text/plain")
-    return Response(path.read_bytes(), media_type=ctype, headers={"Cache-Control": "no-cache"})
+    body, version = assets.content(path)
+    etag = f'"{version}"'
+    cache = "public, max-age=31536000, immutable" if request.query_params.get("v") == version else "no-cache"
+    headers = {"Cache-Control": cache, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(body, media_type=ctype, headers=headers)
 
 
 # --------------------------------------------------------------------------- downloads (no authentication)
@@ -378,6 +398,28 @@ async def join(request: Request) -> Response:
 
 
 # --------------------------------------------------------------------------- project JSON API (session cookie)
+
+async def api_project_change(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.change_project(pj, actor, await body_json(request))
+
+
+async def api_project_delete(request: Request) -> Any:
+    """Delete the project for good. Its credentials are revoked first, which ends their open polls; those let go of
+    the database in the moments after, and then its file is removed."""
+    pj, actor = member_actor(request, request.path_params["slug"])
+    projects.delete_project(pj, actor, (await body_json(request)).get("confirm"))
+    slug = pj.slug
+    await asyncio.sleep(0.2)            # the ended polls write their last mark and return
+    store().drop_project(slug)
+    files.forget(slug)
+    return {"deleted": slug}
+
+
+async def api_my_name(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return projects.set_name(pj, actor, (await body_json(request)).get("name"))
+
 
 async def api_members(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
@@ -618,6 +660,24 @@ async def api_channel_create(request: Request) -> Any:
     return messaging.create_channel(pj, actor, (await body_json(request)).get("name"))
 
 
+async def api_channel_rename(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return messaging.rename_channel(pj, actor, request.path_params["name"], (await body_json(request)).get("name"))
+
+
+async def api_channel_delete(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return messaging.delete_channel(pj, actor, request.path_params["name"])
+
+
+async def api_channel_permissions(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    if request.method == "POST":
+        return messaging.set_channel_permissions(pj, actor, request.path_params["name"],
+                                                 (await body_json(request)).get("overrides"))
+    return messaging.channel_permissions(pj, actor, request.path_params["name"])
+
+
 async def api_channel_mute(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     b = await body_json(request)
@@ -661,9 +721,9 @@ async def api_messages(request: Request) -> Any:
 
 
 async def api_search(request: Request) -> Any:
-    """Search over the messages the person may read (people only; agents have no such tool)."""
+    """Search over the messages the person may read (people only; agents have no such tool): the channels they may
+    read, and their private conversations with the project's read permission."""
     pj, actor, me = member_self(request, request.path_params["slug"])
-    projects.require(pj, actor, "read", "Searching messages needs the read permission.")
     q = request.query_params
     return messaging.search(pj, me, q.get("q"), q.get("in"), q.get("from"), q.get("before"), q.get("limit"))
 
@@ -719,6 +779,9 @@ def _unauthorized(request: Request, slug: str) -> Response:
 async def mcp(request: Request) -> Response:
     slug = request.path_params["slug"]
     if store().project(slug) is None:
+        if request.headers.get("authorization"):       # a deleted project's token is refused as a revoked one
+            _log_mcp_refused(request, slug, "no_project")
+            return _unauthorized(request, slug)
         return error_json(ApiError(404, "not_found", f"There is no project '{slug}'."))
     if request.method != "POST":
         return Response(status_code=405, headers={"Allow": "POST"})
@@ -873,7 +936,8 @@ def _page_context(request: Request, slug: str):
         actor = projects.require_member(pj, person)
     except ApiError as e:
         return page_error(request, e, person)
-    return person, pj, actor
+    # In a project's pages the reader is shown by the name they have in that project.
+    return {**dict(person), "name": projects.person_name(pj, actor.person_id)}, pj, actor
 
 
 def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
@@ -888,8 +952,10 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
+    # The channels the reader may read (an override may grant one without the project's read), and private
+    # conversations with the project's read.
     places = messaging.channels_view(pj, me)
-    return {"slug": pj.slug, "name": info["name"], "repo": info["repo"],
+    return {"slug": pj.slug, "name": info["name"], "repo": info["repo"], "notice_channel": "#" + projects.notice_channel(pj),
             "places": places, "beat_s": config.get().person_beat_s,
             "important": sum(c["important"] for c in places["channels"]),
             "important_private": sum(p["important"] for p in places["private"]),
@@ -927,6 +993,7 @@ async def dm_page(request: Request) -> Response:
     person, pj, actor = ctx
     name = request.path_params.get("name", "")
     try:
+        messaging.require_read(pj, messaging.person_member(pj, actor.person_id))
         if name:
             messaging.resolve_place(pj, messaging.person_member(pj, actor.person_id), name)
     except ApiError as e:
@@ -948,7 +1015,7 @@ def _agent_page(request: Request, tab: str) -> Response:
             "can_edit_tasks": "edit_tasks" in mine}
     if tab == "schedules":
         view["min_every_s"] = config.get().schedule_min_every_s
-        view["places"] = {"channels": messaging.channel_names(pj),
+        view["places"] = {"channels": messaging.channel_names(pj, messaging.person_member(pj, actor.person_id)),
                           "people": [r["name"] for r in pj.db.execute(
                               "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
                           "agents": [r["name"] for r in pj.db.execute(
@@ -969,8 +1036,9 @@ async def schedules_page(request: Request) -> Response:
 
 
 def _settings(request: Request, scope: str, section: str, channel: str | None = None) -> Response:
-    """The settings layer (project or one channel) at `section` ("" for the bare address). Every member may open
-    it; the invitations are for who may invite, and an unknown section or channel is not found."""
+    """The settings layer (the project, one channel, or the reader's own) at `section` ("" for the bare address).
+    Every member may open it; the invitations are for who may invite, and an unknown section or channel (or one the
+    reader may not read) is not found."""
     ctx = _page_context(request, request.path_params["slug"])
     if isinstance(ctx, Response):
         return ctx
@@ -988,11 +1056,23 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
             if here is None:
                 raise ApiError(404, "not_found", "")
             here = {"name": channel, "muted": here["muted"],
-                    "agent_mutes": messaging.agent_mutes(pj, actor.person_id).get(channel, [])}
+                    "agent_mutes": messaging.agent_mutes(pj, actor.person_id).get(channel, []),
+                    "notices": projects.notice_channel(pj) == channel}
+        me = None
+        if scope == "me":
+            acc = accounts.person(store().accounts(), actor.person_id)
+            me = {"name": projects.person_name(pj, actor.person_id), "github_login": acc["github_login"],
+                  "my": projects.my_view(pj, actor)}
     except ApiError as e:
         return page_error(request, e, person)
     return html(pages.settings(tr_for(request), person, frame, scope, section, view, projects.PERMISSIONS,
-                               projects.MANAGEMENT, here))
+                               projects.MANAGEMENT, here, me))
+
+
+async def me_page(request: Request) -> Response:
+    """The reader's own settings: their name here, language and look, computers and connectors, what others may do
+    with their agents (/{slug}/me, /{slug}/me/{section})."""
+    return _settings(request, "me", request.path_params.get("section", ""))
 
 
 async def settings_page(request: Request) -> Response:
@@ -1108,6 +1188,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/login/callback", login_callback),
         Route("/logout", logout, methods=["POST"]),
         Route("/api/me", api(me)),
+        Route("/api/me/settings", api(api_my_settings), methods=["POST"]),
+        Route("/api/projects", api(api_projects_create, 201), methods=["POST"]),
         Route("/static/{path:path}", static_file),
         Route("/join/{code}", join, methods=["GET", "POST"]),
         Route("/.well-known/oauth-protected-resource/{slug}/mcp", oauth_prm),
@@ -1134,11 +1216,16 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/channels/{name}/settings", channel_settings_page),
         Route("/{slug}/channels/{name}/settings/{section}", channel_settings_page),
         Route("/{slug}/schedules", schedules_page),
+        Route("/{slug}/me", me_page),
+        Route("/{slug}/me/{section}", me_page),
         Route("/{slug}/dm", dm_page),
         Route("/{slug}/dm/{name}", dm_page),
         Route("/{slug}/files", files_page),
         Route("/{slug}/files/{path:path}", files_page),
         Route("/{slug}/mcp", mcp, methods=["GET", "POST", "DELETE"]),
+        Route("/{slug}/api/project", api(api_project_change), methods=["POST"]),
+        Route("/{slug}/api/project/delete", api(api_project_delete), methods=["POST"]),
+        Route("/{slug}/api/me/name", api(api_my_name), methods=["POST"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
         Route("/{slug}/api/groups", api(api_groups, 201), methods=["POST"]),
@@ -1153,6 +1240,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/my/credentials/{cred:int}/revoke", api(api_revoke), methods=["POST"]),
         Route("/{slug}/api/channels", api(api_channels), methods=["GET"]),
         Route("/{slug}/api/channels", api(api_channel_create, 201), methods=["POST"]),
+        Route("/{slug}/api/channels/{name}", api(api_channel_rename), methods=["POST"]),
+        Route("/{slug}/api/channels/{name}/delete", api(api_channel_delete), methods=["POST"]),
+        Route("/{slug}/api/channels/{name}/permissions", api(api_channel_permissions), methods=["GET", "POST"]),
         Route("/{slug}/api/channels/{name}/mute", api(api_channel_mute), methods=["POST"]),
         Route("/{slug}/api/channels/{name}/pins", api(api_pin, 201), methods=["POST"]),
         Route("/{slug}/api/channels/{name}/pins/{pid:int}/remove", api(api_unpin), methods=["POST"]),

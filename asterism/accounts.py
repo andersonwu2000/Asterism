@@ -34,7 +34,16 @@ def person(db: sqlite3.Connection, person_id: int) -> sqlite3.Row | None:
 
 
 def public(p: sqlite3.Row) -> dict[str, Any]:
-    return {"name": p["name"], "github_login": p["github_login"]}
+    return {"name": p["name"], "github_login": p["github_login"], "locale": p["locale"]}
+
+
+def set_settings(db: sqlite3.Connection, person_id: int, body: dict[str, Any], locales: list[str]) -> dict[str, Any]:
+    """A person's own settings, kept with the account: the language of the pages (one of `locales`)."""
+    if "locale" not in body or body["locale"] not in locales:
+        raise ApiError(400, "bad_request", "locale must be one of: " + ", ".join(locales) + ".")
+    with db:
+        db.execute("UPDATE people SET locale = ? WHERE id = ?", (body["locale"], person_id))
+    return {"person": public(person(db, person_id))}
 
 
 def _free_name(db: sqlite3.Connection, login: str) -> str:

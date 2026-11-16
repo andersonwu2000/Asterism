@@ -35,12 +35,14 @@
 
   // ------------------------------------------------------------------ places
 
-  // Chat: the channel the hash names (#general by default). Private messages: the conversation the address names.
+  // Chat: the channel the hash names, by default the first channel the reader may read (the second column's first).
+  // Private messages: the conversation the address names.
   function placeFromHash() {
     if (MODE === "dm") return root.dataset.place || "";
     var raw = window.location.hash.slice(1);
     try { raw = decodeURIComponent(raw); } catch (err) { raw = ""; }
-    return raw || "#general";
+    var first = document.querySelector("#side-channels a.place[data-place]");
+    return raw || (first ? first.dataset.place : "");
   }
   function isChannel(place) { return !!place && place.charAt(0) === "#"; }
   function inThisMode(place) { return MODE === "dm" ? !!place && !isChannel(place) : isChannel(place); }
@@ -552,8 +554,8 @@
   // Chat's places are its hash; a private conversation named there (an older address) has its own page now.
   function start() {
     var place = placeFromHash();
+    if (!place) { nothingChosen(); return; }          // no channel the reader may read, or no conversation chosen
     if (MODE === "chat" && !isChannel(place)) { window.location.replace(addressOf(place)); return; }
-    if (!place) { nothingChosen(); return; }
     open(place);
   }
   if (MODE === "chat") window.addEventListener("hashchange", function () { start(); });

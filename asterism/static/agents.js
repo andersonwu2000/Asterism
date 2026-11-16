@@ -3,11 +3,9 @@
 // - Scope "my agents" (the bare address): my agents (#my-agents), one block each: presence, name, kind and its menu;
 //   where it is ("在 {computer}"), its last activity and its tasks (a link to them); an offline agent says why on a
 //   wash; its groups as chips (x and + where the reader may; never the default groups nor my own agent group) and the
-//   default ones as a quiet line. Then my computers and connectors (#my-credentials) with the agents on each and
-//   "revoke" (floating, the label typed), and what others may do with my agents (#my-switches: the four switches,
-//   each saved as it changes).
-// - Scope ?of={person}: that person's agents read only (chips where the reader may change them) and their switches,
-//   disabled.
+//   default ones as a quiet line. My computers and connectors, and what others may do with my agents, are in my
+//   personal settings (me.js, /{slug}/me).
+// - Scope ?of={person}: that person's agents read only (chips where the reader may change them).
 // The agent's menu: private message, its tasks, a new task for it, its groups (check boxes), open in settings,
 // remove from the project (floating, the name typed).
 "use strict";
@@ -15,8 +13,8 @@
   var A = window.Asterism, G = A && A.agentPage, view = document.getElementById("agents-view");
   if (!G || !view || !A.people || !A.side) return;
   var t = A.t, make = A.make, P = A.people, S = A.side, T = A.tasks;
-  var ME = G.me, API = G.api, SWITCHES = ["others_mention", "others_channel", "others_assign", "others_regroup"];
-  var my = null, myRaw = "", said = {};
+  var ME = G.me, API = G.api;
+  var my = null, myRaw = "";
 
   function members() { return S.members; }
   function rules() { return members() ? P.rules(members()) : null; }
@@ -122,7 +120,7 @@
     return li;
   }
 
-  // ------------------------------------------------------------------ my agents, computers and switches
+  // ------------------------------------------------------------------ my agents
 
   function section(id, title) {
     var sec = make("section", "ag-sec");
@@ -150,88 +148,6 @@
       }
     }
     view.appendChild(sec);
-
-    var cs = section("my-credentials", t("ag.creds_n", {n: creds.length}));
-    if (creds.length) {
-      var cl = make("ul", "ag-list");
-      creds.forEach(function (c) { cl.appendChild(credential(c, agents)); });
-      cs.appendChild(cl);
-    } else {
-      cs.appendChild(make("p", "ag-empty", t("my.no_credentials")));
-    }
-    view.appendChild(cs);
-
-    var ss = section("my-switches", t("my.switches"));
-    ss.appendChild(make("p", "dim", t("my.switches_hint")));
-    var box = make("div", "ag-switches");
-    SWITCHES.forEach(function (k) { box.appendChild(switchRow(k, !!(my.switches || {})[k], t("switch." + k), true)); });
-    var more = make("a", "", t("ag.group_settings"));
-    more.href = "/" + encodeURIComponent(G.slug) + "/settings/groups?g=" + encodeURIComponent(ME + "-agents");
-    box.appendChild(make("p", "check")).appendChild(more);
-    ss.appendChild(box);
-    view.appendChild(ss);
-  }
-
-  function credential(c, agents) {
-    var li = make("li", "ag-item"), out = make("div", "out");
-    out.setAttribute("aria-live", "polite");
-    var first = make("div", "ag-line");
-    var via = A.MSG["my.via." + c.via] ? t("my.via." + c.via) : (c.via || "");
-    first.append(make("span", "ag-name mono", c.label), make("span", "dim", t("ag.cred_kind", {kind: t("cred." + c.kind), via: via})));
-    li.appendChild(first);
-    var b = A.button("btn ag-side-btn", t("my.revoke"));
-    b.setAttribute("aria-label", t("ag.revoke_label", {name: c.label}));
-    b.dataset.key = "revoke:" + c.id;
-    b.addEventListener("click", function () {
-      A.gone({title: t("gone.revoke.title", {name: c.label}), text: t("gone.revoke.text", {name: c.label}), name: c.label,
-              button: t("gone.revoke.button"), opener: b,
-              run: function () { return A.request(API + "my/credentials/" + encodeURIComponent(c.id) + "/revoke", null, {}); },
-              done: function () { refresh(null, out); }});
-    });
-    li.appendChild(b);
-    var on = agents.filter(function (a) { return a.credential === c.id; }).map(function (a) { return a.name; });
-    var names = null;
-    if (on.length) {
-      names = make("span");
-      names.appendChild(document.createTextNode(t("ag.cred_agents", {names: ""})));
-      on.forEach(function (n, i) {
-        if (i) names.appendChild(document.createTextNode(t("ag.sep")));
-        names.appendChild(make("span", "mono", n));
-      });
-    }
-    li.appendChild(G.facts("ag-meta", ["connected" in c ? t(c.connected ? "my.connected.yes" : "my.connected.no") : null,
-                                       c.last_used ? t("ag.last_used", {time: G.time(c.last_used)}) : null, names]));
-    li.appendChild(out);
-    return li;
-  }
-
-  // One switch: saved as it changes, "已儲存。" beside it for a moment, a refusal in the same place. Another person's
-  // are shown disabled.
-  function switchRow(k, on, label, mine) {
-    var row = make("div", "check"), lab = make("label"), box = make("input"), out = make("span", "out");
-    box.type = "checkbox";
-    box.name = k;
-    box.checked = on;
-    box.disabled = !mine;
-    box.dataset.key = "sw:" + k;
-    out.setAttribute("aria-live", "polite");
-    out.textContent = said[k] || "";
-    lab.append(box, document.createTextNode(" " + label));
-    row.append(lab, out);
-    if (mine) {
-      box.addEventListener("change", async function () {
-        var body = {};
-        body[k] = box.checked;
-        var r = await A.request(API + "my/switches", null, body);
-        if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("ag.refused", r.data); return; }
-        my.switches = r.data.switches;
-        said[k] = t("ag.saved");
-        out.textContent = said[k];
-        setTimeout(function () { if (said[k] === t("ag.saved")) { said[k] = ""; out.textContent = ""; } }, 2500);
-        S.loadMembers();
-      });
-    }
-    return row;
   }
 
   // ------------------------------------------------------------------ another person's agents
@@ -243,15 +159,6 @@
     agents.forEach(function (a) { ul.appendChild(block(a, null, false)); });
     sec.appendChild(ul);
     view.appendChild(sec);
-    var own = v.groups.filter(function (g) { return g.kind === "ownership" && g.owner === person; })[0];
-    var ss = section("", t("mem.switches", {owner: person}));
-    var box = make("div", "ag-switches");
-    SWITCHES.forEach(function (k) {
-      box.appendChild(switchRow(k, !!(own && own.switches && own.switches[k]), t("mem.sw." + k, {owner: person}), false));
-    });
-    box.appendChild(make("p", "dim", t("mem.switches_other", {owner: person})));
-    ss.appendChild(box);
-    view.appendChild(ss);
   }
 
   // ------------------------------------------------------------------ the tab
