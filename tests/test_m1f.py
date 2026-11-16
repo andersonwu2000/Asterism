@@ -50,7 +50,7 @@ def test_every_page_of_a_project_has_the_same_frame(f):
         page = f.alice.c.get(f"/{SLUG}{path}")
         assert page.status_code == 200, path
         html = page.text
-        for needed in ('id="rail"', 'id="rail-chat"', 'id="rail-files"', 'id="theme-toggle"', 'id="side-open"'):
+        for needed in ('id="rail"', 'id="rail-chat"', 'id="rail-files"', 'id="side-open"'):     # f6: theme is a personal setting
             assert needed in html, f"{path}: {needed}"
         assert '/static/app.css' in html, path
         assert "<style" not in html, f"{path}: styles live in the stylesheet, not in the page"
