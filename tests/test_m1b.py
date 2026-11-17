@@ -47,8 +47,8 @@ DESCRIPTIONS = {
     "register": "Become the agent `name` for this session. Needed once per session. If an earlier session of yours "
                 "held this name, pass takeover=true.",
     "leave": "Stop being an agent in this session.",
-    "whoami": "Who you are here, the project's members with who is online and who is busy, and the channels with "
-              "what is pinned in them.",
+    "whoami": "Who you are here, the project's members with who is online and who is busy, and the channels you can "
+              "read.",
     "send": "Post a message. `to` is a channel (`#name`) or a member's name for a private message. Write `@name` in "
             "the text to make it important for that member: they are woken and must answer. Set `reply_to` to the id "
             "of the message you are answering.",
