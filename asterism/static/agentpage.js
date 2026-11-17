@@ -1,13 +1,12 @@
 // The agent page (#agent-timeline; m1f6_contract.md section 10), from the members (frame.js) and one agent's timeline
 // (/api/agents/{name}/timeline). All texts come from the page's message catalogue.
-// - The second column (#agent-list): every agent of the project, under a switch at its top (#agent-sort, remembered):
-//   by group (sections by the groups in their order; an agent under the first group it is in that is not a default
-//   group, else under AI) or by owner (sections by person, mine first). A row: presence, name, model, what it is doing.
+// - The second column (#agent-list): every agent of the project by group (1z: there is no other sorting): sections by
+//   the custom groups in their order, then each person's agent group; an agent under the first custom group it is in,
+//   else under its person's agent group, else under AI. A row: presence, name, model, what it is doing.
 // - The chosen agent is the address's query (?name=), changed in place with history.pushState; without one, the
 //   first of my agents, else the first listed. The rail's agent button returns to it. Top right (#agent-head): its
 //   presence, name, model, kind and owner; at the right its acts where the reader may (its groups as check boxes, and
 //   removing it from the project, floating), and "invite agent".
-//   By group, a person's own agent groups are passed over (they say whose an agent is: that is the other sorting).
 //   Beside a name, what it is doing (frame.js, S.workMark: working or idle, has a task, has a task but idle). Top right
 //   also what it holds, in one line, and for an agent of the reader's own its quota (/api/my; 1x).
 // - The page: its timeline, as a conversation: the messages that concern it (it sent them, they name it, or they are
@@ -26,10 +25,9 @@
   var SLUG = root.dataset.slug, ME = root.dataset.me, API = "/" + encodeURIComponent(SLUG) + "/api/";
   var HOME = "/" + encodeURIComponent(SLUG) + "/agent";
   var PAGE = 50, EVERY_MS = 4000, LANG = document.documentElement.lang || undefined;
-  var SORT_KEY = "asterism-agent-sort:" + SLUG;
 
   var el = {
-    list: document.getElementById("agent-list"), sort: document.getElementById("agent-sort"),
+    list: document.getElementById("agent-list"),
     head: document.getElementById("agent-head"), acts: document.getElementById("agent-acts"),
     scroll: document.getElementById("tl-scroller"), items: document.getElementById("tl-list"),
     older: document.getElementById("tl-older"), form: document.getElementById("tl-composer"),
@@ -39,7 +37,6 @@
   owner.hidden = true;
   root.appendChild(owner);
 
-  var sort = A.store.get(SORT_KEY, "group") === "owner" ? "owner" : "group";
   var FILTER_KEY = "asterism-agent-filter:" + SLUG, filterBox = document.getElementById("tl-filter");
   var filter = A.store.get(FILTER_KEY, "concerns") === "all" ? "all" : "concerns";
   var tasks = [];                  // the project's tasks (/api/tasks), for the chosen agent's in the top-right cell
@@ -61,35 +58,22 @@
   function sections() {
     var v = S.members, R = rules();
     if (!v || !R) return [];
-    var list = agents(), out = [];
-    if (sort === "owner") {
-      var owners = [];
-      list.forEach(function (a) { if (owners.indexOf(a.owner) < 0) owners.push(a.owner); });
-      var people = (v.people || []).map(function (p) { return p.name; });
-      owners.sort(function (x, y) {
-        if (x === ME || y === ME) return x === ME ? -1 : 1;
-        var i = people.indexOf(x), j = people.indexOf(y);
-        return (i < 0 ? 1e9 : i) - (j < 0 ? 1e9 : j);
-      });
-      owners.forEach(function (o) {
-        out.push({title: o === ME ? t("ag.mine") : t("group.ownership", {owner: o || "?"}),
-                  agents: list.filter(function (a) { return a.owner === o; })});
-      });
-      return out;
-    }
-    // By group: the groups people organise (a person's own agent group says only whose an agent is: that is the other
-    // sorting), in their order; an agent under the first such group it is in, else under AI.
-    var placed = {};
-    v.groups.forEach(function (g) {
-      if (R.isDefault(g) || g.kind === "ownership") return;
-      var here = list.filter(function (a) {
-        if (placed[a.name]) return false;
-        var first = R.plainOf(a).filter(function (x) { return x.kind !== "ownership"; })[0];
-        return !!first && first.name === g.name;
-      });
+    var list = agents(), out = [], placed = {};
+    // The custom groups in their order, an agent under the first it is in; then each person's agent group, for the
+    // agents in none of them.
+    function place(g, home) {
+      var here = list.filter(function (a) { return !placed[a.name] && home(a) === g.name; });
       here.forEach(function (a) { placed[a.name] = true; });
       if (here.length) out.push({title: R.label(g), agents: here});
-    });
+    }
+    function firstOf(kind) {
+      return function (a) {
+        var g = R.plainOf(a).filter(function (x) { return kind === "ownership" ? x.kind === kind : x.kind !== "ownership"; })[0];
+        return g ? g.name : null;
+      };
+    }
+    v.groups.forEach(function (g) { if (!R.isDefault(g) && g.kind !== "ownership") place(g, firstOf("custom")); });
+    v.groups.forEach(function (g) { if (g.kind === "ownership") place(g, firstOf("ownership")); });
     var rest = list.filter(function (a) { return !placed[a.name]; });
     if (rest.length) out.push({title: R.label(R.group("ai")) || "AI", agents: rest});
     return out;
@@ -101,7 +85,8 @@
     link.dataset.name = a.name;
     link.dataset.key = "agent:" + a.name;
     if (a.name === chosen) link.setAttribute("aria-current", "page");
-    link.append(S.presence({kind: "agent", online: !!a.online}), make("span", "place-name", a.name));
+    link.append(S.presence({kind: "agent", online: !!a.online}), S.avatar(a.name, 16, {kind: "agent", avatar: a.avatar}),
+                make("span", "place-name", a.name));
     var model = A.modelTag(a.model);
     if (model) link.appendChild(model);
     var state = S.workMark(a, "busy");
@@ -125,18 +110,8 @@
         el.list.appendChild(sec);
       });
     });
-    Array.prototype.forEach.call(el.sort.querySelectorAll("[data-sort]"), function (b) {
-      b.setAttribute("aria-pressed", String(b.dataset.sort === sort));
-    });
   }
 
-  el.sort.addEventListener("click", function (ev) {
-    var b = ev.target.closest && ev.target.closest("[data-sort]");
-    if (!b) return;
-    sort = b.dataset.sort === "owner" ? "owner" : "group";
-    A.store.set(SORT_KEY, sort);
-    drawList();
-  });
   el.list.addEventListener("click", function (ev) {
     var a = ev.target.closest && ev.target.closest("a[data-name]");
     if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
@@ -151,6 +126,7 @@
     el.head.textContent = "";
     el.acts.textContent = "";
     if (!a) return;
+    el.head.appendChild(S.avatar(a.name, 24, {kind: "agent", avatar: a.avatar}));
     el.head.appendChild(S.presence({kind: "agent", online: !!a.online}));
     el.head.appendChild(make("span", "agent-name", a.name));
     var model = A.modelTag(a.model);
@@ -179,6 +155,29 @@
         }), groups);
       });
       el.acts.appendChild(groups);
+    }
+    // Its avatar, set by its own person only (1z).
+    if (a.owner === ME) {
+      var face = A.button("btn", t("agp.avatar"));
+      face.dataset.key = "avatar";
+      face.setAttribute("aria-haspopup", "menu");
+      face.setAttribute("aria-expanded", "false");
+      face.addEventListener("click", function () {
+        var who = find(chosen);
+        if (!who) return;
+        var url = API + "agents/" + encodeURIComponent(who.name) + "/avatar";
+        var items = [{label: t("agp.avatar_pick", {name: who.name}), run: async function () {
+          var r = await S.pickAvatar(url);
+          if (r.cancelled) return;
+          said(r.ok ? t("agp.avatar_saved", {name: who.name}) : A.refusal("me.avatar", r.data));
+        }}];
+        if (who.avatar) items.push({label: t("agp.avatar_remove", {name: who.name}), run: async function () {
+          var r = await S.removeAvatar(url);
+          said(r.ok ? t("agp.avatar_removed", {name: who.name}) : A.refusal("me.avatar", r.data));
+        }});
+        A.menu({label: t("agp.avatar"), anchor: face}, items, face);
+      });
+      el.acts.appendChild(face);
     }
     if (R.mayRemove(a, true)) {
       var remove = A.button("btn", t("people.remove"));
@@ -243,11 +242,12 @@
     A.keepFocus(el.head.parentNode, drawHead);
   }
 
-  // A refusal of an act on the agent, said under the timeline (where the composer's outcome or the quiet line is).
-  function refused(data) {
-    var text = A.refusal("mem.regroup", data);
+  // A refusal of an act on the agent, or an outcome, said under the timeline (where the composer's outcome or the
+  // quiet line is).
+  function said(text) {
     if (el.form.hidden) { owner.hidden = false; owner.textContent = text; } else el.out.textContent = text;
   }
+  function refused(data) { said(A.refusal("mem.regroup", data)); }
 
   // Only its own person writes to it privately (the server's rule): the composer for them, one quiet line otherwise.
   function drawComposer() {
@@ -295,6 +295,7 @@
     var li = make("li", "msg head" + (m.from_kind === "system" ? " system" : ""));
     var gutter = make("div", "gutter"), body = make("div", "body"), meta = make("div", "meta");
     gutter.appendChild(stamp(m.sent_at));
+    if (m.from_kind !== "system") meta.appendChild(S.avatar(m.from, 20, S.directory[m.from] || {kind: m.from_kind}));
     meta.appendChild(make("span", "from", m.from_kind === "system" ? t("msg.system") : m.from));
     if (m.from_kind === "agent") {
       var model = A.modelTag(m.model);

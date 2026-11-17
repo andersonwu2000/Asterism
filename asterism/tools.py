@@ -37,7 +37,7 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "whoami",
      "description": ("Who you are here, the project's members with who is online and who is busy, and the channels "
-                     "with what is pinned in them."),
+                     "you can read."),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "send",
      "description": ("Post a message. `to` is a channel (`#name`) or a member's name for a private message. Write "

@@ -8,10 +8,11 @@ the server asks without credentials, which works for a public repository. Only G
 the one POST that asks for the installation token; redirects are never followed.
 
 Freshness: the head is trusted for ASTERISM_FILES_REFRESH_S; inside that time GitHub is not asked for what is
-cached. Trees and blobs are addressed by their hash and never change: each is fetched once and kept on disk
-under DATA/cache/<project>/ (trees as JSON, blobs as their bytes, served from the disk). The folder never holds
-more than ASTERISM_FILES_CACHE_MB after an answer: what was used longest ago (file modification time, touched on
-every use) goes first. Deleting the folder at any time is harmless.
+cached, except when a reader asks for the newest head by hand (refresh: the files menu's 重新整理). Trees and blobs
+are addressed by their hash and never change: each is fetched once and kept on disk under DATA/cache/<project>/
+(trees as JSON, blobs as their bytes, served from the disk). The folder never holds more than
+ASTERISM_FILES_CACHE_MB after an answer: what was used longest ago (file modification time, touched on every use)
+goes first. Deleting the folder at any time is harmless.
 
 Three states per project: connected; GitHub away (no answer, 5xx, rate limited: what is cached is served and
 listings are marked stale); not connected (the repository is not readable: 409). Each is checked again after
@@ -759,6 +760,19 @@ async def listing(slug: str, address: str, raw_dir: Any) -> dict[str, Any]:
             item["size"] = e.size
         out.append(item)
     answer: dict[str, Any] = {"ref": h.ref, "commit": h.commit, "dir": folder, "entries": out}
+    if stale:
+        answer["stale"] = True
+    return answer
+
+
+async def refresh(slug: str, address: str) -> dict[str, Any]:
+    """Ask GitHub for the head now, whatever the trust time (a reader's 重新整理); whether it moved since the head the
+    server held. GitHub away: the head held, marked stale."""
+    repo = _repo_of(address)
+    st = _state(slug, repo)
+    before = st.head.commit if st.head else None
+    h, stale = await head(slug, repo, force=True)
+    answer: dict[str, Any] = {"commit": h.commit, "changed": h.commit != before}
     if stale:
         answer["stale"] = True
     return answer

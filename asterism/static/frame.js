@@ -5,6 +5,8 @@
 // settings, create a channel) and of private messages (#dm-list: the conversations, newest first, and #dm-new, a
 // menu of the members one may write to privately). Every page of the project also tells the server it is open
 // (POST /api/presence at once and every few seconds, data-beat on the rail): that is a person's presence.
+// Avatars (1z): S.avatar draws a member's picture (or the monogram), S.pickAvatar sets one (the page crops and
+// scales it); the pictures drawn follow the members as they are read again.
 // The rail and the drawer are rail.js's; the project menu is project.js's.
 "use strict";
 (function () {
@@ -19,7 +21,7 @@
 
   var S = A.side = {
     places: null,                     // what /api/channels answered last
-    directory: A.parseJSON(rail.dataset.directory, {}),   // name -> {kind, online, owner}
+    directory: A.parseJSON(rail.dataset.directory, {}),   // name -> {kind, online, owner, avatar}
     members: null,                    // what /api/members answered last
     current: null,                    // the place open on the messages page
     listeners: [], memberListeners: []
@@ -184,16 +186,126 @@
     if (raw === membersRaw) return S.members;
     membersRaw = raw;
     var d = {};
-    (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person", online: !!x.online}; });
+    (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person", online: !!x.online, avatar: x.avatar || null}; });
     (r.data.agents || []).forEach(function (a) {
       d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy, work: a.work, stale: !!a.stale,
-                   last_active: a.last_active};
+                   last_active: a.last_active, avatar: a.avatar || null};
     });
     S.directory = d;
     S.members = r.data;
+    followAvatars();
     draw(false);
     S.memberListeners.forEach(function (fn) { fn(S.members); });
     return S.members;
+  };
+
+  // ------------------------------------------------------------------ avatars
+
+  // A member's picture, at one of the sizes the stylesheet has (16, 20, 24, 40, 64 px), in the member's shape (a
+  // person's a rounded square, an agent's a disc), from this origin at an address naming its version; without one,
+  // the first letter of the name. Decorative: the name always stands beside it.
+  S.avatarUrl = function (kind, name, version) {
+    return API + "avatars/" + kind + "/" + encodeURIComponent(name) + "?v=" + encodeURIComponent(version);
+  };
+  function fillAvatar(box, name, who) {
+    var version = (who && who.avatar) || "";
+    box.textContent = "";
+    box.dataset.v = version;
+    if (version) {
+      var img = make("img");
+      img.alt = "";
+      img.decoding = "async";
+      img.src = S.avatarUrl(who.kind === "agent" ? "agent" : "person", name, version);
+      box.appendChild(img);
+    } else {
+      box.textContent = (Array.from(name || "?")[0] || "?").toUpperCase();
+    }
+  }
+  S.avatar = function (name, size, who) {
+    who = who || S.directory[name] || {kind: "person"};
+    var box = make("span", "avatar s" + (size || 20) + (who.kind === "agent" ? " agent" : " person"));
+    box.setAttribute("aria-hidden", "true");
+    box.dataset.member = name;
+    fillAvatar(box, name, who);
+    return box;
+  };
+  // The pictures drawn, and the reader's own on the rail, follow a change of the members' avatars.
+  function followAvatars() {
+    Array.prototype.forEach.call(document.querySelectorAll(".avatar[data-member]"), function (box) {
+      var who = S.directory[box.dataset.member];
+      if (who && (who.avatar || "") !== box.dataset.v) fillAvatar(box, box.dataset.member, who);
+    });
+    var me = document.getElementById("rail-me"), mine = S.directory[ME];
+    if (me && mine && (mine.avatar || "") !== (me.dataset.v || "")) {
+      me.dataset.v = mine.avatar || "";
+      var inner = make("span");
+      inner.setAttribute("aria-hidden", "true");
+      if (mine.avatar) {
+        var img = make("img");
+        img.alt = "";
+        img.src = S.avatarUrl("person", ME, mine.avatar);
+        inner.appendChild(img);
+      } else {
+        inner.textContent = (Array.from(ME || "?")[0] || "?").toUpperCase();
+      }
+      me.textContent = "";
+      me.appendChild(inner);
+    }
+  }
+
+  // Setting a picture: the reader chooses a file (PNG, JPEG, WebP or GIF); the page crops it square around its middle,
+  // scales it to 128x128 and sends it as WebP (PNG where the browser cannot write WebP), at most 64 KB, to `url`
+  // (api/me/avatar or api/agents/{name}/avatar). Answers {ok, data} as a request does, {cancelled: true} when no file
+  // was chosen, or {ok: false, data: {error: "unreadable" | "too_large"}} when the picture could not be made.
+  var AVATAR_SIDE = 128, AVATAR_MOST = 64 * 1024;
+  function chooseFile() {
+    return new Promise(function (done) {
+      var input = make("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg,image/webp,image/gif";
+      input.addEventListener("change", function () { done((input.files && input.files[0]) || null); });
+      input.addEventListener("cancel", function () { done(null); });
+      input.click();
+    });
+  }
+  async function squared(file) {
+    var bmp;
+    try { bmp = await createImageBitmap(file); } catch (err) { return {error: "unreadable"}; }
+    var side = Math.min(bmp.width, bmp.height), c = document.createElement("canvas");
+    c.width = c.height = AVATAR_SIDE;
+    var g = c.getContext("2d");
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, AVATAR_SIDE, AVATAR_SIDE);
+    if (bmp.close) bmp.close();
+    var tries = [["image/webp", 0.92], ["image/webp", 0.8], ["image/webp", 0.6], ["image/png"]];
+    for (var i = 0; i < tries.length; i++) {
+      var blob = await new Promise(function (done) { c.toBlob(done, tries[i][0], tries[i][1]); });
+      if (blob && /^image\/(webp|png)$/.test(blob.type) && blob.size <= AVATAR_MOST) return {blob: blob};
+    }
+    return {error: "too_large"};
+  }
+  function base64(blob) {
+    return new Promise(function (done, fail) {
+      var reader = new FileReader();
+      reader.onload = function () { done(String(reader.result).replace(/^data:[^,]*,/, "")); };
+      reader.onerror = fail;
+      reader.readAsDataURL(blob);
+    });
+  }
+  S.pickAvatar = async function (url) {
+    var file = await chooseFile();
+    if (!file) return {cancelled: true};
+    var made = await squared(file);
+    if (made.error) return {ok: false, data: {error: made.error}};
+    var r = await A.request(url, null, {image: await base64(made.blob)});
+    if (r.ok) await S.loadMembers();
+    return r;
+  };
+  S.removeAvatar = async function (url) {
+    var r = await A.request(url, null, {image: null});
+    if (r.ok) await S.loadMembers();
+    return r;
   };
 
   setInterval(S.refresh, PLACES_EVERY_MS);

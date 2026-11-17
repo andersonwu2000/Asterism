@@ -48,7 +48,7 @@ fn tools() -> Value {
          "description": "Stop being an agent in this session.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "whoami",
-         "description": "Who you are here, the project's members with who is online and who is busy, and the channels with what is pinned in them.",
+         "description": "Who you are here, the project's members with who is online and who is busy, and the channels you can read.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "send",
          "description": "Post a message. `to` is a channel (`#name`) or a member's name for a private message. Write `@name` in the text to make it important for that member: they are woken and must answer. Set `reply_to` to the id of the message you are answering.",

@@ -288,15 +288,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     done_at REAL
 );
 CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
-CREATE TABLE IF NOT EXISTS pins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel TEXT NOT NULL,         -- the channel's name, without the '#'
-    path TEXT,                     -- a file of the repository; or
-    message_id INTEGER,            -- a message of that channel
-    by_person INTEGER NOT NULL,
-    created REAL NOT NULL
+CREATE TABLE IF NOT EXISTS avatars (
+    member_kind TEXT NOT NULL,     -- person, agent: a member's picture in this project (1z), set by the person (an
+    member_id INTEGER NOT NULL,    -- agent's by its person)
+    image BLOB NOT NULL,           -- a PNG or WebP of 128x128, at most avatars.MOST bytes
+    mime TEXT NOT NULL,            -- image/png, image/webp
+    version TEXT NOT NULL,         -- changes with every picture: the ETag, and what members' views say
+    at REAL NOT NULL,
+    PRIMARY KEY (member_kind, member_id)
 );
-CREATE INDEX IF NOT EXISTS pins_channel ON pins(channel, id);
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     person_id INTEGER NOT NULL,    -- its creator; the runs are posted in their name
@@ -405,8 +405,9 @@ ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks", "man
 SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_regroup")
 
 
-# Tables dropped after they shipped: a database made by an earlier version loses them when opened.
-DROPPED_TABLES = ("device_requests",)
+# Tables dropped after they shipped: a database made by an earlier version loses them when opened. Pins were retired
+# in 1z (their index goes with the table).
+DROPPED_TABLES = ("device_requests", "pins")
 
 # Data an earlier version allowed and this one does not, made right when a database is opened: (table, statement).
 # Each statement leaves a database that is already right unchanged, so running it on every opening is safe.

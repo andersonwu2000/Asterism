@@ -1,5 +1,6 @@
 // The reader's own settings (the settings layer at /{slug}/me; settings.js switches its sections):
-// - profile: the name in this project (#me-name: sent, then the page again, so every place shows it), the language
+// - profile: the name in this project (#me-name: sent, then the page again, so every place shows it), the avatar
+//   in this project (#me-avatar: the picture or the monogram, "choose a picture" and "remove", A.side.pickAvatar), the language
 //   of the pages (#me-locale: kept with the account, then the page again in it) and the look (#me-theme: dark, light,
 //   or the system's, kept in this browser as before);
 // - computers and connectors (#me-computers, from /api/my): each with what it is, how it came, whether its program
@@ -35,6 +36,40 @@
       }
       window.location.reload();
     });
+  }
+
+  // The avatar: the picture as others see it, choosing another, removing it; the outcome said beside the buttons.
+  var avatarBox = document.getElementById("me-avatar"), ME = A.side ? document.getElementById("rail").dataset.me : "";
+  function drawAvatar(said) {
+    if (!avatarBox || !A.side) return;
+    var mine = A.side.directory[ME] || {kind: "person"}, out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    avatarBox.textContent = "";
+    var pick = A.button("btn", t("me.avatar_pick"), async function () {
+      out.textContent = "";
+      var r = await A.side.pickAvatar(API + "me/avatar");
+      if (r.cancelled) return;
+      if (!r.ok) { out.textContent = A.refusal("me.avatar", r.data); return; }
+      drawAvatar(true);
+    });
+    pick.dataset.key = "avatar-pick";
+    avatarBox.append(A.side.avatar(ME, 64, {kind: "person", avatar: mine.avatar}), pick);
+    if (mine.avatar) {
+      var drop = A.button("btn", t("me.avatar_remove"), async function () {
+        out.textContent = "";
+        var r = await A.side.removeAvatar(API + "me/avatar");
+        if (!r.ok) { out.textContent = A.refusal("me.avatar", r.data); return; }
+        drawAvatar(true);
+      });
+      drop.dataset.key = "avatar-remove";
+      avatarBox.appendChild(drop);
+    }
+    avatarBox.appendChild(out);
+    if (said) A.saved(out);
+  }
+  if (avatarBox && A.side) {
+    drawAvatar(false);
+    A.side.onMembers(function () { A.keepFocus(avatarBox, function () { drawAvatar(false); }); });
   }
 
   var locales = document.getElementById("me-locale"), localeOut = document.getElementById("me-locale-out");

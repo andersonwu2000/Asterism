@@ -8,8 +8,10 @@
 //   how often its body is to be updated, when it last was ("更新於 3 小時前") and the overdue mark; a task held also has
 //   the holder (presence, name, model), since when it holds it, and the lock's quiet tag; a done one, who finished it
 //   and when.
-// - Scopes: all; waiting; in progress; done; posted by me; my agents' (an agent of mine holds it); assigned by me (I
-//   locked it); one group. Any of them with ?agent={name} (a chip over the list, removable) and ?new=1 (the form open).
+// - Scopes (1z): three presets, 進行中 (the first: open and taken tasks, the 待接 and 進行中 sections), 已完成, 我的任務
+//   (tasks I posted and tasks I assigned); then one group: the custom groups and each person's agent group (the
+//   default groups are not listed). Any of them with ?agent={name} (a chip over the list, removable) and ?new=1 (the
+//   form open).
 // - Posting ("發布任務"): a form in place at the top of the list: the title first, then the body (optional), "open to"
 //   (default AI, all agents; in a group's scope that group), optionally an agent of that group to give it to directly
 //   (with the lock, checked), and optionally how often its body is to be updated. Giving it to an agent that holds a
@@ -45,20 +47,24 @@
 
   // ------------------------------------------------------------------ the scope
 
+  // The sections a task is drawn in, and the presets of the column ("" is 進行中, the first).
   var SHOWS = {
     unheld: function (x) { return !x.done && !x.responsible; },
     held: function (x) { return !x.done && !!x.responsible; },
-    done: function (x) { return !!x.done; },
-    posted: function (x) { return x.posted_by === ME; },
-    mine: function (x) { return !x.done && x.responsible_kind === "agent" && owner(x.responsible) === ME; },
-    assigned: function (x) { return !x.done && x.assigned_by === ME; }
+    done: function (x) { return !!x.done; }
   };
-  var SHOW_WORDS = {unheld: "tt.waiting", held: "tt.held", done: "tt.done", posted: "tt.posted_mine", mine: "tt.mine",
-                    assigned: "tt.assigned"};
+  var PRESETS = {
+    "": function (x) { return !x.done; },
+    done: SHOWS.done,
+    mine: function (x) { return x.posted_by === ME || x.assigned_by === ME; }
+  };
+  var PRESET_WORDS = {"": "tt.held", done: "tt.done", mine: "tt.my_tasks"};
+  // The groups listed as scopes: the custom groups in their order, then each person's agent group.
+  function scopeGroups() { return audiences().filter(function (g) { return g.kind !== "default"; }); }
   function scope() {
     var p = G.params(), show = p.get("show"), grp = p.get("group"), agent = p.get("agent");
-    var out = {show: SHOWS[show] ? show : "", group: "", agent: ""};
-    if (!out.show && grp && group(grp)) out.group = grp;
+    var out = {show: show && PRESETS[show] ? show : "", group: "", agent: ""};
+    if (!out.show && grp && scopeGroups().some(function (g) { return g.name === grp; })) out.group = grp;
     if (agent && S.directory[agent] && S.directory[agent].kind === "agent") out.agent = agent;
     out.adding = p.get("new") === "1";
     return out;
@@ -71,8 +77,7 @@
     return p.toString();
   }
   function shown(x, sc) {
-    if (sc.show && !SHOWS[sc.show](x)) return false;
-    if (sc.group && x.group !== sc.group) return false;
+    if (sc.group ? x.group !== sc.group : !PRESETS[sc.show || ""](x)) return false;
     return !sc.agent || x.responsible === sc.agent;
   }
 
@@ -142,6 +147,7 @@
     var line = make("div", "tt-holder"), a = agentOf(task.responsible), who = owner(task.responsible);
     var online = a ? !!a.online : !!task.online;
     line.appendChild(S.presence({kind: "agent", online: online}));
+    line.appendChild(S.avatar(task.responsible, 20, {kind: "agent", avatar: a ? a.avatar : null}));
     var name = make("span", "tt-agent mono", task.responsible);
     name.title = who === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who || "?"});
     line.appendChild(name);
@@ -359,11 +365,13 @@
     var list = all().filter(function (x) { return shown(x, sc); });
     var waiting = list.filter(SHOWS.unheld), held = list.filter(SHOWS.held);
     var done = list.filter(SHOWS.done).sort(function (a, b) { return (b.done_at || "").localeCompare(a.done_at || ""); });
-    if (!sc.show || sc.show === "unheld" || waiting.length) {
+    // 進行中: 待接 and 進行中; 已完成: its own section; 我的任務 and a group: all three, those with nothing receding.
+    var every = sc.group || sc.show === "mine";
+    if (!sc.show || (every && (waiting.length || !held.length && !done.length))) {
       view.appendChild(section("waiting", t("tt.waiting"), waiting, t("tt.none_waiting")));
     }
-    if (!sc.show || sc.show === "held" || held.length) view.appendChild(section("held", t("tt.held"), held, t("tt.none_held")));
-    if (!sc.show || sc.show === "done" || done.length) view.appendChild(section("done", t("tt.done"), done, t("tt.none_done")));
+    if (!sc.show || (every && held.length)) view.appendChild(section("held", t("tt.held"), held, t("tt.none_held")));
+    if (sc.show === "done" || (every && done.length)) view.appendChild(section("done", t("tt.done"), done, t("tt.none_done")));
   }
 
   function count(f) { return all().filter(f).length; }
@@ -371,13 +379,13 @@
   G.register({
     scopes: function () {
       var sc = scope(), out = [{heading: t("tt.tasks")}];
-      [["", "tt.all"], ["unheld", "tt.waiting"], ["held", "tt.held"], ["done", "tt.done"], ["posted", "tt.posted_mine"],
-       ["mine", "tt.mine"], ["assigned", "tt.assigned"]].forEach(function (x) {
-        out.push({query: query(x[0], "", sc.agent), label: t(x[1]),
-                  count: count(function (y) { return shown(y, {show: x[0], agent: sc.agent}); })});
+      ["", "done", "mine"].forEach(function (show) {
+        out.push({query: query(show, "", sc.agent), label: t(PRESET_WORDS[show]),
+                  count: count(function (y) { return shown(y, {show: show, agent: sc.agent}); })});
       });
-      out.push({heading: t("tt.groups")});
-      audiences().forEach(function (g) {
+      var gs = scopeGroups();
+      if (gs.length) out.push({heading: t("tt.groups")});
+      gs.forEach(function (g) {
         out.push({query: query("", g.name, sc.agent), label: T.groupLabel(g), mono: g.kind === "custom",
                   count: count(function (y) { return shown(y, {group: g.name, agent: sc.agent}); })});
       });
@@ -386,7 +394,7 @@
     current: function () { var sc = scope(); return query(sc.show, sc.group, sc.agent); },
     title: function () {
       var sc = scope(), n = count(function (y) { return shown(y, sc); });
-      var name = sc.group ? T.groupLabel(group(sc.group)) : sc.show ? t(SHOW_WORDS[sc.show]) : t("tt.scope_all");
+      var name = sc.group ? T.groupLabel(group(sc.group)) : t(PRESET_WORDS[sc.show]);
       return t("ag.count", {name: name, n: n});
     },
     draw: draw,

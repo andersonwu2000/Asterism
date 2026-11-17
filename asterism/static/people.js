@@ -229,7 +229,9 @@
     card.setAttribute("aria-label", t("people.card", {name: name}));
     var head = make("div", "card-head");
     var who = found ? found.who : {name: name};
-    head.appendChild(S.presence(found ? dirOf(found) : S.directory[name] || {kind: "person"}));
+    var dir = found ? dirOf(found) : S.directory[name] || {kind: "person"};
+    head.appendChild(S.avatar(name, 40, {kind: dir.kind, avatar: found ? who.avatar : dir.avatar}));
+    head.appendChild(S.presence(dir));
     var names = make("div", "card-names");
     var title = make("div", "card-title");
     title.appendChild(make("h2", "card-name" + (found && found.isAgent ? " mono" : ""), name));
@@ -386,6 +388,7 @@
     var b = P.nameButton(who.name, "prow-btn", "");
     b.dataset.key = "m:" + who.name;
     b.appendChild(S.presence(dirOf(found)));
+    b.appendChild(S.avatar(who.name, 20, {kind: found.isAgent ? "agent" : "person", avatar: who.avatar}));
     b.appendChild(make("span", "prow-name" + (found.isAgent ? " mono" : ""), who.name));
     var model = found.isAgent ? A.modelTag(who.model) : null;
     if (model) b.appendChild(model);
@@ -452,7 +455,7 @@
     });
     head.appendChild(fold);
     var table = make("a", "btn quiet tadd-btn", t("task.open_table"));
-    table.href = T.tableHref("show=unheld");
+    table.href = T.tableHref("");
     table.dataset.key = "table:unheld";
     head.appendChild(table);
     if (T.canEdit && !(T.adding && T.adding.member === "")) {

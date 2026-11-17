@@ -1081,16 +1081,14 @@ def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, l
 # --------------------------------------------------------------------------- people
 
 def channels_view(pj: Project, me: Member) -> dict[str, Any]:
-    """The channels `me` may read with their unread counts, mutes and pins, and `me`'s private conversations (with the
+    """The channels `me` may read with their unread counts and mutes, and `me`'s private conversations (with the
     project's read permission)."""
     counts = _counts(pj, me)
     muted = {r["channel"] for r in pj.db.execute("SELECT channel FROM mutes WHERE member_kind = ? AND member_id = ?",
                                                   (me.kind, me.id))}
-    from . import pins                  # pins builds on this module
-    pinned = pins.by_channel(pj)
     restricted = projects.restricted_channels(pj)
     channels = [{"name": n, "unread": counts.get("#" + n, (0, 0))[0], "important": counts.get("#" + n, (0, 0))[1],
-                 "muted": n in muted, "pins": pinned.get(n, []), "restricted": n in restricted}
+                 "muted": n in muted, "restricted": n in restricted}
                 for n in channel_names(pj, me)]
     mine = [r["place"] for r in pj.db.execute(
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
@@ -1255,7 +1253,7 @@ def edit(pj: Project, me: Member, mid: Any, text: Any) -> dict[str, Any]:
 
 def delete(pj: Project, me: Member, mid: Any) -> dict[str, Any]:
     """Delete a message: its author; the author's person when the author is an agent; in a channel, whoever has
-    manage_channels. It keeps its place (sender and time) and its text is gone for good; its reactions, pins, the
+    manage_channels. It keeps its place (sender and time) and its text is gone for good; its reactions, the
     deliveries not handed over yet and the reminders about it go, and agents no longer count it unread. Replies to it
     stay. Deleting it again changes nothing."""
     _person_only(me, "delete")
@@ -1275,7 +1273,6 @@ def delete(pj: Project, me: Member, mid: Any) -> dict[str, Any]:
         pj.db.execute("UPDATE messages SET text = '', mentions = '[]', deleted = ? WHERE id = ?", (t, row["id"]))
         pj.db.execute("UPDATE commands SET args = '' WHERE message_id = ?", (row["id"],))
         pj.db.execute("DELETE FROM reactions WHERE message_id = ?", (row["id"],))
-        pj.db.execute("DELETE FROM pins WHERE message_id = ?", (row["id"],))
         pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE message_id = ? "
                       "AND state IN ('pending', 'out')", (t, row["id"]))
         pj.db.execute("DELETE FROM followups WHERE message_id = ?", (row["id"],))
@@ -1335,7 +1332,7 @@ def set_channel_permissions(pj: Project, actor: Actor, name: str, overrides: Any
 
 
 def rename_channel(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, Any]:
-    """A channel gets a new name and keeps everything: its messages, read positions, mutes, pins, overrides and the
+    """A channel gets a new name and keeps everything: its messages, read positions, mutes, overrides and the
     schedules that post there. Texts that wrote '#old' stay as written."""
     c = _manageable(pj, actor, name, "Renaming channels needs the manage_channels permission.")
     if isinstance(new, str) and new.startswith("#"):
@@ -1353,7 +1350,6 @@ def rename_channel(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, 
         pj.db.execute("UPDATE messages SET place = ? WHERE place = ?", (new_place, old_place))
         pj.db.execute("UPDATE reads SET place = ? WHERE place = ?", (new_place, old_place))
         pj.db.execute("UPDATE mutes SET channel = ? WHERE channel = ?", (new, name))
-        pj.db.execute("UPDATE pins SET channel = ? WHERE channel = ?", (new, name))
         pj.db.execute("UPDATE schedules SET place = ?, to_name = ? WHERE place = ?", (new_place, new_place, old_place))
     util.log("channel_renamed", project=pj.slug, channel=new, was=name, by=actor.person_id)
     return {"name": new}
@@ -1361,7 +1357,7 @@ def rename_channel(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, 
 
 def delete_channel(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
     """Delete a channel at once and for good: its messages (with every reader's record of them, their deliveries and
-    follow-ups), its overrides, mutes, pins, read positions and the schedules that post there. The notice channel
+    follow-ups), its overrides, mutes, read positions and the schedules that post there. The notice channel
     stays until the project chooses another."""
     c = _manageable(pj, actor, name, "Deleting channels needs the manage_channels permission.")
     if projects.notice_channel(pj) == name:
@@ -1380,7 +1376,6 @@ def delete_channel(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
                     "DELETE FROM schedules WHERE place = ?",
                     "DELETE FROM messages WHERE place = ?"):
             pj.db.execute(sql, (place,))
-        pj.db.execute("DELETE FROM pins WHERE channel = ?", (name,))
         pj.db.execute("DELETE FROM mutes WHERE channel = ?", (name,))
         pj.db.execute("DELETE FROM channel_overrides WHERE channel_id = ?", (c["id"],))
         pj.db.execute("DELETE FROM channels WHERE id = ?", (c["id"],))

@@ -73,8 +73,10 @@
     var repo = E.shown === "repo";
     el.ref.hidden = !repo;
     el.ref.textContent = R.headText();
-    el.note.hidden = !(repo && R.stale);
-    el.note.textContent = repo && R.stale ? t("files.stale") : "";
+    // The outcome of 重新整理 for a moment, else whether the listing may be old.
+    var note = repo ? refreshSaid || (R.stale ? t("files.stale") : "") : "";
+    el.note.hidden = !note;
+    el.note.textContent = note;
     Array.prototype.forEach.call(el.sw.querySelectorAll("[data-source]"), function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.source === E.shown));
     });
@@ -108,6 +110,17 @@
     var b = ev.target.closest && ev.target.closest("[data-source]");
     if (b) E.show(b.dataset.source);
   });
+
+  // 重新整理 (the repository): the server asks GitHub for the head now; open folders and tabs follow a new head.
+  var refreshSaid = "", refreshTimer = null;
+  async function refreshRepo() {
+    var before = R.commit, r = await R.refresh();
+    refreshSaid = !r.ok ? A.refusal("files.refresh", r.data)
+      : t(R.commit && R.commit !== before ? "files.refreshed" : "files.up_to_date");
+    showHead();
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () { refreshSaid = ""; showHead(); }, NOTE_MS);
+  }
 
   function say(text) {
     el.said.textContent = text || "";
@@ -155,6 +168,7 @@
       if (L.state === "closed") items.push({label: t("local.reauth"), run: restore});
       if (L.state === "ok" || L.state === "closed") items.push({label: t("local.forget_folder"), run: armForget});
     }
+    if (!local()) items.push({label: t("files.refresh"), run: refreshRepo});
     var gh = !local() && R.githubUrl("", true);
     if (gh) items.push({label: t("files.open_github"), href: gh, external: true});
     if (!items.length) items.push({label: t("files.menu_none"), disabled: true});

@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from . import messaging, notices, pins, presence, projects, tasks, util
+from . import messaging, notices, presence, projects, tasks, util
 from .errors import ApiError, bad_request, conflict, invalid_credential
 from .projects import Actor, Project
 from .store import Store
@@ -115,9 +115,8 @@ def whoami(c: Caller) -> dict[str, Any]:
         out.update(people=[], agents=[], note="This agent lacks the read permission, so the member list is hidden.")
     # Only the channels the agent may read, which a channel's override may grant without the project's read (an
     # unregistered session: those its person may read).
-    pinned = pins.short(pj)
     who = messaging.agent_member(a) if a else messaging.person_member(pj, c.person_id)
-    out["channels"] = [{"name": n, "pins": pinned.get(n, [])} for n in messaging.channel_names(pj, who)]
+    out["channels"] = [{"name": n} for n in messaging.channel_names(pj, who)]
     return out
 
 

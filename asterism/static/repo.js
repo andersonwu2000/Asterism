@@ -1,21 +1,21 @@
 // Files mode, the project's repository as a source of files (Asterism.sources.repo), read-only through the server.
 // Folders are listed on demand (GET /api/files/list, one call per folder, kept for the session) and listed again
-// when the head commit changes; the root is looked at again every few seconds to notice a push. A file is read from
-// GET /api/files/raw/<path>. Entries of type "other" recede and cannot be opened.
+// when the head commit changes. Nothing is asked by itself to notice a push: the reader asks for the newest head by
+// hand (the files menu's 重新整理, refresh()). A file is read from GET /api/files/raw/<path>. Entries of type "other" recede and cannot be opened.
 // The explorer (explorer.js) and the tab strip (viewer.js) speak to it, and to a local folder (local.js), through one
 // small interface:
 //   id, state, on(what, fn)               what: "listing" (redraw the tree), "state", "changed" (a push)
 //   listed(folder) -> entries | undefined, pending(folder), failed(folder), list(folder, fresh) -> Promise
 //   read(path) -> Promise of a document {status, kind, text, url, code, why}, release(doc)
-//   menuItems(entry, ui) -> the acts of an entry's menu
+//   menuItems(entry, ui) -> the acts of an entry's menu; refresh() -> Promise (the repository only)
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("files");
   if (!A || !root) return;
   var t = A.t;
-  var SLUG = root.dataset.slug, REPO = root.dataset.repo, CAN_PIN = !!root.dataset.canPin;
+  var SLUG = root.dataset.slug, REPO = root.dataset.repo;
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var HEAD_EVERY_MS = 10000, MAX_BYTES = Number(root.dataset.maxBytes) || Infinity;
+  var MAX_BYTES = Number(root.dataset.maxBytes) || Infinity;
   var PICTURES = /\.(?:png|jpe?g|gif|webp|svg)$/i, MARKDOWN = /\.(?:md|markdown)$/i, PDF = /\.pdf$/i;
 
   var R = {
@@ -138,32 +138,20 @@
 
   // ------------------------------------------------------------------ the menu of an entry
 
-  function channels() {
-    var places = A.side && A.side.places;
-    return places ? places.channels.map(function (c) { return c.name; }) : [];
-  }
-
-  async function pin(path, channel, ui) {
-    var r = await A.request(API + "channels/" + encodeURIComponent(channel) + "/pins", null, {path: path});
-    ui.say(path, r.ok ? t("files.pinned", {name: channel}) : A.refusal("files.pin_refused", r.data));
-    if (r.ok && A.side) A.side.refresh();
-  }
-
   R.menuItems = function (entry, ui) {
     var path = entry.path, folder = entry.type === "dir", items = [ui.copyItem(path)];
-    if (!folder && CAN_PIN) {
-      var names = channels();
-      items.push({label: t("files.pin"), disabled: !names.length, items: names.map(function (n) {
-        return {label: t("files.pin_to", {name: n}), run: function () { pin(path, n, ui); }};
-      })});
-    }
     if (!folder) items.push(ui.mentionItem(path));
     var gh = R.githubUrl(path, folder);
     if (gh) items.push({separator: true}, {label: t("files.open_github"), href: gh, external: true});
     return items;
   };
 
-  // A push shows up: the root is asked again on the page's rhythm (the server keeps the head for its refresh time).
-  // Asked while not connected too: once the app is installed, the files appear by themselves.
-  setInterval(function () { if (!document.hidden) R.list("", true); }, HEAD_EVERY_MS);
+  // 重新整理: the server asks GitHub for the head now; the root is then listed again, which notices a new head (also
+  // one another reader's refresh brought) and tells the explorer and the tabs ("changed"). Not connected or away:
+  // the listing says so again. Answers {ok, data} as the request did.
+  R.refresh = async function () {
+    var r = await A.request(API + "files/refresh", null, {});
+    if (r.ok || r.data.error === "not_connected" || r.data.error === "github_unavailable") await R.list("", true);
+    return r;
+  };
 })();

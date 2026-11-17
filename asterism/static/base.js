@@ -639,7 +639,7 @@
 
   // ------------------------------------------------------------------ a box that floats by its control
   //
-  // A popover (the project menu, the pins of a channel, a profile card): shown by its control, closed by Escape, a
+  // A popover (the project menu, a profile card): shown by its control, closed by Escape, a
   // click outside, the focus leaving it or A.popup.close(); the focus goes into it and back to the control. One at a
   // time. A menu or a dialog opened from inside it does not count as outside.
   //   A.popup.open(box, anchor, {align: "start" | "end", at: {left, right, top, bottom}, focus: element, onClose})

@@ -24,7 +24,7 @@ from starlette.responses import (FileResponse, HTMLResponse, JSONResponse, Plain
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import (accounts, agents, assets, computers, config, downloads, files, messaging, oauth, pages, pins, projects,
+from . import (accounts, agents, assets, avatars, computers, config, downloads, files, messaging, oauth, pages, projects,
                replays, schedules, tasks, timeline, tools, upkeep, util)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import LOCALES, Translator, pick_locale
@@ -427,6 +427,33 @@ async def api_my_name(request: Request) -> Any:
     return projects.set_name(pj, actor, (await body_json(request)).get("name"))
 
 
+async def api_my_avatar(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return avatars.set_mine(pj, actor, (await body_json(request)).get("image"))
+
+
+async def api_agent_avatar(request: Request) -> Any:
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return avatars.set_agent(pj, actor, request.path_params["name"], (await body_json(request)).get("image"))
+
+
+async def api_avatar(request: Request) -> Response:
+    """A member's avatar, to members with `read`. Its address carries the version (?v=) the views gave: that one is
+    kept by the browser for good, any other is checked again by its ETag."""
+    try:
+        pj, actor = member_actor(request, request.path_params["slug"])
+        pic = avatars.picture(pj, actor, request.path_params["kind"], request.path_params["name"])
+    except ApiError as e:
+        return error_json(e)
+    etag = f'"{pic["version"]}"'
+    same = request.query_params.get("v") == pic["version"]
+    cache = "private, max-age=31536000, immutable" if same else "private, max-age=0, must-revalidate"
+    headers = {"Cache-Control": cache, "ETag": etag}
+    if files.etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    return Response(bytes(pic["image"]), media_type=pic["mime"], headers=headers)
+
+
 async def api_members(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     return projects.members_view(pj, actor)
@@ -546,6 +573,11 @@ def reader(request: Request) -> tuple[Project, str]:
 async def api_files_list(request: Request) -> Any:
     pj, repo = reader(request)
     return await files.listing(pj.slug, repo, request.query_params.get("dir"))
+
+
+async def api_files_refresh(request: Request) -> Any:
+    pj, repo = reader(request)
+    return await files.refresh(pj.slug, repo)
 
 
 async def api_files_find(request: Request) -> Any:
@@ -698,16 +730,6 @@ async def api_channel_mute(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     b = await body_json(request)
     return messaging.set_mute(pj, actor, request.path_params["name"], b.get("muted"), b.get("agent"))
-
-
-async def api_pin(request: Request) -> Any:
-    pj, actor = member_actor(request, request.path_params["slug"])
-    return pins.add(pj, actor, request.path_params["name"], await body_json(request))
-
-
-async def api_unpin(request: Request) -> Any:
-    pj, actor = member_actor(request, request.path_params["slug"])
-    return pins.remove(pj, actor, request.path_params["name"], request.path_params["pid"])
 
 
 async def api_schedules(request: Request) -> Any:
@@ -982,14 +1004,14 @@ def _page_context(request: Request, slug: str):
 def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     """What the project's frame (the rail and the second column on every page of a project) shows: the places with
     their unread counts and the number of messages important for the reader, the members to start a private
-    conversation with, who may create a channel (and pin) or see the settings, and each member's kind, presence and
-    owner for the presence marks."""
+    conversation with, who may create a channel or see the settings, and each member's kind, presence, owner and
+    avatar for the presence marks and pictures."""
     me = messaging.person_member(pj, actor.person_id)
     mine = projects.permissions(pj, actor)
     pa = projects.people_and_agents(pj, work=True)
-    directory = {x["name"]: {"kind": "person", "online": x["online"]} for x in pa["people"]}
+    directory = {x["name"]: {"kind": "person", "online": x["online"], "avatar": x["avatar"]} for x in pa["people"]}
     directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"],
-                                  "work": a["work"], "stale": a["stale"]}
+                                  "work": a["work"], "stale": a["stale"], "avatar": a["avatar"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
     # The channels the reader may read (an override may grant one without the project's read), and private
@@ -1288,6 +1310,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/project", api(api_project_change), methods=["POST"]),
         Route("/{slug}/api/project/delete", api(api_project_delete), methods=["POST"]),
         Route("/{slug}/api/me/name", api(api_my_name), methods=["POST"]),
+        Route("/{slug}/api/me/avatar", api(api_my_avatar), methods=["POST"]),
+        Route("/{slug}/api/agents/{name}/avatar", api(api_agent_avatar), methods=["POST"]),
+        Route("/{slug}/api/avatars/{kind}/{name}", api_avatar, methods=["GET"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
         Route("/{slug}/api/invites", api(api_invites_list), methods=["GET"]),
@@ -1308,8 +1333,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/channels/{name}/delete", api(api_channel_delete), methods=["POST"]),
         Route("/{slug}/api/channels/{name}/permissions", api(api_channel_permissions), methods=["GET", "POST"]),
         Route("/{slug}/api/channels/{name}/mute", api(api_channel_mute), methods=["POST"]),
-        Route("/{slug}/api/channels/{name}/pins", api(api_pin, 201), methods=["POST"]),
-        Route("/{slug}/api/channels/{name}/pins/{pid:int}/remove", api(api_unpin), methods=["POST"]),
         Route("/{slug}/api/schedules", api(api_schedules), methods=["GET"]),
         Route("/{slug}/api/schedules", api(api_schedule_create, 201), methods=["POST"]),
         Route("/{slug}/api/schedules/{sid:int}", api(api_schedule_change), methods=["POST"]),
@@ -1326,6 +1349,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/files/raw/{path:path}", api_files_raw, methods=["GET"]),
         Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),
         Route("/{slug}/api/files/find", api(api_files_find), methods=["GET"]),
+        Route("/{slug}/api/files/refresh", api(api_files_refresh), methods=["POST"]),
         Route("/{slug}/api/presence", api(api_presence), methods=["POST"]),
         Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
         Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),

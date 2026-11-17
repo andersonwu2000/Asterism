@@ -810,9 +810,16 @@ def _owners(pj: Project) -> dict[int, str]:
     return {r["person_id"]: r["name"] for r in pj.db.execute("SELECT person_id, name FROM people")}
 
 
+def avatar(pj: Project, kind: str, member_id: int) -> str | None:
+    """The version of a member's avatar (avatars.py), None when it has none. People's views only."""
+    r = pj.db.execute("SELECT version FROM avatars WHERE member_kind = ? AND member_id = ?", (kind, member_id)).fetchone()
+    return r["version"] if r else None
+
+
 def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None, work: bool = False) -> dict[str, Any]:
     """An agent as the member lists give it. `work`: for people, also what it is doing (presence.work: `work`,
-    `last_active` as its session's last activity, `stale`); what agents read (whoami) stays without it."""
+    `last_active` as its session's last activity, `stale`) and its avatar; what agents read (whoami) stays without
+    them."""
     owners = owners if owners is not None else _owners(pj)
     because = presence.offline_because(pj.slug, a, pj.db)
     view = {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"], "model": a["model"],
@@ -821,6 +828,7 @@ def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None
             "last_active": util.iso(a["last_active"]), "generation": a["generation"]}
     if work:
         view.update(presence.work(pj.slug, a, pj.db, because is None))
+        view["avatar"] = avatar(pj, "agent", a["id"])
     return view
 
 
@@ -838,12 +846,16 @@ def beat(pj: Project, actor: Actor) -> dict[str, Any]:
 
 
 def people_and_agents(pj: Project, work: bool = False) -> dict[str, Any]:
+    """Every member. `work`: for people (agent_view), also what agents are doing and everyone's avatar."""
     owners = _owners(pj)
     people = []
     for r in pj.db.execute("SELECT * FROM people ORDER BY joined, person_id"):
         acc = accounts.person(pj.accounts, r["person_id"])
-        people.append({"name": r["name"], "github_login": acc["github_login"] if acc else "",
-                       "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": person_online(r)})
+        view = {"name": r["name"], "github_login": acc["github_login"] if acc else "",
+                "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": person_online(r)}
+        if work:
+            view["avatar"] = avatar(pj, "person", r["person_id"])
+        people.append(view)
     agents = [agent_view(pj, a, owners, work) for a in pj.db.execute("SELECT * FROM agents ORDER BY id")]
     return {"people": people, "agents": agents}
 
@@ -1031,10 +1043,11 @@ def _members_changed(pj: Project, actor: Actor) -> None:
 
 
 def _forget_reader(pj: Project, kind: str, member_id: int) -> None:
-    """A removed member's per-reader records (inside the caller's transaction). Its messages stay."""
+    """A removed member's per-reader records and its avatar (inside the caller's transaction). Its messages stay."""
     for table in ("levels", "reads"):
         pj.db.execute(f"DELETE FROM {table} WHERE reader_kind = ? AND reader_id = ?", (kind, member_id))
     pj.db.execute("DELETE FROM mutes WHERE member_kind = ? AND member_id = ?", (kind, member_id))
+    pj.db.execute("DELETE FROM avatars WHERE member_kind = ? AND member_id = ?", (kind, member_id))
 
 
 def _purge_agents(pj: Project, where: str, args: tuple[Any, ...]) -> None:

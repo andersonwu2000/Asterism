@@ -77,7 +77,6 @@ GLYPHS = {
     "save": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
     "chevron": '<path d="M7 10l5 5 5-5"/>',
     "invite": '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 19.5c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5"/><path d="M19 7v6M16 10h6"/>',
-    "pin": '<path d="M9 4h6l-1 5.5 3 2.5v2H7v-2l3-2.5z"/><path d="M12 14v6"/>',
     "tasks": '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17"/>',
     "search": '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
     "gear": '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1'
@@ -306,9 +305,12 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
                      f'<span class="rail-tile">{glyph(icon)}{count}</span><span class="rail-word">{e(tr(word))}</span></a></li>')
     data = {"slug": slug, "me": me, "here": here, "directory": f["directory"], "repo": f["repo"], "perms": f["perms"],
             "beat": f.get("beat_s", 20)}
-    initial = (me[:1] or "?").upper()
-    reader = (f'<button type="button" id="rail-me" class="rail-me" popovertarget="me-menu" '
-              f'aria-label="{e(tr("rail.me", name=me))}" title="{e(me)}"><span aria-hidden="true">{e(initial)}</span></button>'
+    # The reader's avatar (1z), else the first letter of their name; frame.js follows a change.
+    version = (f["directory"].get(me) or {}).get("avatar") or ""
+    face = (f'<img alt="" src="/{e(q(slug))}/api/avatars/person/{e(q(me))}?v={e(q(version))}">' if version
+            else e((me[:1] or "?").upper()))
+    reader = (f'<button type="button" id="rail-me" class="rail-me" popovertarget="me-menu" data-v="{e(version)}" '
+              f'aria-label="{e(tr("rail.me", name=me))}" title="{e(me)}"><span aria-hidden="true">{face}</span></button>'
               f'<div id="me-menu" class="me-menu" popover><p class="me-name">{e(me)}</p>'
               f'<a class="me-row" id="me-settings" href="/{e(q(slug))}/me">{e(tr("rail.settings"))}</a>'
               f'<a class="me-row" href="/">{e(tr("rail.home"))}</a>'
@@ -399,7 +401,7 @@ def _explorer(tr: Translator, f: dict[str, Any]) -> str:
             f'</div></div>'
             f'<p id="explorer-ref" class="explorer-ref">{e(_repo_text(f["repo"]))}</p>'
             f'{local}'
-            f'<p id="explorer-note" class="explorer-note" hidden></p>'
+            f'<p id="explorer-note" class="explorer-note" role="status" hidden></p>'
             f'<ul id="explorer-tree" class="tree" role="tree" aria-label="{e(tr("files.tree"))}"></ul>'
             f'<ul id="files-found" class="tree found" role="listbox" aria-label="{e(tr("files.found"))}" hidden></ul>'
             f'<p id="files-found-status" class="explorer-note" role="status" hidden></p>'
@@ -514,7 +516,7 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
     (scope "me", `me`: their name, GitHub login and /api/my) as one layer in the frame's four cells: the project's name and what is set in the top-left cell, the list of sections (#settings-nav) as the
     second column, the section's title (#settings-title) and the close control (#settings-close, also Escape) in the
     top-right cell, the section as the page. `section` "" is the bare address: the first section. settings.js
-    switches sections in place (each has its address), draws members, groups, mutes and pins from the JSON API starting
+    switches sections in place (each has its address), draws members, groups and mutes from the JSON API starting
     from `view` (/api/members), and closes the layer back to the page it was opened from. Groups keep the elements of
     the former members page (#groups, #group-detail, #group-create for who may create groups)."""
     slug = frame["slug"]
@@ -648,7 +650,8 @@ def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> st
 
 
 def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str]:
-    """The reader's own settings: their name in this project, the language and the look of the pages (profile); their
+    """The reader's own settings: their name and avatar in this project (#me-avatar, drawn by me.js), the language and
+    the look of the pages (profile); their
     computers and connectors (me.js draws them from /api/my); what others may do with their agents (the four
     permissions of their own agent group, each saved as it changes)."""
     langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
@@ -660,6 +663,8 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
                f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
                f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
                f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
+               f'<h3 class="set-sub">{e(tr("me.avatar"))}</h3>'
+               f'<div id="me-avatar" class="avatar-set"></div><p class="dim">{e(tr("me.avatar_hint"))}</p>'
                f'<h3 class="set-sub">{e(tr("me.lang"))}</h3>'
                f'<div class="seg" role="group" id="me-locale" aria-label="{e(tr("me.lang"))}">{langs}</div>'
                f'<p class="out" id="me-locale-out" aria-live="polite"></p>'
@@ -814,7 +819,7 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
     in the top-right cell and the document are drawn by explorer.js and viewer.js, from the files API (repo.js) and from the reader's own folder in
     the browser (local.js; nothing of it reaches the server). `path` is the file the address names ("" for none);
     `max_bytes`: a larger file is not shown here (the server does not fetch it)."""
-    data = {"slug": frame["slug"], "path": path, "repo": frame["repo"], "can-pin": "1" if frame["can_create"] else "",
+    data = {"slug": frame["slug"], "path": path, "repo": frame["repo"],
             "can-manage": "1" if frame["can_admin"] else "", "max-bytes": str(max_bytes)}
     views = "".join(f'<button type="button" class="icon-btn" data-view="{v}" aria-pressed="false" aria-label="{e(tr(k))}" '
                     f'title="{e(tr(k))}">{glyph(v)}</button>' for v, k in VIEWS)
@@ -847,23 +852,16 @@ def _action(tr: Translator, ident: str, label_key: str, attrs: str) -> str:
             f'<span class="plus" aria-hidden="true"></span><span class="ag-action-word">{label}</span></button>')
 
 
-# How the agent page's list is sorted: (key, its word).
-AGENT_SORTS = (("group", "agp.by_group"), ("owner", "agp.by_owner"))
-
-
 def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tuple[str, int]:
     """The agent page (m1f6_contract.md section 10), in the frame's four cells: the project menu top left; every agent
-    of the project in the second column (#agent-list), sorted by group or by owner (#agent-sort); top right the chosen
+    of the project in the second column (#agent-list), by group; top right the chosen
     agent (#agent-head: name, kind, owner, model, presence) with its person's acts (#agent-acts) and "invite agent";
     the page is the chosen agent's timeline (#agent-timeline: its messages and changes of state, newest at the
     bottom; #tl-filter: what concerns it, or everything), with a composer (#tl-composer) that its own person writes to
     it with. agentpage.js draws all of it from
     the members (frame.js) and the timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
     slug, mine = frame["slug"], set(frame["perms"])
-    sorts = "".join(f'<button type="button" class="seg-btn" data-sort="{k}" aria-pressed="{"true" if k == "group" else "false"}">'
-                    f'{e(tr(key))}</button>' for k, key in AGENT_SORTS)
     column = (f'<nav id="agent-side" class="column agent-side" aria-label="{e(tr("agp.list"))}"><div class="side-inner">'
-              f'<div id="agent-sort" class="seg agent-sort" role="group" aria-label="{e(tr("agp.sort"))}">{sorts}</div>'
               f'<div id="agent-list" class="agent-list"></div></div></nav>')
     invite = ""
     if "manage_own_agents" in mine:

@@ -327,6 +327,9 @@
     }
 
     var meta = make("div", "meta");
+    if (m.from_kind !== "system") {        // the sender's avatar (1z), or its first letter
+      meta.appendChild(A.side.avatar(m.from, 20, A.side.directory[m.from] || {kind: m.from_kind}));
+    }
     meta.appendChild(m.from_kind === "system" || !A.people ? make("span", "from", senderName(m))
                                                            : A.people.nameButton(m.from, "from name-btn"));
     if (m.from_kind === "agent") {

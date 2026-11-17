@@ -11,10 +11,13 @@ settled; where it is silent, choose the quieter option.
   twice.
 - Identity and state are separate channels: identity is shape and size, state is brightness and fill. Never mix the
   two in one mark.
-- Two exceptions, and only these:
+- Three exceptions, and only these:
   - **Code and mathematics** keep whatever colour their renderer gives them. Code is the one sanctioned use of
     hue: the editor's highlighting colours keywords, declared names, types, strings, numbers and attributes with
     the six muted `--color-syn-*` tokens (defined for both ends like every token); comments are `--color-ink-dim`.
+  - **One blue**, `--color-link`, for a hyperlink in rendered Markdown (messages, task bodies, files), at least
+    4.5:1 on every surface of its end, underlined in its own colour. Nothing else is blue: not a button, not the
+    chrome's own links, not a mention (weight), not code.
   - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. The one control
     that opens such a destruction from a settings page (delete the project, a channel, a group) is outlined in it,
     its word in `--color-destruct-ink`, never filled. Nothing else is red: not errors, not warnings, not a deny.
@@ -45,7 +48,7 @@ The tokens (dark end first, then light):
 | `--color-wash-3` | `rgba(255,255,255,0.12)` | `rgba(16,16,20,0.14)` | pressed, the current place |
 | `--color-ink` | `#ededf0` | `#1a1a1e` | text |
 | `--color-ink-dim` | `#a2a4ab` | `#55575e` | secondary text |
-| `--color-ink-faint` | `#67696f` | `#85878e` | marks and rules only: too quiet for a sentence |
+| `--color-ink-faint` | `#67696f` | `#85878e` | marks, rules and hints (the composer's placeholder): too quiet for a sentence |
 | `--color-loud` | `#f4f5f8` | `#101014` | what asks for the reader: the ground of an inverted pill |
 | `--color-destruct` | `#a33a35` | `#a33a35` | the one red |
 | `--color-destruct-ink` | `#e0807a` | `#a33a35` | the word of the control that opens a destruction |
@@ -55,6 +58,7 @@ The tokens (dark end first, then light):
 | `--color-syn-string` | `#a6c18b` | `#4c7333` | code: strings, TeX labels and citations |
 | `--color-syn-number` | `#d5ac7c` | `#8a5b1f` | code: numbers |
 | `--color-syn-attr` | `#b3a0cf` | `#6a4fa3` | code: attributes, TeX math delimiters |
+| `--color-link` | `#7aa9e8` | `#2559b0` | a hyperlink in rendered Markdown, and nothing else |
 
 Depth is stepped surface lightness, never a shadow.
 
@@ -79,6 +83,12 @@ Depth is stepped surface lightness, never a shadow.
 - **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.
   What is important for the reader still shows its inverted pill there: muting a place silences its talk, not a
   message that names the reader.
+- **An avatar** is a member's picture in one project (a person sets their own in 個人; an agent's is set by its person
+  on the agent page): in the member's shape, a person's a rounded square and an agent's a disc, 128×128 kept, drawn
+  at 16 to 64 px; without one, the first letter of the name on `--color-wash-3` in the dim ink. It is identity, never
+  state: the presence mark stays beside it. It shows in a message's header, the member list, the profile card, the
+  agent page (its list, the chosen agent, the timeline) and the holder on the board, and the reader's own on the rail.
+  Always beside the name, never instead of it, so it says nothing to screen readers.
 - **Who is there** is shape and fill, 10 px: shape says who, fill says state.
   - an agent: a disc; a person: a square with a 2 px radius;
   - online: filled in `--color-ink`; offline: hollow, its outline in `--color-ink-faint`. A person is online while a
@@ -140,7 +150,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   through the top line, and the top line's rule runs under both top cells. Chat, private messages, files, the agent
   page, the work page and the settings layer all have them.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, private messages, files, agent, 任務 (the work page). No divider between them. At its foot the reader, whose menu opens the
+  chat, private messages, files, agent, 看板 (the work page: the task board and the scheduled messages). No divider between them. At its foot the reader, whose menu opens the
   personal settings (設定), all projects and sign-out. The current one is the current place; hover washes the glyph's tile only, so the
   word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
 - **Folding**: in a mode (chat, private messages, files, agent, work), pressing the button of the mode one is already in
@@ -204,8 +214,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
   formulas, pictures, a PDF) may use the whole area; the message list uses the room it has.
-- A channel's row in the second column shows a sliders mark for its settings on hover and focus. The page shows no
-  pins.
+- A channel's row in the second column shows a sliders mark for its settings on hover and focus. There are no pins
+  (retired in 1z).
 - **The right column shows one thing at a time**, or nothing: the member list, or search. Their buttons in the top
   bar show or hide them; whether the member list is open is remembered per project. Search takes the column while it
   is open: its field at the top (in a channel limited to it at first, shown as a removable chip), the results under
@@ -252,6 +262,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   composer and the message waits: sending again sends it as it is. In a message drawn, a mention that reached someone
   is at weight 600, no hue. A name is read as the server reads it: the longest known name the text goes on with after
   the "@", so a group named in any script (`@證明組請看`) needs no space after it.
+- **The message list's scroll bar** shows only while the pointer is over the list or the focus is in it; its room is
+  kept, so nothing moves. **The composer's placeholder** is a hint in `--color-ink-faint`.
 - **The send control** is an icon at the right end of the field: an upward arrow in a filled circle, the circle in the
   strongest ink (`--color-loud`, never a hue), the arrow in the page's ground; named 送出 for screen readers; dim and
   off while the field holds nothing to send. Enter still sends.
@@ -274,16 +286,16 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 - `/{slug}/agent` (the former `/my` answers with the same page); the chosen agent is the address's query
   (`?name=`), changed in place; without one, the first of my agents, else the first listed.
-- The second column is every agent of the project, under a switch at its top (remembered): **依群組** (sections by
-  the groups people organise, in their order; an agent under the first such group it is in, else under AI; a
-  person's own agent group says whose an agent is, which is the other sorting) or **依擁有者** (sections by person,
-  mine first). A row is a place row: presence, name (mono), the model tag, and what it is doing (工作中, 閒置, 有任務,
-  or the 有任務但閒置 tag) at the right; the chosen one is the current place.
+- The second column is every agent of the project **by group**, with no other sorting: sections by the custom
+  groups in their order, then each person's agent group; an agent under the first custom group it is in, else under
+  its person's agent group, else under AI. A row is a place row: presence, avatar, name (mono), the model tag, and
+  what it is doing (工作中, 閒置, 有任務, or the 有任務但閒置 tag) at the right; the chosen one is the current place.
 - Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, what it is doing, what
   it holds in one line (its task's number and title; a link to the board at this agent), for an agent of the reader's
   own its quota in dim, then
   kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
-  boxes, remove from the project, which floats), then "邀請 agent" (the project menu's panel), only for who may.
+  boxes, its avatar for its own person, remove from the project, which floats), then "邀請 agent" (the project menu's
+  panel), only for who may.
 - The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
   older items loaded on scrolling up, new ones arriving at the end. A switch over it (remembered): **找它的和它說的**
   (the default: what it sent, what mentions it, and the reader's private conversation with it) or **全部** (everything
@@ -302,8 +314,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   project menu; top right the two tabs **任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
   the current one, no counts), and at the right one action for the current tab (發布任務 / new schedule), only for
   who may; below 900 px it is a round icon button with its name as label and tooltip.
-- The second column lists the tab's scopes (all, waiting, in progress, done, posted by me, my agents', assigned by me,
-  each group: AI first, the custom groups, each person's agent group last; all, mine, paused, each place). The scope is in the
+- The second column lists the tab's scopes. Tasks: three presets, **進行中** (the first: 待接 and 進行中), **已完成**,
+  **我的任務** (what I posted or assigned), then the custom groups and each person's agent group (the default groups
+  are not listed). Schedules: all, mine, paused, each place. The scope is in the
   address's query, changed in place; below 900 px the list is in the drawer and the content starts with one line
   naming the scope and its count, which opens it.
 - **The tasks tab is a bounty board**: whoever needs something posts it; an idle agent of the group it is open to
@@ -326,7 +339,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   list's people | agents: **公共** (the project's repository) and **私人** (a folder of the reader's own computer), the
   one shown pressed (`aria-pressed`). Both have the same tree, keyboard and entry menu. Above the tree, one line: the files menu
   (for the local source open folder, restore access when the browser must be asked again, and forget folder, two
-  steps in place; for the repository, the repository on GitHub) and the search field filling the rest. The opened
+  steps in place; for the repository **重新整理** and the repository on GitHub) and the search field filling the rest. The opened
   local folder is one folder at the top of its tree, shown and handled like any folder (its name, folding, its entry
   menu); there is no separate bar with its name. With no folder open the local source is one control; a folder kept
   from an earlier visit is one control that restores access; in a browser that cannot open folders it is one sentence
@@ -360,6 +373,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   file follows what is typed after a short pause, without taking the focus or moving its scroll.
 - **Unsaved** is shape: a filled disc after the tab's name (and the word in its accessible name), never a colour.
   Closing that tab confirms in two steps; leaving the page asks through the browser's own question.
+- **The repository is refreshed by hand.** Nothing asks GitHub by itself: 重新整理 in the files menu asks the server
+  for the newest head now; the open folders are listed again and the open tabs read again when it moved, and the
+  outcome ("已更新" / "已經是最新") is said for a moment over the tree. A local folder still follows the disk by itself.
 - **What is shown is redrawn only when it changed.** A file read again (the disk moved, the repository has a new
   head) leaves the document alone when its bytes are the same; new text goes into the open editor and the rendering
   in place, keeping the scroll and the selection. A push to the repository never touches a local file shown.
@@ -391,9 +407,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   control that does the same (the row's small control, the channel's gear and its settings, the member's card).
   It is one menu for the whole page: arrow keys move, Escape, Tab or a click outside close it, and the focus goes
   back where it was. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
-  box, not by hue. A list behind an item (the channels to pin to) opens in
-  its place with a way back, not as a second floating box.
-- The outcome of a menu's act (copied, pinned, a refusal) is said on the row it acted on, for a moment.
+  box, not by hue. A list behind an item opens in its place with a way back, not as a second floating box.
+- The outcome of a menu's act (copied, refreshed, a refusal) is said on the row it acted on, for a moment.
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape
   gives up, and a refused name is said under the field, which stays.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
