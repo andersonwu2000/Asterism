@@ -610,6 +610,50 @@ td .muted, td small { color: var(--color-ink-dim); }
 .acts button { min-height: 26px; padding: 0 8px; font-size: 12px; border-color: transparent; background: transparent; border-radius: var(--r-micro); }
 .acts button:hover { background: var(--color-wash-2); }
 .acts button.armed { background: var(--color-loud); color: var(--color-bg); }
+.acts .act-icon { width: 28px; padding: 0; color: var(--color-ink-dim); }
+.acts .act-icon:hover { color: var(--color-ink); }
+
+/* 1y: reactions under the text, each a toggle; the reader's own is filled (state is fill, not hue). */
+.reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 2px; }
+.reaction {
+  min-height: 24px; height: 24px; padding: 0 8px; gap: 4px; border-radius: var(--r-full); font-size: 12px; font-weight: 500;
+  background: var(--color-wash-2); border-color: transparent; color: var(--color-ink-dim);
+}
+.reaction[aria-pressed="true"] { background: var(--color-wash-3); border-color: var(--color-ink-dim); color: var(--color-ink); }
+.reaction-emoji { font-size: 14px; line-height: 1; }
+.reaction-count { font-variant-numeric: tabular-nums; }
+.reaction-add { width: 30px; padding: 0; opacity: 0; transition: opacity var(--quick) ease; }
+.msg:hover .reaction-add, .msg:focus-within .reaction-add { opacity: 1; }
+/* The picker: the built-in emoji in rows of eight, the common ones first, a search box over them. */
+.emoji-picker { width: min(316px, calc(100vw - 16px)); gap: 8px; padding: 10px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
+.emoji-cell {
+  min-height: 0; height: 34px; padding: 0; border-color: transparent; background: transparent; border-radius: var(--r-micro);
+  font-size: 20px; line-height: 1;
+}
+.emoji-cell:hover, .emoji-cell:focus { background: var(--color-wash-2); }
+.emoji-cell:focus-visible { outline: 2px solid var(--color-ink); outline-offset: -2px; }
+.emoji-sep { grid-column: 1 / -1; height: 1px; margin: 4px 2px; background: var(--color-edge); }
+.emoji-none { margin: 4px 2px; font-size: 13px; }
+/* An edited message: a quiet word after its text; a deleted one keeps its place as one quiet line. */
+.edited-mark { font-size: 11px; color: var(--color-ink-faint); white-space: nowrap; }
+.text.deleted-note { color: var(--color-ink-faint); font-style: italic; margin: 0; }
+.msg-out { margin: 2px 0 0; font-size: 12px; color: var(--color-ink-dim); }
+/* Editing a message: the field in the text's place. */
+.msg.editing .body > .text, .msg.editing .body > .fold-toggle, .msg.editing .body > .edited-mark,
+.msg.editing .body > .pictures { display: none; }
+.msg-edit { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 4px; }
+.msg-edit textarea { min-height: 34px; max-height: 40vh; resize: none; line-height: 1.5; border-radius: var(--r-control); }
+.msg-edit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.msg-edit-row .small { font-size: 12px; }
+/* Pictures of the repository a message names, under its text: at most 360 px high; a click opens files mode. */
+.pictures { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }
+.picture-link { display: block; max-width: 100%; border-radius: var(--r-control); line-height: 0; }
+.picture-link img {
+  display: block; max-width: min(100%, 520px); max-height: 360px; width: auto; height: auto; object-fit: contain;
+  border: 1px solid var(--color-edge); border-radius: var(--r-control); background: var(--color-surface-2);
+}
+.picture-link:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
 
 /* The composer: the roundest thing on the page. */
 .composer { padding: 6px var(--gutter) 14px; }
@@ -626,7 +670,16 @@ td .muted, td small { color: var(--color-ink-dim); }
 }
 .composer-box textarea:focus-visible { outline: none; }
 .composer-box textarea:placeholder-shown { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-.composer-box .send { flex: none; height: 34px; border-radius: var(--r-control); }
+/* The send control (1y): an upward arrow in a filled circle at the right end of the field, in the strongest ink (no
+   hue); dim and off while there is nothing to send. */
+.composer-box .send-icon {
+  flex: none; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: var(--r-full);
+  background: var(--color-loud); color: var(--color-bg); transition: opacity var(--quick) ease;
+}
+.composer-box .send-icon .glyph { stroke-width: 2.2; }
+.composer-box .send-icon:hover { background-image: linear-gradient(var(--color-wash-3), var(--color-wash-3)); }
+.composer-box .send-icon:disabled { opacity: 0.28; color: var(--color-bg); background-image: none; }
+.composer-box .send-icon:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
 .composer-out { padding: 6px 6px 0; }
 .composer-out:empty { display: none; }
 /* New messages below the view: a pill over the foot of the list, held by a line of no height; inverted only when
@@ -1542,6 +1595,7 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   .acts { position: static; opacity: 1; pointer-events: auto; background: none; border: 0; padding: 0; margin-top: 2px;
           justify-content: flex-start; }
   .msg.cont .gutter time { opacity: 1; }
+  .reaction-add { opacity: 1; }
   .prow .row-acts { opacity: 1; pointer-events: auto; }
   .ag-item > .row-acts, .tt-task > .row-acts, .sch-item > .row-acts { opacity: 1; pointer-events: auto; }
   .place-gear { opacity: 1; pointer-events: auto; background: transparent; }

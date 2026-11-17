@@ -1,5 +1,5 @@
 // Sends forms marked data-api to the JSON API: the answer's data-show field into the form's [data-out], else on to
-// data-next, else to the address the field named by data-goto names (/{value}), else the page again; a refusal in the
+// data-next, else to the address the answer's field named by data-goto names (/{value}), else the page again; a refusal in the
 // form's [data-out], in the page's words for its code (the act named by data-refusal).
 // All texts come from the page's message catalogue (body data-msg); this file holds none.
 "use strict";
@@ -35,7 +35,7 @@
     if (!res.ok) { if (out) out.textContent = A.refusal(form.dataset.refusal || "form", res.data); return; }
     if (form.dataset.show && out) out.textContent = res.data[form.dataset.show] || "";
     else if (form.dataset.next) window.location.href = form.dataset.next;
-    else if (form.dataset.goto) window.location.href = "/" + encodeURIComponent(body[form.dataset.goto] || "");
+    else if (form.dataset.goto) window.location.href = "/" + encodeURIComponent(res.data[form.dataset.goto] || "");
     else window.location.reload();
   });
 })();

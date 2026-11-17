@@ -191,10 +191,20 @@ CREATE TABLE IF NOT EXISTS messages (
     notice INTEGER,                -- 1: a notice of presence (never asks for an answer); NULL: any other message
     schedule_id INTEGER,           -- the schedule that posted it; NULL: posted by hand (or by the system)
     sender_model TEXT,             -- an agent sender's model when it was sent; NULL: unknown, or not an agent
-    task_id INTEGER                -- the task whose body update it asks for (tasks.UPDATE_DUE): an update of that
+    task_id INTEGER,               -- the task whose body update it asks for (tasks.UPDATE_DUE): an update of that
                                    -- body by its holder answers it; NULL: any other message
+    edited REAL,                   -- when its author (a person) last edited its text (1y); NULL: never
+    deleted REAL                   -- when it was deleted (1y): its text is gone for good ('') and its place kept;
+                                   -- NULL: not deleted
 );
 CREATE INDEX IF NOT EXISTS messages_place ON messages(place, id);
+CREATE TABLE IF NOT EXISTS reactions (
+    message_id INTEGER NOT NULL,   -- a person's emoji reaction to a message (1y); agents do not react
+    emoji TEXT NOT NULL,
+    person_id INTEGER NOT NULL,
+    at REAL NOT NULL,
+    PRIMARY KEY (message_id, emoji, person_id)
+);
 CREATE INDEX IF NOT EXISTS messages_speaker ON messages(sender_kind, sender_id, place, sent);
 CREATE TABLE IF NOT EXISTS levels (
     message_id INTEGER NOT NULL,   -- one row per reader, written when the message is sent
@@ -364,7 +374,7 @@ ADDED_COLUMNS = {
     "computer_sessions": [("active_at", "REAL")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
-                 ("sender_model", "TEXT"), ("task_id", "INTEGER")],
+                 ("sender_model", "TEXT"), ("task_id", "INTEGER"), ("edited", "REAL"), ("deleted", "REAL")],
     # The groups that existed before groups had an order keep the order of their ids; default groups have none.
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),

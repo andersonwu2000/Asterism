@@ -302,9 +302,15 @@
     }
     meta.appendChild(placeLink(m));
     body.appendChild(meta);
+    if (m.deleted) {                    // 1y: a deleted message keeps its place, without its text
+      body.appendChild(make("p", "text deleted-note", t("msg.deleted")));
+      li.append(gutter, body);
+      return li;
+    }
     var box = A.renderText(m.text, {mentions: m.mentions});
     if (A.paths) A.paths.scan(box);
     body.appendChild(box);
+    if (m.edited_at) body.appendChild(A.editedMark(m.edited_at));
     li.append(gutter, body);
     return li;
   }
@@ -500,7 +506,10 @@
 
   // ------------------------------------------------------------------ the composer
 
+  // The send control (1y) is dim and off while there is nothing to send.
+  var sendButton = el.form.querySelector(".send-icon");
   function grow() {
+    if (sendButton) sendButton.disabled = !el.text.value.trim();
     el.text.style.height = "auto";
     if (!el.text.value) { el.text.style.height = ""; el.text.style.overflowY = "hidden"; return; }
     var max = parseFloat(getComputedStyle(el.text).maxHeight) || Infinity;

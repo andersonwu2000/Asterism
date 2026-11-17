@@ -758,6 +758,22 @@ async def api_post(request: Request) -> Any:
     return {"id": out["id"], "mentions": out["mentions"], **({"command": out["command"]} if "command" in out else {})}
 
 
+async def api_react(request: Request) -> Any:
+    pj, _, me = member_self(request, request.path_params["slug"])
+    b = await body_json(request)
+    return messaging.react(pj, me, request.path_params["mid"], b.get("emoji"), b.get("on"))
+
+
+async def api_edit(request: Request) -> Any:
+    pj, _, me = member_self(request, request.path_params["slug"])
+    return messaging.edit(pj, me, request.path_params["mid"], (await body_json(request)).get("text"))
+
+
+async def api_delete_message(request: Request) -> Any:
+    pj, _, me = member_self(request, request.path_params["slug"])
+    return messaging.delete(pj, me, request.path_params["mid"])
+
+
 async def api_read(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     b = await body_json(request)
@@ -1004,7 +1020,8 @@ async def messages_page(request: Request) -> Response:
     if isinstance(ctx, Response):
         return ctx
     person, pj, actor = ctx
-    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
+    mine = projects.permissions(pj, actor)
+    view = {"can_edit_tasks": "edit_tasks" in mine, "can_manage_channels": "manage_channels" in mine}
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view))
 
 
@@ -1022,7 +1039,7 @@ async def dm_page(request: Request) -> Response:
         messaging.require_read(pj, me)
     except ApiError as e:
         return page_error(request, e, person)
-    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor)}
+    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor), "can_manage_channels": False}
     if name:
         # A conversation that cannot be had is answered inside the frame, saying who may have it (m1f7 section 4).
         try:
@@ -1299,6 +1316,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/schedules/{sid:int}/remove", api(api_schedule_remove), methods=["POST"]),
         Route("/{slug}/api/messages", api(api_messages), methods=["GET"]),
         Route("/{slug}/api/messages", api(api_post, 201), methods=["POST"]),
+        Route("/{slug}/api/messages/{mid:int}/react", api(api_react), methods=["POST"]),
+        Route("/{slug}/api/messages/{mid:int}/edit", api(api_edit), methods=["POST"]),
+        Route("/{slug}/api/messages/{mid:int}/delete", api(api_delete_message), methods=["POST"]),
         Route("/{slug}/api/read", api(api_read), methods=["POST"]),
         Route("/{slug}/api/search", api(api_search), methods=["GET"]),
         Route("/{slug}/api/agents/{name}/timeline", api(api_agent_timeline), methods=["GET"]),

@@ -7,6 +7,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,24 @@ def digest(secret: str) -> str:
 
 def valid_name(name: Any) -> bool:
     return isinstance(name, str) and NAME_RE.fullmatch(name) is not None
+
+
+GROUP_NAME_MAX = 40
+
+
+def valid_group_name(name: Any) -> bool:
+    """A custom group's name (1y): 1 to 40 letters, digits or marks of any script, '.', '_' or '-', starting with a
+    letter or digit; no whitespace, '@', '#', '/', quotes or control characters (they are none of those)."""
+    if not isinstance(name, str) or not 1 <= len(name) <= GROUP_NAME_MAX:
+        return False
+    if unicodedata.category(name[0])[0] not in "LN":
+        return False
+    return all(ch in "._-" or unicodedata.category(ch)[0] in "LNM" for ch in name)
+
+
+def new_slug() -> str:
+    """A new project's address (1y): 10 random characters of [a-z0-9]."""
+    return "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(10))
 
 
 def valid_slug(slug: Any) -> bool:

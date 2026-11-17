@@ -90,6 +90,8 @@ def add(pj: Project, actor: Actor, channel: str, body: dict[str, Any]) -> dict[s
             where = row["place"] if row["place"].startswith("#") else "a private conversation"
             raise bad_request("bad_request", f"Message {row['id']} is in {where}, not in #{channel}. A channel pins "
                                              f"its own messages.")
+        if row["deleted"] is not None:
+            raise conflict(f"Message {row['id']} was deleted.")
         mid = row["id"]
         same = pj.db.execute("SELECT 1 FROM pins WHERE channel = ? AND message_id = ?", (channel, mid)).fetchone()
         what = f"Message {mid}"

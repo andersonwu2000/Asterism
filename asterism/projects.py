@@ -28,6 +28,8 @@ DEFAULT_GROUPS = [
 SWITCHES = ("others_mention", "others_channel", "others_assign", "others_regroup")
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
+GROUP_NAME_RULE = ("A group's name is 1 to 40 letters or digits of any script, '.', '_' or '-', starting with a letter or "
+                   "digit: no spaces, '@', '#', '/' or quotes.")
 # What a channel may override per group, and how (no row: inherit).
 CHANNEL_PERMISSIONS = ("read", "post")
 OVERRIDES = ("allow", "deny", "inherit")
@@ -103,8 +105,6 @@ def create_project(store: Store, slug: str, name: str, repo: str, owner_login: s
 
 
 PROJECT_NAME_MAX = 80
-SLUG_RULE = ("The address is 2 to 40 lower-case letters, digits or '-', starting with a letter or digit, and not one of "
-             "the server's own words (" + ", ".join(sorted(util.RESERVED_SLUGS)) + ").")
 REPO_RULE = "The repository is an address https://github.com/{owner}/{name}, or empty for none."
 
 
@@ -123,18 +123,18 @@ def _repo(v: Any) -> str:
 
 
 def new_project(store: Store, person: sqlite3.Row, body: dict[str, Any]) -> dict[str, Any]:
-    """Anyone signed in makes a project (it lives on this server); they are its owner, in owner and human."""
-    slug = body.get("slug")
-    if not isinstance(slug, str) or len(slug) < 2 or not util.valid_slug(slug):
-        raise bad_request("invalid_slug", SLUG_RULE)
+    """Anyone signed in makes a project (it lives on this server); they are its owner, in owner and human. The server
+    chooses its address (1y): random, never a reserved word nor one in use (a `slug` sent is ignored); names may
+    repeat."""
     name, repo = _project_name(body.get("name")), _repo(body.get("repo"))
-    if store.project(slug) is not None:
-        raise conflict(f"The address '{slug}' is taken. Choose another.")
+    slug = util.new_slug()
+    while not util.valid_slug(slug) or store.project(slug) is not None or store.project_path(slug).exists():
+        slug = util.new_slug()
     create_project(store, slug, name, repo, person["github_login"])
     pj = open_project(store, slug)
     member(pj, person)                 # the creator turns up at once and becomes the owner
     util.log("project_created", project=slug, by=person["id"])
-    return {"project": info(pj)}
+    return {"project": info(pj), "slug": slug}
 
 
 def change_project(pj: Project, actor: Actor, body: dict[str, Any]) -> dict[str, Any]:
@@ -168,8 +168,9 @@ def delete_project(pj: Project, actor: Actor, confirm: Any) -> None:
     caller removes the database (Store.drop_project) once the ended polls have let go of it."""
     _person_only(actor)
     require(pj, actor, "project_settings", "Deleting the project needs the project_settings permission.")
-    if confirm != pj.slug:
-        raise bad_request("bad_request", f"To delete the project, send confirm with its address, '{pj.slug}'.")
+    name = pj.row()["name"]
+    if confirm != name:
+        raise bad_request("bad_request", f"To delete the project, send confirm with its name, '{name}'.")
     _revoke(pj, "1 = 1", ())
     with pj.accounts:
         pj.accounts.execute("DELETE FROM oauth_tokens WHERE slug = ?", (pj.slug,))
@@ -182,6 +183,13 @@ def delete_project(pj: Project, actor: Actor, confirm: Any) -> None:
 def check_name(name: Any) -> str:
     if not util.valid_name(name):
         raise bad_request("invalid_name", NAME_RULE)
+    return name
+
+
+def check_group_name(name: Any) -> str:
+    """A custom group's name may be written in any script (1y); people's and agents' names keep NAME_RULE."""
+    if not util.valid_group_name(name):
+        raise bad_request("invalid_name", GROUP_NAME_RULE)
     return name
 
 
@@ -440,7 +448,7 @@ def _no_escalation(groups: Iterable[sqlite3.Row], mine: set[str]) -> None:
 def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, Any]:
     _person_only(actor)
     require(pj, actor, "manage_groups", "Creating groups needs the manage_groups permission.")
-    check_name(name)
+    check_group_name(name)
     if name.lower().endswith(OWNERSHIP_SUFFIX):
         raise conflict(f"Names ending in '{OWNERSHIP_SUFFIX}' are kept for each person's own group. Choose another name.")
     perms = _check_permissions(perms)
@@ -575,7 +583,7 @@ def rename_group(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, An
     """A custom group gets a new name (the rules of a new group's name); default and agent groups keep theirs. Old
     messages that mentioned the old name stay as they were written."""
     g = _custom_group(pj, actor, name, "Renaming groups needs the manage_groups permission.")
-    check_name(new)
+    check_group_name(new)
     if new.lower().endswith(OWNERSHIP_SUFFIX):
         raise conflict(f"Names ending in '{OWNERSHIP_SUFFIX}' are kept for each person's own group. Choose another name.")
     holder = name_holder(pj, new)

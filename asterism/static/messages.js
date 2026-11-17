@@ -19,7 +19,15 @@
 // start, the commands for it (1x: /goal, /goal clear, /compact, /model, each with one line). A mention of a name that is
 // no member or group holds the message back once, said under the composer, and sending again sends it as it is. A
 // mention that reached someone is drawn in bold. A command's outcome is the system's reply to it, drawn in the page's
-// own words from its `outcome`.
+// own words from its `outcome`. Names are read as the server reads a mention (render.js, A.mentionAt: the longest known
+// name the text goes on with, so a group named in any script is found without a space after it). The send control is an
+// icon, dim and off while the field is empty.
+// A message (1y) has a hover bar (on hover and keyboard focus): add a reaction (a picker of the built-in emoji,
+// emoji.js, with a search box; arrow keys, Enter, Escape), reply, edit (its author), delete (its author, the person of
+// the agent that sent it, or who manages channels; in two steps) and "more", the one menu, which also opens by right
+// click. Reactions are toggles under the text; an edited message carries a quiet "edited"; a deleted one keeps its place
+// as one line. Pictures of the repository a message names show under its text. The newest messages shown are asked for
+// again with the news, so reactions, edits and deletions by others arrive too.
 "use strict";
 (function () {
   var A = window.Asterism;
@@ -29,7 +37,7 @@
 
   var SLUG = root.dataset.slug, MODE = root.dataset.mode === "dm" ? "dm" : "chat", ME = root.dataset.me || "";
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
-  var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000;
+  var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000, WATCH = 50;
   var LANG = document.documentElement.lang || undefined;
   var DOT = " · ";
 
@@ -38,8 +46,10 @@
     scroll: document.getElementById("scroller"),
     older: document.getElementById("older"), form: document.getElementById("composer"),
     text: document.getElementById("text"), out: document.getElementById("composer-out"),
-    reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel")
+    reply: document.getElementById("reply-target"), replyCancel: document.getElementById("reply-cancel"),
+    send: document.querySelector("#composer .send-icon")
   };
+  var CAN_MODERATE = !!root.dataset.canManageChannels;
   // readAt: the read position when the place was opened, openedLast: its newest message then (the unread line goes
   // above the first message between them); seenUpto: what was marked read; fresh: the first message that arrived
   // while the end of the list was out of sight (0: none), freshImportant: one of those is important for the reader.
@@ -272,8 +282,10 @@
   // The quiet line above a reply: who and what it answers, when that message is loaded.
   function replyLabel(id) {
     var m = known.get(id);
-    return m ? t("msg.reply_line", {name: senderName(m), text: snippet(m.text)}) : t("msg.reply_to_link", {id: id});
+    return m ? t("msg.reply_line", {name: senderName(m), text: textOf(m)}) : t("msg.reply_to_link", {id: id});
   }
+  // A message in one line: its text, or that it was deleted.
+  function textOf(m) { return m.deleted ? t("msg.deleted") : snippet(m.text); }
   function refreshReplyLines() {
     Array.prototype.forEach.call(el.list.querySelectorAll(".reply-line .link-btn"), function (b) {
       b.textContent = replyLabel(Number(b.dataset.reply));
@@ -295,8 +307,10 @@
 
   function messageItem(m) {
     known.set(m.id, m);
-    var li = make("li", "msg" + (m.from_kind === "system" ? " system" : "") + (m.level === "important" ? " important" : ""));
+    var li = make("li", "msg" + (m.from_kind === "system" ? " system" : "") + (m.level === "important" ? " important" : "") +
+                        (m.deleted ? " deleted" : ""));
     li.id = "m-" + m.id;
+    li._sig = signature(m);
     var gutter = make("div", "gutter"), body = make("div", "body");
     var when = make("time", "", clock(m.sent_at));
     when.dateTime = m.sent_at;
@@ -328,20 +342,366 @@
     if (m.level === "important") meta.appendChild(make("span", "pill", t("msg.important")));
     body.appendChild(meta);
 
+    if (m.deleted) {                      // its place is kept, its text is gone
+      body.appendChild(make("p", "text deleted-note", t("msg.deleted")));
+      li.append(gutter, body);
+      return li;
+    }
     var box = A.renderText(m.outcome ? outcomeText(m.outcome) : m.text, {mentions: m.mentions});
-    if (A.paths) A.paths.scan(box);
     body.appendChild(box);
+    if (m.edited_at) {                    // after the last line of the text when that is a paragraph
+      var last = box.lastElementChild, mark = A.editedMark(m.edited_at);
+      if (last && last.tagName === "P") last.append(" ", mark); else body.appendChild(mark);
+    }
     body.appendChild(clampable(li, box, m.id));
+    var pictures = make("div", "pictures");
+    pictures.hidden = true;
+    body.appendChild(pictures);
+    if (A.paths) A.paths.scan(box).then(function () { showPictures(box, pictures, m.text); });
+    if (m.reactions && m.reactions.length) body.appendChild(reactionRow(m));
 
-    var acts = make("div", "acts");
-    acts.setAttribute("role", "group");
-    acts.setAttribute("aria-label", t("msg.acts"));
     if (m.from_kind !== "system") {
-      acts.appendChild(A.button("", t("msg.reply"), function () { setReply(m.id); el.text.focus(); }));
-      body.appendChild(acts);
+      body.appendChild(actsOf(li, m));
+      li.addEventListener("contextmenu", function (ev) {
+        // Right click on a link, a picture, selected text or the editor keeps the browser's own menu.
+        if (ev.target.closest("a, img, textarea") || String(window.getSelection() || "")) return;
+        ev.preventDefault();
+        A.menu({label: t("msg.acts"), x: ev.clientX, y: ev.clientY}, messageMenu(li, m), li.querySelector(".act-more"));
+      });
     }
     li.append(gutter, body);
     return li;
+  }
+
+  // What a message row draws from: when it changes, the row is drawn again.
+  function signature(m) {
+    return JSON.stringify([m.text, m.edited_at || "", !!m.deleted, m.reactions || [], m.outcome || null, m.level]);
+  }
+
+  // ------------------------------------------------------------------ the acts on a message (1y)
+
+  function mayEdit(m) { return !m.deleted && mine(m); }
+  function mayDelete(m) {
+    if (m.deleted || m.from_kind === "system") return false;
+    if (mine(m)) return true;
+    var who = m.from_kind === "agent" ? A.side.directory[m.from] : null;
+    return !!(who && who.owner === ME) || (CAN_MODERATE && isChannel(state.place));
+  }
+
+  function iconButton(cls, glyph, label, onClick) {
+    var b = A.button(cls, null, onClick);
+    b.appendChild(A.glyph(glyph));
+    b.setAttribute("aria-label", label);
+    b.title = label;
+    return b;
+  }
+
+  // The hover bar: add a reaction, reply, edit, delete (two steps, in place) and the menu.
+  function actsOf(li, m) {
+    var acts = make("div", "acts");
+    acts.setAttribute("role", "group");
+    acts.setAttribute("aria-label", t("msg.acts"));
+    var reactB = iconButton("act-icon act-react", "react", t("msg.react"), function () { openPicker(m.id, reactB); });
+    reactB.setAttribute("aria-haspopup", "dialog");
+    reactB.setAttribute("aria-expanded", "false");
+    reactB.dataset.key = "act:react";
+    acts.appendChild(reactB);
+    var reply = A.button("", t("msg.reply"), function () { setReply(m.id); el.text.focus(); });
+    reply.dataset.key = "act:reply";
+    acts.appendChild(reply);
+    if (mayEdit(m)) {
+      var edit = A.button("act-edit", t("msg.edit"), function () { startEdit(li, m); });
+      edit.dataset.key = "act:edit";
+      acts.appendChild(edit);
+    }
+    if (mayDelete(m)) {
+      var del = A.button("act-delete", t("msg.delete"), function () {
+        if (!A.twoStep(del, t("msg.confirm_delete"))) return;
+        remove(li, m.id);
+      });
+      del.dataset.key = "act:delete";
+      acts.appendChild(del);
+    }
+    var more = iconButton("act-icon act-more", "dots", t("msg.more"), function () {
+      A.menu({label: t("msg.acts"), anchor: more}, messageMenu(li, m), more);
+    });
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.dataset.key = "act:more";
+    acts.appendChild(more);
+    return acts;
+  }
+
+  // The one menu of a message: the same acts as its bar (deleting arms the bar's button: two steps, in place).
+  function messageMenu(li, m) {
+    var items = [{label: t("msg.reply"), run: function () { setReply(m.id); el.text.focus(); }},
+                 {label: t("msg.react"), run: function () { openPicker(m.id, li.querySelector(".act-react")); }}];
+    if (mayEdit(m)) items.push({label: t("msg.edit"), run: function () { startEdit(li, m); }});
+    if (mayDelete(m)) {
+      items.push({separator: true}, {label: t("msg.delete"), run: function () {
+        var del = li.querySelector(".act-delete");
+        if (del && !del._armed) A.twoStep(del, t("msg.confirm_delete"));
+      }});
+    }
+    return items;
+  }
+
+  // A refusal said on the message's row, where the act was.
+  function rowSay(li, text) {
+    var out = li.querySelector(".msg-out");
+    if (!out) {
+      out = make("p", "out msg-out");
+      out.setAttribute("role", "status");
+      li.querySelector(".body").appendChild(out);
+    }
+    out.textContent = text;
+  }
+
+  // Draw a message again from what the server says of it now. Nothing moves; the focus stays on the same control
+  // (`focusKey`: the control to focus in the new row when the act took the focus away). A row being edited stays.
+  function replaceItem(m, focusKey) {
+    var old = document.getElementById("m-" + m.id);
+    if (!old || (old._editing && !m.deleted) || old._sig === signature(m)) return;
+    var a = document.activeElement, had = !!a && old.contains(a);
+    var key = had && a.dataset ? a.dataset.key : null;
+    if (!key && focusKey && (!a || a === document.body || had)) key = focusKey;
+    var li = messageItem(m);
+    li.hidden = old.hidden;
+    if (old.dataset.run) li.dataset.run = old.dataset.run;
+    old.replaceWith(li);
+    settle([li]);
+    refreshReplyLines();
+    if (state.replyTo === m.id) setReply(m.deleted ? null : m.id);
+    if (key) {
+      var again = li.querySelector('[data-key="' + key.replace(/["\\]/g, "\\$&") + '"]');
+      (again || (had ? li.querySelector(".act-more") : null) || {focus: function () {}}).focus({preventScroll: true});
+    }
+  }
+
+  // One message again, as the server has it now.
+  async function refreshOne(id, focusKey) {
+    var place = state.place;
+    var r = await get("messages", {"in": place, after: id - 1, limit: 1});
+    var m = r.ok && place === state.place ? (r.data.messages || [])[0] : null;
+    if (m && m.id === id) replaceItem(m, focusKey);
+  }
+
+  async function remove(li, id) {
+    var r = await post("messages/" + id + "/delete", {});
+    if (!r.ok) { rowSay(li, A.refusal("msg.delete", r.data)); return; }
+    await refreshOne(id);
+  }
+
+  // ------------------------------------------------------------------ reactions (1y)
+
+  // Under the text: each emoji with its count, a toggle (pressed when the reader's own is among them), and a button to
+  // add another.
+  function reactionRow(m) {
+    var row = make("div", "reactions");
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", t("msg.reactions"));
+    m.reactions.forEach(function (r) {
+      var on = r.by.indexOf(ME) >= 0;
+      var b = A.button("reaction", null, function () { react(m.id, r.emoji, !on); });
+      b.append(make("span", "reaction-emoji", r.emoji), make("span", "reaction-count", String(r.count)));
+      b.setAttribute("aria-pressed", String(on));
+      var label = t("msg.reaction_label", {emoji: r.emoji, n: r.count, names: r.by.join(", ")});
+      b.setAttribute("aria-label", label);
+      b.title = label;
+      b.dataset.key = "react:" + r.emoji;
+      row.appendChild(b);
+    });
+    var add = iconButton("reaction reaction-add", "react", t("msg.react"), function () { openPicker(m.id, add); });
+    add.setAttribute("aria-haspopup", "dialog");
+    add.setAttribute("aria-expanded", "false");
+    add.dataset.key = "react:+";
+    row.appendChild(add);
+    return row;
+  }
+
+  async function react(id, emoji, on) {
+    var r = await post("messages/" + id + "/react", {emoji: emoji, on: on});
+    var li = document.getElementById("m-" + id), m = known.get(id);
+    if (!r.ok) { if (li) rowSay(li, A.refusal("msg.react", r.data)); return; }
+    if (!m) return;
+    var now = Object.assign({}, m);
+    if ((r.data.reactions || []).length) now.reactions = r.data.reactions; else delete now.reactions;
+    replaceItem(now, now.reactions ? "react:" + emoji : "act:react");
+  }
+
+  // The picker: one for the page, floating by the control that opened it (A.popup). A search box over the built-in
+  // list (emoji.js), the common ones first; the arrow keys move through the grid, Enter or a click takes one, Escape
+  // closes it and the focus goes back.
+  var COLS = 8, picker = null;
+  function pickerBox() {
+    if (picker) return picker;
+    var box = make("div", "card-pop emoji-picker");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-label", t("msg.react_picker"));
+    box.hidden = true;
+    if (typeof box.showPopover === "function") box.setAttribute("popover", "manual");
+    var search = make("input", "emoji-search");
+    search.type = "search";
+    search.autocomplete = "off";
+    search.spellcheck = false;
+    search.placeholder = t("msg.emoji_search");
+    search.setAttribute("aria-label", t("msg.emoji_search"));
+    var grid = make("div", "emoji-grid");
+    grid.setAttribute("role", "group");
+    grid.setAttribute("aria-label", t("msg.react_picker"));
+    var none = make("p", "dim emoji-none", t("msg.emoji_none"));
+    box.append(search, grid, none);
+    document.body.appendChild(box);
+    picker = {box: box, search: search, grid: grid, none: none, id: 0};
+    search.addEventListener("input", drawPicker);
+    search.addEventListener("keydown", function (ev) {
+      var cells = grid.querySelectorAll("button");
+      if (ev.key === "ArrowDown" && cells.length) { ev.preventDefault(); cells[0].focus(); }
+      else if (ev.key === "Enter" && !ev.isComposing && ev.keyCode !== 229) {
+        ev.preventDefault();
+        if (cells.length) cells[0].click();
+      }
+    });
+    grid.addEventListener("keydown", function (ev) {
+      var cells = Array.prototype.slice.call(grid.querySelectorAll("button")), i = cells.indexOf(document.activeElement);
+      if (i < 0) return;
+      var j = ev.key === "ArrowRight" ? i + 1 : ev.key === "ArrowLeft" ? i - 1 : ev.key === "ArrowDown" ? i + COLS :
+              ev.key === "ArrowUp" ? i - COLS : ev.key === "Home" ? 0 : ev.key === "End" ? cells.length - 1 : null;
+      if (j === null) return;
+      ev.preventDefault();
+      if (j < 0) { search.focus(); return; }
+      cells[Math.min(j, cells.length - 1)].focus();
+    });
+    grid.addEventListener("focusin", function (ev) {           // one stop for Tab: the cell last moved to
+      Array.prototype.forEach.call(grid.querySelectorAll("button"), function (b) { b.tabIndex = b === ev.target ? 0 : -1; });
+    });
+    return picker;
+  }
+
+  function drawPicker() {
+    var q = picker.search.value.trim(), list = A.emoji.find(q);
+    picker.grid.textContent = "";
+    list.forEach(function (x, i) {
+      var b = A.button("emoji-cell", x.emoji, function () { choose(x.emoji); });
+      b.setAttribute("aria-label", x.emoji);
+      b.tabIndex = i === 0 ? 0 : -1;
+      picker.grid.appendChild(b);
+      if (!q && i === A.emoji.COMMON - 1) picker.grid.appendChild(make("div", "emoji-sep"));     // the common ones, a row
+    });
+    picker.none.hidden = list.length > 0;
+  }
+
+  function openPicker(id, anchor) {
+    if (!anchor) return;
+    var p = pickerBox();
+    p.id = id;
+    p.search.value = "";
+    drawPicker();
+    A.popup.open(p.box, anchor, {align: "end", focus: p.search});
+  }
+
+  function choose(emoji) {
+    var id = picker.id, m = known.get(id);
+    A.popup.close(true);
+    var mineAlready = m && (m.reactions || []).some(function (r) { return r.emoji === emoji && r.by.indexOf(ME) >= 0; });
+    if (!mineAlready) react(id, emoji, true);
+  }
+
+  // ------------------------------------------------------------------ editing (1y)
+
+  // The text becomes a field in its place, with save and cancel: Enter saves, Shift+Enter is a new line, Escape gives
+  // up. A refusal is said beside the buttons. The news leave a row being edited alone.
+  function startEdit(li, m) {
+    if (li._editing) { li._editing.focus(); return; }
+    var form = make("form", "msg-edit"), area = make("textarea");
+    area.value = m.text;
+    area.rows = 1;
+    area.maxLength = 4000;
+    area.setAttribute("aria-label", t("msg.edit_label"));
+    var row = make("div", "row msg-edit-row"), save = make("button", "btn primary", t("msg.edit_save"));
+    save.type = "submit";
+    var cancel = A.button("btn", t("msg.edit_cancel"), function () { stop(true); });
+    var out = make("span", "out");
+    out.setAttribute("aria-live", "polite");
+    row.append(save, cancel, make("span", "dim small", t("msg.edit_hint")), out);
+    form.append(area, row);
+    li.querySelector(".body .text").after(form);
+    li.classList.add("editing");
+    li._editing = area;
+    function fit() {
+      area.style.height = "auto";
+      area.style.height = Math.min(area.scrollHeight + 2, window.innerHeight * 0.4) + "px";
+    }
+    function stop(back) {
+      form.remove();
+      li.classList.remove("editing");
+      li._editing = null;
+      if (back) { var edit = li.querySelector(".act-edit"); if (edit) edit.focus({preventScroll: true}); }
+      news();                             // what changed meanwhile
+    }
+    area.addEventListener("input", function () { fit(); out.textContent = ""; });
+    area.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); stop(true); }
+      else if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var text = area.value;
+      if (!text.trim()) { out.textContent = t("msg.edit_empty"); return; }
+      if (text === m.text) { stop(true); return; }
+      save.disabled = true;
+      var r = await post("messages/" + m.id + "/edit", {text: text});
+      save.disabled = false;
+      if (!r.ok) { out.textContent = A.refusal("msg.edit", r.data); return; }
+      form.remove();
+      li.classList.remove("editing");
+      li._editing = null;
+      await refreshOne(m.id, "act:edit");
+    });
+    fit();
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+  }
+
+  // ------------------------------------------------------------------ pictures of the repository (1y)
+
+  // The pictures a message names, under its text: the paths paths.js linked (they name a file of the repository) that
+  // end in a picture's extension, once each, at most a few; the alternative text a Markdown picture gave. A click opens
+  // the file in files mode. Only this server's raw files are loaded; a picture that cannot be drawn is left out.
+  var PICTURE = /\.(?:png|jpe?g|gif|webp|svg)$/i, PICTURES_MAX = 4;
+  function altsOf(text) {
+    var out = {}, re = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?/g, m;
+    while ((m = re.exec(String(text)))) {
+      var p = m[2].replace(/^\.\//, "");
+      try { p = decodeURI(p); } catch (err) { /* as written */ }
+      if (!(p in out)) out[p] = m[1];
+    }
+    return out;
+  }
+  function showPictures(box, holder, text) {
+    var seen = [], alts = null;
+    Array.prototype.forEach.call(box.querySelectorAll("a.path-link[data-path]"), function (a) {
+      var p = a.dataset.path;
+      if (!PICTURE.test(p) || seen.indexOf(p) >= 0 || seen.length >= PICTURES_MAX) return;
+      seen.push(p);
+      alts = alts || altsOf(text);
+      var link = make("a", "picture-link");
+      link.href = A.fileHref(SLUG, p);
+      link.title = t("msg.picture_hint", {path: p});
+      var img = make("img");
+      img.alt = alts[p] || p;
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.addEventListener("load", function () { if (endInView) toBottom(); });
+      img.addEventListener("error", function () { link.remove(); holder.hidden = !holder.children.length; });
+      img.src = A.rawUrl(SLUG, p);
+      link.appendChild(img);
+      holder.appendChild(link);
+    });
+    holder.hidden = !holder.children.length;
   }
 
   function showEmpty() {
@@ -452,11 +812,11 @@
       marking = false;
     }
   }
-  var looking = false;
+  var looking = false, endInView = true;     // endInView: a picture that loads keeps the end in view
   el.scroll.addEventListener("scroll", function () {
     if (looking) return;
     looking = true;
-    window.requestAnimationFrame(function () { looking = false; seen(); });
+    window.requestAnimationFrame(function () { looking = false; endInView = atBottom(); seen(); });
   }, {passive: true});
   document.addEventListener("visibilitychange", seen);
 
@@ -611,18 +971,24 @@
     }
   };
 
+  // New messages, and the newest WATCH shown asked for again: their reactions, edits and deletions by others.
   async function news() {
     if (!state.place || state.busy) return;
     state.busy = true;
     try {
-      var place = state.place;
-      var r = await get("messages", {"in": place, after: state.last, limit: 200});
-      if (r.ok && place === state.place && (r.data.messages || []).length) {
+      var place = state.place, rows = messageRows(), since = state.last;
+      if (rows.length) since = Math.min(since, idOf(rows[Math.max(0, rows.length - WATCH)]) - 1);
+      var r = await get("messages", {"in": place, after: since, limit: 200});
+      if (!r.ok || place !== state.place) return;
+      var all = r.data.messages || [], last = state.last;
+      all.forEach(function (m) { if (m.id <= last && known.has(m.id)) replaceItem(m); });
+      var fresh = all.filter(function (m) { return m.id > last; });
+      if (fresh.length) {
         var bottom = atBottom();
-        append(r.data.messages);
+        append(fresh);
         if (bottom) toBottom();
         // Read only when the reader sees them; otherwise the pill says they are there.
-        if (caughtUp()) await markRead(); else noteFresh(r.data.messages);
+        if (caughtUp()) await markRead(); else noteFresh(fresh);
         await loadPlaces();
       }
     } finally {
@@ -636,7 +1002,7 @@
     state.replyTo = id;
     el.reply.hidden = !id;
     var m = id ? known.get(id) : null;
-    el.reply.firstChild.textContent = id ? t("msg.replying_to") + (m ? DOT + senderName(m) + ": " + snippet(m.text) : "") : "";
+    el.reply.firstChild.textContent = id ? t("msg.replying_to") + (m ? DOT + senderName(m) + ": " + textOf(m) : "") : "";
   }
 
   function outcome(mentions) {
@@ -653,6 +1019,7 @@
 
   // The input grows with its text up to a limit (CSS max-height), then scrolls.
   function grow() {
+    if (el.send) el.send.disabled = !el.text.value.trim();        // nothing to send: the control is dim and off
     el.text.style.height = "auto";
     if (!el.text.value) {                 // empty: one line, whatever the placeholder's length on a narrow screen
       el.text.style.height = "";
@@ -690,10 +1057,9 @@
 
   // ------------------------------------------------------------------ completion in the composer: @, # and /
 
-  // The server's rule for a mention: "@" not after a name's character, then the name's characters; a name that is
-  // nobody loses its trailing ".", "_" or "-" before it is given up.
-  var MENTION_RE = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
-  var AT_MAX = 12;
+  // A mention is read as the server reads it (render.js: A.mentionAt). While one is typed, what follows the "@" up to the
+  // caret is the query: any characters but spaces, "@", "#", "/" and quotes (a group's name may be in any script).
+  var AT_MAX = 12, AT_QUERY = /(^|[^A-Za-z0-9._-])@([^\s@#\/"'`<>]{0,40})$/;
   // The commands a person gives an agent of theirs (1x): `@agent /command ...` at the start of a message. What each
   // puts into the composer; the ones that take an argument leave the caret after a space.
   var COMMANDS = [{name: "/goal", insert: "/goal ", hint: "msg.cmd_hint.goal"},
@@ -726,7 +1092,7 @@
     if ((m = /^@([A-Za-z0-9._-]+) \/([A-Za-z]*)$/.exec(before)) && isMyAgent(m[1])) {
       return {kind: "/", start: caret - m[2].length - 1, end: caret, query: m[2]};
     }
-    if (isChannel(state.place) && (m = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]*)$/.exec(before))) {
+    if (isChannel(state.place) && (m = AT_QUERY.exec(before))) {
       return {kind: "@", start: caret - m[2].length - 1, end: caret, query: m[2]};
     }
     if ((m = /(^|[^A-Za-z0-9._#-])#([a-z0-9-]*)$/.exec(before))) {
@@ -857,13 +1223,11 @@
     if (!v || !isChannel(state.place)) return [];
     var names = new Set();
     (v.people || []).concat(v.agents || [], v.groups || []).forEach(function (x) { names.add(x.name); });
-    var out = [], m;
-    MENTION_RE.lastIndex = 0;
-    while ((m = MENTION_RE.exec(text))) {
-      var cand = m[2];
-      while (cand && !names.has(cand) && /[._-]$/.test(cand)) cand = cand.slice(0, -1);
+    var list = A.longestFirst(names), out = [];
+    A.mentionStarts(text).forEach(function (start) {
+      var cand = A.mentionAt(text, start, list);
       if (cand && !names.has(cand) && out.indexOf(cand) < 0) out.push(cand);
-    }
+    });
     return out;
   }
 

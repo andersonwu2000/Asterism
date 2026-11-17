@@ -898,10 +898,10 @@
   var dropProject = document.getElementById("project-delete");
   if (dropProject) {
     dropProject.addEventListener("click", function () {
-      var slug = dropProject.dataset.slug;
-      A.gone({title: t("gone.project.title", {name: slug}), text: t("gone.project.text"), name: slug,
+      var name = dropProject.dataset.name;           // the project's name is typed to confirm (1y), not its address
+      A.gone({title: t("gone.project.title", {name: name}), text: t("gone.project.text"), name: name,
               button: t("gone.project.button"), opener: dropProject,
-              run: function () { return A.request(API + "project/delete", null, {confirm: slug}); },
+              run: function () { return A.request(API + "project/delete", null, {confirm: name}); },
               done: function () { window.location.href = "/"; }});
     });
   }

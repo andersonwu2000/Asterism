@@ -86,6 +86,16 @@ GLYPHS = {
     "sliders": '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/>'
                '<circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>',
     "burger": '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    # The composer's send control (1y): an upward arrow; the button around it is the filled circle.
+    "send": '<path d="M12 18.5V6M6.5 11.5L12 6l5.5 5.5"/>',
+    # Add a reaction (1y): a face with a small plus.
+    "react": '<path d="M19.5 12a7.5 7.5 0 1 1-6-7.35"/><path d="M9 14.5c.8 1 1.8 1.5 3 1.5s2.2-.5 3-1.5"/>'
+             '<path d="M9.5 10h.01M14.5 10h.01"/><path d="M19 3v5M16.5 5.5h5"/>',
+    # Edit (1y): a pencil.
+    "edit": '<path d="M5 19l1-4L16 5l3 3L9 18z"/><path d="M14 7l3 3"/>',
+    # Delete (1y): a bin.
+    "bin": '<path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>',
+    "reply": '<path d="M10 8L5 12.5l5 4.5"/><path d="M5.5 12.5H14a5 5 0 0 1 5 5v1"/>',
     # A channel some members may not read.
     "lock": '<rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V8.5a3 3 0 0 1 6 0V11"/>',
     "dots": '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
@@ -94,7 +104,7 @@ GLYPHS = {
 }
 
 # The glyphs the page scripts draw (A.glyph clones them from this template).
-SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip", "lock")
+SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip", "lock", "react", "edit", "bin", "reply")
 
 
 def glyph(name: str, size: int = 20, extra: str = "") -> str:
@@ -435,14 +445,12 @@ def home(tr: Translator, person: dict[str, Any] | None, projects: list[dict[str,
         body = f'<h2>{e(tr("home.projects"))}</h2><ul class="cards">{items}</ul>'
     else:
         body = f'<p>{e(tr("home.no_projects"))}</p>'
-    # Anyone signed in makes a project (it lives on this server); app.js sends the form and opens the new project.
+    # Anyone signed in makes a project (it lives on this server): its name and repository; the server chooses its
+    # address (1y). app.js sends the form and opens the new project at the address the answer gives.
     body += (f'<details class="new-project" id="new-project"><summary class="btn">{e(tr("home.new"))}</summary>'
              f'<form class="stack" data-api="/api/projects" data-goto="slug" data-refusal="home.new">'
              f'<label class="field"><span>{e(tr("home.new_name"))}</span><input name="name" required maxlength="80" '
              f'autocomplete="off"></label>'
-             f'<label class="field"><span>{e(tr("home.new_slug"))}</span><input name="slug" required minlength="2" '
-             f'maxlength="40" pattern="[a-z0-9][a-z0-9\\-]{{1,39}}" autocomplete="off" spellcheck="false" '
-             f'autocapitalize="off" data-invalid="error.invalid_slug"><span class="dim">{e(tr("home.new_slug_hint"))}</span></label>'
              f'<label class="field"><span>{e(tr("home.new_repo"))}</span><input name="repo" type="url" data-invalid="error.invalid_repo" '
              f'placeholder="https://github.com/owner/name" autocomplete="off" spellcheck="false">'
              f'<span class="dim">{e(tr("home.new_repo_hint"))}</span></label>'
@@ -620,7 +628,7 @@ def _project_overview(tr: Translator, frame: dict[str, Any], can: bool) -> str:
             f'<p class="dim">{e(tr("set.notice_hint"))}</p>{_save_row(tr)}</form>'
             f'<section class="danger-zone"><h3>{e(tr("set.delete_project"))}</h3>'
             f'<p class="dim">{e(tr("set.delete_project_hint"))}</p>'
-            f'<button type="button" class="btn danger" id="project-delete" data-slug="{e(frame["slug"])}">'
+            f'<button type="button" class="btn danger" id="project-delete" data-name="{e(frame["name"])}">'
             f'{e(tr("set.delete_project"))}</button></section>')
 
 
@@ -728,6 +736,14 @@ def _tool(tr: Translator, ident: str, icon: str, label_key: str, attrs: str, inn
             f'{glyph(icon)}{inner}</button>')
 
 
+def _send_button(tr: Translator) -> str:
+    """The composer's send control (1y): an upward arrow in a filled circle at the right end of the field, named for
+    screen readers; dim and disabled while the field is empty (the page script turns it on)."""
+    label = e(tr("msg.send"))
+    return (f'<button type="submit" class="send-icon" aria-label="{label}" title="{label}" disabled>'
+            f'{glyph("send", 18)}</button>')
+
+
 def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view: dict[str, Any],
              dm: str | None = None, refused: tuple[str, int] | None = None) -> tuple[str, int]:
     """Chat (`dm` None) and private messages (`dm` the other member's name, "" for none chosen yet): the project menu
@@ -745,7 +761,8 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
         return layout(tr, tr("dm.title"), body, person, frame, "dm", status=status, page_class="room-page",
                       corner=_project_button(tr, frame), column=_dm_side(tr, frame), bar=bar)
     data = {"slug": frame["slug"], "me": person["name"], "mode": "chat" if dm is None else "dm",
-            "place": dm or "", "can-edit-tasks": "1" if view["can_edit_tasks"] else ""}
+            "place": dm or "", "can-edit-tasks": "1" if view["can_edit_tasks"] else "",
+            "can-manage-channels": "1" if view.get("can_manage_channels") else ""}
     room = (f'<div id="chat" class="room" {_attrs(data)}>'
             f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
             f'{e(tr("msg.older"))}</button></div>'
@@ -754,7 +771,7 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
             f'<button type="button" id="reply-cancel" class="quiet-btn">{e(tr("msg.reply_cancel"))}</button></div>'
             f'<div class="composer-box"><textarea id="text" rows="1" maxlength="4000" aria-label="{e(tr("msg.input_label"))}" '
             f'placeholder="{e(tr("msg.input_hint"))}"></textarea>'
-            f'<button class="btn primary send">{e(tr("msg.send"))}</button></div>'
+            f'{_send_button(tr)}</div>'
             f'<div class="out composer-out" id="composer-out" aria-live="polite"></div></form></div>')
     sides = "".join(f'<button type="button" class="seg-btn" data-side="{k}" aria-pressed="{"true" if k == "people" else "false"}">'
                     f'{e(tr("people.side_" + k))}</button>' for k in ("people", "agents"))
@@ -784,7 +801,8 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
                   column=_side(tr, frame) if dm is None else _dm_side(tr, frame), bar=_chat_bar(tr),
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                           "render.js", "paths.js", "right.js", "tasks.js", "people.js", "messages.js", "search.js"])
+                           "render.js", "paths.js", "right.js", "tasks.js", "people.js", "emoji.js", "messages.js",
+                           "search.js"])
 
 
 VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), ("split", "files.view_split"))
@@ -862,7 +880,7 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
             f'<ol id="tl-list" class="messages" aria-live="polite"></ol></div>'
             f'<form id="tl-composer" class="composer" hidden><div class="composer-box">'
             f'<textarea id="tl-text" rows="1" maxlength="4000" aria-label="{e(tr("agp.input_label"))}"></textarea>'
-            f'<button class="btn primary send">{e(tr("msg.send"))}</button></div>'
+            f'{_send_button(tr)}</div>'
             f'<div class="out composer-out" id="tl-out" aria-live="polite"></div></form></section>')
     return layout(tr, tr("agp.title"), body, person, frame, "agent", page_class="room-page agent-room",
                   corner=_project_button(tr, frame), column=column, bar=bar,

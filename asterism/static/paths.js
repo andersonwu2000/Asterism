@@ -67,6 +67,7 @@
   function link(path, inner) {
     var a = A.make("a", "path-link");
     a.href = A.fileHref(SLUG, path);
+    a.dataset.path = path;              // the file it names (messages.js shows the pictures under a message, 1y)
     a.title = A.t("files.open_hint", {path: path});
     a.appendChild(inner);
     return a;

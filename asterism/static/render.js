@@ -6,8 +6,9 @@
 // iframes/objects/forms, only http(s) and mailto links, which open with rel="noopener noreferrer"). Mathematics
 // ($...$, $$...$$) is taken out before Markdown sees it and drawn by KaTeX (trust off) into elements this script
 // creates.
-// - In a message, images become plain links and nothing is loaded; the mentions that reached someone (the names the
-//   caller gives) are marked as span.mention.
+// - In a message, images become plain links and nothing is loaded (a picture of the repository, `![alt](path)`, becomes
+//   its path, which paths.js links and messages.js shows under the text, 1y); the mentions that reached someone (the
+//   names the caller gives) are marked as span.mention.
 // - In a file, links and images may also be relative: while DOMPurify still holds the document in its own inert
 //   copy, `opts.link(href)` turns a relative link into {href, path} (a file of the repository: no new tab, data-path
 //   marks it) or null (the link is dropped, its text stays), and `opts.image(src)` gives the address to load a
@@ -36,6 +37,12 @@
       html: rawHtml,
       image: function (href, title, text) {      // never load an image: show it as a link
         if (href && typeof href === "object") { text = href.text; href = href.href; }
+        // A path of the repository stays its path, for paths.js to link (and the page to show the picture).
+        if (href && !/^[a-z][a-z0-9+.\-]*:/i.test(href)) {
+          var path = href;
+          try { path = decodeURI(href); } catch (err) { path = href; }     // marked encodes what it is given
+          return escapeHtml(path.replace(/^\.\//, ""));
+        }
         return '<a href="' + escapeHtml(href || "") + '">' + escapeHtml(text || href || "") + "</a>";
       }
     }
@@ -149,10 +156,47 @@
     });
   }
 
-  // "@name" as the server reads a mention: "@" not after a name's character, then the name's characters, trailing
-  // ".", "_" or "-" dropped until a name is found. Only names in `names` are marked; the text stays as it was.
-  var MENTION_RE = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
+  // "@name" as the server reads a mention (1y): an "@" not after an ASCII name character; then the longest of the
+  // known names (`names`, longest first) the text goes on with there, unless an ASCII name would go on with ASCII name
+  // characters (`@bobx` is not bob); else the ASCII run of name characters, its trailing ".", "_" or "-" dropped until
+  // it is a known name (an unknown one when none is). Null when there is no name.
+  var NAME_CHAR = /[A-Za-z0-9._-]/, AT_RE = /(^|[^A-Za-z0-9._-])@/g;
+  A.mentionAt = function (s, start, names) {
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i], end = start + n.length;
+      if (s.substr(start, n.length) !== n) continue;
+      if (end < s.length && NAME_CHAR.test(n.charAt(n.length - 1)) && NAME_CHAR.test(s.charAt(end))) continue;
+      return n;
+    }
+    var run = /^[A-Za-z0-9._-]+/.exec(s.slice(start));
+    if (!run) return null;
+    var cand = run[0];
+    while (cand && names.indexOf(cand) < 0 && /[._-]$/.test(cand)) cand = cand.slice(0, -1);
+    return cand || null;
+  };
+  // The places in `s` just after an "@" that may start a mention.
+  A.mentionStarts = function (s) {
+    var out = [], m;
+    AT_RE.lastIndex = 0;
+    while ((m = AT_RE.exec(s))) {
+      out.push(m.index + m[0].length);
+      AT_RE.lastIndex = m.index + m[0].length;
+    }
+    return out;
+  };
+  A.longestFirst = function (names) {
+    return Array.from(names).sort(function (a, b) { return b.length - a.length; });
+  };
+  // The quiet mark of a message its author edited (1y), with the time of the last edit as its tooltip.
+  A.editedMark = function (iso) {
+    var mark = A.make("span", "edited-mark", A.t("msg.edited"));
+    if (iso) mark.title = A.t("msg.edited_at", {time: new Date(iso).toLocaleString(document.documentElement.lang || undefined)});
+    return mark;
+  };
+
+  // Only names in `names` are marked; the text stays as it was.
   function markMentions(box, names) {
+    var known = A.longestFirst(names);
     var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
       acceptNode: function (n) {
         return n.parentNode.closest("code, pre, a, .katex") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
@@ -161,13 +205,12 @@
     var nodes = [], n;
     while ((n = walker.nextNode())) if (n.nodeValue.indexOf("@") >= 0) nodes.push(n);
     nodes.forEach(function (node) {
-      var s = node.nodeValue, frag = document.createDocumentFragment(), at = 0, m, hit = false;
-      MENTION_RE.lastIndex = 0;
-      while ((m = MENTION_RE.exec(s))) {
-        var cand = m[2];
-        while (cand && !names.has(cand) && /[._-]$/.test(cand)) cand = cand.slice(0, -1);
-        if (!cand || !names.has(cand)) continue;
-        var from = m.index + m[1].length;
+      var s = node.nodeValue, frag = document.createDocumentFragment(), at = 0, hit = false;
+      A.mentionStarts(s).forEach(function (start) {
+        if (start <= at) return;
+        var cand = A.mentionAt(s, start, known);
+        if (!cand || !names.has(cand)) return;
+        var from = start - 1;
         frag.appendChild(document.createTextNode(s.slice(at, from)));
         var mark = document.createElement("span");
         mark.className = "mention";
@@ -175,7 +218,7 @@
         frag.appendChild(mark);
         at = from + 1 + cand.length;
         hit = true;
-      }
+      });
       if (!hit) return;
       frag.appendChild(document.createTextNode(s.slice(at)));
       node.parentNode.replaceChild(frag, node);

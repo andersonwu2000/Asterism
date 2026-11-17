@@ -250,7 +250,22 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   The list filters as one types (names that start with it first, then names that hold it); arrow keys, Enter or Tab
   take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
   composer and the message waits: sending again sends it as it is. In a message drawn, a mention that reached someone
-  is at weight 600, no hue.
+  is at weight 600, no hue. A name is read as the server reads it: the longest known name the text goes on with after
+  the "@", so a group named in any script (`@證明組請看`) needs no space after it.
+- **The send control** is an icon at the right end of the field: an upward arrow in a filled circle, the circle in the
+  strongest ink (`--color-loud`, never a hue), the arrow in the page's ground; named 送出 for screen readers; dim and
+  off while the field holds nothing to send. Enter still sends.
+- **A message's acts** are its hover bar (on hover and keyboard focus; on touch, always): add a reaction (a face),
+  回覆, 編輯 (its author), 刪除 (its author, the person of the agent that sent it, or who manages channels; two steps,
+  in place) and "..." (the one menu, also by right click). **Reactions** sit under the text as small pills, emoji and
+  count, each a toggle; the reader's own is filled (a wash and an edge), not coloured; a + at their end adds another.
+  The picker floats by its control: a search box over a built-in list of emoji (the system's own glyphs, nothing
+  loaded), the common ones first in a row of their own; arrow keys move, Enter takes one, Escape closes it. **Editing**
+  puts a field in the text's place (Enter saves, Escape gives up); an edited message carries a quiet "已編輯" after its
+  text. **A deleted message** keeps its place as one faint italic line, "訊息已刪除", under its sender and time;
+  replies to it stay and say so.
+- **Pictures of the repository** that a message names (a path that resolves, or `![alt](path)`) show under its text,
+  at most 360 px high, framed like a card; a click opens the file in files mode. Nothing from another host is loaded.
 - **A command to an agent** (`@cody /compact`, only its own person's) is posted like any message; under the composer
   one line says it was handed to the agent's program, and the outcome comes as a reply from the system, in the
   reader's words.
@@ -384,7 +399,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
   ("移除任務 12") and a second press does it; moving away disarms it. No browser dialogs.
 - **A destruction that cannot be undone floats**: a centred panel over a dimmed page, its button armed only when the
-  thing's name is typed (a channel's deletion asks without typing), and that button is the one red. Escape and a click
+  thing's name is typed (a project's name, not its address; a channel's deletion asks without typing), and that
+  button is the one red. A new project is made with its name (and repository); the server gives its address. Escape and a click
   outside close it.
 - Focus is always visible. Motion is short (120–180 ms), only on what the reader just did, and off under
   `prefers-reduced-motion`.

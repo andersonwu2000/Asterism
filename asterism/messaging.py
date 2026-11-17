@@ -17,6 +17,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
@@ -26,7 +27,13 @@ from .errors import ApiError, bad_request, conflict, forbidden, not_found
 from .projects import Actor, Project
 
 CHANNEL_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
-MENTION_RE = re.compile(r"(?<![A-Za-z0-9._-])@([A-Za-z0-9._-]+)")
+# A mention starts at an "@" not after an ASCII name character (people's and agents' names are ASCII; a group's may be
+# written in any script, 1y).
+MENTION_AT_RE = re.compile(r"(?<![A-Za-z0-9._-])@")
+MENTION_RUN_RE = re.compile(r"[A-Za-z0-9._-]+")
+ASCII_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+REACTION_MAX_LEN = 16
+REACTIONS_PER_MESSAGE = 20              # different emoji on one message
 TEXT_MAX = 4_000
 LIST_DEFAULT, LIST_MAX = 50, 200
 WAIT_MAX_S = 100.0
@@ -249,6 +256,7 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
     # A reply from the system that tells a command's outcome carries it, for the page to say in its own words.
     told = commands.outcomes(pj, [r["id"] for r in rows if r["sender_kind"] == "system" and r["reply_to"]]) \
         if me.kind == "person" else {}
+    reacted = reactions(pj, [r["id"] for r in rows])
     out = []
     for r in rows:
         own = r["sender_kind"] == me.kind and r["sender_id"] == me.id
@@ -260,6 +268,15 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
             m["model"] = r["sender_model"]
         m.update({"level": level, "reply_to": r["reply_to"], "text": r["text"], "sent_at": util.iso(r["sent"]),
                   "mentions": json.loads(r["mentions"])})
+        # 1y: a deleted message keeps its place, sender and time; its text is gone. The time of the last edit and the
+        # reactions only when there are any.
+        if r["deleted"] is not None:
+            m.update({"text": "", "mentions": [], "deleted": True})
+        else:
+            if r["edited"] is not None:
+                m["edited_at"] = util.iso(r["edited"])
+            if r["id"] in reacted:
+                m["reactions"] = reacted[r["id"]]
         if not r["place"].startswith("#"):
             m["private"] = True
         if r["schedule_id"] is not None:
@@ -302,17 +319,45 @@ def _lookup_mention(pj: Project, name: str) -> tuple[str, Any] | None:
     return ("group", g) if g else None
 
 
+def _mentionable_names(pj: Project) -> list[str]:
+    """Every name a mention can reach (people, agents, groups), the longest first."""
+    names = [r[0] for r in pj.db.execute("SELECT name FROM people UNION SELECT name FROM agents "
+                                         "UNION SELECT name FROM groups")]
+    return sorted(names, key=len, reverse=True)
+
+
+def _ends_there(name: str, text: str, end: int) -> bool:
+    """A name read at an "@" ends where the text holds it, unless an ASCII name goes on with ASCII name characters
+    (`@bobx` is not bob)."""
+    return not (end < len(text) and name[-1] in ASCII_NAME_CHARS and text[end] in ASCII_NAME_CHARS)
+
+
+def mention_at(text: str, start: int, names: list[str]) -> str | None:
+    """The name a mention whose "@" is just before `start` names (1y): the longest of `names` (longest first) that the
+    text goes on with there (so `@證明組請看` names 證明組 when that group exists); else, as before, the ASCII run of
+    name characters after the "@", its trailing '.', '_' or '-' dropped until it is one of `names` (an unknown name
+    when none is). None: no name at all."""
+    for n in names:
+        if text.startswith(n, start) and _ends_there(n, text, start + len(n)):
+            return n
+    run = MENTION_RUN_RE.match(text, start)
+    if not run:
+        return None
+    cand, known = run.group(0), set(names)
+    while cand not in known and cand and cand[-1] in "._-":
+        cand = cand[:-1]
+    return cand or None
+
+
 def parse_mentions(pj: Project, text: str) -> tuple[list[tuple[str, str, Any]], list[str]]:
     """([(name, 'member' | 'group', Member | group row)], [unknown names]), each name once, in order."""
     found: list[tuple[str, str, Any]] = []
     unknown: list[str] = []
     seen: set[str] = set()
-    for match in MENTION_RE.finditer(text):
-        cand = match.group(1)
-        hit = _lookup_mention(pj, cand)
-        while hit is None and cand and cand[-1] in "._-":
-            cand = cand[:-1]
-            hit = _lookup_mention(pj, cand) if cand else None
+    names = _mentionable_names(pj) if "@" in text else []
+    for match in MENTION_AT_RE.finditer(text):
+        cand = mention_at(text, match.end(), names)
+        hit = _lookup_mention(pj, cand) if cand else None
         if not cand or cand in seen:
             continue
         seen.add(cand)
@@ -1100,7 +1145,7 @@ def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any
     # A channel `me` may read, or a private place whose two member keys include mine.
     mine = sorted(readable(pj, me))
     private = f"|{me.key}|" if reads_private(pj, me) else "|nobody|"
-    sql = (f"SELECT * FROM messages WHERE (place IN ({','.join('?' * len(mine)) or 'NULL'}) OR "
+    sql = (f"SELECT * FROM messages WHERE deleted IS NULL AND (place IN ({','.join('?' * len(mine)) or 'NULL'}) OR "
            "(substr(place, 1, 2) = 'p:' AND instr('|' || substr(place, 3) || '|', ?) > 0))")
     args: list[Any] = [*mine, private]
     if where is not None:
@@ -1124,6 +1169,120 @@ def search(pj: Project, me: Member, q: Any, where: Any, sender: Any, before: Any
         args += words
     rows = pj.db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, n + 1)).fetchall()
     return {"results": views(pj, rows[:n], me), "more": len(rows) > n}
+
+
+# --------------------------------------------------------------------------- reactions, editing, deleting (1y)
+
+def reactions(pj: Project, mids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """message id -> its reactions [{emoji, count, by: [names]}], each emoji in the order it was first used."""
+    if not mids:
+        return {}
+    marks = ",".join("?" * len(mids))
+    out: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for r in pj.db.execute(f"SELECT r.message_id, r.emoji, coalesce(p.name, 'a former member') AS name FROM reactions r "
+                           f"LEFT JOIN people p ON p.person_id = r.person_id WHERE r.message_id IN ({marks}) "
+                           f"ORDER BY r.message_id, r.at, r.rowid", mids):
+        one = out[r["message_id"]].setdefault(r["emoji"], {"emoji": r["emoji"], "count": 0, "by": []})
+        one["count"] += 1
+        one["by"].append(r["name"])
+    return {mid: list(by.values()) for mid, by in out.items()}
+
+
+def valid_emoji(v: Any) -> bool:
+    """One emoji: 1 to 16 characters, at least one a symbol beyond ASCII, none a letter or a digit (of any script), a
+    space or a control character. Joiners, variation selectors and skin tones are part of it."""
+    if not isinstance(v, str) or not 1 <= len(v) <= REACTION_MAX_LEN:
+        return False
+    cats = [unicodedata.category(ch) for ch in v]
+    if any(c[0] in "LZ" or c in ("Nd", "Nl", "Cc", "Co", "Cs", "Cn") for c in cats):
+        return False
+    return any(c[0] == "S" and ord(ch) > 0x7f for ch, c in zip(v, cats))
+
+
+def _person_only(me: Member, what: str) -> None:
+    if me.kind != "person":
+        raise forbidden(f"Agents cannot {what} messages.")
+
+
+def _live(row: sqlite3.Row, what: str) -> None:
+    if row["sender_kind"] == "system":
+        raise conflict(f"The system's messages cannot be {what}.")
+    if row["deleted"] is not None:
+        raise conflict(f"Message {row['id']} was deleted.")
+
+
+def react(pj: Project, me: Member, mid: Any, emoji: Any, on: Any) -> dict[str, Any]:
+    """A reader of a message (a person) adds (`on` true) or takes away an emoji reaction. Nobody is told."""
+    _person_only(me, "react to")
+    row = _message(pj, me, _int(mid, "id", required=True), "")
+    if not valid_emoji(emoji):
+        raise bad_request("invalid_emoji", "emoji is one emoji: 1 to 16 characters, no letters, digits or spaces.")
+    if not isinstance(on, bool):
+        raise bad_request("bad_request", "on must be true (add the reaction) or false (take it away).")
+    if row["deleted"] is not None:
+        raise conflict(f"Message {row['id']} was deleted.")
+    with pj.db:
+        if on:
+            have = {r[0] for r in pj.db.execute("SELECT DISTINCT emoji FROM reactions WHERE message_id = ?", (row["id"],))}
+            if emoji not in have and len(have) >= REACTIONS_PER_MESSAGE:
+                raise ApiError(409, "too_many_reactions",
+                               f"A message takes at most {REACTIONS_PER_MESSAGE} different reactions.")
+            pj.db.execute("INSERT OR IGNORE INTO reactions (message_id, emoji, person_id, at) VALUES (?, ?, ?, ?)",
+                          (row["id"], emoji, me.person_id, util.now()))
+        else:
+            pj.db.execute("DELETE FROM reactions WHERE message_id = ? AND emoji = ? AND person_id = ?",
+                          (row["id"], emoji, me.person_id))
+    return {"id": row["id"], "reactions": reactions(pj, [row["id"]]).get(row["id"], [])}
+
+
+def edit(pj: Project, me: Member, mid: Any, text: Any) -> dict[str, Any]:
+    """The author (a person) changes the text of their message, under the rules of sending. The mentions are not sent
+    again and nobody is told (agents read the text as it is now, with edited_at)."""
+    _person_only(me, "edit")
+    row = _message(pj, me, _int(mid, "id", required=True), "")
+    if not (row["sender_kind"] == "person" and row["sender_id"] == me.person_id):
+        raise forbidden("Only its author can edit a message.")
+    _live(row, "edited")
+    text = check_text(text)
+    if not may_post_in(pj, me, row["place"]):
+        raise forbidden("Posting messages needs the post permission.")
+    if text != row["text"]:
+        with pj.db:
+            pj.db.execute("UPDATE messages SET text = ?, edited = ? WHERE id = ?", (text, util.now(), row["id"]))
+        util.log("message_edited", project=pj.slug, id=row["id"], by=me.name)
+    return {"id": row["id"]}
+
+
+def delete(pj: Project, me: Member, mid: Any) -> dict[str, Any]:
+    """Delete a message: its author; the author's person when the author is an agent; in a channel, whoever has
+    manage_channels. It keeps its place (sender and time) and its text is gone for good; its reactions, pins, the
+    deliveries not handed over yet and the reminders about it go, and agents no longer count it unread. Replies to it
+    stay. Deleting it again changes nothing."""
+    _person_only(me, "delete")
+    row = _message(pj, me, _int(mid, "id", required=True), "")
+    if row["sender_kind"] == "system":
+        raise conflict("The system's messages cannot be deleted.")
+    if row["deleted"] is not None:
+        return {"id": row["id"], "deleted": True}
+    own = (row["sender_kind"] == "person" and row["sender_id"] == me.person_id) or \
+        (row["sender_kind"] == "agent" and row["sender_person"] == me.person_id)
+    moderator = row["place"].startswith("#") and "manage_channels" in projects.permissions(pj, actor_of(me))
+    if not own and not moderator:
+        raise forbidden("A message is deleted by its author, by the person of the agent that sent it, or in a channel "
+                        "by someone with the manage_channels permission.")
+    t = util.now()
+    with pj.db:
+        pj.db.execute("UPDATE messages SET text = '', mentions = '[]', deleted = ? WHERE id = ?", (t, row["id"]))
+        pj.db.execute("UPDATE commands SET args = '' WHERE message_id = ?", (row["id"],))
+        pj.db.execute("DELETE FROM reactions WHERE message_id = ?", (row["id"],))
+        pj.db.execute("DELETE FROM pins WHERE message_id = ?", (row["id"],))
+        pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE message_id = ? "
+                      "AND state IN ('pending', 'out')", (t, row["id"]))
+        pj.db.execute("DELETE FROM followups WHERE message_id = ?", (row["id"],))
+        pj.db.execute("UPDATE levels SET seen = coalesce(seen, ?) WHERE message_id = ? AND reader_kind = 'agent'",
+                      (t, row["id"]))
+    util.log("message_deleted", project=pj.slug, id=row["id"], by=me.name)
+    return {"id": row["id"], "deleted": True}
 
 
 def mark_read(pj: Project, me: Member, where: Any, upto: Any) -> dict[str, Any]:
@@ -1212,6 +1371,7 @@ def delete_channel(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
     inside = "SELECT id FROM messages WHERE place = ?"
     with pj.db:
         for sql in (f"DELETE FROM levels WHERE message_id IN ({inside})",
+                    f"DELETE FROM reactions WHERE message_id IN ({inside})",
                     f"DELETE FROM deliveries WHERE message_id IN ({inside})",
                     f"DELETE FROM followups WHERE message_id IN ({inside})",
                     f"DELETE FROM chain_reminders WHERE reply_to IN ({inside})",
