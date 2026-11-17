@@ -105,64 +105,6 @@ def logged(w, event: str, **fields) -> list[dict]:
 
 # ------------------------------------------------------------------ pins
 
-def test_files_and_messages_are_pinned_to_a_channel(s):
-    before = len([m for m in s.alice.read() if m["from_kind"] == "system"])
-    r = pin(s.bob, path="  notes/MAP.md ")
-    assert r.status_code == 201, r.text
-    one = r.json()["pin"]
-    assert one == {"id": one["id"], "kind": "file", "path": "notes/MAP.md", "url": REPO + "/blob/HEAD/notes/MAP.md", "by": "bob"}
-    odd = pin(s.alice, path="notes/研究 圖景.md").json()["pin"]
-    assert odd["url"] == REPO + "/blob/HEAD/notes/" + urllib.parse.quote("研究 圖景.md"), "each segment is percent-encoded"
-
-    said = s.bob.say("The plan for this week: " + "one more step, " * 12 + "[pn1]")
-    two = pin(s.alice, message=said["id"])
-    assert two.status_code == 201, two.text
-    two = two.json()["pin"]
-    cut = " ".join(("The plan for this week: " + "one more step, " * 12 + "[pn1]").split())[:120] + "…"
-    assert two == {"id": two["id"], "kind": "message", "message": said["id"], "from": "bob", "text": cut, "by": "alice"}
-
-    for bad in ("", "   ", "/abs/path.md", "a/../b.md", "a\\b.md", "a//b.md", "./a.md", "a/./b.md", "x" * 301, "a\nb.md"):
-        r = pin(s.alice, path=bad)
-        assert r.status_code == 400 and err(r) == "bad_request", repr(bad)
-    assert pin(s.alice, path="x" * 300).status_code == 201, "300 characters is still a path"
-    assert err(pin(s.alice)) == "bad_request" and err(pin(s.alice, path="a.md", message=said["id"])) == "bad_request"
-    assert pin(s.alice, message=999_999).status_code == 404
-    assert s.alice.c.post(f"/{SLUG}/api/channels", json={"name": "side"}).status_code == 201
-    elsewhere = s.alice.say("said in the side channel [pn2]", to="#side")
-    r = pin(s.alice, message=elsewhere["id"])
-    assert r.status_code == 400 and "#side" in r.json()["message"], "a channel pins its own messages"
-    assert pin(s.alice, "side", message=elsewhere["id"]).status_code == 201
-    assert pin(s.alice, "nowhere", path="a.md").status_code == 404
-    assert pin(s.alice, path="notes/MAP.md").status_code == 409 and pin(s.bob, message=said["id"]).status_code == 409
-    r = pin(s.carol, path="carol.md")
-    assert r.status_code == 403 and err(r) == "forbidden", "carol may read and post, not arrange channels"
-    assert unpin(s.carol, one["id"]).status_code == 403
-
-    for i in range(6):                                      # four are there; six more make ten
-        assert pin(s.alice, path=f"fill/{i}.md").status_code == 201
-    r = pin(s.alice, path="one-too-many.md")
-    assert r.status_code == 409 and ("10" in r.json()["message"] or "ten" in r.json()["message"]), r.text
-
-    general = s.carol.channel("general")
-    assert [p["id"] for p in general["pins"]][:3] == [one["id"], odd["id"], two["id"]], "oldest first, for everyone"
-    assert len(general["pins"]) == 10 and len(s.carol.channel("side")["pins"]) == 1
-    who = s.a1.c.get(f"/{SLUG}/api/agent/whoami").json()
-    seen = next(c for c in who["channels"] if c["name"] == "general")["pins"]
-    assert seen[:3] == [{"file": "notes/MAP.md"}, {"file": "notes/研究 圖景.md"}, {"message": said["id"]}]
-    assert next(c for c in who["channels"] if c["name"] == "side")["pins"] == [{"message": elsewhere["id"]}]
-
-    r = unpin(s.bob, odd["id"])
-    assert r.status_code == 200 and r.json() == {"removed": odd["id"]}
-    assert unpin(s.bob, odd["id"]).status_code == 404 and unpin(s.bob, two["id"], "side").status_code == 404
-    assert odd["id"] not in [p["id"] for p in s.alice.channel("general")["pins"]]
-    assert pin(s.alice, path="room-again.md").status_code == 201
-    assert len([m for m in s.alice.read() if m["from_kind"] == "system"]) == before, "nobody is told about a pin"
-    page = s.alice.c.get(f"/{SLUG}")
-    assert page.status_code == 200 and 'id="pins"' not in page.text, "the page shows no pins (the user's ruling, f4)"
-
-
-# ------------------------------------------------------------------ scheduled messages
-
 def test_a_schedule_posts_in_its_creators_name_at_its_own_level(s):
     text = "@b1 @a2 everybody: where do you stand? [sc1]"
     r = schedule(s.alice, text=text, level="important")

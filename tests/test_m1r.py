@@ -178,9 +178,9 @@ def test_a_persons_task_and_pin_with_one_key_are_made_once(r):
     assert len(tasks_with(r.alice, "[r12]")) == 1
     assert r.alice.c.post(f"/{SLUG}/api/tasks/{first.json()['task']['id']}/remove").status_code == 200
     pk = key()
-    pin = {"path": "README.md"}
-    one = r.alice.c.post(f"/{SLUG}/api/channels/general/pins", json=pin, headers=k(pk))
-    two = r.alice.c.post(f"/{SLUG}/api/channels/general/pins", json=pin, headers=k(pk))
+    chan = {"name": "keyed-once"}                          # pins retired (1z): a channel is made once instead
+    one = r.alice.c.post(f"/{SLUG}/api/channels", json=chan, headers=k(pk))
+    two = r.alice.c.post(f"/{SLUG}/api/channels", json=chan, headers=k(pk))
     assert one.status_code == two.status_code, (one.text, two.text)
     assert two.headers.get("idempotent-replayed") == "true"
 

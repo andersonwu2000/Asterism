@@ -628,8 +628,7 @@ def test_an_older_program_leaves_a_newer_resident_program_alone(exe, v, home, tm
     kill_pid(first)
     assert until(lambda: not alive(first), 5)
     major, minor, patch = (int(x) for x in own_version(exe, home).split("."))
-    assert patch < 10, "this test assumes a one-digit patch number of the program under test"
-    newer = standin(home, f"{major}.{minor}.{patch + 10}")     # e.g. 0.1.13 against 0.1.3: text order would say older
+    newer = standin(home, f"{major}.{minor}.{patch + 10}")     # numbers compare as numbers (also unit-tested in Rust)
     m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-rp-3")
     try:
         who, bad = m.tool("whoami")

@@ -260,7 +260,7 @@ def test_whoami_says_who_is_busy_and_lists_the_channels(t):
     who = t.a1.c.get(f"/{SLUG}/api/agent/whoami").json()
     flags = {a["name"]: a["busy"] for a in who["agents"]}
     assert flags["a2"] is True and flags["a1"] is False and flags["b1"] is False
-    assert {"name": "general", "pins": []} in who["channels"]
+    assert {"name": "general"} in who["channels"], "a channel is its name (pins retired, 1z)"
     wipe(t)
 
 

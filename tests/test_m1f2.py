@@ -74,13 +74,14 @@ def test_a_custom_groups_permissions_can_be_changed(g):
 def test_a_change_takes_effect_at_once(g):
     before = group(g.alice, "human")["permissions"]
     assert change(g.alice, "human", [p for p in before if p != "create_channel"]).status_code == 200
-    pin = lambda: g.carol.c.post(f"/{SLUG}/api/channels/general/pins", json={"path": "notes/carol.md"})
+    names = iter(f"carols-{i}" for i in range(10))
+    pin = lambda: g.carol.c.post(f"/{SLUG}/api/channels", json={"name": next(names)})     # create_channel, as pins were
     assert pin().status_code == 403
     assert make(g.alice, "readers", ["read", "post", "create_channel"]).status_code == 201
     assert put(g.alice, "carol", add=["readers"]).status_code == 200
     assert pin().status_code == 201, "carol holds what her group holds now"
     assert change(g.alice, "readers", ["read", "post"]).status_code == 200
-    assert g.carol.c.post(f"/{SLUG}/api/channels/general/pins", json={"path": "notes/again.md"}).status_code == 403
+    assert pin().status_code == 403
     assert change(g.alice, "human", before).status_code == 200
     assert put(g.alice, "carol", take=["readers"]).status_code == 200
 
