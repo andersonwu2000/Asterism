@@ -157,23 +157,22 @@ def test_a_person_chooses_the_language_of_the_pages(w):
 # ------------------------------------------------------------------ projects
 
 def test_anyone_signed_in_makes_a_project_and_its_owner_renames_and_deletes_it(w):
+    """The address is chosen by the server (1y); deleting asks for the project's name typed."""
     dora = Person(w.srv, "dora")
-    assert httpx.post(f"{w.srv.url}/api/projects", json={"slug": "dora-lab", "name": "Dora Lab"}).status_code in (401, 403)
-    assert dora.c.post("/api/projects", json={"slug": "Bad Slug", "name": "x"}).status_code == 400
-    r = dora.c.post("/api/projects", json={"slug": "dora-lab", "name": "Dora Lab"})
+    assert httpx.post(f"{w.srv.url}/api/projects", json={"name": "Dora Lab"}).status_code in (401, 403)
+    assert dora.c.post("/api/projects", json={"name": "   "}).status_code == 400
+    r = dora.c.post("/api/projects", json={"name": "Dora Lab"})
     assert r.status_code == 201, r.text
-    assert dora.c.post("/api/projects", json={"slug": "dora-lab", "name": "Again"}).status_code == 409
-    assert dora.c.post("/api/projects", json={"slug": SLUG, "name": "Taken"}).status_code == 409
-    me = next(p for p in dora.c.get("/dora-lab/api/members").json()["people"] if p["github_login"] == "dora")
+    slug = r.json()["slug"]
+    me = next(p for p in dora.c.get(f"/{slug}/api/members").json()["people"] if p["github_login"] == "dora")
     assert "owner" in me["groups"] and "human" in me["groups"]
-    assert w.alice.c.get("/dora-lab/api/members").status_code in (403, 404), "others are not members"
-    assert dora.c.post("/dora-lab/api/project", json={"name": "Dora's Lab"}).status_code == 200
-    assert dora.c.post("/dora-lab/api/project", json={"repo": "https://github.com/dora/lab"}).status_code == 200
-    assert w.alice.c.post("/dora-lab/api/project/delete", json={"confirm": "dora-lab"}).status_code in (403, 404)
-    assert dora.c.post("/dora-lab/api/project/delete", json={"confirm": "wrong"}).status_code == 400
-    assert dora.c.post("/dora-lab/api/project/delete", json={"confirm": "dora-lab"}).status_code == 200
-    assert dora.c.get("/dora-lab").status_code == 404
-    assert dora.c.post("/api/projects", json={"slug": "dora-lab", "name": "Dora Lab"}).status_code == 201, "the name is free"
+    assert w.alice.c.get(f"/{slug}/api/members").status_code in (403, 404), "others are not members"
+    assert dora.c.post(f"/{slug}/api/project", json={"name": "Dora's Lab"}).status_code == 200
+    assert dora.c.post(f"/{slug}/api/project", json={"repo": "https://github.com/dora/lab"}).status_code == 200
+    assert w.alice.c.post(f"/{slug}/api/project/delete", json={"confirm": "Dora's Lab"}).status_code in (403, 404)
+    assert dora.c.post(f"/{slug}/api/project/delete", json={"confirm": "wrong"}).status_code == 400
+    assert dora.c.post(f"/{slug}/api/project/delete", json={"confirm": "Dora's Lab"}).status_code == 200
+    assert dora.c.get(f"/{slug}").status_code == 404
     assert "新增專案" in dora.c.get("/").text or "New project" in dora.c.get("/").text
 
 
