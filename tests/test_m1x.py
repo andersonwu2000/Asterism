@@ -25,16 +25,20 @@ def new_link(person) -> str:
 @pytest.fixture(scope="module")
 def x(tmp_path_factory):
     world = build_world(tmp_path_factory.mktemp("datax"), dict(ENV, ASTERISM_STALE_S=str(STALE_S), ASTERISM_ACTIVE_S="60"))
-    cred = redeem(new_link(world.alice), computer="pc-x").json()["credential"]
-    world.cmd_agent = Agent(world.srv, cred, "s-x1", client="claude-code").register("cody")
-    world.pc = Computer(world.srv, cred)
-    world.pc.report(("s-x1", "claude-code"))
-    world.pc.connect()
-    world.cred = cred
-    assert until(lambda: agent(world, "cody")["online"], 8)
-    yield world
-    world.pc.disconnect()
-    world.srv.stop()
+    world.pc = None
+    try:                                   # a failure while setting up must not leave the server running
+        cred = redeem(new_link(world.alice), computer="pc-x").json()["credential"]
+        world.cmd_agent = Agent(world.srv, cred, "s-x1", client="claude-code").register("cody")
+        world.pc = Computer(world.srv, cred)
+        world.pc.report(("s-x1", "claude-code"))
+        world.pc.connect()
+        world.cred = cred
+        assert until(lambda: agent(world, "cody")["online"], 8)
+        yield world
+    finally:
+        if world.pc is not None and world.pc._stop is not None:
+            world.pc.disconnect()
+        world.srv.stop()
 
 
 def agent(w, name) -> dict:
