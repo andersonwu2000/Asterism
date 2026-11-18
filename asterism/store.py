@@ -59,6 +59,15 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     credential_id INTEGER NOT NULL,
     expires REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS github_tokens (
+    person_id INTEGER PRIMARY KEY, -- a person's GitHub authorization, kept to save repository files in their name (1w)
+    token TEXT NOT NULL,           -- the access token, encrypted (usertokens.py); never logged or returned
+    expires REAL,                  -- when it expires; NULL: it does not
+    refresh TEXT,                  -- the refresh token, encrypted; NULL: none was given
+    refresh_expires REAL,          -- when the refresh token expires; NULL: unknown or never
+    created REAL NOT NULL,         -- when it was given (sign-in) or last refreshed
+    refused REAL                   -- GitHub refused it then (and no refresh helped): the person signs in again
+);
 """
 
 PROJECT_SCHEMA = """

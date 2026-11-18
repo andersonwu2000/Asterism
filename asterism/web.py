@@ -25,7 +25,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import (accounts, agents, assets, avatars, computers, config, downloads, files, messaging, oauth, pages, projects,
-               replays, schedules, tasks, timeline, tools, upkeep, util)
+               replays, schedules, tasks, timeline, tools, upkeep, usertokens, util, writes)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import LOCALES, Translator, pick_locale
 from .projects import Actor, Project
@@ -86,7 +86,7 @@ async def body_form(request: Request) -> dict[str, str]:
 
 
 def error_json(e: ApiError) -> JSONResponse:
-    return JSONResponse({"error": e.code, "message": e.message}, status_code=e.status)
+    return JSONResponse({**e.fields, "error": e.code, "message": e.message}, status_code=e.status)
 
 
 def set_session_cookie(resp: Response, token: str) -> None:
@@ -246,14 +246,20 @@ async def login_callback(request: Request) -> Response:
 
 
 async def test_login(request: Request) -> Response:
-    """Test mode only (not routed otherwise): sign in as any GitHub login."""
+    """Test mode only (not routed otherwise): sign in as any GitHub login. `github_token`, when given, is kept as that
+    person's GitHub authorization, as a real sign-in keeps the token GitHub gives (tests have no GitHub sign-in)."""
     try:
-        login_name = (await body_json(request)).get("github_login")
+        body = await body_json(request)
     except ApiError as e:
         return error_json(e)
+    login_name, token = body.get("github_login"), body.get("github_token")
     if not isinstance(login_name, str) or not util.GITHUB_LOGIN_RE.fullmatch(login_name):
         return error_json(bad_request("invalid_login", "github_login must be a GitHub login."))
+    if token is not None and (not isinstance(token, str) or not usertokens.TOKEN_RE.fullmatch(token)):
+        return error_json(bad_request("invalid_token", "github_token must be a token: printable, without spaces."))
     person = accounts.upsert_github(store().accounts(), "test:" + login_name.lower(), login_name)
+    if token is not None:
+        usertokens.keep(store().accounts(), person["id"], {"access_token": token})
     resp = JSONResponse({"person": accounts.public(person)})
     set_session_cookie(resp, accounts.start_web_session(store().accounts(), person["id"]))
     return resp
@@ -268,6 +274,14 @@ async def logout(request: Request) -> Response:
 
 async def me(request: Request) -> Any:
     return {"signed_in": True, "person": accounts.public(require_person(request))}
+
+
+async def api_my_github_revoke(request: Request) -> Any:
+    """The person's GitHub authorization for saving files in their name: deleted here and revoked at GitHub."""
+    person = require_person(request)
+    had = await usertokens.revoke(store().accounts(), person["id"])
+    writes.forget_person(person["id"])
+    return {"revoked": had, "state": "none"}
 
 
 async def api_my_settings(request: Request) -> Any:
@@ -556,7 +570,8 @@ async def api_revoke(request: Request) -> Any:
     return projects.revoke_credential(pj, actor, request.path_params["cred"])
 
 
-# --------------------------------------------------------------------------- the project's repository (session cookie; read-only)
+# --------------------------------------------------------------------------- the project's repository (session cookie; reading,
+# and saving with the reader's own GitHub authorization)
 
 def reader(request: Request) -> tuple[Project, str]:
     """The project and its repository address, for a member with `read`."""
@@ -584,6 +599,18 @@ async def api_files_find(request: Request) -> Any:
 async def api_files_resolve(request: Request) -> Any:
     pj, repo = reader(request)
     return await files.resolve(pj.slug, repo, (await body_json(request)).get("paths"))
+
+
+async def api_files_can_write(request: Request) -> Any:
+    """Whether the reader may save files of the repository from the page, in their own name (writes.py)."""
+    pj, repo = reader(request)
+    return await writes.can_write(store().accounts(), pj.slug, repo, signed_in(request)["id"])
+
+
+async def api_files_save(request: Request) -> Any:
+    """One file saved to the repository as one commit, with the reader's own GitHub authorization (writes.py)."""
+    pj, repo = reader(request)
+    return await writes.save(store().accounts(), pj.slug, repo, signed_in(request)["id"], await body_json(request))
 
 
 async def api_files_raw(request: Request) -> Response:
@@ -1139,7 +1166,7 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
         if scope == "me":
             acc = accounts.person(store().accounts(), actor.person_id)
             me = {"name": projects.person_name(pj, actor.person_id), "github_login": acc["github_login"],
-                  "my": projects.my_view(pj, actor)}
+                  "my": projects.my_view(pj, actor), "github": usertokens.state(store().accounts(), actor.person_id)}
     except ApiError as e:
         return page_error(request, e, person)
     return html(pages.settings(tr_for(request), person, frame, scope, section, view, projects.PERMISSIONS,
@@ -1266,6 +1293,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/logout", logout, methods=["POST"]),
         Route("/api/me", api(me)),
         Route("/api/me/settings", api(api_my_settings), methods=["POST"]),
+        Route("/api/me/github/revoke", api(api_my_github_revoke), methods=["POST"]),
         Route("/api/projects", api(api_projects_create, 201), methods=["POST"]),
         Route("/static/{path:path}", static_file),
         Route("/join/{code}", join, methods=["GET", "POST"]),
@@ -1345,6 +1373,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/files/resolve", api(api_files_resolve), methods=["POST"]),
         Route("/{slug}/api/files/find", api(api_files_find), methods=["GET"]),
         Route("/{slug}/api/files/refresh", api(api_files_refresh), methods=["POST"]),
+        Route("/{slug}/api/files/can-write", api(api_files_can_write), methods=["GET"]),
+        Route("/{slug}/api/files/save", api(api_files_save), methods=["POST"]),
         Route("/{slug}/api/presence", api(api_presence), methods=["POST"]),
         Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
         Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),

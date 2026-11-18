@@ -167,7 +167,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   Files mode has no project name and no project menu.
 - **Settings are one layer in the four cells** (the rail stays): the project's settings (overview: name, repository,
   notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and
-  delete; permissions; notifications) and the reader's own (個人: their name in the project, 語言, 外觀; 電腦和連接器;
+  delete; permissions; notifications) and the reader's own (個人: their name in the project, GitHub 寫入授權 (its state
+  in one sentence and 撤銷, two steps in place), 語言, 外觀; 電腦和連接器;
   別人能對我的 agent 做什麼) look the same. A setting that is changed is a form of one field with its button, saved
   where it is, its outcome said beside the button; a choice (a check box, a control of three) is saved as it is
   pressed. "Saved" is said the same everywhere: in place, at the row's end, for a moment, in a place kept for it so
@@ -335,7 +336,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   list's people | agents: **公共** (the project's repository) and **私人** (a folder of the reader's own computer), the
   one shown pressed (`aria-pressed`). Both have the same tree, keyboard and entry menu. Above the tree, one line: the files menu
   (for the local source open folder, restore access when the browser must be asked again, and forget folder, two
-  steps in place; for the repository **重新整理** and the repository on GitHub) and the search field filling the rest. The opened
+  steps in place; for the repository **新增檔案** at the top for a reader who may save there, **重新整理** and the repository on
+  GitHub) and the search field filling the rest. The opened
   local folder is one folder at the top of its tree, shown and handled like any folder (its name, folding, its entry
   menu); there is no separate bar with its name. With no folder open the local source is one control; a folder kept
   from an earlier visit is one control that restores access; in a browser that cannot open folders it is one sentence
@@ -358,12 +360,15 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   or by dragging its row onto the strip, where a line marks the place it will go. A file already open has its tab
   chosen. Tabs are reordered by dragging them along the strip.
 - At the strip's far right, and nothing else there: for a `.tex` file next to a PDF of the same name, the word
-  "開啟 PDF" (it opens the PDF in a new tab); the view switch (rendered, source, both side by side) and one more
-  control in the same place: "open on GitHub" for a file of the repository, **save** for a local file (also
-  Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
+  "開啟 PDF" (it opens the PDF in a new tab); for a text file of the repository the word **編輯** (pressed while editing)
+  when the reader may save there in their own GitHub name, or in its place a quiet link "需要 GitHub 寫入授權" to their
+  settings when that needs their authorization (nothing when their GitHub account cannot push); the view switch
+  (rendered, source, both side by side) and one more control in the same place: "open on GitHub" for a file of the
+  repository, **save** for a local file and for a file of the repository being edited (also Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
   hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
   already say which file it is.
-- **The source view is the editor, for both sources**: read only for the repository, editable for a local text file.
+- **The source view is the editor, for both sources**: editable for a local text file; for the repository read only
+  until **編輯**, which makes the same editor editable in place (a view showing only the rendering turns to the source).
   The mono voice with line numbers; prose (`.md`, `.tex`, `.txt`) wraps, code does not and scrolls sideways inside
   the editor. Its colours are the tokens, so it switches ends with the page. Beside it, the rendering of a Markdown
   file follows what is typed after a short pause, without taking the focus or moving its scroll.
@@ -379,6 +384,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   unsaved changes, saving first compares the disk with what was loaded; when they differ nothing is written, and one
   sentence over the document offers both ways, each in two steps: load the disk's version (the changes are lost) or
   write over it. A save that is refused says why in the same place.
+- **Saving to the repository is a commit in the reader's own name.** Saving asks over the document, in place, for the
+  commit message: one line, prefilled ("Edit {path} via Asterism"), with "存到 GitHub" and "取消"; while it goes, one dim
+  line says so. When GitHub has another version nothing is written, and the same sentence offers "載入 GitHub 上的版本"
+  or "用我的版本覆蓋", each in two steps. After a save the tab shows the new version, editing ends, and the tree and
+  the other tabs follow as after 重新整理. A file of the repository with unsaved changes is never replaced by a push.
+  Pressing the pressed **編輯** ends editing; with unsaved changes it says so first (two steps).
+- **A new file of the repository** (its folder's menu, or the files menu for the top) asks for the name in the tree as
+  a local one does, opens an empty tab being edited, and says over it that it reaches GitHub only when saved.
 - What cannot be shown or edited (too large, not text, not UTF-8) is one sentence where the document would be, with
   one link, or over the read-only editor.
 - Below 900 px, while the source shown has no tab, the page is the explorer (the source, the search field and the

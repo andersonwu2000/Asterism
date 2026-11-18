@@ -1,6 +1,7 @@
 // The reader's own settings (the settings layer at /{slug}/me; settings.js switches its sections):
 // - profile: the name in this project (#me-name: sent, then the page again, so every place shows it), the avatar
-//   in this project (#me-avatar: the picture or the monogram, "choose a picture" and "remove", A.side.pickAvatar), the language
+//   in this project (#me-avatar: the picture or the monogram, "choose a picture" and "remove", A.side.pickAvatar), the
+//   GitHub authorization to save repository files in one's own name (#me-github-state: its state, 撤銷), the language
 //   of the pages (#me-locale: kept with the account, then the page again in it) and the look (#me-theme: dark, light,
 //   or the system's, kept in this browser as before);
 // - computers and connectors (#me-computers, from /api/my): each with what it is, how it came, whether its program
@@ -70,6 +71,26 @@
   if (avatarBox && A.side) {
     drawAvatar(false);
     A.side.onMembers(function () { A.keepFocus(avatarBox, function () { drawAvatar(false); }); });
+  }
+
+  // The GitHub authorization to save repository files in one's own name: 撤銷 in two steps; the state then says none.
+  var ghState = document.getElementById("me-github-state"), ghRevoke = document.getElementById("me-github-revoke");
+  if (ghState && ghRevoke) {
+    ghRevoke.addEventListener("click", async function () {
+      var out = ghState.querySelector(".out");
+      if (!A.twoStep(ghRevoke, t("me.gh_revoke_armed"))) return;
+      out.textContent = "";
+      var r = await A.request("/api/me/github/revoke", null, {});
+      if (!r.ok) { out.textContent = A.refusal("me.gh_revoke", r.data); return; }
+      ghState.dataset.state = "none";
+      ghState.textContent = "";
+      var p = make("p", "dim", t("me.gh_write.none")), said = make("p", "out", t("me.gh_revoked"));
+      said.setAttribute("role", "status");
+      ghState.append(p, said);
+      var head = document.getElementById("me-github");           // the pressed button is gone: the focus stays here
+      head.tabIndex = -1;
+      head.focus({preventScroll: true});
+    });
   }
 
   var locales = document.getElementById("me-locale"), localeOut = document.getElementById("me-locale-out");

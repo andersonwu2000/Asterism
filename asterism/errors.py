@@ -4,9 +4,11 @@ from __future__ import annotations
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    """`fields`: more of the answer, beside error and message (e.g. a conflict's `current`)."""
+
+    def __init__(self, status: int, code: str, message: str, fields: dict | None = None):
         super().__init__(message)
-        self.status, self.code, self.message = status, code, message
+        self.status, self.code, self.message, self.fields = status, code, message, fields or {}
 
 
 def bad_request(code: str, message: str) -> ApiError:

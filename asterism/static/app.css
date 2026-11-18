@@ -1361,6 +1361,13 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 .file-tools [aria-disabled="true"]:hover { background: transparent; color: var(--color-ink-faint); }
 /* A .tex file next to its PDF: "open PDF", a word before the view switch. */
 .file-pdf { min-height: 30px; margin-right: 6px; padding: 0 10px; font-size: 13px; white-space: nowrap; }
+/* A file of the repository that the reader may save: 編輯, a word like "open PDF"; pressed while editing. When saving
+   needs their GitHub authorization, a quiet link to their settings in its place. */
+.file-edit { min-height: 30px; margin-right: 6px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
+.file-edit[aria-pressed="true"] { background: var(--color-wash-3); border-color: var(--color-edge-strong); }
+.file-auth { margin-right: 8px; font-size: 13px; color: var(--color-ink-dim); white-space: nowrap; overflow: hidden;
+             text-overflow: ellipsis; max-width: 22ch; }
+.file-auth:hover { color: var(--color-ink); }
 /* Below 900 px with no tab in the source shown, the explorer is the page (viewer.js moves it here). */
 .files.tree-here > .file-view { display: none; }
 .files.tree-here > .explorer { flex: 1; width: auto; max-width: none; min-height: 0; height: auto; margin: 0; padding: 0;
@@ -1406,6 +1413,10 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 }
 .doc-note p { margin: 0; max-width: 70ch; overflow-wrap: anywhere; }
 .doc-note .row { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Saving a file of the repository: the commit message, one line, asked for in the same place. */
+.commit-ask { flex: 1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.commit-field { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; color: var(--color-ink-dim); }
+.commit-field input { width: 100%; font-family: var(--font-mono); font-size: 13px; }
 
 /* Source on the left, the rendering on the right, each scrolling by itself. */
 .split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

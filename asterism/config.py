@@ -31,6 +31,7 @@ class Settings:
     files_refresh_s: float          # the head of a repository's default branch is trusted this long
     files_cache_mb: float           # DATA/cache/ never holds more than this after an answer
     files_max_mb: float             # a larger file of the repository is not fetched
+    token_key_file: str             # the key that encrypts people's GitHub tokens; "" = DATA/token.key
     replay_keep_s: float            # the answer to a request with an Idempotency-Key is kept this long
     person_beat_s: float            # an open page of a project tells the server every this long that it is open
     person_offline_after_s: float   # a person whose last page beat is older than this is offline
@@ -89,6 +90,7 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     files_refresh_s=_env_s("ASTERISM_FILES_REFRESH_S", 30),
                     files_cache_mb=_env_s("ASTERISM_FILES_CACHE_MB", 200),
                     files_max_mb=_env_s("ASTERISM_FILES_MAX_MB", 25),
+                    token_key_file=os.environ.get("ASTERISM_TOKEN_KEY_FILE") or "",
                     replay_keep_s=_env_s("ASTERISM_REPLAY_KEEP_S", 86400),
                     person_beat_s=_env_s("ASTERISM_PERSON_BEAT_S", 20),
                     person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60),

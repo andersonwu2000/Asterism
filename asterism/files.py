@@ -1,5 +1,6 @@
 """The project's GitHub repository, read-only: the head of its default branch, its folders one at a time, and
-its files as raw bytes. Nothing is ever written to GitHub.
+its files as raw bytes. Nothing here ever writes to GitHub: a member's save in the page goes through writes.py, with
+that member's own token, never with the app's installation token kept here.
 
 Reaching GitHub: with an app configured (an id and a private key), the server signs a short-lived token as the
 app, finds the app's installation on the repository and asks for an installation token that can only read
@@ -763,6 +764,40 @@ async def listing(slug: str, address: str, raw_dir: Any) -> dict[str, Any]:
     if stale:
         answer["stale"] = True
     return answer
+
+
+def repo_of(address: str) -> Repo:
+    """The repository at the project's address; not_connected when it is not a GitHub repository's address."""
+    return _repo_of(address)
+
+
+async def wrote(slug: str, repo: Repo, ref: str, commit: str, tree: Any) -> None:
+    """A member's save made `commit` the head of `ref` (writes.py): the server follows it at once instead of after
+    the refresh time. GitHub's answer names the commit's tree; without one the head is read again now."""
+    st = _state(slug, repo)
+    async with st.lock:
+        if isinstance(tree, str) and HASH_RE.fullmatch(tree) and HASH_RE.fullmatch(commit):
+            if st.head is None or st.head.commit != commit:
+                util.log("files_head", project=slug, commit=commit)
+            st.head = Head(ref, commit, tree)
+            _enter(slug, st, "ok")
+            st.next_check = time.monotonic() + config.get().files_refresh_s
+        else:
+            await _refresh(slug, repo, st)
+
+
+async def blob_now(slug: str, repo: Repo, segs: list[str]) -> str | None:
+    """The hash of the file at this path in the newest head, read from GitHub now (a save was refused as made over
+    another change); None when there is no such file. Raises github_unavailable or not_connected."""
+    h, stale = await head(slug, repo, force=True)
+    if stale:
+        raise unavailable()
+
+    async def work(h: Head):
+        e = await _walk(slug, repo, h.tree, segs)
+        return e.sha if e is not None and e.kind == "file" else None
+    out, _ = await _guarded(slug, repo, work)
+    return out
 
 
 async def refresh(slug: str, address: str) -> dict[str, Any]:

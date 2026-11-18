@@ -12,7 +12,8 @@
 // folding, its entry menu). With no folder open the local source is one control (#local-open); a folder kept from an
 // earlier visit is one control that restores access (#local-restore); in a browser without the File System Access
 // API, one sentence and no control. A new file, a new folder and a rename ask for the name in the tree itself, and a
-// refusal is said there.
+// refusal is said there; so does a new file of the repository (its folder's menu, or the files menu for the top, for
+// a reader who may save there), which opens as an empty tab and reaches GitHub when it is saved.
 // The tree is one roving tab stop: arrows move, Right and Left open and close a folder, Enter opens, a letter jumps.
 // Every entry has the one menu (A.menu): by right click, by the context-menu key or Shift+F10, and by the small
 // control on its row. Each row carries the kind mark of what it is (A.kindMark).
@@ -167,6 +168,11 @@
       items.push({label: t("local.open"), run: openFolder});
       if (L.state === "closed") items.push({label: t("local.reauth"), run: restore});
       if (L.state === "ok" || L.state === "closed") items.push({label: t("local.forget_folder"), run: armForget});
+    }
+    if (!local() && R.canWrite) {
+      items.push({label: t("files.new_file"), run: function () {
+        ask({folder: "", kind: "file", run: function (name) { return R.newFile("", name); }});
+      }});
     }
     if (!local()) items.push({label: t("files.refresh"), run: refreshRepo});
     var gh = !local() && R.githubUrl("", true);
@@ -474,11 +480,12 @@
 
   // ------------------------------------------------------------------ a name asked for in the tree
 
-  // opts: {folder, kind: "file" | "dir", run(name) -> Promise of {ok, path, message}} for a new entry in `folder`, or
-  // {rename: path, run} for a new name. Enter does it, Escape or leaving the field gives up; a refusal stays on the row.
+  // opts: {folder, kind: "file" | "dir", run(name) -> Promise of {ok, path, message, opened, said}} for a new entry in
+  // `folder`, or {rename: path, run} for a new name. Enter does it, Escape or leaving the field gives up; a refusal
+  // stays on the row. `opened`: the source opened the new file itself (a new file of the repository, not on GitHub
+  // until it is saved); `said`: what the note says instead of "created".
   function ask(opts) {
-    if (!local()) return;
-    asked = {folder: opts.folder, rename: opts.rename, kind: opts.kind, run: opts.run, refusal: "", busy: false};
+    asked ={folder: opts.folder, rename: opts.rename, kind: opts.kind, run: opts.run, refusal: "", busy: false};
     askInput = make("input", "ask-input");
     askInput.type = "text";
     askInput.autocomplete = "off";
@@ -531,7 +538,7 @@
   async function commit() {
     if (!asked || asked.busy) return;
     var name = askInput.value.trim(), was = asked;
-    if (L.badName(name)) {
+    if (src().badName(name)) {
       was.refusal = t("error.local_bad_name");
       el.status.textContent = was.refusal;
       draw();
@@ -554,8 +561,9 @@
     askInput = null;
     draw();
     focusRow(res.path);
-    if (!was.rename && was.kind === "file" && A.viewer) A.viewer.open("local", res.path);
-    note(res.path, t(was.rename ? "local.renamed" : "local.created"));
+    if (!was.rename && was.kind === "file" && A.viewer && !res.opened) A.viewer.open(E.shown, res.path);
+    note(res.path, res.said || t(was.rename ? "local.renamed" : "local.created"));
+    if (res.opened && A.rail && A.rail.isDrawer()) A.rail.closeDrawer(false);     // below 900 px: the new file is the page
   }
 
   // ------------------------------------------------------------------ the menu of an entry

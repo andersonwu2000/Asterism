@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from . import config, util
+from . import config, usertokens, util
 from .errors import ApiError
 
 WEB_SESSION_TTL_S = 30 * 24 * 3600
@@ -128,8 +128,10 @@ def take_login_state(db: sqlite3.Connection, state: str) -> str | None:
 
 
 async def finish_github(db: sqlite3.Connection, code: str) -> sqlite3.Row:
-    """Exchange the callback's code for a GitHub token, read the account's id and login, and forget the token.
-    Every failure raises SignInFailed; the caller writes it down once."""
+    """Exchange the callback's code for a GitHub token, read the account's id and login, and keep the token (encrypted,
+    usertokens.py) as the person's authorization to save repository files in their own name. Every failure of the
+    sign-in raises SignInFailed; the caller writes it down once. A token that cannot be kept does not stop the sign-in
+    (it is written down, and saving then asks for a new sign-in)."""
     s = config.get()
     refused = "GitHub did not accept the sign-in. Try again."
     unknown = "GitHub did not say who signed in. Try again."
@@ -160,4 +162,9 @@ async def finish_github(db: sqlite3.Connection, code: str) -> sqlite3.Row:
     gid, login = info.get("id"), info.get("login")
     if not isinstance(gid, int) or not isinstance(login, str) or not util.GITHUB_LOGIN_RE.fullmatch(login):
         raise SignInFailed("account", "unusable", "GitHub answered with an account this server cannot use.")
-    return upsert_github(db, str(gid), login)
+    person = upsert_github(db, str(gid), login)
+    try:
+        usertokens.keep(db, person["id"], answer)
+    except Exception as e:  # noqa: BLE001 - the key file or the library: the person is signed in all the same
+        util.log("github_token_not_kept", person=person["id"], reason=type(e).__name__.lower())
+    return person

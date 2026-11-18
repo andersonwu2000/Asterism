@@ -650,8 +650,9 @@ def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> st
 
 
 def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str]:
-    """The reader's own settings: their name and avatar in this project (#me-avatar, drawn by me.js), the language and
-    the look of the pages (profile); their
+    """The reader's own settings: their name and avatar in this project (#me-avatar, drawn by me.js), their GitHub
+    authorization to save repository files in their own name (#me-github), the language and the look of the pages
+    (profile); their
     computers and connectors (me.js draws them from /api/my); what others may do with their agents (the four
     permissions of their own agent group, each saved as it changes)."""
     langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
@@ -663,6 +664,7 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
                f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
                f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
                f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
+               f'{_github_write(tr, me["github"])}'
                f'<h3 class="set-sub">{e(tr("me.avatar"))}</h3>'
                f'<div id="me-avatar" class="avatar-set"></div><p class="dim">{e(tr("me.avatar_hint"))}</p>'
                f'<h3 class="set-sub">{e(tr("me.lang"))}</h3>'
@@ -678,6 +680,16 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
     agents = (f'<p class="dim">{e(tr("my.switches_hint"))}</p><div class="perm-list" id="me-switches">{rows}</div>'
               f'<p><a href="/{e(q(slug))}/settings/groups?g={e(q(me["name"] + "-agents"))}">{e(tr("ag.group_settings"))}</a></p>')
     return {"profile": profile, "computers": '<div id="me-computers"></div>', "agents": agents}
+
+
+def _github_write(tr: Translator, state: str) -> str:
+    """The person's GitHub authorization to save repository files in their own name (1w): its state (kept, refused,
+    none) and, while one is kept, revoke (two steps in place; me.js sends it)."""
+    revoke = (f'<div class="row"><button type="button" class="btn" id="me-github-revoke">{e(tr("me.gh_revoke"))}</button>'
+              f'<span class="out" aria-live="polite"></span></div>' if state != "none" else "")
+    return (f'<h3 class="set-sub" id="me-github">{e(tr("me.gh_write"))}</h3>'
+            f'<div class="stack gh-write" id="me-github-state" data-state="{e(state)}">'
+            f'<p class="dim">{e(tr("me.gh_write." + state))}</p>{revoke}</div>')
 
 
 def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:
@@ -815,7 +827,7 @@ VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), (
 
 def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: str, max_bytes: int) -> tuple[str, int]:
     """Files mode: the repository's files and a local folder's, using the whole page. A shell: the source in the
-    top-left cell, the explorer (the second column), the tab strip with "open PDF" (a .tex file's) and the view switch
+    top-left cell, the explorer (the second column), the tab strip with "open PDF" (a .tex file's), edit and the view switch
     in the top-right cell and the document are drawn by explorer.js and viewer.js, from the files API (repo.js) and from the reader's own folder in
     the browser (local.js; nothing of it reaches the server). `path` is the file the address names ("" for none);
     `max_bytes`: a larger file is not shown here (the server does not fetch it)."""
@@ -824,10 +836,16 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
     views = "".join(f'<button type="button" class="icon-btn" data-view="{v}" aria-pressed="false" aria-label="{e(tr(k))}" '
                     f'title="{e(tr(k))}">{glyph(v)}</button>' for v, k in VIEWS)
     github, save = e(tr("files.github")), e(tr("files.save"))
+    # Edit (a reader who may save in their own GitHub name) or, when that needs their authorization, a quiet link to
+    # their settings: viewer.js shows one of them for a text file of the repository.
     bar = (f'<h1 class="vh">{e(tr("files.title"))}</h1>'
            f'<div id="file-tabs" class="file-tabs" role="tablist" aria-label="{e(tr("files.tabs"))}"></div>'
            f'<div class="file-tools" role="group" aria-label="{e(tr("files.tools"))}">'
            f'<button type="button" id="file-pdf" class="btn file-pdf" hidden>{e(tr("files.open_pdf"))}</button>'
+           f'<button type="button" id="file-edit" class="btn file-word file-edit" aria-pressed="false" '
+           f'title="{e(tr("files.edit_title"))}" hidden>{e(tr("files.edit"))}</button>'
+           f'<a id="file-auth" class="file-auth" href="/{e(q(frame["slug"]))}/me/profile#me-github" '
+           f'title="{e(tr("files.need_auth_title"))}" hidden>{e(tr("files.need_auth"))}</a>'
            f'<div id="view-switch" class="view-switch" role="group" aria-label="{e(tr("files.view"))}">{views}</div>'
            f'<a id="file-github" class="icon-btn" aria-label="{github}" title="{github}" target="_blank" '
            f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a>'
