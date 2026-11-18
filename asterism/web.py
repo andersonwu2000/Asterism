@@ -380,11 +380,6 @@ async def computer_ack(request: Request) -> Any:
     return computers.ack(c, (await body_json(request)).get("deliveries"))
 
 
-async def computer_command(request: Request) -> Any:
-    c = computer_caller(request)
-    return computers.answer_command(c, await body_json(request))
-
-
 # --------------------------------------------------------------------------- joining
 
 async def join(request: Request) -> Response:
@@ -777,7 +772,7 @@ async def api_post(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     b = await body_json(request)
     out = messaging.send(pj, me, b.get("to"), b.get("text"), b.get("reply_to"))
-    return {"id": out["id"], "mentions": out["mentions"], **({"command": out["command"]} if "command" in out else {})}
+    return {"id": out["id"], "mentions": out["mentions"]}
 
 
 async def api_react(request: Request) -> Any:
@@ -1368,7 +1363,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
         Route("/{slug}/api/computer/poll", api(computer_poll)),
         Route("/{slug}/api/computer/ack", api(computer_ack), methods=["POST"]),
-        Route("/{slug}/api/computer/command", api(computer_command), methods=["POST"]),
     ]
     if config.get().test_mode:
         routes.insert(0, Route("/test/login", test_login, methods=["POST"]))

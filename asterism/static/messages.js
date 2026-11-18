@@ -15,11 +15,9 @@
 // messages important for the reader in the whole project, from the frame's places.
 // The composer keeps one draft per place (sessionStorage: this tab's, gone with it). It completes, in one list over the
 // composer (arrow keys, Enter or Tab, Escape; it never sends): in a channel, "@" and the members (my agents first, then
-// the other agents and the people, then the groups); "#" and the channels; "/" right after "@<an agent of mine> " at the
-// start, the commands for it (1x: /goal, /goal clear, /compact, /model, each with one line). A mention of a name that is
-// no member or group holds the message back once, said under the composer, and sending again sends it as it is. A
-// mention that reached someone is drawn in bold. A command's outcome is the system's reply to it, drawn in the page's
-// own words from its `outcome`. Names are read as the server reads a mention (render.js, A.mentionAt: the longest known
+// the other agents and the people, then the groups); "#" and the channels. A mention of a name that is no member or
+// group holds the message back once, said under the composer, and sending again sends it as it is. A mention that
+// reached someone is drawn in bold. Names are read as the server reads a mention (render.js, A.mentionAt: the longest known
 // name the text goes on with, so a group named in any script is found without a space after it). The send control is an
 // icon, dim and off while the field is empty.
 // A message (1y) has a hover bar (on hover and keyboard focus): add a reaction (a picker of the built-in emoji,
@@ -292,14 +290,6 @@
     });
   }
 
-  // The system's reply that tells how a command to an agent went (1x), in the reader's words; the stored text is the
-  // same sentence in English.
-  function outcomeText(o) {
-    var key = "msg.cmd." + o.result, vars = {agent: o.agent, command: o.command, detail: o.detail || ""};
-    if (o.detail && A.MSG[key + "_why"]) key += "_why";
-    return A.MSG[key] ? t(key, vars) : o.result;
-  }
-
   function agentTag(name) {
     var who = A.side.directory[name];
     return who && who.owner ? t("msg.agent_of", {owner: who.owner}) : t("msg.kind_agent");
@@ -350,7 +340,7 @@
       li.append(gutter, body);
       return li;
     }
-    var box = A.renderText(m.outcome ? outcomeText(m.outcome) : m.text, {mentions: m.mentions});
+    var box = A.renderText(m.text, {mentions: m.mentions});
     body.appendChild(box);
     if (m.edited_at) {                    // after the last line of the text when that is a paragraph
       var last = box.lastElementChild, mark = A.editedMark(m.edited_at);
@@ -378,7 +368,7 @@
 
   // What a message row draws from: when it changes, the row is drawn again.
   function signature(m) {
-    return JSON.stringify([m.text, m.edited_at || "", !!m.deleted, m.reactions || [], m.outcome || null, m.level]);
+    return JSON.stringify([m.text, m.edited_at || "", !!m.deleted, m.reactions || [], m.level]);
   }
 
   // ------------------------------------------------------------------ the acts on a message (1y)
@@ -1058,17 +1048,11 @@
     grow();
   }
 
-  // ------------------------------------------------------------------ completion in the composer: @, # and /
+  // ------------------------------------------------------------------ completion in the composer: @ and #
 
   // A mention is read as the server reads it (render.js: A.mentionAt). While one is typed, what follows the "@" up to the
   // caret is the query: any characters but spaces, "@", "#", "/" and quotes (a group's name may be in any script).
   var AT_MAX = 12, AT_QUERY = /(^|[^A-Za-z0-9._-])@([^\s@#\/"'`<>]{0,40})$/;
-  // The commands a person gives an agent of theirs (1x): `@agent /command ...` at the start of a message. What each
-  // puts into the composer; the ones that take an argument leave the caret after a space.
-  var COMMANDS = [{name: "/goal", insert: "/goal ", hint: "msg.cmd_hint.goal"},
-                  {name: "/goal clear", insert: "/goal clear", hint: "msg.cmd_hint.goal_clear"},
-                  {name: "/compact", insert: "/compact", hint: "msg.cmd_hint.compact"},
-                  {name: "/model", insert: "/model ", hint: "msg.cmd_hint.model"}];
   var atList = make("ul", "mention-list");
   atList.id = "mention-list";
   atList.setAttribute("role", "listbox");
@@ -1080,21 +1064,12 @@
   el.text.setAttribute("aria-expanded", "false");
   var at = {options: [], active: -1, start: -1, shut: -1};
 
-  function isMyAgent(name) {
-    var v = A.side.members;
-    return !!v && (v.agents || []).some(function (a) { return a.name === name && a.owner === ME; });
-  }
-
   // What is being completed at the caret, or null: {kind, start, end, query}, where kind is
-  // - "/": a command right after "@<an agent of mine> " at the very start of the text (any place);
   // - "@": a name to mention (a channel only: a private message mentions nobody);
   // - "#": a channel's name (any place).
   function atToken() {
     if (el.text.selectionStart !== el.text.selectionEnd) return null;
     var caret = el.text.selectionStart, before = el.text.value.slice(0, caret), m;
-    if ((m = /^@([A-Za-z0-9._-]+) \/([A-Za-z]*)$/.exec(before)) && isMyAgent(m[1])) {
-      return {kind: "/", start: caret - m[2].length - 1, end: caret, query: m[2]};
-    }
     if (isChannel(state.place) && (m = AT_QUERY.exec(before))) {
       return {kind: "@", start: caret - m[2].length - 1, end: caret, query: m[2]};
     }
@@ -1140,17 +1115,11 @@
     });
   }
 
-  function commandChoices() {
-    return COMMANDS.map(function (c) {
-      return {key: c.name.slice(1), name: c.name, kind: "command", insert: c.insert, note: t(c.hint)};
-    });
-  }
-
   function atOption(o, i) {
-    var li = make("li", "mention-option" + (o.kind === "command" ? " command-option" : ""));
+    var li = make("li", "mention-option");
     li.id = "mention-opt-" + i;
     li.setAttribute("role", "option");
-    if (o.kind === "group" || o.kind === "channel" || o.kind === "command") li.appendChild(make("span", "mention-mark"));
+    if (o.kind === "group" || o.kind === "channel") li.appendChild(make("span", "mention-mark"));
     else li.appendChild(A.side.presence(A.side.directory[o.name] || {kind: o.kind}));
     li.appendChild(make("span", "mono mention-name", o.name));
     var model = o.kind === "agent" ? A.modelTag(o.model) : null;
@@ -1162,13 +1131,13 @@
     return li;
   }
 
-  var LIST_LABEL = {"@": "msg.at_label", "#": "msg.hash_label", "/": "msg.cmd_label"};
+  var LIST_LABEL = {"@": "msg.at_label", "#": "msg.hash_label"};
   function atDraw() {
     var tok = atToken();
     if (!tok) at.shut = -1;                         // Escape shuts the list for that one token only
     if (!tok || tok.start === at.shut) { atClose(); return; }
     var q = tok.query.toLowerCase();
-    var all = tok.kind === "/" ? commandChoices() : tok.kind === "#" ? channelChoices() : mentionable();
+    var all = tok.kind === "#" ? channelChoices() : mentionable();
     // Names starting with what was typed first, then names holding it; each in the order above.
     var ranked = all.map(function (o, i) {
       var low = o.key.toLowerCase(), where = low.indexOf(q);
@@ -1236,19 +1205,12 @@
 
   // ------------------------------------------------------------------ sending
 
-  // The words a refused command needs: the agent it names and that agent's person.
-  function commandVars(text) {
-    var m = /^@([A-Za-z0-9._-]+) \//.exec(text), who = m && A.side.directory[m[1]];
-    return m ? {agent: m[1], person: (who && who.owner) || "?"} : {};
-  }
-
   var held = null;                        // the text held back once for a mention of nobody
 
   async function send() {
     var text = el.text.value;
     if (!text.trim() || !state.place) return;
-    // A command to an agent mentions nobody (the server's rule): nothing in it is held back.
-    var unknown = /^@[A-Za-z0-9._-]+ \/(goal|compact|model)(\s|$)/.test(text) ? [] : unknownMentions(text);
+    var unknown = unknownMentions(text);
     if (unknown.length && held !== text) {          // said in place; sending the same text again sends it
       held = text;
       el.out.textContent = t("msg.unknown_hold", {names: unknown.map(function (n) { return "@" + n; }).join(", ")});
@@ -1259,14 +1221,12 @@
     if (state.replyTo) body.reply_to = state.replyTo;
     var place = state.place;
     var r = await post("messages", body);
-    if (!r.ok) { el.out.textContent = A.refusal("msg.send", r.data, commandVars(text)); return; }
+    if (!r.ok) { el.out.textContent = A.refusal("msg.send", r.data); return; }
     if (place === state.place) {
       el.text.value = "";
       grow();
       setReply(null);
-      var c = r.data.command;
-      el.out.textContent = c ? (c.delivered ? t("msg.cmd.sent", {agent: c.agent, command: "/" + c.command}) : "")
-                             : outcome(r.data.mentions);
+      el.out.textContent = outcome(r.data.mentions);
     }
     try { sessionStorage.removeItem(DRAFT + place); } catch (err) { /* nothing kept */ }
     await news();

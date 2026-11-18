@@ -252,13 +252,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the list says "↓ 新訊息", or, as the inverted pill, "↓ 有人找你" when one of them is important for the reader; it goes
   to the first of them, then to the end. The browser tab's title starts with the count of messages important for the
   reader in the whole project: `(2) #general · Asterism`.
-- **The composer** keeps one draft per place, for the life of the tab. It completes three things in one list over
+- **The composer** keeps one draft per place, for the life of the tab. It completes two things in one list over
   the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
   other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is
-  doing); "#" lists the channels the reader may read; "/" right after "@<an agent of mine> " at the start of the
-  message lists the commands for it (/goal, /goal clear, /compact, /model), each with one line saying what it does.
-  The list filters as one types (names that start with it first, then names that hold it); arrow keys, Enter or Tab
-  take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
+  doing); "#" lists the channels the reader may read. Nothing is offered after "/": `@cody /compact` is an ordinary
+  message. The list filters as one types (names that start with it first, then names that hold it); arrow keys,
+  Enter or Tab take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
   composer and the message waits: sending again sends it as it is. In a message drawn, a mention that reached someone
   is at weight 600, no hue. A name is read as the server reads it: the longest known name the text goes on with after
   the "@", so a group named in any script (`@證明組請看`) needs no space after it.
@@ -278,9 +277,6 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   replies to it stay and say so.
 - **Pictures of the repository** that a message names (a path that resolves, or `![alt](path)`) show under its text,
   at most 360 px high, framed like a card; a click opens the file in files mode. Nothing from another host is loaded.
-- **A command to an agent** (`@cody /compact`, only its own person's) is posted like any message; under the composer
-  one line says it was handed to the agent's program, and the outcome comes as a reply from the system, in the
-  reader's words.
 
 ### The agent page
 

@@ -218,8 +218,7 @@ CREATE TABLE IF NOT EXISTS levels (
 CREATE TABLE IF NOT EXISTS deliveries (
     id INTEGER PRIMARY KEY,
     agent_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,            -- message, notice, reminder (message_id: the message it is about), or command
-                                   -- (message_id: a person's command to the agent, for its program; see `commands`)
+    kind TEXT NOT NULL,            -- message, notice, or reminder (message_id: the message it is about)
     message_id INTEGER,
     state TEXT NOT NULL,           -- pending, out (handed out, not acknowledged), done, dropped
     how TEXT NOT NULL,             -- what an acknowledgement counts as: push, or return (held while offline)
@@ -340,19 +339,6 @@ CREATE TABLE IF NOT EXISTS agent_states (
     at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agent_states_agent ON agent_states(agent_id, after_message, id);
-CREATE TABLE IF NOT EXISTS commands (
-    message_id INTEGER PRIMARY KEY, -- a person's message `@agent /command ...` to one of their agents (1x)
-    agent_id INTEGER NOT NULL,
-    command TEXT NOT NULL,         -- goal, compact, model
-    args TEXT NOT NULL,            -- what follows the command, trimmed ('' for none; `/goal clear` has 'clear')
-    delivery_id INTEGER,           -- its delivery to the agent's program (kind command); NULL: none was made
-    result TEXT,                   -- the outcome: done, failed, unsupported (the program's answer), offline (no program
-                                   -- could take it), no_answer (the program did not answer); NULL: not known yet
-    detail TEXT,                   -- the program's one line about the outcome, as it said it
-    answered REAL,
-    reply_id INTEGER               -- the system's reply to the command that tells the outcome
-);
-CREATE INDEX IF NOT EXISTS commands_reply ON commands(reply_id);
 CREATE TABLE IF NOT EXISTS upgrades (
     name TEXT PRIMARY KEY,         -- a one-time change of data (ADDED_PERMISSIONS) that was made, or found not needed
     at REAL NOT NULL
@@ -406,8 +392,8 @@ SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_r
 
 
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened. Pins were retired
-# in 1z (their index goes with the table).
-DROPPED_TABLES = ("device_requests", "pins")
+# in 1z, commands to agents on 2026-11-18 (their indexes go with the tables).
+DROPPED_TABLES = ("device_requests", "pins", "commands")
 
 # Data an earlier version allowed and this one does not, made right when a database is opened: (table, statement).
 # Each statement leaves a database that is already right unchanged, so running it on every opening is safe.
@@ -428,6 +414,10 @@ DATA_FIXES = (
               "AND n.responsible_kind = 'agent' AND n.responsible_id = tasks.responsible_id "
               "AND (coalesce(n.taken, 0) > coalesce(tasks.taken, 0) "
               "OR (coalesce(n.taken, 0) = coalesce(tasks.taken, 0) AND n.id > tasks.id)))"),
+    # Commands to agents were withdrawn on 2026-11-18: their deliveries (kind command, for the agent's program, never
+    # for the agent) go, so that none is ever handed to an agent as a message. The system's replies that told their
+    # outcomes stay, as written (their English text).
+    ("deliveries", "DELETE FROM deliveries WHERE kind = 'command'"),
 )
 
 

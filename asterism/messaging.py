@@ -22,7 +22,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from . import commands, config, presence, projects, util
+from . import config, presence, projects, util
 from .errors import ApiError, bad_request, conflict, forbidden, not_found
 from .projects import Actor, Project
 
@@ -253,9 +253,6 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
         f"SELECT message_id, level FROM levels WHERE reader_kind = ? AND reader_id = ? AND message_id IN ({marks})",
         (me.kind, me.id, *[r["id"] for r in rows]))}
     names: dict[str, str] = {}
-    # A reply from the system that tells a command's outcome carries it, for the page to say in its own words.
-    told = commands.outcomes(pj, [r["id"] for r in rows if r["sender_kind"] == "system" and r["reply_to"]]) \
-        if me.kind == "person" else {}
     reacted = reactions(pj, [r["id"] for r in rows])
     out = []
     for r in rows:
@@ -281,8 +278,6 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
             m["private"] = True
         if r["schedule_id"] is not None:
             m["scheduled"] = True
-        if r["id"] in told:
-            m["outcome"] = told[r["id"]]
         out.append(m)
     return out
 
@@ -424,8 +419,6 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
                                              f"where it is.")
     if not may_post_in(pj, sender, place):
         raise forbidden("Posting messages needs the post permission.")
-    # A person's `@<agent> /<command> ...` to an agent of theirs is for its program (commands.py): it mentions nobody.
-    command = commands.parse(pj, sender, text) if sender.kind == "person" else None
     hop = orig["hop"] + 1 if sender.kind == "agent" and orig is not None else 0
     if sender.kind == "agent" and hop >= 3 and hop % 2 == 1:
         with pj.db:
@@ -434,15 +427,9 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
         if first:
             util.log("reply_chain_reminded", project=pj.slug, agent=sender.name, reply_to=rid, hop=hop)
             raise ApiError(409, "reply_chain", CHAIN_REMINDER.format(n=hop))
-    found, unknown = parse_mentions(pj, text) if place.startswith("#") and command is None else ([], [])
-    mid, results = _post(pj, sender, place, text, orig, hop, found, command=command)
-    out = {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
-    if command is not None:
-        delivered = pj.db.execute("SELECT delivery_id FROM commands WHERE message_id = ?", (mid,)).fetchone()[0]
-        if delivered is None:           # no program can take it: said at once
-            commands.tell(pj, mid, "offline", None)
-        out["command"] = {"agent": command.agent["name"], "command": command.command, "delivered": delivered is not None}
-    return out
+    found, unknown = parse_mentions(pj, text) if place.startswith("#") else ([], [])
+    mid, results = _post(pj, sender, place, text, orig, hop, found)
+    return {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
 
 
 def post_scheduled(pj: Project, sender: Member, place: str, text: str, level: str, schedule_id: int,
@@ -455,9 +442,8 @@ def post_scheduled(pj: Project, sender: Member, place: str, text: str, level: st
 
 def _post(pj: Project, sender: Member, place: str, text: str, orig: sqlite3.Row | None, hop: int,
           found: list[tuple[str, str, Any]], scheduled: tuple[str, int] | None = None,
-          then: Callable[[int], None] | None = None, command: Any = None) -> tuple[int, list[dict[str, Any]]]:
-    """Write a message checked by the caller, each reader's level and the deliveries; wake the agents. `command`
-    (commands.Command): the agent it names gets no level and no delivery of the message, its program the command."""
+          then: Callable[[int], None] | None = None) -> tuple[int, list[dict[str, Any]]]:
+    """Write a message checked by the caller, each reader's level and the deliveries; wake the agents."""
     rid = orig["id"] if orig is not None else None
     t = util.now()
     # An agent's message keeps the model its session last said it runs on, as it is now.
@@ -470,10 +456,7 @@ def _post(pj: Project, sender: Member, place: str, text: str, orig: sqlite3.Row 
                             (place, sender.kind, sender.id, sender.person_id, sender.name, text, rid, hop,
                              json.dumps([n for n, _, _ in found]), t,
                              scheduled[1] if scheduled else None, said["model"] if said else None)).lastrowid
-        results, woken = _distribute(pj, mid, place, sender, found, orig, t, scheduled[0] if scheduled else None,
-                                     command.agent["id"] if command is not None else None)
-        if command is not None and commands.record(pj, mid, command, t):
-            woken.append(command.agent["id"])
+        results, woken = _distribute(pj, mid, place, sender, found, orig, t, scheduled[0] if scheduled else None)
         if scheduled:
             _unstack(pj, scheduled[1], mid, t)
         if sender.kind == "agent" and rid is not None:      # an answer ends the follow-up of what it answers
@@ -522,12 +505,10 @@ def _log_place(pj: Project, place: str, sender: Member) -> dict[str, Any]:
 
 
 def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[tuple[str, str, Any]],
-                orig: sqlite3.Row | None, t: float, fixed: str | None = None,
-                commanded: int | None = None) -> tuple[list[dict[str, Any]], list[int]]:
+                orig: sqlite3.Row | None, t: float, fixed: str | None = None) -> tuple[list[dict[str, Any]], list[int]]:
     """Write each reader's level and the agents' deliveries (inside the caller's transaction). Returns the
     answer's mention results and the agents to wake. `fixed`: the level of a schedule's run, which takes the
-    place of mentions and of what the agent is doing (_scheduled_level). `commanded`: the agent a command is for,
-    which is no reader of it (its program gets the command instead)."""
+    place of mentions and of what the agent is doing (_scheduled_level)."""
     s = config.get()
     channel = place.startswith("#")
     shut: set[str] = set()              # members who may not read the channel: no level, nothing delivered
@@ -544,8 +525,6 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
         readers = [other] if other else []
         agent_rows = {other.id: pj.db.execute("SELECT * FROM agents WHERE id = ?", (other.id,)).fetchone()} \
             if other and other.kind == "agent" else {}
-    if commanded is not None:
-        readers = [r for r in readers if not (r.kind == "agent" and r.id == commanded)]
     direct = {m.key for _, kind, m in found if kind == "member"}
     via_group = _group_member_keys(pj, [g["id"] for _, kind, g in found if kind == "group"])
     muted = {f"{r['member_kind']}:{r['member_id']}" for r in pj.db.execute(
@@ -805,8 +784,6 @@ def delivery_view(pj: Project, d: sqlite3.Row, me: Member) -> dict[str, Any]:
                 "about": d["message_id"]}
     row = pj.db.execute("SELECT * FROM messages WHERE id = ?", (d["message_id"],)).fetchone()
     m = views(pj, [row], me)[0]
-    if d["kind"] == "command":          # for the agent's program, never put in front of the agent: no frame
-        return {"delivery": d["id"], "kind": "command", **commands.delivery_fields(pj, d), "message": m}
     return {"delivery": d["id"], "kind": d["kind"], "message": m, "frame": frame(m, d["kind"] == "notice")}
 
 
@@ -843,21 +820,19 @@ def drop_unreadable(pj: Project, me: Member) -> None:
     inside = f"SELECT id FROM messages WHERE {' OR '.join(gone)}"
     with pj.db:
         pj.db.execute(f"UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND state IN ('pending', 'out') "
-                      f"AND kind != 'command' AND message_id IN ({inside})", (util.now(), me.id, *shut))
+                      f"AND message_id IN ({inside})", (util.now(), me.id, *shut))
         pj.db.execute(f"DELETE FROM followups WHERE agent_id = ? AND message_id IN ({inside})", (me.id, *shut))
 
 
-def hand_out(pj: Project, me: Member, programs: bool = False) -> list[dict[str, Any]]:
+def hand_out(pj: Project, me: Member) -> list[dict[str, Any]]:
     """What a poll (its session's or its computer's) hands out now: new deliveries, and those handed out once
     and not acknowledged in time (same id). They stay open until acknowledged. One handed out twice is left to
     the background task, which makes the agent offline (`unanswered`). When it holds messages kept while the
-    agent was offline (`how` return) and more is unread than it carries, the last of them says how much.
-    `programs`: the computer's poll, which also hands out the commands for the agent's program (commands.py)."""
+    agent was offline (`how` return) and more is unread than it carries, the last of them says how much."""
     drop_unreadable(pj, me)
     t = util.now()
     rows = pj.db.execute("SELECT * FROM deliveries WHERE agent_id = ? AND (state = 'pending' OR "
-                         "(state = 'out' AND attempts < 2 AND handed_out <= ?))"
-                         + ("" if programs else " AND kind != 'command'") + " ORDER BY id",
+                         "(state = 'out' AND attempts < 2 AND handed_out <= ?)) ORDER BY id",
                          (me.id, t - config.get().redeliver_after_s)).fetchall()
     if not rows:
         return []
@@ -874,10 +849,10 @@ def hand_out(pj: Project, me: Member, programs: bool = False) -> list[dict[str, 
     return out
 
 
-def next_due(pj: Project, me: Member, programs: bool = False) -> float | None:
+def next_due(pj: Project, me: Member) -> float | None:
     """When the earliest delivery handed out once and not acknowledged falls due again."""
-    r = pj.db.execute("SELECT min(handed_out) FROM deliveries WHERE agent_id = ? AND state = 'out' AND attempts < 2"
-                      + ("" if programs else " AND kind != 'command'"), (me.id,)).fetchone()
+    r = pj.db.execute("SELECT min(handed_out) FROM deliveries WHERE agent_id = ? AND state = 'out' AND attempts < 2",
+                      (me.id,)).fetchone()
     return r[0] + config.get().redeliver_after_s if r and r[0] is not None else None
 
 
@@ -1271,7 +1246,6 @@ def delete(pj: Project, me: Member, mid: Any) -> dict[str, Any]:
     t = util.now()
     with pj.db:
         pj.db.execute("UPDATE messages SET text = '', mentions = '[]', deleted = ? WHERE id = ?", (t, row["id"]))
-        pj.db.execute("UPDATE commands SET args = '' WHERE message_id = ?", (row["id"],))
         pj.db.execute("DELETE FROM reactions WHERE message_id = ?", (row["id"],))
         pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE message_id = ? "
                       "AND state IN ('pending', 'out')", (t, row["id"]))
@@ -1371,7 +1345,6 @@ def delete_channel(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
                     f"DELETE FROM deliveries WHERE message_id IN ({inside})",
                     f"DELETE FROM followups WHERE message_id IN ({inside})",
                     f"DELETE FROM chain_reminders WHERE reply_to IN ({inside})",
-                    f"DELETE FROM commands WHERE message_id IN ({inside})",
                     "DELETE FROM reads WHERE place = ?",
                     "DELETE FROM schedules WHERE place = ?",
                     "DELETE FROM messages WHERE place = ?"):

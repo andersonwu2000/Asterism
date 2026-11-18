@@ -15,7 +15,7 @@ import re
 import sqlite3
 from typing import Any, Awaitable, Callable
 
-from . import agents, commands, config, downloads, messaging, notices, presence, projects, util
+from . import agents, config, downloads, messaging, notices, presence, projects, util
 from .agents import Caller
 from .errors import bad_request, forbidden, gone, invalid_credential
 from .projects import Actor, Project
@@ -270,8 +270,8 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                             continue
                         me = messaging.agent_member(a)
                         session = a["session"][len(LOCAL):] if a["session"].startswith(LOCAL) else a["session"]
-                        out += [dict(d, agent=a["name"], session=session) for d in messaging.hand_out(pj, me, True)]
-                        due = messaging.next_due(pj, me, True)
+                        out += [dict(d, agent=a["name"], session=session) for d in messaging.hand_out(pj, me)]
+                        due = messaging.next_due(pj, me)
                         if due is not None:
                             left = min(left, max(0.05, due - util.now()))
                     if out:
@@ -294,11 +294,6 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
     finally:
         presence.computer_closed(pj.slug, cred_id, waker)
         mark()
-
-
-def answer_command(c: Caller, body: dict[str, Any]) -> dict[str, Any]:
-    """The program's answer to a command it was handed for one of the agents bound through this credential."""
-    return commands.answer(c.pj, _computer(c), body.get("delivery"), body.get("result"), body.get("detail"))
 
 
 def ack(c: Caller, ids: Any) -> dict[str, Any]:

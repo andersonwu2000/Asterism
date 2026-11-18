@@ -5,9 +5,7 @@
 //! sessions it can wake right now (`POST /api/computer/sessions`, the complete list, again whenever it
 //! changes, with each session's last activity and the products' quotas: report.rs), keeps a poll open
 //! (`GET /api/computer/poll`), puts each delivery in front of its session and acknowledges
-//! (`POST /api/computer/ack`) only what was put there. A command a person gives an agent (a delivery of kind
-//! `command`) is never put in front of the session: it is answered (`POST /api/computer/command`), for now
-//! always `unsupported`, since the session is open in its product and nothing here can reach it there yet.
+//! (`POST /api/computer/ack`) only what was put there.
 //! Each project has two threads: the reporter (sends the list when it or what it says changed) and the
 //! poller (polls, delivers, acknowledges), so that a new session is reported while a poll is held.
 //!
@@ -451,10 +449,6 @@ impl Daemon {
             if p.stopped() {
                 break;
             }
-            if d["kind"] == "command" {
-                self.answer_command(p, d);
-                continue;
-            }
             let (Some(id), Some(frame), Some(session)) = (d["delivery"].as_i64(), d["frame"].as_str(), d["session"].as_str()) else {
                 continue;
             };
@@ -496,35 +490,6 @@ impl Daemon {
             // The server hands them out again later; delivering twice is better than losing one.
             Err(Fail::Unreachable(e)) => log(&format!("{}: acknowledging failed ({e})", p.p.slug)),
             Err(Fail::Refused { message, .. }) => log(&format!("{}: acknowledging refused ({message})", p.p.slug)),
-        }
-    }
-
-    /// A command a person gave an agent of theirs (`goal`, `compact`, `model`): never put in front of the
-    /// session. Until commands can reach a session that is open in its product, the answer is `unsupported`,
-    /// saying why. The answer hands the delivery over; one that does not reach the server is handed out again.
-    fn answer_command(&self, p: &Proj, d: &Value) {
-        let (Some(id), Some(session)) = (d["delivery"].as_i64(), d["session"].as_str()) else { return };
-        let product = {
-            let w = lock(&self.w);
-            if w.claude.contains_key(session) {
-                Some(Product::ClaudeCode)
-            } else if w.codex.contains_key(session) {
-                Some(Product::Codex)
-            } else {
-                None
-            }
-        };
-        let detail = match product {
-            Some(Product::ClaudeCode) => "the session is open in Claude Code; commands cannot reach it from Asterism yet",
-            Some(Product::Codex) => "the session is open in the Codex App; commands cannot reach it from Asterism yet",
-            None => "the session is not known on this computer (any more)",
-        };
-        let body = json!({"delivery": id, "result": "unsupported", "detail": detail});
-        match self.call(p, "POST", "command", Some(&body), &[], Duration::from_secs(30)) {
-            Ok(_) => log(&format!("{}: command {id} for {session} answered (unsupported)", p.p.slug)),
-            Err(e) if e.is_revoked() => self.revoked(p),
-            Err(Fail::Unreachable(e)) => log(&format!("{}: answering command {id} failed ({e})", p.p.slug)),
-            Err(Fail::Refused { message, .. }) => log(&format!("{}: answering command {id} refused ({message})", p.p.slug)),
         }
     }
 
