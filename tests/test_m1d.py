@@ -46,7 +46,10 @@ class FakeGitHub:
         self.tokens: list[str] = []
         self.blobs: dict[str, bytes] = {}
         self.trees: dict[str, list[dict]] = {}
-        self.recursive, self.truncate_after = 0, 0      # recursive listings asked for; cut them after n entries
+        self.recursive, self.truncate_after = 0, 0
+        self.user_tokens: dict[str, dict] = {}         # a person's token -> {"login", "push"}
+        self.writes: list[dict] = []                   # files written through the contents API
+        self.install_writes = 0                        # writes tried with an installation token (must stay 0)      # recursive listings asked for; cut them after n entries
         self.head = ("", "")
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
@@ -82,8 +85,7 @@ class FakeGitHub:
 
             def _handle(self, method):
                 length = int(self.headers.get("content-length") or 0)
-                if length:
-                    self.rfile.read(length)
+                raw = self.rfile.read(length) if length else b""
                 path = self.path.split("?")[0]
                 fake.requests.append((method, path))
                 if fake.down:
@@ -95,9 +97,15 @@ class FakeGitHub:
                     fake.tokens.append(token)
                     expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
                     return self._send(201, {"token": token, "expires_at": expires})
+                base = f"/repos/{OWNER_REPO}"
+                user = fake.user_tokens.get((self.headers.get("authorization") or "").split(" ")[-1])
+                if method == "PUT" and path.startswith(base + "/contents/"):
+                    return self._put_contents(path[len(base + "/contents/"):], raw, user)
                 if method != "GET":
                     return self._send(404, {"message": "Not Found"})
-                base = f"/repos/{OWNER_REPO}"
+                if path == base and user is not None:
+                    return self._send(200, {"full_name": OWNER_REPO, "default_branch": "main", "private": not fake.public,
+                                            "permissions": {"pull": True, "push": user["push"], "admin": False}})
                 if path == base + "/installation":
                     if not self._app():
                         return self._send(401, {"message": "A JSON web token could not be decoded"})
@@ -141,6 +149,33 @@ class FakeGitHub:
                     return self._send(200, {"sha": rest.rsplit("/", 1)[1], "size": len(blob), "encoding": "base64",
                                             "content": base64.b64encode(blob).decode()})
                 return self._send(404, {"message": "Not Found"})
+
+            def _put_contents(self, file_path, raw, user):
+                """GitHub's contents API: a user's token with push permission writes one file; an installation
+                token is refused (the server must never write with it)."""
+                auth = (self.headers.get("authorization") or "").split(" ")[-1]
+                if auth in fake.tokens:
+                    fake.install_writes += 1
+                    return self._send(403, {"message": "Resource not accessible by integration"})
+                if user is None:
+                    return self._send(401, {"message": "Bad credentials"})
+                if not user["push"]:
+                    return self._send(404, {"message": "Not Found"})
+                body = json.loads(raw or b"{}")
+                current = fake.files.get(file_path)
+                current_sha = sha(b"blob", current) if current is not None else None
+                if current is not None and body.get("sha") != current_sha:
+                    return self._send(409, {"message": f"{file_path} does not match {body.get('sha')}"})
+                if current is None and body.get("sha"):
+                    return self._send(404, {"message": "Not Found"})
+                data = base64.b64decode(body["content"])
+                fake.files[file_path] = data
+                fake.commit()
+                fake.writes.append({"path": file_path, "login": user["login"], "message": body.get("message"),
+                                    "branch": body.get("branch")})
+                return self._send(200 if current is not None else 201,
+                                  {"content": {"path": file_path, "sha": sha(b"blob", data)},
+                                   "commit": {"sha": fake.head[0]}})
 
             def do_GET(self):
                 self._handle("GET")
