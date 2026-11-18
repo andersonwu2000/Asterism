@@ -1,5 +1,4 @@
-"""Slice 1x: commands to an agent (`@agent /command ...`, its person only, delivered to its program, not as a
-message), what an agent is doing (active / idle / offline from its session's last activity), quotas reported by the
+"""Slice 1x (commands withdrawn on 2026-11-18): what an agent is doing (active / idle / offline from its session's last activity), quotas reported by the
 program and shown only to their person, the files source as two buttons.
 
     python -m pytest tests/test_m1x.py -q
@@ -50,46 +49,16 @@ def commands(w) -> list[dict]:
         return [d for d in w.pc.got if d.get("kind") == "command"]
 
 
-# ------------------------------------------------------------------ commands
+# ------------------------------------------------------------------ commands (withdrawn 2026-11-18)
 
-def test_a_person_commands_their_own_agent_and_it_reaches_the_program_not_the_agent(x):
-    sent = x.alice.say("@cody /compact")
-    got = until(lambda: commands(x), 8)
-    assert got, "the program is handed the command"
-    d = got[-1]
-    assert d["command"] == "compact" and d.get("args", "") == "" and d["message"]["id"] == sent["id"]
-    assert any(m["id"] == sent["id"] for m in x.bob.read()), "everyone reading the place sees it"
-    with x.pc.lock:
-        assert not [g for g in x.pc.got if g.get("kind") == "message" and g["message"]["id"] == sent["id"]], \
-            "it is not delivered as a message"
-    r = x.pc.c.post(f"/{SLUG}/api/computer/command", json={"delivery": d["delivery"], "result": "unsupported",
-                                                           "detail": "the session is open in Claude Code"})
-    assert r.status_code == 200, r.text
-    replies = until(lambda: [m for m in x.alice.read() if m.get("reply_to") == sent["id"] and m["from_kind"] == "system"], 6)
-    assert replies, "the outcome is told as a reply to the command"
-
-
-def test_goal_and_model_carry_their_arguments(x):
-    x.alice.say("@cody /goal all tests in tests/ pass")
-    x.alice.say("@cody /model claude-sonnet-5-5")
-    x.alice.say("@cody /goal clear")
-    got = until(lambda: len(commands(x)) >= 4 and commands(x), 8)
-    tail = [(d["command"], d.get("args", "")) for d in got[-3:]]
-    assert tail == [("goal", "all tests in tests/ pass"), ("model", "claude-sonnet-5-5"), ("goal", "clear")], tail
-
-
-def test_only_the_agents_person_may_command_it_and_only_at_the_start(x):
-    r = x.bob.post("@cody /compact")
-    assert r.status_code == 403, r.text
-    before = len(commands(x))
-    x.alice.say("please @cody /compact later [x1]")
-    x.alice.say("@cody /dance now [x1]")
-    time.sleep(1.5)
-    assert len(commands(x)) == before, "not at the start, or not a command: an ordinary message"
-    texts = [m["text"] for m in x.alice.read() if "[x1]" in m["text"]]
-    assert len(texts) == 2
-    r = x.a1.send("@cody /compact")
-    assert r.status_code in (400, 403), "an agent never commands an agent"
+def test_a_slash_after_a_mention_is_an_ordinary_message(x):
+    """Commands to agents were withdrawn: `@agent /compact` is delivered to the agent as a message, and nothing is
+    handed to its program as a command."""
+    sent = x.alice.say("@cody /compact [x0]")
+    got = until(lambda: [g for g in x.pc.got if g.get("kind") == "message" and g["message"]["id"] == sent["id"]], 8)
+    assert got, "the agent is handed it as a message"
+    assert not commands(x), "no command deliveries exist any more"
+    assert x.pc.c.post(f"/{SLUG}/api/computer/command", json={"delivery": 1, "result": "done"}).status_code in (404, 405)
 
 
 # ------------------------------------------------------------------ activity and quotas
