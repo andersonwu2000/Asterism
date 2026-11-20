@@ -5,7 +5,8 @@
 //   of the pages (#me-locale: kept with the account, then the page again in it) and the look (#me-theme: dark, light,
 //   or the system's, kept in this browser as before);
 // - computers and connectors (#me-computers, from /api/my): each with what it is, how it came, whether its program
-//   is connected, when it was last used, the agents on it, and "revoke" (floating, its label typed);
+//   is connected, when it was last used, the agents on it, and "revoke" (floating, its label typed); a computer also
+//   with whether it writes the shared files with its own git (w2: choose it, two steps, or go back to the server);
 // - what others may do with my agents (#me-switches): the four permissions of my own agent group, each saved as it
 //   changes.
 "use strict";
@@ -194,8 +195,29 @@
                             q.plan ? t("quota.plan", {plan: q.plan}) : null,
                             q.at ? t("quota.at", {time: when(q.at)}) : null]));
     });
+    if (c.kind === "computer") li.appendChild(writerRow(c, out));
     li.appendChild(out);
     return li;
+  }
+
+  // Whether this computer writes the reader's changes to the shared files with its own git (w2): choosing it (two
+  // steps, since the server then deletes their GitHub write authorization) or going back to the server; the page is
+  // then drawn again, so that every place says the same.
+  function writerRow(c, out) {
+    var row = make("div", "ag-writer");
+    if (c.writer) row.appendChild(facts([make("span", "tag", t("my.writer")), t("my.writer_note")]));
+    if (c.git === false || (c.writer && c.git !== true)) row.appendChild(facts([t("my.writer_no_git")]));
+    row.appendChild(facts([t(c.writer ? "my.writer_back_hint" : "my.writer_choose_hint")]));
+    var b = A.button("btn", t(c.writer ? "my.writer_back" : "my.writer_choose"), async function () {
+      if (!c.writer && !A.twoStep(b, t("my.writer_choose_armed"))) return;
+      out.textContent = "";
+      var r = await A.request(API + "me/writer", null, {credential: c.writer ? null : c.id});
+      if (!r.ok) { out.textContent = A.refusal("my.writer", r.data); return; }
+      window.location.reload();
+    });
+    b.dataset.key = "writer:" + c.id;
+    row.appendChild(b);
+    return row;
   }
 
   function draw() {

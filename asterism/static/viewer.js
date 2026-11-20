@@ -17,7 +17,7 @@
 // repository, save (#file-save, also Ctrl+S / Cmd+S) for a local one and for a file of the repository being edited.
 // Before them, for a text file of the repository: 編輯 (#file-edit, pressed while editing) for a reader who may save
 // there in their own GitHub name (repo.js canWrite), or a quiet link to their settings (#file-auth) when that needs
-// their GitHub authorization.
+// their GitHub authorization, or when the computer they chose to write is not connected or cannot write.
 // Below 900 px, while the source shown has no tab, the explorer is drawn in the page instead of the drawer, so the
 // page is the tree, not an empty page; it goes back into the drawer when a file opens.
 // The tabs, each source's active one and the view chosen per kind of file are kept in localStorage; the address
@@ -466,28 +466,39 @@
       if (E.shown === "local") showSource(false); else save();
     }
   });
-  L.on("moved", function (m) {
-    var tab = find(keyOf("local", m.from));
-    if (!tab || find(keyOf("local", m.to))) return;
+  // A file renamed or deleted here (in the local folder, or in the repository by the reader: one commit) takes its
+  // tab along, or leaves it saying the file is gone.
+  function moved(source, m) {
+    var tab = find(keyOf(source, m.from));
+    if (!tab || find(keyOf(source, m.to))) return;
     var was = tab.key;
     tab.path = m.to;
-    tab.key = keyOf("local", m.to);
-    if (actives.local === was) { actives.local = tab.key; if (E.shown === "local") E.setCurrent("local", m.to); }
+    tab.key = keyOf(source, m.to);
+    if (actives[source] === was) {
+      actives[source] = tab.key;
+      // The repository's active file is in the address, which follows; a local one only moves in the tree.
+      if (E.shown === source && source === "repo") { showSource(false); return; }
+      if (E.shown === source) E.setCurrent(source, m.to);
+    }
     save();
     drawTabs(false);
-  });
-  L.on("removed", function (m) {
+  }
+  function removed(source, m) {
     tabs.forEach(function (x) {
-      if (x.source !== "local" || !(x.path === m.path || x.path.indexOf(m.path + "/") === 0)) return;
+      if (x.source !== source || !(x.path === m.path || x.path.indexOf(m.path + "/") === 0)) return;
       if (shownTab === x) shownTab = null;
       release(x);
       x.doc = null;
-      x.dirty = false;
+      x.dirty = x.editing = x.asking = x.conflict = false;
       x.status = "gone";
     });
     drawTabs(false);
     draw(true);
-  });
+  }
+  L.on("moved", function (m) { moved("local", m); });
+  L.on("removed", function (m) { removed("local", m); });
+  R.on("moved", function (m) { moved("repo", m); });
+  R.on("removed", function (m) { removed("repo", m); });
 
   // ------------------------------------------------------------------ following the disk (local files)
 
@@ -712,9 +723,8 @@
       tab.message = message;
       el.status.textContent = t("files.conflict_repo");
     } else {
-      if (code === "github_reauth") R.refused("reauth");
-      else if (code === "forbidden") R.refused("no_push");
-      tab.said = A.refusal("files.save", r.data);
+      R.afterRefusal(code);
+      tab.said = R.refusal("files.save", r.data);
       tab.message = message;
       el.status.textContent = tab.said;
     }
@@ -777,8 +787,17 @@
     if (el.edit) {
       el.edit.hidden = !(text && (tab.editing || (R.canWrite && tab.doc.editable)));
       el.edit.setAttribute("aria-pressed", String(!!(text && tab.editing)));
+      el.edit.title = R.writer ? t("files.edit_title_computer", {name: R.writer.label}) : t("files.edit_title");
     }
-    if (el.auth) el.auth.hidden = !(text && !tab.editing && !R.canWrite && /^(no_token|reauth)$/.test(R.writeReason || ""));
+    // The quiet link: to the GitHub authorization when saving needs it, or to the chosen computer when that one is
+    // not connected or cannot write.
+    var why = R.writeReason || "", computer = /^computer_(offline|cannot_push)$/.test(why);
+    if (el.auth) {
+      el.auth.hidden = !(text && !tab.editing && !R.canWrite && (computer || /^(no_token|reauth)$/.test(why)));
+      el.auth.textContent = t(computer ? "files.need_" + why : "files.need_auth");
+      el.auth.title = t(computer ? "files.need_computer_title" : "files.need_auth_title");
+      el.auth.href = "/" + encodeURIComponent(SLUG) + (computer ? "/me/computers" : "/me/profile#me-github");
+    }
     el.github.hidden = local || writing;
     el.save.hidden = !(local || writing);
     var gh = tab && !local ? R.githubUrl(tab.path, false) : null;

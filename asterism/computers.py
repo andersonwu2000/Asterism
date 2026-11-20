@@ -4,7 +4,8 @@ that the resident program holds for every agent whose session came through that 
 The connection is three calls with the computer's credential: the list of local sessions the program can wake
 right now, a held poll that hands out the deliveries of all those agents, and the acknowledgements. The
 delivery rules themselves (redelivery, holds, reminders, notices) are the ones of messaging and notices, per
-agent; this module only decides which agents a computer serves.
+agent; this module only decides which agents a computer serves. The same poll hands the computer the writes of the
+repository's files its person chose it for (writer.py), which the program answers with a fourth call.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import re
 import sqlite3
 from typing import Any, Awaitable, Callable
 
-from . import agents, config, downloads, messaging, notices, presence, projects, util
+from . import agents, config, downloads, messaging, notices, presence, projects, util, writer
 from .agents import Caller
 from .errors import bad_request, forbidden, gone, invalid_credential
 from .projects import Actor, Project
@@ -191,10 +192,12 @@ def _quotas(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def report_sessions(c: Caller, sessions: Any, quotas: Any = None) -> dict[str, Any]:
+def report_sessions(c: Caller, sessions: Any, quotas: Any = None, git: Any = None) -> dict[str, Any]:
     """The complete list of local sessions the program can wake right now; it replaces the previous one. Each may
     say when the session last did something (`active_at`, Unix seconds: presence.work); the report may carry the
-    computer's quotas (`quotas`, kept until the next report that carries them; shown to its person only)."""
+    computer's quotas (`quotas`, kept until the next report that carries them; shown to its person only) and whether
+    the program has git, so that it can write the repository's files (`git`, w2; a report without it, from a program
+    before 0.1.12, says it cannot)."""
     cred_id = _computer(c)
     pj = c.pj
     if not isinstance(sessions, list) or len(sessions) > SESSIONS_MAX:
@@ -210,11 +213,14 @@ def report_sessions(c: Caller, sessions: Any, quotas: Any = None) -> dict[str, A
         # A clock ahead of the server's says "now", not "in the future".
         rows[LOCAL + sid] = (product, None if at is None else min(_seconds(at, "active_at"), util.now()))
     checked = _quotas(quotas) if quotas is not None else None
+    if git is not None and not isinstance(git, bool):
+        raise bad_request("bad_request", "git must be true or false.")
     before = notices.online_now(pj, _agents_of(pj, cred_id))
     with pj.db:
         pj.db.execute("DELETE FROM computer_sessions WHERE credential_id = ?", (cred_id,))
         pj.db.executemany("INSERT INTO computer_sessions (credential_id, session, product, active_at) VALUES (?, ?, ?, ?)",
                           [(cred_id, sid, product, at) for sid, (product, at) in rows.items()])
+        pj.db.execute("UPDATE credentials SET git = ? WHERE id = ?", (None if git is None else int(git), cred_id))
         if checked is not None:
             pj.db.execute("UPDATE credentials SET quotas = ?, quotas_at = ? WHERE id = ?",
                           (json.dumps(checked), util.now(), cred_id))
@@ -263,7 +269,7 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                 news = {a["id"]: messaging.listen(pj.slug, a["id"]) for a in served}
                 try:
                     left = deadline - loop.time()
-                    out: list[dict[str, Any]] = []
+                    out: list[dict[str, Any]] = writer.take(pj.slug, cred_id)
                     for a in served:
                         # As in the per-session poll: an open wait takes the messages, a held agent gets nothing.
                         if messaging.waiting(pj.slug, a["id"]) or presence.held(a):
@@ -304,3 +310,8 @@ def ack(c: Caller, ids: Any) -> dict[str, Any]:
     for a in c.pj.db.execute("SELECT * FROM agents WHERE credential_id = ?", (cred_id,)).fetchall():
         messaging.ack(c.pj, messaging.agent_member(a), ids)
     return {}
+
+
+def write_answer(c: Caller, body: dict[str, Any]) -> dict[str, Any]:
+    """The program's outcome of a write delivery (writer.answer)."""
+    return writer.answer(c.pj, _computer(c), body)

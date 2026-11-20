@@ -168,7 +168,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **Settings are one layer in the four cells** (the rail stays): the project's settings (overview: name, repository,
   notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and
   delete; permissions; notifications) and the reader's own (個人: their name in the project, GitHub 寫入授權 (its state
-  in one sentence and 撤銷, two steps in place), 語言, 外觀; 電腦和連接器;
+  in one sentence and 撤銷, two steps in place; while a computer of theirs writes instead, the sentence says so), 語言,
+  外觀; 電腦和連接器 (each computer also with **用這台電腦寫入公共檔案**, two steps, since the server then deletes their
+  GitHub write authorization; the chosen one is marked and offers **改回由伺服器寫入**);
   別人能對我的 agent 做什麼) look the same. A setting that is changed is a form of one field with its button, saved
   where it is, its outcome said beside the button; a choice (a check box, a control of three) is saved as it is
   pressed. "Saved" is said the same everywhere: in place, at the row's end, for a moment, in a place kept for it so
@@ -362,7 +364,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - At the strip's far right, and nothing else there: for a `.tex` file next to a PDF of the same name, the word
   "開啟 PDF" (it opens the PDF in a new tab); for a text file of the repository the word **編輯** (pressed while editing)
   when the reader may save there in their own GitHub name, or in its place a quiet link "需要 GitHub 寫入授權" to their
-  settings when that needs their authorization (nothing when their GitHub account cannot push); the view switch
+  settings when that needs their authorization, or "寫入電腦離線" / "寫入電腦無法寫入" to their computers when the
+  computer they chose to write is not connected or has no git (nothing when their GitHub account cannot push); the view switch
   (rendered, source, both side by side) and one more control in the same place: "open on GitHub" for a file of the
   repository, **save** for a local file and for a file of the repository being edited (also Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
   hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
@@ -392,6 +395,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   Pressing the pressed **編輯** ends editing; with unsaved changes it says so first (two steps).
 - **A new file of the repository** (its folder's menu, or the files menu for the top) asks for the name in the tree as
   a local one does, opens an empty tab being edited, and says over it that it reaches GitHub only when saved.
+- **A file of the repository** has, for who may write there, **重新命名** (the name asked in the tree, in place, as for a
+  local file) and **刪除** (floating, the name typed) in its entry menu; each is one commit in the reader's name. A
+  rename onto a name GitHub already has, or of a file changed on GitHub since it was read, is refused under the field;
+  a delete refused so says it in the panel; either way the tree is listed again. Its open tab follows a rename (and
+  the address with it) and says the file is gone after a delete. Folders are not renamed or deleted as such.
 - What cannot be shown or edited (too large, not text, not UTF-8) is one sentence where the document would be, with
   one link, or over the read-only editor.
 - Below 900 px, while the source shown has no tab, the page is the explorer (the source, the search field and the

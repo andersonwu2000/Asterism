@@ -937,11 +937,16 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
     agents = [{**agent_view(pj, a, owners, work=True), "credential": a["credential_id"]} for a in
               pj.db.execute("SELECT * FROM agents WHERE person_id = ? ORDER BY id", (actor.person_id,))]
     creds = []
+    me = pj.db.execute("SELECT writer FROM people WHERE person_id = ?", (actor.person_id,)).fetchone()
     for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",
                            (actor.person_id,)):
         view = credential_view(c)
         if c["kind"] == "computer":     # whether that computer's program holds its connection now
             view["connected"] = presence.computer_connected(pj.slug, c["id"], pj.db)
+            # The computer that writes this person's changes to the repository's files (w2), and whether its program
+            # said it has git (null: not said, a program before 0.1.12).
+            view["writer"] = bool(me and me["writer"] == c["id"])
+            view["git"] = None if c["git"] is None else bool(c["git"])
             if c["quotas"] is not None:  # what its program last reported (1x); only its own person sees it
                 view["quotas"] = [dict(q, at=util.iso(c["quotas_at"])) for q in json.loads(c["quotas"])]
         creds.append(view)
@@ -985,6 +990,8 @@ def _revoke(pj: Project, where: str, args: tuple[Any, ...]) -> None:
         pj.db.execute(f"UPDATE credentials SET revoked = ? WHERE id IN ({marks})", (util.now(), *ids))
         pj.db.execute(f"UPDATE agents SET session = NULL, credential_id = NULL, last_poll = NULL "
                       f"WHERE credential_id IN ({marks})", ids)
+        # A revoked computer writes nobody's files any more: its person is back on the server path (w2).
+        pj.db.execute(f"UPDATE people SET writer = NULL WHERE writer IN ({marks})", ids)
     with pj.accounts:
         pj.accounts.execute(f"DELETE FROM oauth_tokens WHERE slug = ? AND credential_id IN ({marks})", (pj.slug, *ids))
     for aid in bound:

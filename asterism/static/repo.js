@@ -1,16 +1,20 @@
 // Files mode, the project's repository as a source of files (Asterism.sources.repo), read through the server; a
-// member whose GitHub account may push saves a text file from the page, committed in their own name (can-write, save).
+// member whose GitHub account may push saves a text file from the page, deletes or renames a file, each committed in
+// their own name (can-write, save, delete, rename): with their own GitHub authorization, or by the computer they chose
+// (then can-write names it, `writer`).
 // Folders are listed on demand (GET /api/files/list, one call per folder, kept for the session) and listed again
 // when the head commit changes. Nothing is asked by itself to notice a push: the reader asks for the newest head by
 // hand (the files menu's 重新整理, refresh()). A file is read from GET /api/files/raw/<path>. Entries of type "other" recede and cannot be opened.
 // The explorer (explorer.js) and the tab strip (viewer.js) speak to it, and to a local folder (local.js), through one
 // small interface:
-//   id, state, on(what, fn)               what: "listing" (redraw the tree), "state", "changed" (a push)
+//   id, state, on(what, fn)               what: "listing" (redraw the tree), "state", "changed" (a push), "moved"
+//                                         ({from, to}: a file renamed here), "removed" ({path}: a file deleted here)
 //   listed(folder) -> entries | undefined, pending(folder), failed(folder), list(folder, fresh) -> Promise
 //   read(path) -> Promise of a document {status, kind, text, url, code, why}, release(doc)
 //   menuItems(entry, ui) -> the acts of an entry's menu; refresh() -> Promise (the repository only)
-// and, for saving (the repository only): canWrite / writeReason (told by "write"), refused(reason), save(path, doc,
-// text, base, message), newFile(folder, name), wrote() (a save moved the server's head: listed again), badName(name).
+// and, for saving (the repository only): canWrite / writeReason / writer (told by "write"), refused(reason),
+// recheck(), save(path, doc, text, base, message), rename(path, name), remove(path), newFile(folder, name), wrote() (a
+// write moved the server's head: listed again), badName(name), refusal(act, data), afterRefusal(code).
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("files");
@@ -27,7 +31,9 @@
     ref: null, commit: null, stale: false,
     state: "loading",            // loading | ok | not_connected | away (nothing could be listed)
     canWrite: false,             // the reader may save here, in their own GitHub name
-    writeReason: null            // why not: no_token | reauth | no_push; null when they may, or when it is unknown
+    writeReason: null,           // why not: no_token | reauth | no_push | computer_offline | computer_cannot_push; null
+                                 // when they may, or when it is unknown
+    writer: null                 // the computer that writes for them ({credential, label}), or null: the server
   };
   A.sources = A.sources || {};
   A.sources.repo = R;
@@ -35,9 +41,9 @@
   var listings = new Map();      // folder ("" is the root) -> its entries, as the server ordered them
   var asking = new Map();        // folder -> the pending answer
   var failed = new Set();        // folders GitHub could not list this time
-  var listeners = {listing: [], state: [], changed: [], write: []};
+  var listeners = {listing: [], state: [], changed: [], write: [], moved: [], removed: []};
   R.on = function (what, fn) { listeners[what].push(fn); };
-  function emit(what) { listeners[what].forEach(function (fn) { fn(); }); }
+  function emit(what, arg) { listeners[what].forEach(function (fn) { fn(arg); }); }
 
   function setState(state) {
     if (R.state === state) return;
@@ -53,8 +59,10 @@
     var r = await A.request(API + "files/can-write");
     R.canWrite = !!(r.ok && r.data.can_write);
     R.writeReason = r.ok ? r.data.reason || null : null;
+    R.writer = r.ok && r.data.writer ? r.data.writer : null;
     emit("write");
   }
+  R.recheck = checkWrite;
   // A save was refused for want of authorization or permission: no more saving here until the page is opened again.
   R.refused = function (reason) {
     R.canWrite = false;
@@ -212,6 +220,74 @@
     return {ok: true, path: path, opened: true, said: t("files.new_unsaved")};
   };
 
+  // ------------------------------------------------------------------ deleting and renaming
+
+  // A refusal of a write in the page's words (A.refusal), with what the chosen computer said when it could not write.
+  R.refusal = function (act, data) {
+    var said = A.refusal(act, data);
+    return data && data.error === "computer_failed" && data.detail ? said + " " + t("files.computer_said", {detail: data.detail}) : said;
+  };
+
+  // After a refused write: what it says of writing here from now on (a sign-in needed, no push; the chosen computer
+  // gone or unable: asked again), and a conflict or a file gone lists the repository again, so the reader sees it.
+  R.afterRefusal = function (code) {
+    if (code === "github_reauth") R.refused("reauth");
+    else if (code === "forbidden") R.refused("no_push");
+    else if (/^computer_(offline|cannot_push)$/.test(code || "")) checkWrite();
+    if (code === "conflict" || code === "not_found") R.wrote();
+  };
+
+  // The hash of the file as the server has it now: the version a delete or a rename starts from. Asked with
+  // If-None-Match: *, which the server answers with the ETag alone (304), whatever the file's size.
+  async function baseOf(path) {
+    var r;
+    try {
+      r = await fetch(A.rawUrl(SLUG, path), {method: "HEAD", credentials: "same-origin", cache: "no-store",
+                                             headers: {"If-None-Match": "*"}});
+    } catch (err) {
+      return {error: "network"};
+    }
+    if (r.status === 404) return {error: "not_found"};
+    if (r.status === 409) return {error: "not_connected"};
+    var sha = (r.headers.get("etag") || "").replace(/^W\//, "").replace(/"/g, "");
+    return sha ? {sha: sha} : {error: "github_unavailable"};
+  }
+
+  // A file renamed in its folder, one commit (POST /api/files/rename). Answers as the explorer's name field expects:
+  // {ok, path, said} or {ok: false, message}.
+  R.rename = async function (path, name) {
+    var slash = path.lastIndexOf("/"), folder = slash < 0 ? "" : path.slice(0, slash);
+    if (name === path.slice(slash + 1)) return {ok: true, path: path};
+    if (R.badName(name)) return {ok: false, message: A.errorText("local_bad_name")};
+    var to = folder ? folder + "/" + name : name;
+    var entries = await R.list(folder);
+    if (entries && entries.some(function (x) { return x.name === name; })) return {ok: false, message: t("local.exists", {name: name})};
+    var base = await baseOf(path);
+    if (base.error) { R.afterRefusal(base.error); return {ok: false, message: R.refusal("files.rename", {error: base.error})}; }
+    var r = await A.request(API + "files/rename", null, {path: path, to: to, base: base.sha});
+    if (!r.ok) {
+      var code = r.data && r.data.error;
+      R.afterRefusal(code);
+      // A conflict while the file is still what was read: the new name is taken on GitHub.
+      if (code === "conflict" && r.data.current === base.sha) return {ok: false, message: t("files.rename.exists", {name: name})};
+      return {ok: false, message: R.refusal("files.rename", r.data)};
+    }
+    emit("moved", {from: path, to: to});
+    await R.wrote();
+    return {ok: true, path: to, said: t("files.renamed_github")};
+  };
+
+  // A file deleted, one commit (POST /api/files/delete). Answers as A.gone expects: {ok} or {ok: false, data}.
+  R.remove = async function (path) {
+    var base = await baseOf(path);
+    if (base.error) { R.afterRefusal(base.error); return {ok: false, data: {error: base.error}}; }
+    var r = await A.request(API + "files/delete", null, {path: path, base: base.sha});
+    if (!r.ok) { R.afterRefusal(r.data && r.data.error); return r; }
+    emit("removed", {path: path});
+    await R.wrote();
+    return {ok: true};
+  };
+
   // ------------------------------------------------------------------ the menu of an entry
 
   R.menuItems = function (entry, ui) {
@@ -219,6 +295,20 @@
     if (folder && R.canWrite) {
       items.push({label: t("files.new_file"), run: function () {
         ui.ask({folder: path, kind: "file", run: function (name) { return R.newFile(path, name); }});
+      }}, {separator: true});
+    }
+    // A file, for who may write here: renamed in place, deleted with its name typed. Folders are not renamed or
+    // deleted as such.
+    if (!folder && path && R.canWrite) {
+      items.push({label: t("files.rename"), run: function () {
+        ui.ask({rename: path, run: function (name) { return R.rename(path, name); }});
+      }}, {label: t("files.delete"), run: function () {
+        var slash = path.lastIndexOf("/");
+        A.gone({title: t("gone.repo_file.title", {name: entry.name}), text: t("gone.repo_file.text", {name: entry.name}),
+                name: entry.name, button: t("gone.repo.button"), opener: ui.opener(path),
+                refusal: function (data) { return R.refusal("files.delete", data); },
+                run: function () { return R.remove(path); },
+                done: function () { ui.focus(slash < 0 ? "" : path.slice(0, slash)); }});
       }}, {separator: true});
     }
     items.push(ui.copyItem(path));

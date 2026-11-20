@@ -664,7 +664,7 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
                f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
                f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
                f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
-               f'{_github_write(tr, me["github"])}'
+               f'{_github_write(tr, me["github"], me.get("writer"))}'
                f'<h3 class="set-sub">{e(tr("me.avatar"))}</h3>'
                f'<div id="me-avatar" class="avatar-set"></div><p class="dim">{e(tr("me.avatar_hint"))}</p>'
                f'<h3 class="set-sub">{e(tr("me.lang"))}</h3>'
@@ -682,14 +682,16 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
     return {"profile": profile, "computers": '<div id="me-computers"></div>', "agents": agents}
 
 
-def _github_write(tr: Translator, state: str) -> str:
+def _github_write(tr: Translator, state: str, writer: str | None = None) -> str:
     """The person's GitHub authorization to save repository files in their own name (1w): its state (kept, refused,
-    none) and, while one is kept, revoke (two steps in place; me.js sends it)."""
+    none) and, while one is kept, revoke (two steps in place; me.js sends it). While a computer of theirs writes
+    instead (w2, `writer`: its label), that is what it says."""
     revoke = (f'<div class="row"><button type="button" class="btn" id="me-github-revoke">{e(tr("me.gh_revoke"))}</button>'
               f'<span class="out" aria-live="polite"></span></div>' if state != "none" else "")
+    said = tr("me.gh_write.computer", name=writer) if writer is not None and state == "none" else tr("me.gh_write." + state)
     return (f'<h3 class="set-sub" id="me-github">{e(tr("me.gh_write"))}</h3>'
             f'<div class="stack gh-write" id="me-github-state" data-state="{e(state)}">'
-            f'<p class="dim">{e(tr("me.gh_write." + state))}</p>{revoke}</div>')
+            f'<p class="dim">{e(said)}</p>{revoke}</div>')
 
 
 def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:

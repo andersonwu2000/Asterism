@@ -208,6 +208,7 @@
   // where the thing's name is typed, and the one red button, armed only while the name matches. Escape and a click
   // outside close it; focus goes in on open and back to the opener on close; the server's refusal shows inside.
   //   A.gone({title, text, name, button, opener, run: async () => A.request(...), done: function (res) {}})
+  // A refusal is said by the catalogue under `act` (A.refusal), or by `refusal(data)` when the caller says it.
 
   var gone = null;
 
@@ -257,7 +258,7 @@
         if (opts.done) opts.done(res);
         return;
       }
-      out.textContent = A.refusal(opts.act || "gone", res && res.data);
+      out.textContent = opts.refusal ? opts.refusal(res && res.data) : A.refusal(opts.act || "gone", res && res.data);
       go.disabled = !armed();
       input.focus();
     });

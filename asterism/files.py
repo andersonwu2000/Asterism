@@ -562,6 +562,7 @@ class Entry:
     kind: str                                   # dir | file | other
     sha: str = ""
     size: int = 0
+    mode: str = ""                              # a file's: 100644 or 100755 (a rename keeps it)
 
 
 def _entries(tree: Any) -> list[Entry]:
@@ -582,7 +583,7 @@ def _entries(tree: Any) -> list[Entry]:
             out.append(Entry(name, "dir", sha))
         elif usable and kind == "blob" and mode in ("100644", "100755") and isinstance(size, int) \
                 and not isinstance(size, bool) and size >= 0:
-            out.append(Entry(name, "file", sha, size))
+            out.append(Entry(name, "file", sha, size, mode))
         else:
             out.append(Entry(name, "other"))
     return out
@@ -597,9 +598,12 @@ def _load_tree(path: Path) -> list[Entry] | None:
         return None                             # damaged: fetched again
     _touch(path)
     try:
-        return [Entry(**e) for e in raw]
+        entries = [Entry(**e) for e in raw]
     except TypeError:
         return None
+    if any(e.kind == "file" and not e.mode for e in entries):
+        return None                             # kept before files had their mode: fetched again
+    return entries
 
 
 def _save_tree(folder: Path, sha: str, entries: list[Entry]) -> Path:
@@ -784,6 +788,31 @@ async def wrote(slug: str, repo: Repo, ref: str, commit: str, tree: Any) -> None
             st.next_check = time.monotonic() + config.get().files_refresh_s
         else:
             await _refresh(slug, repo, st)
+
+
+def expire(slug: str, repo: Repo) -> None:
+    """The head moved by a write GitHub did not answer for here (a person's computer pushed it, w2): the next reader
+    asks GitHub for the head, without waiting for the refresh time. Nothing is asked now."""
+    _state(slug, repo).next_check = 0.0
+
+
+def known_ref(slug: str, repo: Repo) -> str | None:
+    """The default branch as the server last read it, or None when it has not read it yet. Nothing is asked."""
+    st = _states.get((slug, repo))
+    return st.head.ref if st is not None and st.head is not None else None
+
+
+async def entries_now(slug: str, repo: Repo, paths: list[list[str]]) -> tuple[Head, list[Entry | None]]:
+    """The newest head, read from GitHub now, and the entry at each path in it (None where there is none). Raises
+    github_unavailable or not_connected."""
+    h, stale = await head(slug, repo, force=True)
+    if stale:
+        raise unavailable()
+
+    async def work(h: Head):
+        return [await _walk(slug, repo, h.tree, segs) for segs in paths]
+    out, _ = await _guarded(slug, repo, work)
+    return h, out
 
 
 async def blob_now(slug: str, repo: Repo, segs: list[str]) -> str | None:

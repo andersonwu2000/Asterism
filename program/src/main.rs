@@ -14,6 +14,7 @@
 
 mod allow;
 mod daemon;
+mod git;
 mod http;
 mod join;
 mod local;

@@ -5,7 +5,9 @@
 //! sessions it can wake right now (`POST /api/computer/sessions`, the complete list, again whenever it
 //! changes, with each session's last activity and the products' quotas: report.rs), keeps a poll open
 //! (`GET /api/computer/poll`), puts each delivery in front of its session and acknowledges
-//! (`POST /api/computer/ack`) only what was put there.
+//! (`POST /api/computer/ack`) only what was put there. The same poll hands it the writes of the repository's
+//! files of the person who chose this computer for them (git.rs): each is done on a thread of its own, one at a
+//! time, and answered with `POST /api/computer/write`; a write is never acknowledged (the server hands it out once).
 //! Each project has two threads: the reporter (sends the list when it or what it says changed) and the
 //! poller (polls, delivers, acknowledges), so that a new session is reported while a poll is held.
 //!
@@ -335,7 +337,7 @@ impl Daemon {
             }
             sessions.push(s);
         }
-        json!({"sessions": sessions, "quotas": report::quotas(claude_records, &rollouts)})
+        json!({"sessions": sessions, "quotas": report::quotas(claude_records, &rollouts), "git": crate::git::available()})
     }
 
     /// Send the list of wakeable sessions whenever it, or what it says of them, changed (or the server may
@@ -449,6 +451,10 @@ impl Daemon {
             if p.stopped() {
                 break;
             }
+            if d["kind"].as_str() == Some("write") {
+                self.write(p, d);
+                continue;
+            }
             let (Some(id), Some(frame), Some(session)) = (d["delivery"].as_i64(), d["frame"].as_str(), d["session"].as_str()) else {
                 continue;
             };
@@ -491,6 +497,34 @@ impl Daemon {
             Err(Fail::Unreachable(e)) => log(&format!("{}: acknowledging failed ({e})", p.p.slug)),
             Err(Fail::Refused { message, .. }) => log(&format!("{}: acknowledging refused ({message})", p.p.slug)),
         }
+    }
+
+    /// A write of the repository's files (git.rs), done on a thread of its own so that the poll goes on meanwhile,
+    /// and answered to the server. Its content and message are never logged.
+    fn write(&self, p: &Proj, d: &Value) {
+        let Some(id) = d["delivery"].as_str().filter(|i| i.len() <= 64 && i.chars().all(|c| c.is_ascii_alphanumeric())) else {
+            return;
+        };
+        let (id, d, home, agent, project) = (id.to_string(), d.clone(), self.home.clone(), self.agent.clone(), p.p.clone());
+        std::thread::spawn(move || {
+            let op = d["op"].as_str().unwrap_or("?").to_string();
+            let mut answer = crate::git::write(&home, &d);
+            let result = answer["result"].as_str().unwrap_or("?").to_string();
+            match answer["detail"].as_str() {
+                Some(why) => log(&format!("{}: write {id} ({op}): {result}: {why}", project.slug)),
+                None => log(&format!("{}: write {id} ({op}): {result}", project.slug)),
+            }
+            answer["delivery"] = json!(id);
+            let auth = format!("Bearer {}", project.credential);
+            let url = format!("{}/api/computer/write", project.url);
+            if let Err(e) = http::call(&agent, "POST", &url, Some(&answer), &[("Authorization", &auth)], &[], Duration::from_secs(30)) {
+                let why = match e {
+                    Fail::Unreachable(e) => e,
+                    Fail::Refused { message, .. } => message,
+                };
+                log(&format!("{}: answering write {id} failed ({why})", project.slug));
+            }
+        });
     }
 
     /// A Codex thread whose `codex queue` failed can no longer be woken from here.

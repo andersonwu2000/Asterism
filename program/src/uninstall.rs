@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const OURS: [&str; 10] = [
+const OURS: [&str; 11] = [
     "bin", "daemon.json", "daemon.lock", "daemon.log", "daemon.log.1", "threads.json", "pending.json",
-    "state.lock", "update.json", "projects",
+    "state.lock", "update.json", "projects", "repos",
 ];
 
 pub fn run(home: &Path, args: &[String]) -> i32 {
@@ -135,6 +135,14 @@ fn delete_files(home: &Path, forget: bool) -> (usize, Vec<String>) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let ours = OURS.contains(&name.as_str()) || name.ends_with(".part");
         if !ours || (name == "projects" && !forget) {
+            continue;
+        }
+        if name == "repos" {
+            // The bare clones the program writes repository files from (git.rs): nothing else is in them.
+            match fs::remove_dir_all(&path) {
+                Ok(()) => deleted += 1,
+                Err(e) => left.push(format!("{} ({e})", path.display())),
+            }
             continue;
         }
         if path.is_dir() {

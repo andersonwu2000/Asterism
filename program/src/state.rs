@@ -11,6 +11,8 @@
 //!   in this project", left by `join` for the `mcp` of that conversation.
 //! - `state.lock`: taken while `threads.json` or `pending.json` is read and rewritten, by any process.
 //! - `daemon.log`: what the resident program did (never a secret or a message text).
+//! - `repos/<owner>__<name>.git`: a partial bare clone per repository, from which the resident program writes the
+//!   repository's files for a person who chose this computer to do it (git.rs). Never a working copy of theirs.
 //!
 //! On Unix, secret files are created mode 0600 and the folder 0700. On Windows the folder is in the user's
 //! profile, whose default permissions already keep other ordinary users out; nothing is changed there.

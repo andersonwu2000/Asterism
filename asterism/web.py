@@ -25,7 +25,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import (accounts, agents, assets, avatars, computers, config, downloads, files, messaging, oauth, pages, projects,
-               replays, schedules, tasks, timeline, tools, upkeep, usertokens, util, writes)
+               replays, schedules, tasks, timeline, tools, upkeep, usertokens, util, writer, writes)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import LOCALES, Translator, pick_locale
 from .projects import Actor, Project
@@ -377,7 +377,7 @@ def computer_caller(request: Request) -> agents.Caller:
 async def computer_sessions(request: Request) -> Any:
     c = computer_caller(request)
     b = await body_json(request)
-    return computers.report_sessions(c, b.get("sessions"), b.get("quotas"))
+    return computers.report_sessions(c, b.get("sessions"), b.get("quotas"), b.get("git"))
 
 
 async def computer_poll(request: Request) -> Any:
@@ -392,6 +392,12 @@ async def computer_poll(request: Request) -> Any:
 async def computer_ack(request: Request) -> Any:
     c = computer_caller(request)
     return computers.ack(c, (await body_json(request)).get("deliveries"))
+
+
+async def computer_write(request: Request) -> Any:
+    """The program's outcome of a write it was handed (writer.py)."""
+    c = computer_caller(request)
+    return computers.write_answer(c, await body_json(request))
 
 
 # --------------------------------------------------------------------------- joining
@@ -602,15 +608,37 @@ async def api_files_resolve(request: Request) -> Any:
 
 
 async def api_files_can_write(request: Request) -> Any:
-    """Whether the reader may save files of the repository from the page, in their own name (writes.py)."""
+    """Whether the reader may write files of the repository from the page, in their own name: with their own GitHub
+    authorization, or by the computer they chose (writes.py, writer.py)."""
     pj, repo = reader(request)
-    return await writes.can_write(store().accounts(), pj.slug, repo, signed_in(request)["id"])
+    return await writes.can_write(store().accounts(), pj, repo, signed_in(request)["id"])
+
+
+async def _files_write(request: Request, op: str) -> Any:
+    pj, repo = reader(request)
+    return await writes.write(store().accounts(), pj, repo, signed_in(request)["id"], op, await body_json(request))
 
 
 async def api_files_save(request: Request) -> Any:
-    """One file saved to the repository as one commit, with the reader's own GitHub authorization (writes.py)."""
-    pj, repo = reader(request)
-    return await writes.save(store().accounts(), pj.slug, repo, signed_in(request)["id"], await body_json(request))
+    """One file saved to the repository as one commit, in the reader's own name (writes.py)."""
+    return await _files_write(request, "save")
+
+
+async def api_files_delete(request: Request) -> Any:
+    """One file deleted from the repository as one commit, in the reader's own name (writes.py)."""
+    return await _files_write(request, "delete")
+
+
+async def api_files_rename(request: Request) -> Any:
+    """One file renamed in the repository as one commit, in the reader's own name (writes.py)."""
+    return await _files_write(request, "rename")
+
+
+async def api_my_writer(request: Request) -> Any:
+    """The computer that writes the reader's changes to the repository's files, or none (the server, with their own
+    GitHub authorization). Choosing one deletes and revokes their GitHub token (writer.py)."""
+    pj, actor = member_actor(request, request.path_params["slug"])
+    return await writer.choose(pj, actor, (await body_json(request)).get("credential"), store().accounts())
 
 
 async def api_files_raw(request: Request) -> Response:
@@ -1165,8 +1193,10 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
         me = None
         if scope == "me":
             acc = accounts.person(store().accounts(), actor.person_id)
+            chosen = writer.chosen(pj, actor.person_id)
             me = {"name": projects.person_name(pj, actor.person_id), "github_login": acc["github_login"],
-                  "my": projects.my_view(pj, actor), "github": usertokens.state(store().accounts(), actor.person_id)}
+                  "my": projects.my_view(pj, actor), "github": usertokens.state(store().accounts(), actor.person_id),
+                  "writer": chosen["label"] if chosen is not None else None}
     except ApiError as e:
         return page_error(request, e, person)
     return html(pages.settings(tr_for(request), person, frame, scope, section, view, projects.PERMISSIONS,
@@ -1375,6 +1405,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/files/refresh", api(api_files_refresh), methods=["POST"]),
         Route("/{slug}/api/files/can-write", api(api_files_can_write), methods=["GET"]),
         Route("/{slug}/api/files/save", api(api_files_save), methods=["POST"]),
+        Route("/{slug}/api/files/delete", api(api_files_delete), methods=["POST"]),
+        Route("/{slug}/api/files/rename", api(api_files_rename), methods=["POST"]),
+        Route("/{slug}/api/me/writer", api(api_my_writer), methods=["POST"]),
         Route("/{slug}/api/presence", api(api_presence), methods=["POST"]),
         Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
         Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),
@@ -1393,6 +1426,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
         Route("/{slug}/api/computer/poll", api(computer_poll)),
         Route("/{slug}/api/computer/ack", api(computer_ack), methods=["POST"]),
+        Route("/{slug}/api/computer/write", api(computer_write), methods=["POST"]),
     ]
     if config.get().test_mode:
         routes.insert(0, Route("/test/login", test_login, methods=["POST"]))

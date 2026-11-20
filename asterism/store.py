@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS people (
     person_id INTEGER PRIMARY KEY, -- id in the accounts database
     name TEXT NOT NULL UNIQUE,
     joined REAL NOT NULL,
-    last_beat REAL                 -- the latest beat of an open page of the project (presence); NULL never
+    last_beat REAL,                -- the latest beat of an open page of the project (presence); NULL never
+    writer INTEGER                 -- the computer (credential id) the person chose to write the repository's files
+                                   -- with its own git (w2); NULL: the server writes, with the person's GitHub token
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -152,7 +154,9 @@ CREATE TABLE IF NOT EXISTS credentials (
     connected INTEGER,             -- the computer connection last written to the log (1 connected, 0 or NULL not)
     quotas TEXT,                   -- a computer's: the quotas its program last reported (JSON list, computers.QUOTAS);
                                    -- shown to its person only. NULL: none reported
-    quotas_at REAL                 -- when they were reported
+    quotas_at REAL,                -- when they were reported
+    git INTEGER                    -- a computer's: its program's last report said it has git (1) or not (0), so it
+                                   -- can write the repository's files (w2); NULL: not said (a program before 0.1.12)
 );
 CREATE TABLE IF NOT EXISTS agent_invites (
     digest TEXT PRIMARY KEY,       -- digest of the code in the link; the code itself is never kept
@@ -365,7 +369,8 @@ ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
                ("model", "TEXT")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
-                    ("last_poll", "REAL"), ("connected", "INTEGER"), ("quotas", "TEXT"), ("quotas_at", "REAL")],
+                    ("last_poll", "REAL"), ("connected", "INTEGER"), ("quotas", "TEXT"), ("quotas_at", "REAL"),
+                    ("git", "INTEGER")],
     "computer_sessions": [("active_at", "REAL")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
@@ -374,7 +379,7 @@ ADDED_COLUMNS = {
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
-    "people": [("last_beat", "REAL")],
+    "people": [("last_beat", "REAL"), ("writer", "INTEGER")],
     # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then. The
     # columns of 1t (title, body, tracking, done) come with the rebuild that drops `text` (DROPPED_COLUMNS).
     "tasks": [("posted_kind", "TEXT"), ("posted_id", "INTEGER"), ("taken", "REAL")],

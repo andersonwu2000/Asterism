@@ -39,6 +39,7 @@ class Settings:
     task_done_keep_s: float         # a done task stays listed this long, then it is deleted
     active_s: float                 # an agent whose session did something this recently is working (1x)
     stale_s: float                  # an agent holding a task and idle this long is marked "has a task, idle"
+    write_wait_s: float             # a write handed to the person's chosen computer is waited for this long (w2)
 
     @property
     def secure_cookies(self) -> bool:
@@ -97,7 +98,8 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     task_hour_s=_env_s("ASTERISM_TASK_HOUR_S", 3600),
                     task_done_keep_s=_env_s("ASTERISM_TASK_DONE_KEEP_S", 604800),
                     active_s=_env_s("ASTERISM_ACTIVE_S", 120),
-                    stale_s=_env_s("ASTERISM_STALE_S", 1800))
+                    stale_s=_env_s("ASTERISM_STALE_S", 1800),
+                    write_wait_s=_env_s("ASTERISM_WRITE_WAIT_S", 60))
 
 
 def use(s: Settings) -> Settings:

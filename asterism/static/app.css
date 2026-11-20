@@ -875,6 +875,9 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .ag-item > .row-acts { grid-column: 2; grid-row: 1; align-self: start; }
 .ag-item > .ag-side-btn { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .ag-item > .out { grid-column: 1 / -1; }
+/* Whether a computer writes the shared files (w2): its sentences, then its one button, under the computer's facts. */
+.ag-writer { grid-column: 1; display: grid; justify-items: start; gap: 2px; margin-top: 4px; min-width: 0; }
+.ag-writer > .btn { margin-top: 6px; }
 .ag-item > .out:empty, .tt-task > .out:empty, .sch-item > .out:empty { display: none; }
 .ag-item:hover > .row-acts, .ag-item:focus-within > .row-acts, .tt-task:hover > .row-acts, .tt-task:focus-within > .row-acts,
 .sch-item:hover > .row-acts, .sch-item:focus-within > .row-acts { opacity: 1; pointer-events: auto; }
