@@ -109,6 +109,8 @@ def test_choosing_a_computer_drops_the_servers_token_and_writes_go_there(w):
     pc.c.post(f"/{SLUG}/api/computer/sessions", json={"sessions": [], "git": True})
     pc.connect()
     try:
+        # the stand-in program is online once its first poll has reached the server
+        assert until(lambda: w.bob.c.get(f"/{SLUG}/api/files/can-write").json()["can_write"] is True, 8)
         state = w.bob.c.get(f"/{SLUG}/api/files/can-write").json()
         assert state["can_write"] is True and state.get("writer"), state
         stop = answer_writes(pc, lambda d: {"result": "done", "commit": "c0ffee", "sha": "beef"})
