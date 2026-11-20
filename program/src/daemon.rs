@@ -120,6 +120,8 @@ struct Daemon {
     projects: Mutex<HashMap<String, Arc<Proj>>>,
     report_after: std::time::Instant,
     records: report::Records,
+    /// This computer's machine id (state.rs), sent with every sessions report; None when it could not be made.
+    machine: Option<String>,
 }
 
 pub fn run(home: PathBuf) -> i32 {
@@ -171,6 +173,7 @@ pub fn run(home: PathBuf) -> i32 {
         projects: Mutex::new(HashMap::new()),
         report_after: std::time::Instant::now() + grace,
         records: report::Records::default(),
+        machine: state::machine(&home),
     });
     d.reload();
     crate::update::start(home);
@@ -337,7 +340,12 @@ impl Daemon {
             }
             sessions.push(s);
         }
-        json!({"sessions": sessions, "quotas": report::quotas(claude_records, &rollouts), "git": crate::git::available()})
+        let mut body = json!({"sessions": sessions, "quotas": report::quotas(claude_records, &rollouts),
+                              "git": crate::git::available(), "version": crate::VERSION});
+        if let Some(m) = &self.machine {
+            body["machine"] = json!(m);
+        }
+        body
     }
 
     /// Send the list of wakeable sessions whenever it, or what it says of them, changed (or the server may

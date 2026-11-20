@@ -13,6 +13,10 @@
 //! - `daemon.log`: what the resident program did (never a secret or a message text).
 //! - `repos/<owner>__<name>.git`: a partial bare clone per repository, from which the resident program writes the
 //!   repository's files for a person who chose this computer to do it (git.rs). Never a working copy of theirs.
+//! - `machine.json`: `{machine}`, this computer's machine id: 32 hex characters, random, made once, sent when a link
+//!   is redeemed and with every sessions report, so that the server knows it is the same computer in every project
+//!   (a person chooses one computer of theirs to write repository files, for all their projects). Not a secret, and
+//!   derived from nothing of the computer (not its name, not its hardware).
 //!
 //! On Unix, secret files are created mode 0600 and the folder 0700. On Windows the folder is in the user's
 //! profile, whose default permissions already keep other ordinary users out; nothing is changed there.
@@ -154,6 +158,37 @@ pub fn save_credential(home: &Path, url: &str, person: &str, credential: &str) -
     let data = json!({"project": url, "person": person, "credential": credential, "created": crate::sys::utc_iso()});
     let text = serde_json::to_string_pretty(&data).unwrap_or_default();
     write_private(&projects_dir(home).join(format!("{}.json", project_key(url))), text.as_bytes())
+}
+
+// --------------------------------------------------------------------------- machine.json
+
+/// What a machine id looks like: 32 lowercase hexadecimal characters (as the server checks it).
+pub fn valid_machine(m: &str) -> bool {
+    m.len() == 32 && m.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+fn read_machine(path: &Path) -> Option<String> {
+    read_json(path).and_then(|v| v["machine"].as_str().map(String::from)).filter(|m| valid_machine(m))
+}
+
+/// This computer's machine id, made on first use (under `state.lock`, so that `join` and the resident program
+/// starting together make one). None when it can be neither read nor made: then nothing is sent, as by a program
+/// before 0.1.13.
+pub fn machine(home: &Path) -> Option<String> {
+    let path = home.join("machine.json");
+    if let Some(m) = read_machine(&path) {
+        return Some(m);
+    }
+    locked(home, || {
+        if let Some(m) = read_machine(&path) {
+            return Some(m);
+        }
+        let m = crate::sys::random_hex(16).ok()?;
+        write_private(&path, json!({"machine": m}).to_string().as_bytes()).ok()?;
+        Some(m)
+    })
+    .ok()
+    .flatten()
 }
 
 // --------------------------------------------------------------------------- daemon.json
@@ -302,6 +337,19 @@ mod tests {
         assert_eq!(project_key("http://127.0.0.1:5123/lab"), "127.0.0.1_5123_lab");
         assert_eq!(project_key("https://asterismhub.com/my-lab"), "asterismhub.com_my-lab");
         assert_eq!(slug_of("https://asterismhub.com/my-lab"), "my-lab");
+    }
+
+    #[test]
+    fn the_machine_id_is_made_once_and_kept() {
+        let home = std::env::temp_dir().join(format!("asterism-machine-{}", crate::sys::random_hex(6).unwrap()));
+        let first = machine(&home).expect("made");
+        assert!(valid_machine(&first), "{first}");
+        assert_eq!(machine(&home).as_deref(), Some(first.as_str()), "the same one again");
+        write_private(&home.join("machine.json"), b"{\"machine\": \"not-hex\"}").unwrap();
+        let other = machine(&home).expect("made again");
+        assert!(valid_machine(&other) && other != first, "an unusable file is replaced");
+        let _ = fs::remove_dir_all(&home);
+        assert!(!valid_machine("ABCDEF0123456789ABCDEF0123456789") && !valid_machine("abc"));
     }
 
     #[test]

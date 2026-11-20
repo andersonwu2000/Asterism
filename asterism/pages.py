@@ -498,7 +498,7 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
 # The sections of the settings layer, under their small headings: (scope -> ((heading, (section, ...)), ...)).
 SETTINGS = {"project": (("set.group.project", ("overview",)), ("set.group.people", ("members", "groups", "invites"))),
             "channel": (("set.group.channel", ("overview", "permissions", "notifications")),),
-            "me": (("set.group.me", ("profile", "computers", "agents")),)}
+            "me": (("set.group.me", ("profile", "computers", "writing", "agents")),)}
 THEMES = ("dark", "light", "system")
 REQUIRED_40, REQUIRED_80 = ' required maxlength="40"', ' required maxlength="80"'
 REPO_INPUT = ' type="url" placeholder="https://github.com/owner/name" data-invalid="error.invalid_repo"'
@@ -513,7 +513,7 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
              view: dict[str, Any], permissions: list[str], management: Iterable[str],
              channel: dict[str, Any] | None = None, me: dict[str, Any] | None = None) -> tuple[str, int]:
     """Project settings (scope "project"), one channel's settings (scope "channel") and the reader's own settings
-    (scope "me", `me`: their name, GitHub login and /api/my) as one layer in the frame's four cells: the project's name and what is set in the top-left cell, the list of sections (#settings-nav) as the
+    (scope "me", `me`: their name, GitHub login, /api/my, /api/me/computers and /api/me/writer) as one layer in the frame's four cells: the project's name and what is set in the top-left cell, the list of sections (#settings-nav) as the
     second column, the section's title (#settings-title) and the close control (#settings-close, also Escape) in the
     top-right cell, the section as the page. `section` "" is the bare address: the first section. settings.js
     switches sections in place (each has its address), draws members, groups and mutes from the JSON API starting
@@ -542,7 +542,7 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
         what = title = tr("set.channel_title", name=channel["name"])
     parts = {}
     if scope == "me":
-        parts.update(_me_sections(tr, slug, me))
+        parts.update(_me_sections(tr, slug, me, frame["name"]))
     elif scope == "project":
         parts["overview"] = _project_overview(tr, frame, "project_settings" in mine)
         parts["members"] = (f'<p class="dim">{e(tr("mem.all_hint"))}</p>'
@@ -581,7 +581,9 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
     close = e(tr("set.close"))
     data = {"slug": slug, "scope": scope, "section": section, "base": base, "view": view, "catalogue": permissions,
             "management": sorted(management), "switches": list(SWITCHES),
-            **({"channel": channel["name"]} if channel else {}), **({"my": me["my"]} if me else {})}
+            **({"channel": channel["name"]} if channel else {}),
+            **({"my": me["my"], "computers": me["computers"], "writer": me["writer"], "login": me["github_login"],
+                "project": frame["name"], "repo": frame["repo"]} if me else {})}
     corner = (f'<p class="corner-title"><span class="corner-name">{e(frame["name"])}</span>'
               f'<span class="corner-word">{e(what)}</span></p>')
     column = (f'<nav id="settings-nav" class="column settings-nav" aria-label="{e(tr("set.sections"))}">'
@@ -649,12 +651,13 @@ def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> st
             f'<section class="danger-zone"><h3>{e(tr("chan.delete"))}</h3>{gone}</section>')
 
 
-def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str]:
+def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) -> dict[str, str]:
     """The reader's own settings: their name and avatar in this project (#me-avatar, drawn by me.js), their GitHub
-    authorization to save repository files in their own name (#me-github), the language and the look of the pages
-    (profile); their
-    computers and connectors (me.js draws them from /api/my); what others may do with their agents (the four
-    permissions of their own agent group, each saved as it changes)."""
+    account as a fact, the language and the look of the pages (profile); their computers and connectors (me.js draws
+    them from /api/my and /api/me/computers); who writes their changes to the shared files, the server with their
+    GitHub authorization or one of their computers (writing: me.js, from /api/me/writer, /api/me/computers and
+    can-write); what others may do with their agents (the four permissions of their own agent group, each saved as it
+    changes)."""
     langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
                     f'aria-pressed="{"true" if loc == tr.locale else "false"}">{e(tr("me.lang." + loc))}</button>'
                     for loc in ("zh-TW", "en"))
@@ -664,7 +667,6 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
                f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
                f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
                f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
-               f'{_github_write(tr, me["github"], me.get("writer"))}'
                f'<h3 class="set-sub">{e(tr("me.avatar"))}</h3>'
                f'<div id="me-avatar" class="avatar-set"></div><p class="dim">{e(tr("me.avatar_hint"))}</p>'
                f'<h3 class="set-sub">{e(tr("me.lang"))}</h3>'
@@ -679,19 +681,12 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any]) -> dict[str, str
                    f'</label></div>' for k in SWITCHES)
     agents = (f'<p class="dim">{e(tr("my.switches_hint"))}</p><div class="perm-list" id="me-switches">{rows}</div>'
               f'<p><a href="/{e(q(slug))}/settings/groups?g={e(q(me["name"] + "-agents"))}">{e(tr("ag.group_settings"))}</a></p>')
-    return {"profile": profile, "computers": '<div id="me-computers"></div>', "agents": agents}
-
-
-def _github_write(tr: Translator, state: str, writer: str | None = None) -> str:
-    """The person's GitHub authorization to save repository files in their own name (1w): its state (kept, refused,
-    none) and, while one is kept, revoke (two steps in place; me.js sends it). While a computer of theirs writes
-    instead (w2, `writer`: its label), that is what it says."""
-    revoke = (f'<div class="row"><button type="button" class="btn" id="me-github-revoke">{e(tr("me.gh_revoke"))}</button>'
-              f'<span class="out" aria-live="polite"></span></div>' if state != "none" else "")
-    said = tr("me.gh_write.computer", name=writer) if writer is not None and state == "none" else tr("me.gh_write." + state)
-    return (f'<h3 class="set-sub" id="me-github">{e(tr("me.gh_write"))}</h3>'
-            f'<div class="stack gh-write" id="me-github-state" data-state="{e(state)}">'
-            f'<p class="dim">{e(said)}</p>{revoke}</div>')
+    computers = (f'<p class="dim my-lead">{e(tr("my.lead", project=project))}</p>'
+                 f'<p class="my-stale" id="me-stale" role="status" hidden>{e(tr("my.stale"))}</p>'
+                 f'<div id="me-computers"></div>')
+    writing = (f'<p class="dim my-lead">{e(tr("wr.lead"))}</p>'
+               f'<div id="me-writing"></div>')
+    return {"profile": profile, "computers": computers, "writing": writing, "agents": agents}
 
 
 def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:
@@ -838,21 +833,22 @@ def files(tr: Translator, person: dict[str, Any], frame: dict[str, Any], path: s
     views = "".join(f'<button type="button" class="icon-btn" data-view="{v}" aria-pressed="false" aria-label="{e(tr(k))}" '
                     f'title="{e(tr(k))}">{glyph(v)}</button>' for v, k in VIEWS)
     github, save = e(tr("files.github")), e(tr("files.save"))
-    # Edit (a reader who may save in their own GitHub name) or, when that needs their authorization, a quiet link to
-    # their settings: viewer.js shows one of them for a text file of the repository.
+    # Edit (a reader who may save in their own GitHub name) with save beside it (also a local file's), or, when saving
+    # needs their authorization or their writing computer, a quiet link to that section of their settings: viewer.js
+    # shows them for the file shown.
     bar = (f'<h1 class="vh">{e(tr("files.title"))}</h1>'
            f'<div id="file-tabs" class="file-tabs" role="tablist" aria-label="{e(tr("files.tabs"))}"></div>'
            f'<div class="file-tools" role="group" aria-label="{e(tr("files.tools"))}">'
            f'<button type="button" id="file-pdf" class="btn file-pdf" hidden>{e(tr("files.open_pdf"))}</button>'
            f'<button type="button" id="file-edit" class="btn file-word file-edit" aria-pressed="false" '
            f'title="{e(tr("files.edit_title"))}" hidden>{e(tr("files.edit"))}</button>'
-           f'<a id="file-auth" class="file-auth" href="/{e(q(frame["slug"]))}/me/profile#me-github" '
+           f'<button type="button" id="file-save" class="icon-btn file-save" aria-label="{save}" title="{save}" '
+           f'aria-keyshortcuts="Control+S Meta+S" aria-disabled="true" hidden>{glyph("save")}</button>'
+           f'<a id="file-auth" class="file-auth" href="/{e(q(frame["slug"]))}/me/writing" '
            f'title="{e(tr("files.need_auth_title"))}" hidden>{e(tr("files.need_auth"))}</a>'
            f'<div id="view-switch" class="view-switch" role="group" aria-label="{e(tr("files.view"))}">{views}</div>'
            f'<a id="file-github" class="icon-btn" aria-label="{github}" title="{github}" target="_blank" '
-           f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a>'
-           f'<button type="button" id="file-save" class="icon-btn" aria-label="{save}" title="{save}" '
-           f'aria-keyshortcuts="Control+S Meta+S" aria-disabled="true" hidden>{glyph("save")}</button></div>')
+           f'rel="noopener noreferrer" aria-disabled="true">{glyph("github")}</a></div>')
     body = (f'<section id="files" class="files" {_attrs(data)}>'
             f'<div id="file-view" class="file-view" role="tabpanel" tabindex="-1" aria-label="{e(tr("files.title"))}"></div>'
             f'</section>')

@@ -102,7 +102,13 @@ Depth is stepped surface lightness, never a shadow.
   private conversations and the composer's list of names.
 - **A quota** (the 5-hour and weekly use of a product, as the person's own program last reported it) is plain dim
   text, "5 小時 23%・週 41%", shown only to that person: on the agent page of their own agents (the reset times in its
-  title) and in 電腦和連接器 (with the reset times, the plan and when it was reported). Nobody else ever sees it.
+  title) and in 電腦和連接器 (a named line 用量 under the computer: one line per product, the product's name in the ink
+  in a fixed column, then the windows with their reset times and the plan; a last line says when it was reported).
+  Nobody else ever sees it.
+- **A computer's state is three facts** on one line under its name, joined by " · ": its connection (連線中, or 沒有連線
+  with when it was last connected), its program (程式 0.1.13; older than the newest, or unknown) and git (有 git, 沒有
+  git, or not said). Each is dim when it is the norm and in `--color-ink` when it is the exception: state is brightness,
+  no new mark, no hue.
 - **A name never shrinks first.** In every list a member's name keeps its width; the model tag shrinks or drops, and
   the owner ("alice 的 agent") is the first to shrink and go.
 - **A channel some members may not read** carries a small lock after its name in the channel list (a shape in the
@@ -167,11 +173,17 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   Files mode has no project name and no project menu.
 - **Settings are one layer in the four cells** (the rail stays): the project's settings (overview: name, repository,
   notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and
-  delete; permissions; notifications) and the reader's own (個人: their name in the project, GitHub 寫入授權 (its state
-  in one sentence and 撤銷, two steps in place; while a computer of theirs writes instead, the sentence says so), 語言,
-  外觀; 電腦和連接器 (each computer also with **用這台電腦寫入公共檔案**, two steps, since the server then deletes their
-  GitHub write authorization; the chosen one is marked and offers **改回由伺服器寫入**);
-  別人能對我的 agent 做什麼) look the same. A setting that is changed is a form of one field with its button, saved
+  delete; permissions; notifications) and the reader's own look the same. The reader's own: 個人 (their name in the
+  project, the GitHub account as a fact, avatar, 語言, 外觀); 電腦和連接器 (what may act in their name in this project:
+  under 電腦 · n, with 邀請 agent at its right, each computer as a block of its name, its state line and named lines
+  (agent, 用量, 授權), then a quiet row for each computer of theirs that has not joined this project; under 連接器 · n
+  the connectors the same way; 撤銷 floats, the name typed, saying the project, the agents that go offline and what
+  happens to writing when it is the writing computer; nothing is chosen there); 寫入公共檔案 (who commits their changes
+  to the shared files, for their whole account: a choice of one drawn as rows with the menu's ring, the server with
+  the GitHub authorization's state and acts first, then each computer of theirs; choosing a computer is two steps in
+  place, since the server then deletes their GitHub authorization; a computer without git or with a program too old is
+  shown with the reason and its button disabled; under the list, the outcome for this project in one sentence on a
+  wash, with at most one act); 別人能對我的 agent 做什麼. A setting that is changed is a form of one field with its button, saved
   where it is, its outcome said beside the button; a choice (a check box, a control of three) is saved as it is
   pressed. "Saved" is said the same everywhere: in place, at the row's end, for a moment, in a place kept for it so
   nothing moves. The invitations section makes one (its link shown once, with its copy control: only the link's digest
@@ -363,11 +375,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   chosen. Tabs are reordered by dragging them along the strip.
 - At the strip's far right, and nothing else there: for a `.tex` file next to a PDF of the same name, the word
   "開啟 PDF" (it opens the PDF in a new tab); for a text file of the repository the word **編輯** (pressed while editing)
-  when the reader may save there in their own GitHub name, or in its place a quiet link "需要 GitHub 寫入授權" to their
-  settings when that needs their authorization, or "寫入電腦離線" / "寫入電腦無法寫入" to their computers when the
-  computer they chose to write is not connected or has no git (nothing when their GitHub account cannot push); the view switch
-  (rendered, source, both side by side) and one more control in the same place: "open on GitHub" for a file of the
-  repository, **save** for a local file and for a file of the repository being edited (also Ctrl+S / Cmd+S). Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
+  when the reader may save there in their own GitHub name, with **儲存** beside it (an icon button, while the file is
+  edited, disabled while nothing is unsaved; also Ctrl+S / Cmd+S; a local file has it in the same place), or in place
+  of 編輯 a quiet link to the settings' 寫入公共檔案: "需要 GitHub 寫入授權" when saving needs their authorization, or
+  "寫入電腦離線" / "寫入電腦無法寫入" / "寫入電腦不在這個專案" when the computer they chose to write is not connected,
+  has no git or has not joined this project (nothing when their GitHub account cannot push); the view switch
+  (rendered, source, both side by side) and "open on GitHub" for a file of the repository. Icon buttons with names and tooltips. A view that makes no sense for the file is disabled, not
   hidden, so the switch keeps its shape. There is no bar under the tabs: the address, the tab's title and the tree
   already say which file it is.
 - **The source view is the editor, for both sources**: editable for a local text file; for the repository read only

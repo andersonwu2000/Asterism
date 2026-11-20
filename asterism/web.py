@@ -201,8 +201,12 @@ async def home(request: Request) -> Response:
 
 
 async def login(request: Request) -> Response:
+    """Sign-in: to GitHub's authorization and back to `next`. A person signed in already goes straight to `next`, unless
+    they ask to authorise GitHub again (/login/github?again=1, w3: the server keeps the new token as their authorization
+    to save repository files, unless a computer of theirs writes them), which runs the same authorization."""
     nxt = util.safe_next(request.query_params.get("next"))
-    if signed_in(request):
+    again = request.url.path == "/login/github" and request.query_params.get("again") == "1"
+    if signed_in(request) and not again:
         return RedirectResponse(nxt, status_code=303)
     if config.get().test_mode:
         return html(pages.test_login(tr_for(request), nxt))
@@ -259,7 +263,7 @@ async def test_login(request: Request) -> Response:
         return error_json(bad_request("invalid_token", "github_token must be a token: printable, without spaces."))
     person = accounts.upsert_github(store().accounts(), "test:" + login_name.lower(), login_name)
     if token is not None:
-        usertokens.keep(store().accounts(), person["id"], {"access_token": token})
+        accounts.keep_token(store().accounts(), person["id"], {"access_token": token})
     resp = JSONResponse({"person": accounts.public(person)})
     set_session_cookie(resp, accounts.start_web_session(store().accounts(), person["id"]))
     return resp
@@ -282,6 +286,24 @@ async def api_my_github_revoke(request: Request) -> Any:
     had = await usertokens.revoke(store().accounts(), person["id"])
     writes.forget_person(person["id"])
     return {"revoked": had, "state": "none"}
+
+
+async def api_my_writer_state(request: Request) -> Any:
+    """Who writes the person's changes to the repositories' files (the server or one of their computers, the same in
+    every project), and whether the server holds their GitHub authorization (writer.py)."""
+    return writer.state(store().accounts(), require_person(request)["id"])
+
+
+async def api_my_writer_choose(request: Request) -> Any:
+    """The account's writing computer, by its machine id, or none (the server). Choosing one deletes and revokes the
+    person's GitHub token (writer.py)."""
+    person = require_person(request)
+    return await writer.choose_machine(store(), person["id"], (await body_json(request)).get("machine"))
+
+
+async def api_my_computers(request: Request) -> Any:
+    """The person's computers in every project of theirs, and their connectors (computers.mine)."""
+    return computers.mine(store(), require_person(request)["id"])
 
 
 async def api_my_settings(request: Request) -> Any:
@@ -365,7 +387,7 @@ def bearer(request: Request) -> str | None:
 async def agent_invite_redeem(request: Request) -> Any:
     b = await body_json(request)
     return computers.redeem(store(), request.path_params["slug"], request.path_params["code"], bearer(request),
-                            b.get("computer"), b.get("product"))
+                            b.get("computer"), b.get("product"), b.get("machine"))
 
 
 # --------------------------------------------------------------------------- the computer's connection (resident program)
@@ -377,7 +399,8 @@ def computer_caller(request: Request) -> agents.Caller:
 async def computer_sessions(request: Request) -> Any:
     c = computer_caller(request)
     b = await body_json(request)
-    return computers.report_sessions(c, b.get("sessions"), b.get("quotas"), b.get("git"))
+    return computers.report_sessions(c, b.get("sessions"), b.get("quotas"), b.get("git"), b.get("machine"),
+                                     b.get("version"))
 
 
 async def computer_poll(request: Request) -> Any:
@@ -635,10 +658,11 @@ async def api_files_rename(request: Request) -> Any:
 
 
 async def api_my_writer(request: Request) -> Any:
-    """The computer that writes the reader's changes to the repository's files, or none (the server, with their own
-    GitHub authorization). Choosing one deletes and revokes their GitHub token (writer.py)."""
+    """The shortcut that chooses the machine of one of the reader's computers in this project as the account's writer,
+    or none (the server, with their own GitHub authorization). Choosing one deletes and revokes their GitHub token
+    (writer.py)."""
     pj, actor = member_actor(request, request.path_params["slug"])
-    return await writer.choose(pj, actor, (await body_json(request)).get("credential"), store().accounts())
+    return await writer.choose(pj, actor, (await body_json(request)).get("credential"))
 
 
 async def api_files_raw(request: Request) -> Response:
@@ -1193,10 +1217,9 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
         me = None
         if scope == "me":
             acc = accounts.person(store().accounts(), actor.person_id)
-            chosen = writer.chosen(pj, actor.person_id)
             me = {"name": projects.person_name(pj, actor.person_id), "github_login": acc["github_login"],
-                  "my": projects.my_view(pj, actor), "github": usertokens.state(store().accounts(), actor.person_id),
-                  "writer": chosen["label"] if chosen is not None else None}
+                  "my": projects.my_view(pj, actor), "computers": computers.mine(store(), actor.person_id),
+                  "writer": writer.state(store().accounts(), actor.person_id)}
     except ApiError as e:
         return page_error(request, e, person)
     return html(pages.settings(tr_for(request), person, frame, scope, section, view, projects.PERMISSIONS,
@@ -1319,11 +1342,15 @@ def build_app(s: Store) -> ASGIApp:
     routes = [
         Route("/", home),
         Route("/login", login),
+        Route("/login/github", login),
         Route("/login/callback", login_callback),
         Route("/logout", logout, methods=["POST"]),
         Route("/api/me", api(me)),
         Route("/api/me/settings", api(api_my_settings), methods=["POST"]),
         Route("/api/me/github/revoke", api(api_my_github_revoke), methods=["POST"]),
+        Route("/api/me/writer", api(api_my_writer_state), methods=["GET"]),
+        Route("/api/me/writer", api(api_my_writer_choose), methods=["POST"]),
+        Route("/api/me/computers", api(api_my_computers), methods=["GET"]),
         Route("/api/projects", api(api_projects_create, 201), methods=["POST"]),
         Route("/static/{path:path}", static_file),
         Route("/join/{code}", join, methods=["GET", "POST"]),

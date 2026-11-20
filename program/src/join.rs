@@ -146,11 +146,15 @@ pub fn run(home: &Path, raw: &[String]) -> i32 {
     let held = state::load_project(home, &link.project_url);
     let auth = held.as_ref().map(|p| format!("Bearer {}", p.credential));
     let headers: Vec<(&str, &str)> = auth.iter().map(|a| ("Authorization", a.as_str())).collect();
-    let body = json!({
+    let mut body = json!({
         "computer": crate::sys::hostname(),
         // The server records which product redeemed the link; with none, the more common one.
         "product": if product == Some("codex") { "codex" } else { "claude-code" },
     });
+    // Which computer this is across projects (state.rs, machine.json).
+    if let Some(m) = state::machine(home) {
+        body["machine"] = json!(m);
+    }
     let url = format!("{}/redeem", link.link);
     let got = match http::call(&agent, "POST", &url, Some(&body), &headers, &[], Duration::from_secs(30)) {
         Ok(v) => v,

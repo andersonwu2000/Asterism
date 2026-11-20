@@ -1,9 +1,16 @@
-"""The computer a person chose to write the project's repository files with its own git (slice 1w, step w2).
+"""The computer a person chose to write the projects' repository files with its own git (slice 1w, steps w2, w3).
 
-CHOOSING: in personal settings each authorised computer (a credential of kind computer) can be chosen, at most one per
-person and project (people.writer). Choosing one deletes the person's stored GitHub token and asks GitHub to revoke it:
-from then on the server holds nothing that can write for them. Choosing none goes back to the server path (writes.py),
-which needs a new sign-in. A revoked credential is never the writer (projects._revoke clears the choice).
+CHOOSING (w3: per account): the choice is a machine id, kept with the account (accounts' people.writer), the same in
+every project. A computer is known across projects by the machine id its program sends (computers.redeem, the
+sessions report); a credential without one (a program before 0.1.13) cannot be chosen (computer_too_old), and a
+machine none of whose credentials reported git cannot either (computer_cannot_push). Choosing one deletes the person's
+stored GitHub token and asks GitHub to revoke it, and while one is chosen signing in keeps no token
+(accounts.keep_token): from then on the server holds nothing that can write for them. Choosing none goes back to the
+server path (writes.py), which needs GitHub's authorization again. A machine with no credential left in any project
+(revoked in its last one) is no longer the writer: projects._revoke clears the choice (settle).
+
+In a project, the writer is the person's unrevoked computer credential there with the chosen machine id; with none,
+`can-write` answers computer_not_here and a write is refused with it.
 
 WRITING: every save, delete and rename of that person is handed to that computer's program as a delivery of the
 computer poll (computers.poll), {"kind": "write", "delivery": "w...", "op", "repo", "branch", "path", "to"?,
@@ -27,13 +34,15 @@ import re
 import secrets
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from . import config, files, presence, usertokens, util
 from .errors import ApiError, bad_request, not_found
 from .projects import Actor, Project
+from .store import Store
 
 HEX_RE = re.compile(r"[0-9a-f]{4,64}")
+MACHINE_RE = re.compile(r"[0-9a-f]{32}")
 DELIVERY_RE = re.compile(r"w[0-9a-f]{32}")
 DETAIL_MOST = 300
 RESULTS = ("done", "conflict", "failed")
@@ -43,6 +52,12 @@ OFFLINE = ("The computer you chose to write the repository's files is not connec
 CANNOT_PUSH = ("The computer you chose to write the repository's files cannot write them: its Asterism program "
                "reports no git there (or is older than 0.1.12). Install git, or update the program; nothing was "
                "written.")
+NOT_HERE = ("The computer you chose to write the repositories' files has not joined this project, so nothing was "
+            "written. Join it with an agent invitation link, or choose another way in your settings.")
+NO_GIT = ("That computer's Asterism program reports no git there, so it cannot write the repository's files; nothing "
+          "was changed.")
+TOO_OLD = ("That computer's Asterism program is older than 0.1.13 and does not say which computer it is, so it cannot "
+           "be chosen yet; nothing was changed. The program updates itself daily.")
 TIMEOUT = ("The computer you chose did not say in time whether it wrote the change. It may still have written it: "
            "refresh the files before trying again.")
 FAILED = "The computer you chose could not write the change; nothing was written."
@@ -65,38 +80,114 @@ _open: dict[str, _Write] = {}
 
 # --------------------------------------------------------------------------- choosing
 
-def chosen(pj: Project, person_id: int) -> sqlite3.Row | None:
-    """The credential of the computer the person chose, or None (the server path)."""
-    row = pj.db.execute("SELECT c.* FROM people p JOIN credentials c ON c.id = p.writer WHERE p.person_id = ? "
-                        "AND c.person_id = p.person_id AND c.kind = 'computer' AND c.revoked IS NULL",
-                        (person_id,)).fetchone()
-    return row
+@dataclass
+class Chosen:
+    """The person's choice as it stands in one project: the machine, and its credential here (None: not here)."""
+    machine: str
+    cred: sqlite3.Row | None
 
 
-async def choose(pj: Project, actor: Actor, raw: Any, accounts: sqlite3.Connection) -> dict[str, Any]:
-    """POST /api/me/writer {"credential": id | null}. Choosing a computer deletes and revokes the person's GitHub
-    token (usertokens.revoke); choosing none goes back to the server path."""
+def machine_of(accounts: sqlite3.Connection, person_id: int) -> str | None:
+    """The machine id the person chose to write with, or None (the server path)."""
+    row = accounts.execute("SELECT writer FROM people WHERE id = ?", (person_id,)).fetchone()
+    return row["writer"] if row else None
+
+
+def credential_here(pj: Project, person_id: int, machine: str) -> sqlite3.Row | None:
+    """The person's unrevoked computer credential in this project with that machine id (the newest), or None."""
+    return pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND kind = 'computer' AND revoked IS NULL "
+                         "AND machine = ? ORDER BY id DESC LIMIT 1", (person_id, machine)).fetchone()
+
+
+def chosen(pj: Project, person_id: int) -> Chosen | None:
+    """The person's choice in this project, or None (the server path)."""
+    machine = machine_of(pj.accounts, person_id)
+    if machine is None:
+        return None
+    return Chosen(machine, credential_here(pj, person_id, machine))
+
+
+def projects_of(store: Store, person_id: int) -> Iterator[Project]:
+    """Every project the person is a member of."""
+    for slug in store.slugs():
+        db = store.project(slug)
+        if db is not None and db.execute("SELECT 1 FROM people WHERE person_id = ?", (person_id,)).fetchone():
+            yield Project(store, slug, db)
+
+
+def _credentials_of(store: Store, person_id: int, machine: str) -> list[sqlite3.Row]:
+    """The person's unrevoked computer credentials with that machine id, in every project of theirs."""
+    return [c for pj in projects_of(store, person_id) for c in pj.db.execute(
+        "SELECT * FROM credentials WHERE person_id = ? AND kind = 'computer' AND revoked IS NULL AND machine = ?",
+        (person_id, machine))]
+
+
+def state(accounts: sqlite3.Connection, person_id: int) -> dict[str, Any]:
+    """GET /api/me/writer: who writes the person's changes (the server or a machine), and whether the server holds
+    their GitHub authorization (authorised, refused: GitHub no longer takes it, none)."""
+    machine = machine_of(accounts, person_id)
+    github = usertokens.state(accounts, person_id)
+    out: dict[str, Any] = {"mode": "server" if machine is None else "computer",
+                           "github": "authorised" if github == "kept" else github}
+    if machine is not None:
+        out["machine"] = machine
+    return out
+
+
+async def choose_machine(store: Store, person_id: int, raw: Any) -> dict[str, Any]:
+    """POST /api/me/writer {"machine": id | null}. A machine must be one of the person's computers in some project,
+    and its program must have reported git there. Choosing one deletes and revokes the person's GitHub token
+    (usertokens.revoke); choosing none goes back to the server path (GitHub's authorization is asked for again)."""
+    accounts = store.accounts()
+    if raw is not None and (not isinstance(raw, str) or not MACHINE_RE.fullmatch(raw)):
+        raise bad_request("bad_request", "machine must be the machine id of one of your computers, or null.")
+    if raw is not None:
+        creds = _credentials_of(store, person_id, raw)
+        if not creds:
+            raise not_found("You have no such computer.")
+        if not any(c["git"] == 1 for c in creds):
+            raise ApiError(409, "computer_cannot_push", NO_GIT)
+    with accounts:
+        accounts.execute("UPDATE people SET writer = ? WHERE id = ?", (raw, person_id))
+    util.log("files_writer_chosen", person=person_id, machine=raw)
+    if raw is not None:
+        from . import writes                    # writes imports this module
+        await usertokens.revoke(accounts, person_id)
+        writes.forget_person(person_id)
+    return state(accounts, person_id)
+
+
+async def choose(pj: Project, actor: Actor, raw: Any) -> dict[str, Any]:
+    """POST /{slug}/api/me/writer {"credential": id | null}: the shortcut that chooses the machine of one of the
+    person's computers in this project (or none). A credential whose program sent no machine id: computer_too_old."""
     if actor.agent_id is not None:
         raise ApiError(403, "forbidden", "Only a person chooses how their writes are made.")
     if raw is not None and (isinstance(raw, bool) or not isinstance(raw, int)):
         raise bad_request("bad_request", "credential must be the id of one of your computers, or null.")
-    if raw is not None:
-        row = pj.db.execute("SELECT id FROM credentials WHERE id = ? AND person_id = ? AND kind = 'computer' "
-                            "AND revoked IS NULL", (raw, actor.person_id)).fetchone()
-        if row is None:
-            raise not_found("You have no such computer.")
-    with pj.db:
-        pj.db.execute("UPDATE people SET writer = ? WHERE person_id = ?", (raw, actor.person_id))
-    util.log("files_writer_chosen", project=pj.slug, person=actor.person_id, credential=raw)
-    if raw is not None:
-        from . import writes                    # writes imports this module
-        await usertokens.revoke(accounts, actor.person_id)
-        writes.forget_person(actor.person_id)
-    return {"writer": raw}
+    if raw is None:
+        return await choose_machine(pj.store, actor.person_id, None)
+    row = pj.db.execute("SELECT machine FROM credentials WHERE id = ? AND person_id = ? AND kind = 'computer' "
+                        "AND revoked IS NULL", (raw, actor.person_id)).fetchone()
+    if row is None:
+        raise not_found("You have no such computer.")
+    if row["machine"] is None:
+        raise ApiError(409, "computer_too_old", TOO_OLD)
+    return await choose_machine(pj.store, actor.person_id, row["machine"])
+
+
+def settle(store: Store, person_id: int) -> None:
+    """After credentials of the person were revoked: a chosen machine with no credential left in any project is no
+    longer the writer, and the person is back on the server path."""
+    machine = machine_of(store.accounts(), person_id)
+    if machine is None or _credentials_of(store, person_id, machine):
+        return
+    with store.accounts():
+        store.accounts().execute("UPDATE people SET writer = NULL WHERE id = ? AND writer = ?", (person_id, machine))
+    util.log("files_writer_cleared", person=person_id, machine=machine)
 
 
 def label(cred: sqlite3.Row) -> dict[str, Any]:
-    return {"credential": cred["id"], "label": cred["label"]}
+    return {"credential": cred["id"], "label": cred["label"], "machine": cred["machine"]}
 
 
 def _not_ready(pj: Project, cred: sqlite3.Row) -> str | None:
@@ -107,9 +198,11 @@ def _not_ready(pj: Project, cred: sqlite3.Row) -> str | None:
     return None
 
 
-def can_write(pj: Project, cred: sqlite3.Row) -> dict[str, Any]:
-    reason = _not_ready(pj, cred)
-    answer: dict[str, Any] = {"can_write": reason is None, "writer": label(cred)}
+def can_write(pj: Project, ch: Chosen) -> dict[str, Any]:
+    if ch.cred is None:
+        return {"can_write": False, "reason": "computer_not_here", "writer": {"machine": ch.machine}}
+    reason = _not_ready(pj, ch.cred)
+    answer: dict[str, Any] = {"can_write": reason is None, "writer": label(ch.cred)}
     if reason:
         answer["reason"] = reason
     return answer
@@ -130,10 +223,13 @@ def _detail(raw: Any) -> str | None:
     return text or None
 
 
-async def write(pj: Project, address: str, person_id: int, cred: sqlite3.Row, op: str,
+async def write(pj: Project, address: str, person_id: int, ch: Chosen, op: str,
                 checked: dict[str, Any]) -> dict[str, Any]:
     """Hand one save, delete or rename to the person's computer and wait for its answer. `checked` is what writes.py
     made of the request: path, to?, data?, base, message."""
+    cred = ch.cred
+    if cred is None:
+        raise ApiError(409, "computer_not_here", NOT_HERE)
     reason = _not_ready(pj, cred)
     if reason == "computer_offline":
         raise ApiError(409, reason, OFFLINE)

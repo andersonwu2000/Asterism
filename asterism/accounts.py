@@ -98,6 +98,16 @@ def end_web_session(db: sqlite3.Connection, token: str | None) -> None:
             db.execute("DELETE FROM web_sessions WHERE digest = ?", (util.digest(token),))
 
 
+def keep_token(db: sqlite3.Connection, person_id: int, answer: dict[str, Any]) -> bool:
+    """Keep the token of a sign-in (or of authorising again) as the person's authorization to save repository files in
+    their name (usertokens.keep), unless they chose a computer to write them (w3: people.writer): then the server
+    keeps nothing that can write for them. Whether one was kept."""
+    row = db.execute("SELECT writer FROM people WHERE id = ?", (person_id,)).fetchone()
+    if row is not None and row["writer"] is not None:
+        return False
+    return usertokens.keep(db, person_id, answer)
+
+
 # --------------------------------------------------------------------------- GitHub OAuth web flow (real mode)
 
 def github_redirect_uri() -> str:
@@ -129,9 +139,10 @@ def take_login_state(db: sqlite3.Connection, state: str) -> str | None:
 
 async def finish_github(db: sqlite3.Connection, code: str) -> sqlite3.Row:
     """Exchange the callback's code for a GitHub token, read the account's id and login, and keep the token (encrypted,
-    usertokens.py) as the person's authorization to save repository files in their own name. Every failure of the
-    sign-in raises SignInFailed; the caller writes it down once. A token that cannot be kept does not stop the sign-in
-    (it is written down, and saving then asks for a new sign-in)."""
+    usertokens.py) as the person's authorization to save repository files in their own name, unless they chose a
+    computer to write them (keep_token). Every failure of the sign-in raises SignInFailed; the caller writes it down
+    once. A token that cannot be kept does not stop the sign-in (it is written down, and saving then asks for GitHub's
+    authorization again)."""
     s = config.get()
     refused = "GitHub did not accept the sign-in. Try again."
     unknown = "GitHub did not say who signed in. Try again."
@@ -164,7 +175,7 @@ async def finish_github(db: sqlite3.Connection, code: str) -> sqlite3.Row:
         raise SignInFailed("account", "unusable", "GitHub answered with an account this server cannot use.")
     person = upsert_github(db, str(gid), login)
     try:
-        usertokens.keep(db, person["id"], answer)
+        keep_token(db, person["id"], answer)
     except Exception as e:  # noqa: BLE001 - the key file or the library: the person is signed in all the same
         util.log("github_token_not_kept", person=person["id"], reason=type(e).__name__.lower())
     return person

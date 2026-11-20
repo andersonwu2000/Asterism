@@ -31,7 +31,8 @@
     ref: null, commit: null, stale: false,
     state: "loading",            // loading | ok | not_connected | away (nothing could be listed)
     canWrite: false,             // the reader may save here, in their own GitHub name
-    writeReason: null,           // why not: no_token | reauth | no_push | computer_offline | computer_cannot_push; null
+    writeReason: null,           // why not: no_token | reauth | no_push | computer_offline | computer_cannot_push |
+                                 // computer_not_here; null
                                  // when they may, or when it is unknown
     writer: null                 // the computer that writes for them ({credential, label}), or null: the server
   };
@@ -233,7 +234,7 @@
   R.afterRefusal = function (code) {
     if (code === "github_reauth") R.refused("reauth");
     else if (code === "forbidden") R.refused("no_push");
-    else if (/^computer_(offline|cannot_push)$/.test(code || "")) checkWrite();
+    else if (/^computer_(offline|cannot_push|not_here)$/.test(code || "")) checkWrite();
     if (code === "conflict" || code === "not_found") R.wrote();
   };
 

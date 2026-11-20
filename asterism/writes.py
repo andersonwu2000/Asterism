@@ -34,7 +34,8 @@ MAX_BYTES = 5 * 1024 * 1024
 MESSAGE_MOST = 200
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
-REAUTH = "Saving to GitHub needs your GitHub authorization again: sign out and sign in again, then save."
+REAUTH = ("Saving to GitHub needs your GitHub authorization again: authorise again in your settings (writing shared "
+          "files), then save.")
 NO_PUSH = "Your GitHub account cannot push to this repository, so files cannot be saved here in your name."
 REFUSED = "GitHub refused this change (for example, the branch is protected); nothing was written."
 CHANGED = "The file changed on GitHub since you started; nothing was written."
@@ -135,9 +136,9 @@ async def _permission(db: sqlite3.Connection, person_id: int, repo: files.Repo) 
 async def can_write(db: sqlite3.Connection, pj: Project, address: str, person_id: int) -> dict[str, Any]:
     """Whether the person may write the repository's files from the page: their chosen computer can (writer.py), or
     GitHub says their own token may push."""
-    cred = writer.chosen(pj, person_id)
-    if cred is not None:
-        return writer.can_write(pj, cred)
+    ch = writer.chosen(pj, person_id)
+    if ch is not None:
+        return writer.can_write(pj, ch)
     repo = files.repo_of(address)
     try:
         await usertokens.token(db, person_id)
@@ -224,9 +225,9 @@ async def write(db: sqlite3.Connection, pj: Project, address: str, person_id: in
     """One save, delete or rename (`op`) as one commit in the person's name: by their chosen computer when there is
     one (writer.py), else here with their own GitHub token."""
     checked = _checked(op, body)
-    cred = writer.chosen(pj, person_id)
-    if cred is not None:
-        return await writer.write(pj, address, person_id, cred, op, checked)
+    ch = writer.chosen(pj, person_id)
+    if ch is not None:
+        return await writer.write(pj, address, person_id, ch, op, checked)
     if op == "save":
         return await _save(db, pj.slug, address, person_id, checked)
     if op == "delete":

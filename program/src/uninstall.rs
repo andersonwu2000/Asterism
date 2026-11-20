@@ -1,7 +1,7 @@
 //! `asterism uninstall [--forget]`, for a person: stop the resident program, take `asterism-local` out of
 //! every product it is in (with the product's own command) and the approval-free entry it may have set in
-//! Claude Code, and delete what Asterism keeps in the state folder except `projects/` (the computer stays
-//! authorised; `--forget` deletes that too). Only names Asterism itself creates are deleted, so a state folder
+//! Claude Code, and delete what Asterism keeps in the state folder except `projects/` and `machine.json` (the
+//! computer stays authorised, and the same computer; `--forget` deletes them too). Only names Asterism itself creates are deleted, so a state folder
 //! set by mistake to a folder with other files in it loses none of them.
 
 use crate::allow;
@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const OURS: [&str; 11] = [
+const OURS: [&str; 12] = [
     "bin", "daemon.json", "daemon.lock", "daemon.log", "daemon.log.1", "threads.json", "pending.json",
-    "state.lock", "update.json", "projects", "repos",
+    "state.lock", "update.json", "projects", "repos", "machine.json",
 ];
 
 pub fn run(home: &Path, args: &[String]) -> i32 {
@@ -83,7 +83,7 @@ pub fn run(home: &Path, args: &[String]) -> i32 {
             println!("Deleted Asterism's files in {}, this computer's credentials included.", home.display());
         } else {
             println!(
-                "Deleted Asterism's files in {} except projects/: this computer stays authorised (`asterism uninstall --forget` deletes that too).",
+                "Deleted Asterism's files in {} except projects/ and machine.json: this computer stays authorised (`asterism uninstall --forget` deletes them too).",
                 home.display()
             );
         }
@@ -134,7 +134,8 @@ fn delete_files(home: &Path, forget: bool) -> (usize, Vec<String>) {
     for path in entries {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let ours = OURS.contains(&name.as_str()) || name.ends_with(".part");
-        if !ours || (name == "projects" && !forget) {
+        // The machine id stays with the credentials: the computer is still the same one in its projects.
+        if !ours || ((name == "projects" || name == "machine.json") && !forget) {
             continue;
         }
         if name == "repos" {

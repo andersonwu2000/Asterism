@@ -13,11 +13,12 @@
 // moved by dragging them along the strip.
 // At the strip's far right: for a .tex file next to a PDF of the same name, "open PDF" (#file-pdf, in a new tab);
 // the view switch (#view-switch: rendered, source, or source on the left with the rendering on the right; what makes
-// no sense for the file is disabled) and one more control: "open on GitHub" (#file-github) for a file of the
-// repository, save (#file-save, also Ctrl+S / Cmd+S) for a local one and for a file of the repository being edited.
-// Before them, for a text file of the repository: 編輯 (#file-edit, pressed while editing) for a reader who may save
-// there in their own GitHub name (repo.js canWrite), or a quiet link to their settings (#file-auth) when that needs
-// their GitHub authorization, or when the computer they chose to write is not connected or cannot write.
+// no sense for the file is disabled) and "open on GitHub" (#file-github) for a file of the repository. Before them,
+// for a text file of the repository: 編輯 (#file-edit, pressed while editing) for a reader who may save there in their
+// own GitHub name (repo.js canWrite), or a quiet link to their settings' 寫入公共檔案 (#file-auth) when that needs
+// their GitHub authorization, or when the computer they chose to write is not connected, cannot write or has not
+// joined this project; and beside 編輯, save (#file-save, also Ctrl+S / Cmd+S) for a file of the repository being
+// edited and for a local one, disabled while there is nothing unsaved.
 // Below 900 px, while the source shown has no tab, the explorer is drawn in the page instead of the drawer, so the
 // page is the tree, not an empty page; it goes back into the drawer when a file opens.
 // The tabs, each source's active one and the view chosen per kind of file are kept in localStorage; the address
@@ -789,16 +790,16 @@
       el.edit.setAttribute("aria-pressed", String(!!(text && tab.editing)));
       el.edit.title = R.writer ? t("files.edit_title_computer", {name: R.writer.label}) : t("files.edit_title");
     }
-    // The quiet link: to the GitHub authorization when saving needs it, or to the chosen computer when that one is
-    // not connected or cannot write.
-    var why = R.writeReason || "", computer = /^computer_(offline|cannot_push)$/.test(why);
+    // The quiet link to the settings' 寫入公共檔案: when saving needs the GitHub authorization, or when the chosen
+    // computer is not connected, cannot write or is not in this project.
+    var why = R.writeReason || "", computer = /^computer_(offline|cannot_push|not_here)$/.test(why);
     if (el.auth) {
       el.auth.hidden = !(text && !tab.editing && !R.canWrite && (computer || /^(no_token|reauth)$/.test(why)));
       el.auth.textContent = t(computer ? "files.need_" + why : "files.need_auth");
       el.auth.title = t(computer ? "files.need_computer_title" : "files.need_auth_title");
-      el.auth.href = "/" + encodeURIComponent(SLUG) + (computer ? "/me/computers" : "/me/profile#me-github");
     }
-    el.github.hidden = local || writing;
+    // Save sits beside 編輯 while a file of the repository is edited (and for a local file); open on GitHub stays.
+    el.github.hidden = local;
     el.save.hidden = !(local || writing);
     var gh = tab && !local ? R.githubUrl(tab.path, false) : null;
     if (gh) { el.github.href = gh; el.github.removeAttribute("aria-disabled"); }

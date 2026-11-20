@@ -207,7 +207,9 @@
   // A centred panel over the dimmed page (a modal <dialog>): one or two sentences on what will be gone, a field
   // where the thing's name is typed, and the one red button, armed only while the name matches. Escape and a click
   // outside close it; focus goes in on open and back to the opener on close; the server's refusal shows inside.
-  //   A.gone({title, text, name, button, opener, run: async () => A.request(...), done: function (res) {}})
+  //   A.gone({title, text, more?, name, button, opener, run: async () => A.request(...), done: function (res) {}})
+  // `more`: one more sentence after the text, in the ink (a consequence that is the exception, such as the writing
+  // computer going).
   // A refusal is said by the catalogue under `act` (A.refusal), or by `refusal(data)` when the caller says it.
 
   var gone = null;
@@ -217,11 +219,12 @@
     var d = A.make("dialog", "gone");
     d.setAttribute("closedby", "any");
     d.setAttribute("aria-labelledby", "gone-title");
-    d.setAttribute("aria-describedby", "gone-text");
+    d.setAttribute("aria-describedby", "gone-text gone-more");
     var form = A.make("form", "gone-form");
-    var title = A.make("h2", "gone-title"), text = A.make("p", "gone-text");
+    var title = A.make("h2", "gone-title"), text = A.make("p", "gone-text"), more = A.make("p", "gone-more");
     title.id = "gone-title";
     text.id = "gone-text";
+    more.id = "gone-more";
     var field = A.make("label", "field"), ask = A.make("span"), input = A.make("input");
     input.autocomplete = "off";
     input.spellcheck = false;
@@ -234,10 +237,10 @@
     var go = A.make("button", "btn destruct");
     go.type = "submit";
     row.append(cancel, go);
-    form.append(title, text, field, out, row);
+    form.append(title, text, more, field, out, row);
     d.appendChild(form);
     document.body.appendChild(d);
-    gone = {dialog: d, title: title, text: text, field: field, ask: ask, input: input, out: out, cancel: cancel, go: go,
+    gone = {dialog: d, title: title, text: text, more: more, field: field, ask: ask, input: input, out: out, cancel: cancel, go: go,
             opts: null};
 
     // Armed when the name is typed; a confirmation without typing (opts.name null) is armed at once.
@@ -289,6 +292,8 @@
     g.running = false;
     g.title.textContent = opts.title;
     g.text.textContent = opts.text;
+    g.more.textContent = opts.more || "";
+    g.more.hidden = !opts.more;
     g.field.hidden = opts.name === null;
     g.ask.textContent = opts.name === null ? "" : A.t("gone.type", {name: opts.name});
     g.input.value = "";

@@ -937,16 +937,23 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
     agents = [{**agent_view(pj, a, owners, work=True), "credential": a["credential_id"]} for a in
               pj.db.execute("SELECT * FROM agents WHERE person_id = ? ORDER BY id", (actor.person_id,))]
     creds = []
-    me = pj.db.execute("SELECT writer FROM people WHERE person_id = ?", (actor.person_id,)).fetchone()
+    me = pj.accounts.execute("SELECT writer FROM people WHERE id = ?", (actor.person_id,)).fetchone()
     for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",
                            (actor.person_id,)):
         view = credential_view(c)
         if c["kind"] == "computer":     # whether that computer's program holds its connection now
             view["connected"] = presence.computer_connected(pj.slug, c["id"], pj.db)
-            # The computer that writes this person's changes to the repository's files (w2), and whether its program
-            # said it has git (null: not said, a program before 0.1.12).
-            view["writer"] = bool(me and me["writer"] == c["id"])
+            view["last_seen"] = util.iso(c["last_poll"])
+            # The computer that writes this person's changes to the repositories' files (w3: the machine the account
+            # chose), whether its program said it has git (null: not said, a program before 0.1.12), which computer
+            # it is across projects and the program's version (null: not said, a program before 0.1.13).
+            view["machine"], view["version"] = c["machine"], c["version"]
+            view["writer"] = bool(me and c["machine"] is not None and me["writer"] == c["machine"])
             view["git"] = None if c["git"] is None else bool(c["git"])
+            # The sessions its program can wake that no agent is bound to (not registered as agents yet).
+            view["sessions_unbound"] = pj.db.execute(
+                "SELECT count(*) FROM computer_sessions s WHERE s.credential_id = ? AND NOT EXISTS (SELECT 1 FROM "
+                "agents a WHERE a.credential_id = s.credential_id AND a.session = s.session)", (c["id"],)).fetchone()[0]
             if c["quotas"] is not None:  # what its program last reported (1x); only its own person sees it
                 view["quotas"] = [dict(q, at=util.iso(c["quotas_at"])) for q in json.loads(c["quotas"])]
         creds.append(view)
@@ -981,7 +988,8 @@ def revoke_credential(pj: Project, actor: Actor, cred_id: int) -> dict[str, Any]
 
 def _revoke(pj: Project, where: str, args: tuple[Any, ...]) -> None:
     """Revoke credentials and unbind the sessions that came through them, so their agents go offline."""
-    ids = [r["id"] for r in pj.db.execute(f"SELECT id FROM credentials WHERE revoked IS NULL AND {where}", args)]
+    rows = pj.db.execute(f"SELECT id, person_id FROM credentials WHERE revoked IS NULL AND {where}", args).fetchall()
+    ids, people = [r["id"] for r in rows], {r["person_id"] for r in rows}
     if not ids:
         return
     marks = ",".join("?" * len(ids))
@@ -990,10 +998,12 @@ def _revoke(pj: Project, where: str, args: tuple[Any, ...]) -> None:
         pj.db.execute(f"UPDATE credentials SET revoked = ? WHERE id IN ({marks})", (util.now(), *ids))
         pj.db.execute(f"UPDATE agents SET session = NULL, credential_id = NULL, last_poll = NULL "
                       f"WHERE credential_id IN ({marks})", ids)
-        # A revoked computer writes nobody's files any more: its person is back on the server path (w2).
-        pj.db.execute(f"UPDATE people SET writer = NULL WHERE writer IN ({marks})", ids)
     with pj.accounts:
         pj.accounts.execute(f"DELETE FROM oauth_tokens WHERE slug = ? AND credential_id IN ({marks})", (pj.slug, *ids))
+    # A computer revoked in its last project writes nobody's files any more: its person is back on the server path.
+    from . import writer                # writer imports this module
+    for pid in people:
+        writer.settle(pj.store, pid)
     for aid in bound:
         presence.binding_changed(pj.slug, aid)
     for cid in ids:                     # an open computer poll with a revoked credential ends with 401

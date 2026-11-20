@@ -28,6 +28,10 @@ LOCAL = "local:"
 # A quota report (1x): per product, an optional plan and the windows of its limits.
 QUOTA_WINDOW_RE = re.compile(r"[A-Za-z0-9]{1,16}")
 QUOTA_PLAN_MAX, QUOTA_WINDOWS_MAX = 40, 8
+# What a program says of itself (w3): the machine id it made once (random; it carries nothing of the computer) and its
+# version.
+MACHINE_RE = re.compile(r"[0-9a-f]{32}")
+VERSION_RE = re.compile(r"[0-9A-Za-z.+-]{1,32}")
 
 # Agent-facing wording, word for word from the specification.
 INVITE_TEXT = ('You are invited to join the Asterism project "{project}" as an agent of {person}.\n'
@@ -108,9 +112,28 @@ def invite_text(store: Store, slug: str, code: str) -> str:
                               ps=cmds["windows"])
 
 
-def redeem(store: Store, slug: str, code: str, credential: str | None, computer: Any, product: Any) -> dict[str, Any]:
+def _machine(raw: Any) -> str | None:
+    """The machine id a program sent (w3), checked; None when it sent none (a program before 0.1.13)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not MACHINE_RE.fullmatch(raw):
+        raise bad_request("bad_request", "machine must be 32 lowercase hexadecimal characters.")
+    return raw
+
+
+def _version(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not VERSION_RE.fullmatch(raw):
+        raise bad_request("bad_request", "version must be the program's version, like 0.1.13.")
+    return raw
+
+
+def redeem(store: Store, slug: str, code: str, credential: str | None, computer: Any, product: Any,
+           machine: Any = None) -> dict[str, Any]:
     """Redeeming the link is the consent: the computer gets a credential of the inviting member.
-    A computer already authorised for that member keeps its credential.
+    A computer already authorised for that member keeps its credential. The program's machine id (w3), when it sends
+    one, is kept with the credential.
     The link is used up either way, except when the request is refused."""
     pj, row, person = _usable(store, slug, code)
     if product not in agents.LOCAL_KINDS:
@@ -118,6 +141,7 @@ def redeem(store: Store, slug: str, code: str, credential: str | None, computer:
     label = util.clean_label(computer)
     if not label:
         raise bad_request("bad_request", "computer must name this computer.")
+    machine = _machine(machine)
     held = pj.db.execute("SELECT * FROM credentials WHERE digest = ? AND revoked IS NULL AND kind = 'computer'",
                          (util.digest(credential),)).fetchone() if credential else None
     if held is not None and held["person_id"] != row["person_id"]:
@@ -131,10 +155,57 @@ def redeem(store: Store, slug: str, code: str, credential: str | None, computer:
     with pj.db:
         pj.db.execute("UPDATE agent_invites SET used = ?, credential_id = ?, computer = ?, product = ? WHERE digest = ?",
                       (util.now(), cred_id, label, product, row["digest"]))
+        if machine is not None:
+            pj.db.execute("UPDATE credentials SET machine = ? WHERE id = ?", (machine, cred_id))
     util.log("agent_invite_redeemed", project=slug, person=row["person_id"], credential=cred_id, computer=label,
              product=product)
     info = projects.info(pj)
     return {"credential": secret, "person": person, "project": {"name": info["name"], "slug": info["slug"]}}
+
+
+# --------------------------------------------------------------------------- my computers, across projects
+
+def mine(store: Store, person_id: int) -> dict[str, Any]:
+    """GET /api/me/computers: the person's computers in every project of theirs, one per machine id (a credential
+    whose program sent none is a computer of its own), each with its label, the projects it joined (slug, name,
+    credential id), its program's version, whether it has git, when it last polled, whether it is connected now, the
+    sessions it can wake (with the agent bound to each), its quotas, and whether it writes the person's files; plus
+    the person's connectors, per project. Only the person ever sees this. The label, version, git and quotas are those
+    of the credential that polled last (one program reports the same to every project)."""
+    machine = writer.machine_of(store.accounts(), person_id)
+    by_key: dict[str, dict[str, Any]] = {}
+    freshest: dict[str, float] = {}
+    connectors: list[dict[str, Any]] = []
+    for pj in writer.projects_of(store, person_id):
+        name = projects.info(pj)["name"]
+        for c in pj.db.execute("SELECT * FROM credentials WHERE person_id = ? AND revoked IS NULL ORDER BY id",
+                               (person_id,)).fetchall():
+            here = {"slug": pj.slug, "name": name, "credential": c["id"]}
+            if c["kind"] != "computer":
+                connectors.append({**here, "label": c["label"], "via": c["via"], "created": util.iso(c["created"]),
+                                   "last_used": util.iso(c["last_used"])})
+                continue
+            key = c["machine"] or f"{pj.slug}:{c['id']}"
+            item = by_key.setdefault(key, {"machine": c["machine"], "projects": [], "sessions": [], "online": False,
+                                           "last_seen": None, "writer": c["machine"] is not None
+                                           and c["machine"] == machine})
+            item["projects"].append(here)
+            item["online"] = item["online"] or presence.computer_connected(pj.slug, c["id"], pj.db)
+            if c["last_poll"] is not None and (item["last_seen"] is None or c["last_poll"] > item["last_seen"]):
+                item["last_seen"] = c["last_poll"]
+            for r in pj.db.execute("SELECT s.product, a.name FROM computer_sessions s LEFT JOIN agents a ON "
+                                   "a.credential_id = s.credential_id AND a.session = s.session "
+                                   "WHERE s.credential_id = ? ORDER BY s.session", (c["id"],)):
+                item["sessions"].append({"slug": pj.slug, "product": r["product"], "agent": r["name"]})
+            fresh = max(c["last_poll"] or 0, c["created"])
+            if fresh >= freshest.get(key, -1):
+                freshest[key] = fresh
+                item.update(label=c["label"], version=c["version"], git=None if c["git"] is None else bool(c["git"]))
+                item["quotas"] = [dict(q, at=util.iso(c["quotas_at"])) for q in json.loads(c["quotas"])]                     if c["quotas"] is not None else None
+    out = list(by_key.values())
+    for item in out:
+        item["last_seen"] = util.iso(item["last_seen"])
+    return {"computers": out, "connectors": connectors, "program": downloads.program(config.get().data)}
 
 
 # --------------------------------------------------------------------------- one connection per computer
@@ -192,12 +263,15 @@ def _quotas(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def report_sessions(c: Caller, sessions: Any, quotas: Any = None, git: Any = None) -> dict[str, Any]:
+def report_sessions(c: Caller, sessions: Any, quotas: Any = None, git: Any = None, machine: Any = None,
+                    version: Any = None) -> dict[str, Any]:
     """The complete list of local sessions the program can wake right now; it replaces the previous one. Each may
     say when the session last did something (`active_at`, Unix seconds: presence.work); the report may carry the
-    computer's quotas (`quotas`, kept until the next report that carries them; shown to its person only) and whether
+    computer's quotas (`quotas`, kept until the next report that carries them; shown to its person only), whether
     the program has git, so that it can write the repository's files (`git`, w2; a report without it, from a program
-    before 0.1.12, says it cannot)."""
+    before 0.1.12, says it cannot), and the program's machine id and version (w3: `machine`, kept until another one
+    comes, since a computer does not stop being itself; `version`, as the report says it, none from a program before
+    0.1.13)."""
     cred_id = _computer(c)
     pj = c.pj
     if not isinstance(sessions, list) or len(sessions) > SESSIONS_MAX:
@@ -215,12 +289,14 @@ def report_sessions(c: Caller, sessions: Any, quotas: Any = None, git: Any = Non
     checked = _quotas(quotas) if quotas is not None else None
     if git is not None and not isinstance(git, bool):
         raise bad_request("bad_request", "git must be true or false.")
+    machine, version = _machine(machine), _version(version)
     before = notices.online_now(pj, _agents_of(pj, cred_id))
     with pj.db:
         pj.db.execute("DELETE FROM computer_sessions WHERE credential_id = ?", (cred_id,))
         pj.db.executemany("INSERT INTO computer_sessions (credential_id, session, product, active_at) VALUES (?, ?, ?, ?)",
                           [(cred_id, sid, product, at) for sid, (product, at) in rows.items()])
-        pj.db.execute("UPDATE credentials SET git = ? WHERE id = ?", (None if git is None else int(git), cred_id))
+        pj.db.execute("UPDATE credentials SET git = ?, machine = coalesce(?, machine), version = ? WHERE id = ?",
+                      (None if git is None else int(git), machine, version, cred_id))
         if checked is not None:
             pj.db.execute("UPDATE credentials SET quotas = ?, quotas_at = ? WHERE id = ?",
                           (json.dumps(checked), util.now(), cred_id))

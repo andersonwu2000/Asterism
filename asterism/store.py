@@ -11,7 +11,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import util
 
@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS people (
     github_id TEXT NOT NULL UNIQUE,
     github_login TEXT NOT NULL,
     created REAL NOT NULL,
-    locale TEXT                    -- the language the person chose for the pages; NULL: the browser's
+    locale TEXT,                   -- the language the person chose for the pages; NULL: the browser's
+    writer TEXT                    -- the machine id of the computer the person chose to write the repositories' files
+                                   -- with its own git, in every project (w3); NULL: the server writes, with the
+                                   -- person's GitHub token
 );
 CREATE TABLE IF NOT EXISTS web_sessions (
     digest TEXT PRIMARY KEY,
@@ -85,9 +88,7 @@ CREATE TABLE IF NOT EXISTS people (
     person_id INTEGER PRIMARY KEY, -- id in the accounts database
     name TEXT NOT NULL UNIQUE,
     joined REAL NOT NULL,
-    last_beat REAL,                -- the latest beat of an open page of the project (presence); NULL never
-    writer INTEGER                 -- the computer (credential id) the person chose to write the repository's files
-                                   -- with its own git (w2); NULL: the server writes, with the person's GitHub token
+    last_beat REAL                 -- the latest beat of an open page of the project (presence); NULL never
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -155,8 +156,12 @@ CREATE TABLE IF NOT EXISTS credentials (
     quotas TEXT,                   -- a computer's: the quotas its program last reported (JSON list, computers.QUOTAS);
                                    -- shown to its person only. NULL: none reported
     quotas_at REAL,                -- when they were reported
-    git INTEGER                    -- a computer's: its program's last report said it has git (1) or not (0), so it
+    git INTEGER,                   -- a computer's: its program's last report said it has git (1) or not (0), so it
                                    -- can write the repository's files (w2); NULL: not said (a program before 0.1.12)
+    machine TEXT,                  -- a computer's: the machine id its program sent (w3: 32 hex characters, random, made
+                                   -- once in its state folder), the same in every project; NULL: not said (a program
+                                   -- before 0.1.13)
+    version TEXT                   -- a computer's: the version of its program, as its last report said; NULL: not said
 );
 CREATE TABLE IF NOT EXISTS agent_invites (
     digest TEXT PRIMARY KEY,       -- digest of the code in the link; the code itself is never kept
@@ -363,14 +368,14 @@ CREATE TABLE IF NOT EXISTS upgrades (
 # The optional third item fills the new column of the rows that existed before (an SQL expression). The accounts
 # database and a project's have their own lists.
 ACCOUNTS_ADDED_COLUMNS = {
-    "people": [("locale", "TEXT")],
+    "people": [("locale", "TEXT"), ("writer", "TEXT")],
 }
 ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
                ("model", "TEXT")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
                     ("last_poll", "REAL"), ("connected", "INTEGER"), ("quotas", "TEXT"), ("quotas_at", "REAL"),
-                    ("git", "INTEGER")],
+                    ("git", "INTEGER"), ("machine", "TEXT"), ("version", "TEXT")],
     "computer_sessions": [("active_at", "REAL")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
@@ -379,7 +384,7 @@ ADDED_COLUMNS = {
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
-    "people": [("last_beat", "REAL"), ("writer", "INTEGER")],
+    "people": [("last_beat", "REAL")],
     # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then. The
     # columns of 1t (title, body, tracking, done) come with the rebuild that drops `text` (DROPPED_COLUMNS).
     "tasks": [("posted_kind", "TEXT"), ("posted_id", "INTEGER"), ("taken", "REAL")],
@@ -439,7 +444,8 @@ def _has_table(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, ...]]]) -> None:
+def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, ...]]],
+             dropped_columns: dict[str, tuple[tuple[str, ...], Callable[[sqlite3.Connection, list[str]], None]]]) -> None:
     for table in DROPPED_TABLES:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
     for table, cols in added_columns.items():
@@ -467,7 +473,7 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
                     conn.execute("UPDATE groups SET permissions = ? WHERE id = ?",
                                  (json.dumps(json.loads(row[1]) + [p]), row[0]))
                 conn.execute("INSERT INTO upgrades (name, at) VALUES (?, ?)", (key, util.now()))
-    for table, (columns, move) in DROPPED_COLUMNS.items():
+    for table, (columns, move) in dropped_columns.items():
         if _has_table(conn, table):
             _rebuild(conn, table, columns, move)
     for table, sql in DATA_FIXES:
@@ -510,7 +516,13 @@ def _split_task_text(conn: sqlite3.Connection, moved: list[str]) -> None:
 # - groups: the four switches of an ownership group were columns until f6; since then they are permissions of that
 #   group, kept in its JSON list.
 # - tasks: a task was one `text` until 1t; since then it is a title and a body.
-DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "tasks": (("text",), _split_task_text)}
+# - people: the computer a person chose to write the repository's files was a credential of each project until w3;
+#   since then it is a machine id kept with the account (accounts' people.writer). Nothing is carried over: the
+#   account's choice starts as none (the hub had no computer chosen when w3 came), so the person is on the server
+#   path until they choose again.
+# Only a project's database has these tables (the accounts database has a `people` of its own: never rebuilt).
+DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "tasks": (("text",), _split_task_text),
+                   "people": (("writer",), lambda conn, moved: None)}
 
 
 def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
@@ -553,12 +565,13 @@ def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
         conn.execute("PRAGMA foreign_keys = ON")
 
 
-def _open(path: Path, schema: str, added_columns: dict[str, list[tuple[str, ...]]]) -> sqlite3.Connection:
+def _open(path: Path, schema: str, added_columns: dict[str, list[tuple[str, ...]]],
+          dropped_columns: dict[str, Any]) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(schema)
-    _upgrade(conn, added_columns)
+    _upgrade(conn, added_columns, dropped_columns)
     return conn
 
 
@@ -572,7 +585,7 @@ class Store:
 
     def accounts(self) -> sqlite3.Connection:
         if self._accounts is None:
-            self._accounts = _open(self.data / "accounts.db", ACCOUNTS_SCHEMA, ACCOUNTS_ADDED_COLUMNS)
+            self._accounts = _open(self.data / "accounts.db", ACCOUNTS_SCHEMA, ACCOUNTS_ADDED_COLUMNS, {})
         return self._accounts
 
     def project_path(self, slug: str) -> Path:
@@ -588,7 +601,7 @@ class Store:
             path = self.project_path(slug)
             if not path.is_file():
                 return None
-            conn = self._projects[slug] = _open(path, PROJECT_SCHEMA, ADDED_COLUMNS)
+            conn = self._projects[slug] = _open(path, PROJECT_SCHEMA, ADDED_COLUMNS, DROPPED_COLUMNS)
         return conn
 
     def slugs(self) -> list[str]:
@@ -598,7 +611,7 @@ class Store:
         tmp = self.projects_dir / f".{slug}.db.part"
         if tmp.exists():
             tmp.unlink()
-        return _open(tmp, PROJECT_SCHEMA, ADDED_COLUMNS), tmp
+        return _open(tmp, PROJECT_SCHEMA, ADDED_COLUMNS, DROPPED_COLUMNS), tmp
 
     def publish_project_db(self, conn: sqlite3.Connection, tmp: Path, slug: str) -> None:
         conn.commit()

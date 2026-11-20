@@ -875,9 +875,6 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .ag-item > .row-acts { grid-column: 2; grid-row: 1; align-self: start; }
 .ag-item > .ag-side-btn { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .ag-item > .out { grid-column: 1 / -1; }
-/* Whether a computer writes the shared files (w2): its sentences, then its one button, under the computer's facts. */
-.ag-writer { grid-column: 1; display: grid; justify-items: start; gap: 2px; margin-top: 4px; min-width: 0; }
-.ag-writer > .btn { margin-top: 6px; }
 .ag-item > .out:empty, .tt-task > .out:empty, .sch-item > .out:empty { display: none; }
 .ag-item:hover > .row-acts, .ag-item:focus-within > .row-acts, .tt-task:hover > .row-acts, .tt-task:focus-within > .row-acts,
 .sch-item:hover > .row-acts, .sch-item:focus-within > .row-acts { opacity: 1; pointer-events: auto; }
@@ -1029,6 +1026,8 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .gone-form { display: flex; flex-direction: column; gap: 12px; }
 .gone-title { font-size: 16px; overflow-wrap: anywhere; }
 .gone-text { margin: 0; color: var(--color-ink-dim); overflow-wrap: anywhere; }
+/* One more sentence of what follows, in the ink: the exception (the writing computer going). */
+.gone-more { margin: 0; color: var(--color-ink); overflow-wrap: anywhere; }
 .gone .field input { width: 100%; font-family: var(--font-mono); }
 .gone .field > span { overflow-wrap: anywhere; }
 .gone-out:empty { display: none; }
@@ -1111,6 +1110,77 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .gd-sec > p { color: var(--color-ink-dim); font-size: 13px; max-width: 70ch; }
 .gd-sub { margin: 16px 0 6px; }
 .gd-perms { display: flex; flex-direction: column; }
+
+/* 電腦和連接器 (me.js): two lists under small headings with a hairline; a computer or a connector is a block (its
+   name, its act at the right, a state line of facts, then named lines), hairlines between, no card. A fact is dim
+   when it is the norm and in the ink when it is the exception: state is brightness, no new mark, no hue. */
+.my-lead { margin: 0 0 16px; }
+.my-stale { margin: 0 0 12px; font-size: 13px; color: var(--color-ink); }
+.my-sub { display: flex; align-items: center; gap: 12px; margin: 28px 0 0; padding-bottom: 8px;
+          border-bottom: 1px solid var(--color-edge); }
+#me-computers > .my-sub:first-child { margin-top: 0; }
+.my-h { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+.my-h .dim { font-weight: 400; }
+.my-empty { margin: 0; padding: 14px 4px; max-width: 70ch; color: var(--color-ink-dim); }
+.ink { color: var(--color-ink); }
+.dev { padding: 14px 4px 16px; border-bottom: 1px solid var(--color-edge); }
+.dev-head { display: flex; align-items: flex-start; gap: 8px 12px; }
+.dev-name { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dev-label { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; }
+.dev-label b { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.dev-name a.tag { text-decoration: none; }
+.dev-name a.tag:hover { color: var(--color-ink); border-color: var(--color-ink-dim); }
+.dev-revoke { flex: none; }
+.dev-state { margin: 2px 0 8px; font-size: 13px; color: var(--color-ink-dim); overflow-wrap: anywhere; }
+.facts { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 13px; }
+.facts dt { color: var(--color-ink-dim); }
+.facts dd { margin: 0; min-width: 0; color: var(--color-ink-dim); overflow-wrap: anywhere; }
+.facts .line { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; }
+.facts .line + .line { margin-top: 2px; }
+.facts .who { display: inline-flex; align-items: center; gap: 6px; }
+.facts .who a { color: var(--color-ink); text-decoration: none; }
+.facts .who a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.facts .q-product { flex: none; width: 92px; color: var(--color-ink); }
+/* A computer of mine not in this project: one quiet row, its acts where it is. */
+.quiet-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 10px 4px; font-size: 13px;
+             color: var(--color-ink-dim); border-bottom: 1px solid var(--color-edge); }
+.quiet-row b { font-size: 14px; font-weight: 600; color: var(--color-ink); }
+.quiet-row a { color: var(--color-ink-dim); }
+.quiet-row a:hover { color: var(--color-ink); }
+
+/* 寫入公共檔案 (me.js): a choice of one drawn as rows with the menu's ring (filled: the current one, which carries the
+   dim word 目前); the row is not a control, only its button acts. Then the outcome for this project on a wash. */
+.opts { border-top: 1px solid var(--color-edge); }
+.opt { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; padding: 14px 4px;
+       border-bottom: 1px solid var(--color-edge); }
+.opt:focus { outline: none; }
+.ring { grid-column: 1; grid-row: 1; width: 14px; height: 14px; margin-top: 4px; border-radius: var(--r-full);
+        border: 1.5px solid var(--color-ink-faint); }
+.opt.cur .ring { border-color: var(--color-ink); background: radial-gradient(circle, var(--color-ink) 0 3.5px, transparent 4.5px); }
+.opt-name { grid-column: 2; grid-row: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0;
+            font-weight: 600; }
+.opt-name .dev-label b { font-size: 14px; }
+.opt-cur { font-size: 12px; font-weight: 400; color: var(--color-ink-dim); }
+.opt-text { grid-column: 2; max-width: 72ch; font-size: 13px; color: var(--color-ink-dim); overflow-wrap: anywhere; }
+.opt-acts { grid-column: 3; grid-row: 1 / 3; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center;
+            gap: 6px 8px; max-width: 320px; }
+.opt-acts .out { flex-basis: 100%; font-size: 13px; text-align: right; color: var(--color-ink-dim); }
+.opt-acts .out:empty { display: none; }
+.wr-none { margin: 12px 4px 0; font-size: 13px; }
+.outcome { margin: 16px 0 0; padding: 12px 14px; max-width: 72ch; background: var(--color-wash);
+           border: 1px solid var(--color-edge); border-radius: var(--r-container); overflow-wrap: anywhere; }
+.outcome p { margin: 0; }
+.outcome p + p { margin-top: 4px; font-size: 13px; color: var(--color-ink-dim); }
+.outcome .btn { margin-top: 10px; }
+@media (max-width: 599.98px) {
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dt { margin-top: 8px; font-size: 12px; }
+  .facts dt:first-child { margin-top: 0; }
+  .facts .q-product { width: 100%; }
+  .opt { grid-template-columns: 16px minmax(0, 1fr); }
+  .opt-acts { grid-column: 2; grid-row: auto; justify-content: flex-start; margin-top: 8px; max-width: none; }
+  .opt-acts .out { text-align: left; }
+}
 
 /* Forms of the settings: one field, its hint and its button, each form apart. */
 .set-form { margin: 0 0 20px; }
@@ -1368,6 +1438,8 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
    needs their GitHub authorization, a quiet link to their settings in its place. */
 .file-edit { min-height: 30px; margin-right: 6px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
 .file-edit[aria-pressed="true"] { background: var(--color-wash-3); border-color: var(--color-edge-strong); }
+/* Save, an icon beside 編輯 while a file is edited (a local file's too); disabled while nothing is unsaved. */
+.file-tools .file-save { margin-right: 6px; }
 .file-auth { margin-right: 8px; font-size: 13px; color: var(--color-ink-dim); white-space: nowrap; overflow: hidden;
              text-overflow: ellipsis; max-width: 22ch; }
 .file-auth:hover { color: var(--color-ink); }
