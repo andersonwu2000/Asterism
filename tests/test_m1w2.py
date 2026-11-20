@@ -103,10 +103,11 @@ def answer_writes(pc, answer):
 
 def test_choosing_a_computer_drops_the_servers_token_and_writes_go_there(w):
     pc = Computer(w.srv, w.cred_b)
-    pc.report()
+    # w3: a computer is chosen by the machine id its program reports, so the stand-in reports one first
+    pc.c.post(f"/{SLUG}/api/computer/sessions", json={"sessions": [], "git": True, "machine": "b" * 32,
+                                                      "version": "0.1.13"})
     r = w.bob.c.post(f"/{SLUG}/api/me/writer", json={"credential": credential_id(w.bob)})
     assert r.status_code == 200, r.text
-    pc.c.post(f"/{SLUG}/api/computer/sessions", json={"sessions": [], "git": True})
     pc.connect()
     try:
         # the stand-in program is online once its first poll has reached the server
