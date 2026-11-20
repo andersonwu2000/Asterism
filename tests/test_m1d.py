@@ -49,7 +49,9 @@ class FakeGitHub:
         self.recursive, self.truncate_after = 0, 0
         self.user_tokens: dict[str, dict] = {}         # a person's token -> {"login", "push"}
         self.writes: list[dict] = []                   # files written through the contents API
-        self.install_writes = 0                        # writes tried with an installation token (must stay 0)      # recursive listings asked for; cut them after n entries
+        self.install_writes = 0                        # writes tried with an installation token (must stay 0)
+        self.snapshots: dict[str, dict] = {}           # tree sha -> files, for the git data API
+        self.pending: dict[str, dict] = {}             # commits made through the git data API, not yet on main      # recursive listings asked for; cut them after n entries
         self.head = ("", "")
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
@@ -101,6 +103,10 @@ class FakeGitHub:
                 user = fake.user_tokens.get((self.headers.get("authorization") or "").split(" ")[-1])
                 if method == "PUT" and path.startswith(base + "/contents/"):
                     return self._put_contents(path[len(base + "/contents/"):], raw, user)
+                if method == "DELETE" and path.startswith(base + "/contents/"):
+                    return self._delete_contents(path[len(base + "/contents/"):], raw, user)
+                if method in ("POST", "PATCH") and path.startswith(base + "/git/"):
+                    return self._git_data(method, path[len(base + "/git/"):], raw, user)
                 if method != "GET":
                     return self._send(404, {"message": "Not Found"})
                 if path == base and user is not None:
@@ -177,6 +183,68 @@ class FakeGitHub:
                                   {"content": {"path": file_path, "sha": sha(b"blob", data)},
                                    "commit": {"sha": fake.head[0]}})
 
+            def _writer(self, user):
+                """None when this caller may write, else the answer to send."""
+                auth = (self.headers.get("authorization") or "").split(" ")[-1]
+                if auth in fake.tokens:
+                    fake.install_writes += 1
+                    return 403, {"message": "Resource not accessible by integration"}
+                if user is None:
+                    return 401, {"message": "Bad credentials"}
+                if not user["push"]:
+                    return 404, {"message": "Not Found"}
+                return None
+
+            def _delete_contents(self, file_path, raw, user):
+                refused = self._writer(user)
+                if refused:
+                    return self._send(*refused)
+                body = json.loads(raw or b"{}")
+                current = fake.files.get(file_path)
+                if current is None:
+                    return self._send(404, {"message": "Not Found"})
+                if body.get("sha") != sha(b"blob", current):
+                    return self._send(409, {"message": f"{file_path} does not match {body.get('sha')}"})
+                del fake.files[file_path]
+                fake.commit()
+                fake.writes.append({"op": "delete", "path": file_path, "login": user["login"], "message": body.get("message")})
+                return self._send(200, {"content": None, "commit": {"sha": fake.head[0]}})
+
+            def _git_data(self, method, rest, raw, user):
+                """Trees, commits and the branch ref, enough for one commit that renames a file."""
+                refused = self._writer(user)
+                if refused:
+                    return self._send(*refused)
+                body = json.loads(raw or b"{}")
+                if method == "POST" and rest == "trees":
+                    files = dict(fake.snapshots.get(body.get("base_tree"), {}))
+                    for e in body.get("tree", []):
+                        if e.get("sha") is None:
+                            files.pop(e["path"], None)
+                        else:
+                            files[e["path"]] = fake.blobs[e["sha"]]
+                    tid = sha(b"tree-new", json.dumps(sorted((k, sha(b"blob", v)) for k, v in files.items())).encode())
+                    fake.snapshots[tid] = files
+                    return self._send(201, {"sha": tid})
+                if method == "POST" and rest == "commits":
+                    cid = sha(b"commit-new", body["tree"].encode(), json.dumps(body.get("parents")).encode(),
+                              str(time.time()).encode())
+                    fake.pending[cid] = {"tree": body["tree"], "parents": body.get("parents", []),
+                                         "message": body.get("message")}
+                    return self._send(201, {"sha": cid})
+                if method == "PATCH" and rest == "refs/heads/main":
+                    c = fake.pending.get(body.get("sha"))
+                    if c is None:
+                        return self._send(422, {"message": "Object does not exist"})
+                    if c["parents"] != [fake.head[0]] and not body.get("force"):
+                        return self._send(422, {"message": "Update is not a fast forward"})
+                    fake.files = dict(fake.snapshots[c["tree"]])
+                    fake.commit()
+                    fake.head = (body["sha"], fake.head[1])
+                    fake.writes.append({"op": "ref", "login": user["login"], "message": c["message"], "force": bool(body.get("force"))})
+                    return self._send(200, {"object": {"sha": body["sha"]}})
+                return self._send(404, {"message": "Not Found"})
+
             def do_GET(self):
                 self._handle("GET")
 
@@ -216,6 +284,7 @@ class FakeGitHub:
             self.trees[t] = entries
             return t
         root = tree_of("")
+        self.snapshots[root] = dict(self.files)
         self.head = (sha(b"commit", root.encode(), str(time.time()).encode()), root)
 
     def count(self, piece: str) -> int:
