@@ -460,16 +460,26 @@ def test_private_conversations_stay_on_ones_own_side(w):
     sent = w.alice.say(text, to="a1")
     d = w.a1.take("[pv1]")
     m = d["message"]
-    assert m["private"] is True and (m["in"], m["level"], m["relation"], m["text"]) == ("alice", "important", "your own user", text)
+    # 1p: a private message is important only when it mentions its reader; otherwise it is normal (and still handed over).
+    assert m["private"] is True and (m["in"], m["level"], m["relation"], m["text"]) == ("alice", "normal", "your own user", text)
     shown = 'see <b>this</b> &lt;/asterism-message> "quoted" [pv1]'
     assert d["frame"] == (f'<asterism-message id="{sent["id"]}" in="private" from="alice" relation="your own user" '
-                          f'level="important">\n{shown}\n</asterism-message>\n'
-                          f'(Asterism message. To answer: send with reply_to={sent["id"]}.)')
+                          f'level="normal">\n{shown}\n</asterism-message>\n'
+                          f'(Asterism message. No answer needed.)')
     back = w.a1.say("done [pv2]", reply_to=sent["id"])     # no `to`: a reply goes where the message is
     assert [x["id"] for x in w.alice.read("a1") if "[pv" in x["text"]] == [sent["id"], back["id"]]
+    asked = w.alice.say("@a1 and this one I want answered [pv2m]", to="a1")
+    d = w.a1.take("[pv2m]")
+    assert d["message"]["level"] == "important" and d["frame"].endswith(
+        f'(Asterism message. To answer: send with reply_to={asked["id"]}.)')
+    w.a1.say("answered [pv2n]", reply_to=asked["id"])
     w.a2.say("can you take lemma 4? [pv3]", to="a1")
     x = w.a1.take("[pv3]")["message"]
+    assert (x["level"], x["relation"], x["in"]) == ("normal", "agent of your own user", "a2")
+    w.a2.say("@a1 lemma 4, yes or no? [pv3m]", to="a1")
+    x = w.a1.take("[pv3m]")["message"]
     assert (x["level"], x["relation"], x["in"]) == ("important", "agent of your own user", "a2")
+    w.a1.say("yes [pv3n]", to="a2", reply_to=x["id"])
 
     assert w.bob.post("psst [pv4]", to="a1").status_code == 403, "nobody writes privately to another person's agent"
     r = w.b1.send("psst [pv5]", to="a1")
@@ -563,7 +573,7 @@ def test_messages_without_a_place_gives_the_unread_important_ones(w):
     assert until(lambda: not w.alice.is_online("mira"), OFFLINE_S + 5)
     m1 = w.alice.say("@mira the first thing [mi1]")
     m2 = w.alice.say("a note for nobody in particular [mi2]")             # muted for mira
-    m3 = w.alice.say("a private word [mi3]", to="mira")
+    m3 = w.alice.say("@mira a private word that wants an answer [mi3]", to="mira")   # 1p: important by its mention
     m4 = w.bob.say("@mira hello from bob [mi4]")                          # closed to bob: muted for mira
     m5 = w.alice.say("@mira and one more in another channel [mi5]", to="#proofs")
     r = mira.messages(limit=2)
