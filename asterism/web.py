@@ -919,7 +919,8 @@ async def mcp(request: Request) -> Response:
         if session is not None and not tools.SESSION_HEADER_RE.fullmatch(session):
             raise bad_request("invalid_session", "The x-openai-session header is not a usable session id.")
         return caller
-    answer = await tools.handle(caller_for, msg, disconnect_watch(request))
+    answer = await tools.handle(caller_for, msg, disconnect_watch(request),
+                                codex=tools.from_codex(request.headers.get("user-agent")))
     if answer is None:
         return Response(status_code=202)
     _log_mcp_call(request, slug, caller, msg, answer)

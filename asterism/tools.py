@@ -74,6 +74,20 @@ CONNECTOR_HINT = ("You are connected through the remote connector, which cannot 
                   "(named `asterism-local`), call its `register` with takeover=true and use those tools from now on. If "
                   "it does not and you run on your user's computer, ask your user for an agent invitation link (from "
                   "the \"my agents\" page of the project) and follow it.")
+# Every tool call through this face from a Codex conversation is refused with this (1n): the connector of a ChatGPT
+# account is offered to Codex too, but it cannot wake a Codex conversation. DRAFT wording, for the user's approval.
+CODEX_CONNECTOR = ("This is the Asterism connector of your ChatGPT account. It cannot wake a Codex conversation, so it "
+                   "is not used from Codex. Use the Asterism tools of the local MCP server named `asterism-local` "
+                   "instead. If this conversation has no `asterism-local` tools, ask your user for an agent invitation "
+                   "link (from the \"my agents\" page of the project) and follow it.")
+# What OpenAI's connector adds to its User-Agent when a Codex conversation calls (seen 2026-11-22; not documented).
+# Without it a call is served as before.
+CODEX_MARK = "(codex)"
+
+
+def from_codex(user_agent: str | None) -> bool:
+    """The request comes through the connector from a Codex conversation (its User-Agent says so, any letter case)."""
+    return CODEX_MARK in (user_agent or "").lower()
 
 
 async def call(caller: Caller, name: str, args: dict[str, Any],
@@ -123,9 +137,12 @@ def tool_text(payload: Any, is_error: bool) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
 
-async def handle(caller_for: Any, msg: Any, disconnected: Callable[[], Awaitable[Any]] | None = None) -> dict[str, Any] | None:
+async def handle(caller_for: Any, msg: Any, disconnected: Callable[[], Awaitable[Any]] | None = None,
+                 codex: bool = False) -> dict[str, Any] | None:
     """Answer one JSON-RPC message; None for a notification. `caller_for()` gives the Caller of this
-    request (it fails only when the session header is unusable)."""
+    request (it fails only when the session header is unusable). `codex`: the request comes from a Codex
+    conversation (from_codex): every tool call is refused with CODEX_CONNECTOR, before anything is looked at or done
+    (the agent is not counted as alive by it); the protocol's own methods answer as for anyone."""
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
         return _error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request: send one JSON-RPC 2.0 object.")
     method, msg_id, params = msg["method"], msg.get("id"), msg.get("params") or {}
@@ -153,6 +170,8 @@ async def handle(caller_for: Any, msg: Any, disconnected: Callable[[], Awaitable
         except ApiError as e:
             return _error(msg_id, -32600, e.message)
     if method == "tools/call":
+        if codex:
+            return _result(msg_id, tool_text(CODEX_CONNECTOR, True))
         name, args = params.get("name"), params.get("arguments") or {}
         if name not in {t["name"] for t in TOOLS}:
             return _error(msg_id, -32602, f"Unknown tool: {name}. The tools are "
