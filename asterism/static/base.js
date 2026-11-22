@@ -793,7 +793,8 @@
     return line;
   };
 
-  // What an agent invitation answers: the sentence for the agent, and the commands to set up a computer oneself.
+  // What an agent invitation answers: the sentence for the agent, and, folded as an advanced part (1i), the commands
+  // to set up a computer oneself (or why that cannot be done here yet).
   var SYSTEMS = ["macos-linux", "windows"], PRODUCTS = ["claude-code", "codex"], invites = 0;
   A.showInvite = function (box, data) {
     var make = A.make, t = A.t;
@@ -803,11 +804,14 @@
     var until = new Date(Date.now() + data.expires_in * 1000);
     var time = until.toLocaleTimeString(document.documentElement.lang || undefined, {hour: "2-digit", minute: "2-digit"});
     box.append(make("p", "muted", t("invite.expires", {time: time})));
+    var more = make("details", "invite-advanced");
+    more.appendChild(make("summary", null, t("invite.advanced")));
+    box.append(more);
     if (!data.program || !data.program.available) {
-      box.append(make("p", "muted", t("invite.unavailable")));
+      more.append(make("p", "muted", t("invite.unavailable")));
       return;
     }
-    box.append(make("p", null, t("invite.self")));
+    more.append(make("p", null, t("invite.self")));
     SYSTEMS.forEach(function (system) {
       var group = make("fieldset");
       group.append(make("legend", null, t("invite.system." + system)));
@@ -831,7 +835,7 @@
         lines[product].hidden = i !== 0;
         group.append(lines[product]);
       });
-      box.append(group);
+      more.append(group);
     });
   };
 

@@ -966,6 +966,16 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 
 /* ------------------------------------------------------------------ inviting an agent */
 .invite-panel { display: flex; flex-direction: column; gap: 10px; }
+/* Two parts (1i): Claude Code or Codex, by a link; ChatGPT (dot), by a connector. */
+.invite-kind { align-self: flex-start; }
+#invite-local, .invite-dot { display: flex; flex-direction: column; gap: 10px; }
+#invite-local > p, .invite-dot p { margin: 0; }
+.invite-steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 12px; }
+.invite-steps li > * + * { margin-top: 6px; }
+/* The terminal commands of a link's result: an advanced part, closed. */
+.invite-advanced > summary { cursor: pointer; width: fit-content; font-size: 13px; color: var(--color-ink-dim); }
+.invite-advanced > summary:hover { color: var(--color-ink); }
+.invite-advanced > * + * { margin-top: 10px; }
 .invite-panel .out:empty { display: none; }
 .invite-result { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .invite-result p { margin: 0; }

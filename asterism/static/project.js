@@ -121,7 +121,26 @@
     body.appendChild(form);
   }
 
-  // Inviting an agent: each press of #invite-make makes a new link and replaces what the previous one showed.
+  // Inviting an agent: Claude Code or Codex (a link) or ChatGPT, dot (a connector), chosen in #invite-kind; each press
+  // of #invite-make makes a new link and replaces what the previous one showed. The texts to copy in the dot part
+  // get their copy buttons (Asterism.copyLine).
+  if (invitePanel) {
+    Array.prototype.forEach.call(invitePanel.querySelectorAll(".copy-slot[data-copy]"), function (slot) {
+      slot.replaceWith(A.copyLine(slot.dataset.copy));
+    });
+    var kinds = invitePanel.querySelector("#invite-kind");
+    if (kinds) {
+      kinds.addEventListener("click", function (ev) {
+        var b = ev.target.closest && ev.target.closest("[data-invite]");
+        if (!b) return;
+        Array.prototype.forEach.call(kinds.querySelectorAll("[data-invite]"), function (x) {
+          x.setAttribute("aria-pressed", String(x === b));
+          var part = document.getElementById("invite-" + x.dataset.invite);
+          if (part) part.hidden = x !== b;
+        });
+      });
+    }
+  }
   function inviteAgent(body) {
     if (!invitePanel) return;
     invitePanel.hidden = false;

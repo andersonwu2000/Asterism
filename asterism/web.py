@@ -1077,6 +1077,8 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     # conversations with the project's read.
     places = messaging.channels_view(pj, me)
     return {"slug": pj.slug, "name": info["name"], "repo": info["repo"], "notice_channel": "#" + projects.notice_channel(pj),
+            # The address ChatGPT adds as a connector (dot joins that way, not by a link; 1i).
+            "connector": f"{config.get().public_url}/{pj.slug}/mcp",
             "places": places, "beat_s": config.get().person_beat_s,
             "important": sum(c["important"] for c in places["channels"]),
             "important_private": sum(p["important"] for p in places["private"]),

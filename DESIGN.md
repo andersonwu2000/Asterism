@@ -166,6 +166,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   create channel, my agents (the agent page), each only for who may use it. What these acts ask for (a login, a
   channel's name) is asked in one floating panel over the dimmed page, which Escape and a click outside close; the
   answer (a link with its copy control) shows in that panel. The agent page's "invite agent" opens the same panel.
+- **Inviting an agent** starts with a choice of two, a switch like files mode's 公共 | 私人: **Claude Code 或 Codex**
+  (the default: 產生邀請連結, then the sentence to paste with its copy control; setting the computer up oneself in a
+  terminal is an advanced part, a closed fold under 「進階：自己在終端機設定這台電腦」) and **ChatGPT（dot）** (no
+  link: numbered steps to add Asterism as a connector, its address and the sentence to paste each with a copy
+  control, and a dim line on where to revoke it).
   Files mode has no project name and no project menu.
 - **Settings are one layer in the four cells** (the rail stays): the project's settings (overview: name, repository,
   notice channel and "delete project"; people: members, groups, invitations), one channel's (overview: rename and

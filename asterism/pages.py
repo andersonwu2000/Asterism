@@ -422,18 +422,42 @@ def _chat_bar(tr: Translator) -> str:
             f'<div class="room-tools" role="group" aria-label="{e(tr("bar.tools"))}">{tools}</div>')
 
 
+# What a person pastes to dot (ChatGPT) once its connector is added (1i). Agent-facing: English in every locale, as
+# the local agents' sentence is.
+DOT_SAY = "Register on Asterism with the name dot."
+INVITE_KINDS = ("local", "dot")
+
+
+def _copy_slot(text: str) -> str:
+    """A text to copy: project.js turns it into a line with its copy button (Asterism.copyLine)."""
+    return f'<div class="copy-slot" data-copy="{e(text)}"><code>{e(text)}</code></div>'
+
+
 def _invite_panel(tr: Translator, f: dict[str, Any]) -> str:
     """What inviting an agent of mine shows, in the floating panel that the project menu's item and the agent page's
-    action open (project.js moves it there): making a link (#invite-make), what one agrees to by sending it
-    (#invite-consent) and the answer (#invite-result, Asterism.showInvite). Only for who may manage their agents."""
+    action open (project.js moves it there). A choice of two first (#invite-kind, m1i_contract.md): Claude Code or
+    Codex (#invite-local: making a link (#invite-make), what one agrees to by sending it (#invite-consent) and the
+    answer (#invite-result, Asterism.showInvite)), or ChatGPT, dot (#invite-dot: no link; the steps to add Asterism
+    as a connector at its address, approve it, and the sentence to paste). Only for who may manage their agents."""
     if "manage_own_agents" not in f["perms"]:
         return ""
-    return (f'<div id="invite-panel" class="invite-panel" hidden><p class="dim">{e(tr("invite.skip"))}</p>'
-            f'<p class="row"><button type="button" class="btn primary" id="invite-make" '
-            f'data-api="/{q(f["slug"])}/api/my/agent-invites">{e(tr("invite.button"))}</button>'
-            f'<span class="out" data-out></span></p>'
-            f'<p class="dim" id="invite-consent">{e(tr("invite.consent"))}</p>'
-            f'<div id="invite-result" class="invite-result" hidden></div></div>')
+    kinds = "".join(f'<button type="button" class="seg-btn" data-invite="{k}" '
+                    f'aria-pressed="{"true" if k == "local" else "false"}">{e(tr("invite.kind." + k))}</button>'
+                    for k in INVITE_KINDS)
+    local = (f'<div id="invite-local"><p class="dim">{e(tr("invite.skip"))}</p>'
+             f'<p class="row"><button type="button" class="btn primary" id="invite-make" '
+             f'data-api="/{q(f["slug"])}/api/my/agent-invites">{e(tr("invite.button"))}</button>'
+             f'<span class="out" data-out></span></p>'
+             f'<p class="dim" id="invite-consent">{e(tr("invite.consent"))}</p>'
+             f'<div id="invite-result" class="invite-result" hidden></div></div>')
+    dot = (f'<div id="invite-dot" class="invite-dot" hidden><ol class="invite-steps">'
+           f'<li><p>{e(tr("invite.dot.connector"))}</p>{_copy_slot(f["connector"])}<p>{e(tr("invite.dot.oauth"))}</p></li>'
+           f'<li><p>{e(tr("invite.dot.approve"))}</p></li>'
+           f'<li><p>{e(tr("invite.dot.say"))}</p>{_copy_slot(DOT_SAY)}</li></ol>'
+           f'<p class="dim">{e(tr("invite.dot.revoke"))}</p></div>')
+    return (f'<div id="invite-panel" class="invite-panel" hidden>'
+            f'<div id="invite-kind" class="seg invite-kind" role="group" aria-label="{e(tr("invite.kind"))}">{kinds}</div>'
+            f'{local}{dot}</div>')
 
 
 # --------------------------------------------------------------------------- pages
