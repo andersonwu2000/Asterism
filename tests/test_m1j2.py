@@ -103,8 +103,20 @@ def home(tmp_path):
         kill_pid(info["pid"])
 
 
+def isolated(home: Path, **env) -> dict:
+    """The environment of every program a test starts: its state folder AND the two products' configuration folders
+    are the test's own (beside the state folder), unless the test names others. Without the last two the program
+    edits the real ~/.codex and ~/.claude: on 2026-11-22 `join` wrote a test's folder into the real Codex entry, and
+    the real Codex then ran its Asterism tools against that folder. conftest.py checks at the end of every run that
+    the real entries are as they were."""
+    base = dict(CLEAN, ASTERISM_HOME=str(home), CODEX_HOME=str(Path(home).parent / "codex_home_own"),
+                CLAUDE_CONFIG_DIR=str(Path(home).parent / "claude_config_own"))
+    base.update(env)
+    return base
+
+
 def run(exe, home, *args, timeout=90, **env) -> tuple[int, str]:
-    r = subprocess.run([str(exe), *args], env=dict(CLEAN, ASTERISM_HOME=str(home), **env), capture_output=True,
+    r = subprocess.run([str(exe), *args], env=isolated(home, **env), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
     return r.returncode, r.stdout + r.stderr
 
@@ -147,7 +159,7 @@ class Mcp:
     def __init__(self, exe, home, client_name="claude-code", **env):
         self.p = subprocess.Popen([str(exe), "mcp"], text=True, encoding="utf-8", stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  env=dict(CLEAN, ASTERISM_HOME=str(home), **env))
+                                  env=isolated(home, **env))
         self.q, self.n = queue.Queue(), 0
         threading.Thread(target=self._read, daemon=True).start()
         self.init = self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -554,7 +566,7 @@ STANDIN = Path(__file__).resolve().parent / "standin_resident.py"
 def standin(home: Path, version: str) -> subprocess.Popen:
     """A resident program of another version (see standin_resident.py), running and answering."""
     p = subprocess.Popen([sys.executable, str(STANDIN), str(home), version], stdout=subprocess.PIPE, text=True,
-                         env=dict(CLEAN, ASTERISM_HOME=str(home)))
+                         env=isolated(home))
     assert p.stdout.readline().strip() == "ready"
     assert daemon_info(home)["pid"] == p.pid
     return p
