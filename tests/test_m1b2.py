@@ -1,7 +1,7 @@
 """Acceptance checks for M1 slice 1b, second step: reminders, offline rules, notices, events for the connector.
 
 Black box, same harness as test_m1b.py, with a server of its own whose reminder time is short. Every test uses
-agents of its own: an agent that leaves an important message unanswered is reminded and may go offline, and that
+agents of its own: an agent that leaves an important message unanswered is reminded (1o: silence is not offline), and that
 must not leak into another test.
 
     python -m pytest tests/test_m1b2.py -x -q
@@ -91,41 +91,26 @@ def test_an_unanswered_important_message_is_followed_by_one_reminder(v):
     leave(r)
 
 
-def test_an_active_agent_is_reminded_again_and_a_silent_one_goes_offline(v):
+def test_an_active_agent_is_reminded_again_and_a_silent_one_stays_online(v):
+    """1o: silence is not offline. An agent that calls no tool gets one reminder and then waits, online."""
     active, idle = fresh(v, "r2"), fresh(v, "r3")
     sent = v.alice.say("@r2 @r3 please answer [f2]")
     active.take("[f2]")
     idle.take("[f2]")
-    end = time.time() + REMIND_S * 2 + 2.5
+    end = time.time() + REMIND_S * 3 + 2.5
     while time.time() < end:                               # r2 keeps working without answering; r3 does nothing,
         tool_call(active)                                  # though its helper acknowledges everything
         time.sleep(0.8)
     assert len(of_kind(active, "reminder")) >= 2 and v.alice.is_online("r2"), "seen alive: reminded again, not offline"
-    assert until(lambda: not v.alice.is_online("r3"), 6), "no tool call in a whole period: offline, open poll or not"
-    assert len(of_kind(idle, "reminder")) == 1
-    assert logged(v, "agent_offline", agent="r3", reason="silent")
-
-    off = "r3 is offline."
-    assert until(lambda: system_messages(v.alice, off), 5), "the system says so in #general"
-    m = system_messages(v.alice, off)[0]
-    assert (m["from"], m["relation"], m["level"]) == ("system", "system", "important"), "alice was waiting for r3's answer"
-    assert system_messages(v.bob, off)[0]["level"] == "muted"
-    time.sleep(1.5)                                        # a change of presence is not sent to agents (1s)
-    assert not notices(active, off), "no agent is sent a notice of presence"
-    seen = [m for m in active.messages(place="#general", limit=200).json()["messages"] if m["text"] == off]
-    assert seen and seen[0]["level"] == "muted", "it is there to read, muted"
-    assert not notices(v.b1, off), "an agent of someone else is not told"
-
-    late = v.alice.say("@r3 this arrived while you were out [f3]")
-    assert mention(late, "r3")["result"] == "offline"
-    idle.absent("[f3]", 1.0)
-    tool_call(idle)                                        # the agent shows itself: online again
-    assert until(lambda: v.alice.is_online("r3"), 5)
+    assert v.alice.is_online("r3"), "no tool call is not a failed handshake: still online"
+    assert len(of_kind(idle, "reminder")) == 1, "one reminder, then it waits"
+    assert not logged(v, "agent_offline", agent="r3")
+    assert not system_messages(v.alice, "r3 is offline.")
+    later = v.alice.say("@r3 one more while you are quiet [f3]")
+    assert mention(later, "r3")["result"] != "offline"
     idle.take("[f3]")
-    on = until(lambda: [m for m in system_messages(v.alice, "r3 is online.")], 5)
-    assert on and on[-1]["level"] == "normal"
     idle.say("sorry, here [f2a]", reply_to=sent["id"])
-    idle.say("and this [f3a]", reply_to=late["id"])
+    idle.say("and this [f3a]", reply_to=later["id"])
     active.say("done [f2b]", reply_to=sent["id"])
     leave(active)
     leave(idle)
@@ -137,12 +122,12 @@ def test_a_helper_that_never_acknowledges_makes_its_agent_offline(v):
     assert until(lambda: len(u.tagged("[u1]")) >= 2, REDELIVER_S * 2 + 3), "handed out a second time"
     assert until(lambda: not v.alice.is_online("u1"), REDELIVER_S + 4), "twice without an acknowledgement: offline"
     assert logged(v, "agent_offline", agent="u1", reason="unanswered")
-    n = len(u.tagged("[u1]"))
     u.acks = True
-    tool_call(u)
-    assert until(lambda: v.alice.is_online("u1"), 5)
-    assert until(lambda: len(u.tagged("[u1]")) > n, 6), "what was never acknowledged is handed out again"
+    more = v.alice.say("@u1 still there? [u2]")
+    assert until(lambda: u.tagged("[u2]"), REDELIVER_S + 6), "1o: an offline agent is still handed what it is given"
+    assert until(lambda: v.alice.is_online("u1"), 6), "an acknowledgement is a handshake: online again, no tool call"
     u.say("yes [u1a]", reply_to=sent["id"])
+    u.say("yes [u2a]", reply_to=more["id"])
     leave(u)
 
 
@@ -276,10 +261,12 @@ def test_the_connector_is_woken_by_signed_events(v):
         assert until(lambda: not v.alice.is_online("dot-e"), REDELIVER_S * 2 + 6), "no 2xx twice: offline"
         assert len(recv.events(lost["id"])) == 2 and logged(v, "agent_offline", agent="dot-e", reason="unanswered")
         recv.status = 200
-        assert not remote_tool(v.srv, "whoami", token, "conv-e")[1]
-        assert until(lambda: v.alice.is_online("dot-e"), 5), "a tool call brings it back"
+        sched = v.alice.say("@dot-e a message while you are offline [e6]")
+        assert until(lambda: recv.events(sched["id"]), 8), "1o: offline, still sent while the subscription lives"
+        assert until(lambda: v.alice.is_online("dot-e"), 5), "a 2xx is a handshake: online again, no tool call"
         assert until(lambda: len(recv.events(lost["id"])) == 3, 8), "and what it missed is sent again"
         assert not remote_tool(v.srv, "send", token, "conv-e", text="yes [e3a]", reply_to=lost["id"])[1]
+        assert not remote_tool(v.srv, "send", token, "conv-e", text="yes [e6a]", reply_to=sched["id"])[1]
 
         assert not recv.bad, "every POST carried a valid Standard Webhooks signature"
         gone = rpc(v.srv, "events/unsubscribe", {"name": "message.arrived", "arguments": {"agent": "dot-e"},
