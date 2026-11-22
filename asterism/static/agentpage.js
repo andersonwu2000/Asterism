@@ -327,6 +327,10 @@
     if (A.paths) A.paths.scan(box);
     body.appendChild(box);
     if (m.edited_at) body.appendChild(A.editedMark(m.edited_at));
+    if (m.waiting && m.waiting.length) {    // 1h: not handed over yet to an agent that is away
+      body.appendChild(make("p", "msg-waiting", t(m.from === ME ? "msg.waiting_change" : "msg.waiting",
+                                                  {names: m.waiting.join(t("msg.names_sep"))})));
+    }
     li.append(gutter, body);
     return li;
   }
@@ -427,13 +431,28 @@
       if (mine !== gen || !r.ok) return;
       var got = r.data.items || [];
       if (!got.length) return;
+      // A message whose waiting changed (1h: handed over, or deleted) is drawn again in its place.
+      var changed = false, index = new Map(entries.map(function (x, i) { return [keyOf(x), i]; }));
+      got.forEach(function (x) {
+        var i = index.get(keyOf(x));
+        if (x.kind !== "message" || i === undefined) return;
+        var was = entries[i].message;
+        if (JSON.stringify(was.waiting || []) !== JSON.stringify(x.message.waiting || []) || !!was.deleted !== !!x.message.deleted) {
+          entries[i] = x;
+          nodes.delete(keyOf(x));
+          changed = true;
+        }
+      });
       var last = entries.length ? keyOf(entries[entries.length - 1]) : null, at = -1;
       for (var i = got.length - 1; i >= 0; i--) { if (keyOf(got[i]) === last) { at = i; break; } }
       var add;
       if (last === null) add = got;
       else if (at >= 0) add = got.slice(at + 1);
       else { gen++; polling = false; start(chosen); return; }   // more arrived than one page: read it all again
-      if (!add.length) return;
+      if (!add.length) {
+        if (changed) draw();
+        return;
+      }
       var bottom = atBottom();
       if (last === null) more = !!r.data.more;
       entries = entries.concat(add);

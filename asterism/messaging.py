@@ -242,12 +242,32 @@ def _place_for(pj: Project, place: str, me: Member, names: dict[str, str]) -> st
     return names[other]
 
 
+def waits_for(pj: Project, mids: list[int]) -> dict[int, list[str]]:
+    """Message id -> the names of the agents it waits for (1h), sorted: a delivery of it to the agent is open (made,
+    not acknowledged) and the agent is offline as the pages show it. For people only: agents never read it."""
+    if not mids:
+        return {}
+    marks = ",".join("?" * len(mids))
+    online: dict[int, bool] = {}
+    out: dict[int, set[str]] = defaultdict(set)
+    for r in pj.db.execute(f"SELECT d.message_id AS mid, a.* FROM deliveries d JOIN agents a ON a.id = d.agent_id "
+                           f"WHERE d.kind = 'message' AND d.state IN ('pending', 'out') AND d.message_id IN ({marks})",
+                           mids).fetchall():
+        if r["id"] not in online:
+            online[r["id"]] = presence.is_online(pj.slug, r, pj.db)
+        if not online[r["id"]]:
+            out[r["mid"]].add(r["name"])
+    return {mid: sorted(names) for mid, names in out.items()}
+
+
 def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member, side: Member | None = None) -> list[dict[str, Any]]:
     """Message objects as `me` gets them. `side`: a private conversation `me` is not part of is named as seen from
-    this member of it (the agent page shows a person their agents' conversations with each other, 1v)."""
+    this member of it (the agent page shows a person their agents' conversations with each other, 1v). A person also
+    gets `waiting`, the agents a message waits for (1h; absent when none)."""
     rows = list(rows)
     if not rows:
         return []
+    waits = waits_for(pj, [r["id"] for r in rows]) if me.kind == "person" else {}
     marks = ",".join("?" * len(rows))
     levels = {r["message_id"]: r["level"] for r in pj.db.execute(
         f"SELECT message_id, level FROM levels WHERE reader_kind = ? AND reader_id = ? AND message_id IN ({marks})",
@@ -274,6 +294,8 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member, side: Member | N
                 m["edited_at"] = util.iso(r["edited"])
             if r["id"] in reacted:
                 m["reactions"] = reacted[r["id"]]
+            if r["id"] in waits:
+                m["waiting"] = waits[r["id"]]
         if not r["place"].startswith("#"):
             m["private"] = True
         if r["schedule_id"] is not None:
@@ -435,7 +457,11 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
             raise ApiError(409, "reply_chain", CHAIN_REMINDER.format(n=hop))
     found, unknown = parse_mentions(pj, text) if place.startswith("#") else (_private_mention(pj, text, place, sender), [])
     mid, results = _post(pj, sender, place, text, orig, hop, found)
-    return {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
+    out: dict[str, Any] = {"id": mid, "hop": hop,
+                           "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
+    if sender.kind == "person" and mid in (w := waits_for(pj, [mid])):
+        out["waiting"] = w[mid]                 # 1h: the agents it waits for, said to the person who sent it
+    return out
 
 
 def post_scheduled(pj: Project, sender: Member, place: str, text: str, level: str, schedule_id: int,

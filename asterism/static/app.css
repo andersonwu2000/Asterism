@@ -666,6 +666,8 @@ td .muted, td small { color: var(--color-ink-dim); }
 .edited-mark { font-size: 11px; color: var(--color-ink-faint); white-space: nowrap; }
 .text.deleted-note { color: var(--color-ink-faint); font-style: italic; margin: 0; }
 .msg-out { margin: 2px 0 0; font-size: 12px; color: var(--color-ink-dim); }
+/* 1h: a message not handed over yet to an agent that is away: one quiet line under it. */
+.msg-waiting { margin: 2px 0 0; font-size: 12px; color: var(--color-ink-dim); }
 /* Editing a message: the field in the text's place. */
 .msg.editing .body > .text, .msg.editing .body > .fold-toggle, .msg.editing .body > .edited-mark,
 .msg.editing .body > .pictures { display: none; }

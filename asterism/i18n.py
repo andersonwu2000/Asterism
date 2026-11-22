@@ -700,6 +700,9 @@ CATALOGUE: dict[str, dict[str, str]] = {
         # 1y: reactions, editing and deleting a message, pictures of the repository in a message.
         "msg.deleted": "訊息已刪除",
         "msg.edited": "已編輯",
+        "msg.waiting": "尚未送達 {names}：等它回來才會收到。",
+        "msg.waiting_change": "尚未送達 {names}：等它回來才會收到。可以編輯或刪除這則訊息。",
+        "msg.names_sep": "、",
         "msg.edited_at": "編輯於 {time}",
         "msg.react": "加上反應",
         "msg.react_picker": "選一個表情符號",
@@ -1706,6 +1709,9 @@ CATALOGUE["en"] = {
         # 1y: reactions, editing and deleting a message, pictures of the repository in a message.
         "msg.deleted": "Message deleted",
         "msg.edited": "edited",
+        "msg.waiting": "Not delivered to {names} yet: it will get it when it comes back.",
+        "msg.waiting_change": "Not delivered to {names} yet: it will get it when it comes back. You can edit or delete this message.",
+        "msg.names_sep": ", ",
         "msg.edited_at": "Edited {time}",
         "msg.react": "Add reaction",
         "msg.react_picker": "Choose an emoji",

@@ -263,6 +263,10 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the list says "↓ 新訊息", or, as the inverted pill, "↓ 有人找你" when one of them is important for the reader; it goes
   to the first of them, then to the end. The browser tab's title starts with the count of messages important for the
   reader in the whole project: `(2) #general · Asterism`.
+- **A message that waits for an agent** (1h: addressed to an agent that is away, not handed over yet) has one quiet
+  dim line under it, in chat, private messages and the agent page: "尚未送達 {names}：等它回來才會收到。", followed,
+  for whoever may edit or delete it, by "可以編輯或刪除這則訊息。". It goes at the next refresh once the agent is
+  handed the message (or the message is deleted). After sending, the composer's result line says the same.
 - **The composer** keeps one draft per place, for the life of the tab. It completes two things in one list over
   the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
   other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is

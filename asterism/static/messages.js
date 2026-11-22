@@ -352,6 +352,9 @@
     body.appendChild(pictures);
     if (A.paths) A.paths.scan(box).then(function () { showPictures(box, pictures, m.text); });
     if (m.reactions && m.reactions.length) body.appendChild(reactionRow(m));
+    if (m.waiting && m.waiting.length) {  // 1h: not handed over yet to an agent that is away
+      body.appendChild(make("p", "msg-waiting", waitingText(m.waiting, mayEdit(m) || mayDelete(m))));
+    }
 
     if (m.from_kind !== "system") {
       body.appendChild(actsOf(li, m));
@@ -368,7 +371,13 @@
 
   // What a message row draws from: when it changes, the row is drawn again.
   function signature(m) {
-    return JSON.stringify([m.text, m.edited_at || "", !!m.deleted, m.reactions || [], m.level]);
+    return JSON.stringify([m.text, m.edited_at || "", !!m.deleted, m.reactions || [], m.level, m.waiting || []]);
+  }
+
+  // A message that waits for agents that are away (1h): who, and, for whoever may edit or delete it, that it can
+  // still be changed or taken back.
+  function waitingText(names, mayChange) {
+    return t(mayChange ? "msg.waiting_change" : "msg.waiting", {names: names.join(t("msg.names_sep"))});
   }
 
   // ------------------------------------------------------------------ the acts on a message (1y)
@@ -998,13 +1007,16 @@
     el.reply.firstChild.textContent = id ? t("msg.replying_to") + (m ? DOT + senderName(m) + ": " + textOf(m) : "") : "";
   }
 
-  function outcome(mentions) {
+  // The result line after sending: who it waits for (1h: the sender may still change or take it back), else who
+  // was mentioned and is offline; who it did not reach.
+  function outcome(mentions, waiting) {
     var by = {offline: [], closed: [], unknown: []};
     (mentions || []).forEach(function (m) {
       if (by[m.result]) by[m.result].push(m.name);
     });
     var parts = [];
-    if (by.offline.length) parts.push(t("msg.sent_offline", {names: by.offline.join(", ")}));
+    if (waiting && waiting.length) parts.push(waitingText(waiting, true));
+    else if (by.offline.length) parts.push(t("msg.sent_offline", {names: by.offline.join(", ")}));
     if (by.closed.length) parts.push(t("msg.sent_closed", {names: by.closed.join(", ")}));
     if (by.unknown.length) parts.push(t("msg.sent_unknown", {names: by.unknown.join(", ")}));
     return parts.join(" ");
@@ -1226,7 +1238,7 @@
       el.text.value = "";
       grow();
       setReply(null);
-      el.out.textContent = outcome(r.data.mentions);
+      el.out.textContent = outcome(r.data.mentions, r.data.waiting);
     }
     try { sessionStorage.removeItem(DRAFT + place); } catch (err) { /* nothing kept */ }
     await news();

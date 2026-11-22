@@ -835,7 +835,8 @@ async def api_post(request: Request) -> Any:
     pj, _, me = member_self(request, request.path_params["slug"])
     b = await body_json(request)
     out = messaging.send(pj, me, b.get("to"), b.get("text"), b.get("reply_to"))
-    return {"id": out["id"], "mentions": out["mentions"]}
+    # `waiting` (1h): the agents it waits for, when there are any.
+    return {k: out[k] for k in ("id", "mentions", "waiting") if k in out}
 
 
 async def api_react(request: Request) -> Any:
