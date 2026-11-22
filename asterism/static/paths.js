@@ -1,4 +1,4 @@
-// Paths elsewhere become links (Asterism.paths): in rendered messages, task texts and Markdown files, a path that
+// Paths elsewhere become links (Asterism.paths): in rendered messages, statuses and Markdown files, a path that
 // names an existing file of the repository opens it in files mode. Nothing is guessed: the candidates are the text
 // inside backticks and the bare tokens that contain a "/" or end in a known extension; the server is asked for them
 // (POST /api/files/resolve) in one batch per render pass, the answers (misses too) are kept for the session, and only

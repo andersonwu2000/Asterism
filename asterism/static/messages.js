@@ -5,7 +5,7 @@
 // (the row's id) for replies and jumps. An address with ?m=<id> opens its place at that message. It speaks only the
 // project's JSON API (/api/messages, /api/read) and asks for news every few seconds; the places (and their unread
 // counts) come from the frame (frame.js, Asterism.side), the text rendering from render.js, the right column from
-// right.js, tasks.js, people.js and search.js. Asterism.chat lets the others put a mention into the composer and
+// right.js, statuses.js, people.js and search.js. Asterism.chat lets the others put a mention into the composer and
 // open a place at one message (in the other mode's page when the place is there). All texts come from the page's
 // message catalogue.
 // New messages: opening a place draws a quiet line "new" above its first unread message (the read position the API

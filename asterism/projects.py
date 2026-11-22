@@ -15,17 +15,17 @@ from . import accounts, config, downloads, presence, util
 from .errors import bad_request, conflict, forbidden, gone, not_found
 from .store import Store
 
-PERMISSIONS = ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents",
-               "edit_tasks", "coordinate_tasks", "manage_members", "manage_groups", "manage_channels", "project_settings"]
+PERMISSIONS = ["read", "post", "create_channel", "create_schedule", "manage_own_agents", "manage_members",
+               "manage_groups", "manage_channels", "project_settings"]
 MANAGEMENT = {"manage_members", "manage_groups", "manage_channels", "project_settings"}
 DEFAULT_GROUPS = [
     ("owner", PERMISSIONS),
-    ("human", ["read", "post", "create_channel", "create_schedule", "assign_tasks", "manage_own_agents", "edit_tasks"]),
-    ("ai", ["read", "post", "edit_tasks"]),
+    ("human", ["read", "post", "create_channel", "create_schedule", "manage_own_agents"]),
+    ("ai", ["read", "post"]),
 ]
-# The four permissions only a person's own agent group (ownership) carries, set only by that person: what others may
-# do with that person's agents (until f6 they were called its switches, and the API still sets them that way too).
-SWITCHES = ("others_mention", "others_channel", "others_assign", "others_regroup")
+# The permissions only a person's own agent group (ownership) carries, set only by that person: what others may do
+# with that person's agents (until f6 they were called its switches, and the API still sets them that way too).
+SWITCHES = ("others_mention", "others_channel", "others_regroup")
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
 GROUP_NAME_RULE = ("A group's name is 1 to 40 letters or digits of any script, '.', '_' or '-', starting with a letter or "
@@ -596,23 +596,17 @@ def rename_group(pj: Project, actor: Actor, name: str, new: Any) -> dict[str, An
 
 
 def remove_group(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
-    """Remove a custom group that holds no task. Its members are simply no longer in it; its name is free again."""
+    """Remove a custom group. Its members are simply no longer in it; its name is free again."""
     g = _custom_group(pj, actor, name, "Removing groups needs the manage_groups permission.")
     mine = permissions(pj, actor)
     missing = [p for p in json.loads(g["permissions"]) if p not in mine]
     if missing:
         raise forbidden(f"'{name}' carries permissions you do not hold ({', '.join(missing)}), so you cannot remove it.")
-    n = pj.db.execute("SELECT count(*) FROM tasks WHERE group_id = ?", (g["id"],)).fetchone()[0]
-    if n:
-        raise conflict(f"'{name}' still has {n} task{'s' if n != 1 else ''}. Remove {'them' if n != 1 else 'it'} "
-                       f"from the task table first (a task cannot move to another group; make it again there to "
-                       f"keep it).")
     with pj.db:
         pj.db.execute("DELETE FROM group_members WHERE group_id = ?", (g["id"],))
         pj.db.execute("DELETE FROM channel_overrides WHERE group_id = ?", (g["id"],))
         pj.db.execute("DELETE FROM groups WHERE id = ?", (g["id"],))
     util.log("group_removed", project=pj.slug, group=name, by=actor.person_id)
-    _members_changed(pj, actor)
     return {"removed": name}
 
 
@@ -672,7 +666,6 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
                 pj.db.execute("DELETE FROM group_members WHERE group_id = ? AND member_kind = ? AND member_id = ?",
                               (groups[gname]["id"], kind, mid))
     util.log("groups_changed", project=pj.slug, member=target, add=add, remove=remove, by=actor.person_id)
-    _members_changed(pj, actor)
     return {"groups": [g["name"] for g in groups_of(pj, kind, mid)]}
 
 
@@ -816,18 +809,36 @@ def avatar(pj: Project, kind: str, member_id: int) -> str | None:
     return r["version"] if r else None
 
 
+def status_since(a: sqlite3.Row) -> float | None:
+    """Where the agent's update period counts from: its status's last change, or the moment its person asked for
+    updates (update_every_h) if that came later. None: neither."""
+    times = [x for x in (a["status_at"], a["update_every_at"]) if x is not None]
+    return max(times) if times else None
+
+
+def status_overdue(a: sqlite3.Row, t: float | None = None) -> bool:
+    """The agent's person asked for a status update every update_every_h hours (ASTERISM_STATUS_HOUR_S each) and
+    the last is older than that."""
+    if not a["update_every_h"]:
+        return False
+    since = status_since(a)
+    t = util.now() if t is None else t
+    return since is not None and t - since >= a["update_every_h"] * config.get().status_hour_s
+
+
 def agent_view(pj: Project, a: sqlite3.Row, owners: dict[int, str] | None = None, work: bool = False) -> dict[str, Any]:
     """An agent as the member lists give it. `work`: for people, also what it is doing (presence.work: `work`,
-    `last_active` as its session's last activity, `stale`) and its avatar; what agents read (whoami) stays without
-    them."""
+    `last_active` as its session's last activity), its status (title, when it changed, overdue) and its avatar; what
+    agents read (whoami) stays without them."""
     owners = owners if owners is not None else _owners(pj)
     because = presence.offline_because(pj.slug, a, pj.db)
     view = {"name": a["name"], "owner": owners.get(a["person_id"], ""), "kind": a["kind"], "model": a["model"],
             "groups": [g["name"] for g in groups_of(pj, "agent", a["id"])],
-            "online": because is None, "offline_because": because, "busy": presence.busy(pj.db, a),
+            "online": because is None, "offline_because": because,
             "last_active": util.iso(a["last_active"]), "generation": a["generation"]}
     if work:
         view.update(presence.work(pj.slug, a, pj.db, because is None))
+        view["status"] = {"title": a["status_title"], "at": util.iso(a["status_at"]), "overdue": status_overdue(a)}
         view["avatar"] = avatar(pj, "agent", a["id"])
     return view
 
@@ -854,6 +865,7 @@ def people_and_agents(pj: Project, work: bool = False) -> dict[str, Any]:
         view = {"name": r["name"], "github_login": acc["github_login"] if acc else "",
                 "groups": [g["name"] for g in groups_of(pj, "person", r["person_id"])], "online": person_online(r)}
         if work:
+            view["status"] = {"title": r["status_title"]}
             view["avatar"] = avatar(pj, "person", r["person_id"])
         people.append(view)
     agents = [agent_view(pj, a, owners, work) for a in pj.db.execute("SELECT * FROM agents ORDER BY id")]
@@ -1021,7 +1033,6 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
             require(pj, actor, "manage_members", "Removing another person's agent needs the manage_members permission.")
         _purge_agents(pj, "id = ?", (agent["id"],))
         util.log("agent_removed", project=pj.slug, agent=name, by=actor.person_id)
-        _members_changed(pj, actor)
         return {"removed": name}
     person = pj.db.execute("SELECT * FROM people WHERE name = ?", (name,)).fetchone()
     if not person:
@@ -1049,14 +1060,7 @@ def remove_member(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
     with pj.accounts:
         pj.accounts.execute("DELETE FROM oauth_tokens WHERE slug = ? AND person_id = ?", (pj.slug, pid))
     util.log("person_removed", project=pj.slug, person=pid, by=actor.person_id)
-    _members_changed(pj, actor)
     return {"removed": name}
-
-
-def _members_changed(pj: Project, actor: Actor) -> None:
-    """Members left groups or the project: the task table follows (tasks.members_changed)."""
-    from . import tasks                 # tasks builds on this module
-    tasks.members_changed(pj, actor)
 
 
 def _forget_reader(pj: Project, kind: str, member_id: int) -> None:

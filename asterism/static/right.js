@@ -1,5 +1,5 @@
 // The right column of the messages pages (Asterism.right): one thing at a time, or nothing: the member list
-// (#member-panel, with each member's tasks) or search (#search-results: the field and its results). #members-toggle
+// (#member-panel, with each member's status) or search (#search-results: the field and its results). #members-toggle
 // and #search-open in the top bar show or hide their panel. Whether the member list is open is remembered per project
 // on a wide screen; below 900 px the column is a sheet over the messages that starts closed, closes on Escape and
 // gives the focus back to its control. Search takes the column while it is open and then gives back what was there.

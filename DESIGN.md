@@ -15,7 +15,7 @@ settled; where it is silent, choose the quieter option.
   - **Code and mathematics** keep whatever colour their renderer gives them. Code is the one sanctioned use of
     hue: the editor's highlighting colours keywords, declared names, types, strings, numbers and attributes with
     the six muted `--color-syn-*` tokens (defined for both ends like every token); comments are `--color-ink-dim`.
-  - **One blue**, `--color-link`, for a hyperlink in rendered Markdown (messages, task bodies, files), at least
+  - **One blue**, `--color-link`, for a hyperlink in rendered Markdown (messages, statuses, files), at least
     4.5:1 on every surface of its end, underlined in its own colour. Nothing else is blue: not a button, not the
     chrome's own links, not a mention (weight), not code.
   - **One red**, `--color-destruct`, for the armed button of a destruction that cannot be undone. The one control
@@ -67,13 +67,12 @@ Depth is stepped surface lightness, never a shadow.
 - **Important** (a message that needs the reader, and a count of such messages) is an **inverted pill**:
   `--color-loud` ground, `--color-bg` text. It is the loudest thing on a page; a page with three of them has stopped
   saying anything. A control that is armed for its second press wears the same inversion while it is armed.
-- **Locked** (a task a person assigned) is a quiet tag: `--color-edge-strong` outline, `--color-ink-dim` text, saying
-  who assigned it. A lock is a settled fact, not a call for attention.
-- **A task is held by an agent or by nobody**, never by a person, and an agent holds one task at a time. On the work
-  page's tasks tab a task shows its number (mono, 12 px, dim: agents and the system's notices name tasks by number); a
-  message still shows none.
-- **Overdue** (a task whose body was not updated as often as its poster asked) is a word in a dashed tag after a small
-  triangle, in `--color-ink`: shape and word, never a colour alone. "更新於 3 小時前" beside it is plain dim text.
+- **A status** (1s): each agent has one, written by itself, a one-line title and a body saying where it stands; a
+  person's is a title only (a mood, a few words about themselves), set by the person. It changes nothing of how
+  messages reach anyone. The title is plain text; the body is Markdown with mathematics, folded after about six lines.
+- **Overdue** (an agent that has not updated its status as often as its person asked) is a word in a dashed tag after
+  a small triangle, in `--color-ink`: shape and word, never a colour alone. "更新於 3 小時前" beside it is plain dim
+  text.
 - **A schedule's level** is a quiet tag; the usual level (normal) is unmarked.
 - **An agent's model** (as its program last said it) is a quiet tag in mono, 11 px, right after its name: in the
   member list, the profile card and the agent page; a message header carries the model its sender had when it was
@@ -87,7 +86,7 @@ Depth is stepped surface lightness, never a shadow.
   on the agent page): in the member's shape, a person's a rounded square and an agent's a disc, 128×128 kept, drawn
   at 16 to 64 px; without one, the first letter of the name on `--color-wash-3` in the dim ink. It is identity, never
   state: the presence mark stays beside it. It shows in a message's header, the member list, the profile card, the
-  agent page (its list, the chosen agent, the timeline) and the holder on the board, and the reader's own on the rail.
+  agent page (its list, the chosen agent, the timeline) and the dashboard's cards, and the reader's own on the rail.
   Always beside the name, never instead of it, so it says nothing to screen readers.
 - **Who is there** is shape and fill, 10 px: shape says who, fill says state.
   - an agent: a disc; a person: a square with a 2 px radius;
@@ -95,11 +94,8 @@ Depth is stepped surface lightness, never a shadow.
     page of the project is open in a browser (the page beats every few seconds); an agent as its presence says.
 - **What an agent is doing** is words next to its name, not a colour (1x): while online, **工作中** (its session did
   something within the last two minutes, as its program reads it from the session's own record) in `--color-ink`, or
-  **閒置** in the dim ink, after **有任務** when it holds a task ("有任務 · 閒置"). One that holds a task and has been
-  idle for longer than half an hour carries **有任務但閒置** in the overdue mark's shape instead (a dashed tag after a
-  small triangle, the time of its last activity in its title): a task taken and left is the exception worth ink.
-  Offline it carries none of them (the hollow mark says it). The same words in the member list, the agent page, the
-  private conversations and the composer's list of names.
+  **閒置** in the dim ink. Offline it carries neither (the hollow mark says it). The same words in the member list, the
+  agent page, the dashboard, the private conversations and the composer's list of names.
 - **A quota** (the 5-hour and weekly use of a product, as the person's own program last reported it) is plain dim
   text, "5 小時 23%・週 41%", shown only to that person: on the agent page of their own agents (the reset times in its
   title) and in 電腦和連接器 (a named line 用量 under the computer: one line per product, the product's name in the ink
@@ -156,7 +152,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   through the top line, and the top line's rule runs under both top cells. Chat, private messages, files, the agent
   page, the work page and the settings layer all have them.
 - The rail holds the top-level buttons, each a line glyph (`currentColor`, decorative) with a short word under it:
-  chat, private messages, files, agent, 看板 (the work page: the task board and the scheduled messages). No divider between them. At its foot the reader, whose menu opens the
+  chat, private messages, files, agent, 看板 (the work page: the dashboard and the scheduled messages). No divider between them. At its foot the reader, whose menu opens the
   personal settings (設定), all projects and sign-out. The current one is the current place; hover washes the glyph's tile only, so the
   word never jumps. Members, groups and the project's settings are not on the rail: the project menu leads there.
 - **Folding**: in a mode (chat, private messages, files, agent, work), pressing the button of the mode one is already in
@@ -239,19 +235,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **The member list** has a switch at its top, people | agents (remembered). Sections as Discord's: one per group
   shown separately, in the groups' order, holding the online members whose highest such group it is; then "在線"
   for the other online members; then "離線" for every offline member, whatever their groups. In a channel it lists
-  only who may read the channel. Under an agent's name,
-  its task as its status (a person holds none): its title on one line, cut with an ellipsis, and under it "更新於…"
-  with the overdue mark when an update is due; a long title folds under "n 項任務", opened in place; a locked task
-  carries the quiet tag. On the agents' side,
-  first, the tasks nobody holds, folded, with "open in the task table" and "new task" (its group chosen). A member's
-  row has its menu (a "..." control, right click, the context-menu key or Shift+F10); an agent's has "new task" and
-  "open in the task table"; each task has its own small menu: edit its title and body (in place), hand to another
-  agent ..., lock or unlock, release, 標記完成 (also for its poster), remove (in two steps, in place), offered only
-  where the page cannot already tell the answer is no; a done task only removes. It is the work page's task menu too.
+  only who may read the channel. Under a member's name, its status: an agent's title on one line, cut with an
+  ellipsis, with "更新於…" and the overdue mark; a person's title. The reader's own entry sets theirs in place (one
+  line: Enter saves, Escape gives up). A member's row has its menu (a "..." control, right click, the context-menu
+  key or Shift+F10); an agent's has "open on the dashboard".
 - **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
-  presence, groups as chips (× and + for who may change them; never the default groups), an agent's tasks, and the
-  acts mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus
-  goes back to the name.
+  presence, its status, groups as chips (× and + for who may change them; never the default groups), and the acts
+  mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus goes
+  back to the name.
 - **Private messages** have a page of their own (`/{slug}/dm/{name}`; the bare address opens the newest
   conversation): the conversation in the middle with the same composer and top bar as chat. An older address of a
   private conversation in chat leads there. A conversation that cannot be had (another person's agent) is answered in
@@ -260,7 +251,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   top-left cell (the project's name with its menu, the source in files, the project's name in settings) is the head
   of the second column there. The right column is a sheet over the messages that starts closed. Nothing scrolls
   sideways at 360 px.
-- Lists that update (messages, tasks, schedules, the explorer) never move what the reader is looking at: new things
+- Lists that update (messages, statuses, schedules, the explorer) never move what the reader is looking at: new things
   arrive at the end, and an editor that is open survives a refresh.
 - **New messages.** Opening a place draws a quiet line "新訊息" (a day's line in ink) above its first unread message.
   Messages that arrive while the reader is scrolled up stay unread until the end is seen, and a pill over the foot of
@@ -300,49 +291,45 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - The second column is every agent of the project **by group**, with no other sorting: sections by the custom
   groups in their order, then each person's agent group; an agent under the first custom group it is in, else under
   its person's agent group, else under AI. A row is a place row: presence, avatar, name (mono), the model tag, and
-  what it is doing (工作中, 閒置, 有任務, or the 有任務但閒置 tag) at the right; the chosen one is the current place.
-- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, what it is doing, what
-  it holds in one line (its task's number and title; a link to the board at this agent), for an agent of the reader's
-  own its quota in dim, then
+  what it is doing (工作中, 閒置) at the right; the chosen one is the current place.
+- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, what it is doing, for
+  an agent of the reader's own its quota in dim, then
   kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
   boxes, its avatar for its own person, remove from the project, which floats), then "邀請 agent" (the project menu's
   panel), only for who may.
-- The page is the chosen agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
+- The page starts with the chosen agent's **status**, in a quiet box: its title (600), its body (folded, opened in
+  place), "更新於 3 小時前" with the overdue mark, and for its own person "要求每 __ 小時更新" (set or clear, in place);
+  for others, how often its person asks, as dim text.
+- Under it the agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
   older items loaded on scrolling up, new ones arriving at the end. A switch over it (remembered): **找它的和它說的**
   (the default: what it sent, what mentions it, and the reader's private conversation with it) or **全部** (everything
   it sent or was handed). A message is a message row (time in the gutter, sender, model) whose header also says where
   it was (the channel, or "私訊", a link to it there). A change of state is a quiet line between them, as a day is:
-  time, then "上線", "離線" (its reason under it on a wash), or what happened to a task, by number. Each event once:
-  the system's message about a change of a task that is such a line is not drawn. Only what the reader may read is
-  there.
+  time, then "上線", "離線" (its reason under it on a wash), or its new status title ("狀態：…", "清除了狀態"). Only
+  what the reader may read is there.
 - Its own person has the composer at the foot, which writes to it privately; anybody else sees one quiet line saying
   who can. With no agent at all, the column says so and the page is empty.
 
 ### The work page
 
-- One page for the task table and the scheduled messages (`/{slug}/work`, `/work/schedules`; the former
+- One page for the dashboard and the scheduled messages (`/{slug}/work`, `/work/schedules`; the former
   `/agent/tasks`, `/agent/schedules` and `/schedules` answer with the same page at the matching tab). Top left the
-  project menu; top right the two tabs **任務 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
-  the current one, no counts), and at the right one action for the current tab (發布任務 / new schedule), only for
-  who may; below 900 px it is a round icon button with its name as label and tooltip.
-- The second column lists the tab's scopes. Tasks: three presets, **進行中** (the first: 待接 and 進行中), **已完成**,
-  **我的任務** (what I posted or assigned), then the custom groups and each person's agent group (the default groups
-  are not listed). Schedules: all, mine, paused, each place. The scope is in the
-  address's query, changed in place; below 900 px the list is in the drawer and the content starts with one line
-  naming the scope and its count, which opens it.
-- **The tasks tab is a bounty board**: whoever needs something posts it; an idle agent of the group it is open to
-  takes it and keeps its body current. Three sections in the reading column, in this order: **待接** (nobody holds it;
-  oldest first), **進行中** (an agent holds it) and **已完成** (done, newest first; the server keeps them 7 days). A
-  card: its number, its title (600), its body as Markdown with mathematics (about six lines, then "顯示全部" opens it in
-  place), and quiet lines: who posted it and how long ago, "開放給 {group}" as a quiet tag (the group decides which
-  agents may take it), "每 N 小時更新" and "更新於 3 小時前" with the overdue mark; a task held also shows its holder
-  (presence, name in mono, model tag), since when it holds it, and the lock's quiet tag; a done one, who finished it
-  and "完成於 …". Posting, "發布任務", is a form in place at the top: **標題** first, then **內容** (optional), **開放給**
-  (AI, every agent, unless the scope is a group), **指定給** (optional, with the lock), and "要求每 __ 小時更新內容"
-  (optional). Choosing an agent that holds a task says in place what happens: "{agent} 正在做「{title}」：交給它會把
-  那件退回待接", or, for a locked one, who must take it off the agent first.
+  project menu; top right the two tabs **儀表板 · 排程訊息**, drawn as the files tabs are (ink and a 2 px underline for
+  the current one, no counts), and at the right one action for the current tab (new schedule), only for who may;
+  below 900 px it is a round icon button with its name as label and tooltip.
+- The second column lists the tab's scopes. The dashboard: **所有群組** (the first: every agent), then each group that
+  has agents (the custom groups in their order, each person's agent group, then the default ones), with its number of
+  agents. Schedules: all, mine, paused, each place. The scope is in the address's query, changed in place; below
+  900 px the list is in the drawer and the content starts with one line naming the scope and its count, which opens
+  it.
+- **The dashboard** is one card per agent of the chosen scope, in a grid of cards on the surface: its avatar,
+  presence, name (mono, 600, a link to the agent page), model tag and what it is doing; its person, "離線" when it is,
+  and, for an agent of the reader's own, its quotas; then its status: the title (600), the body (about six lines,
+  then "顯示全部" opens it in place), "更新於 3 小時前" with the overdue mark (an overdue card's edge is dashed too);
+  "還沒有狀態" when it has none. For the agent's own person, "要求每 __ 小時更新" with 設定 and 不要求, saved in place;
+  for others, "每 N 小時更新" as dim text.
 - A schedule says where to, when next over how often, its text and its last message or why it is paused. Every row's
-  acts are behind one "..." control; a new task or schedule is a form in place, which Escape closes.
+  acts are behind one "..." control; a new schedule is a form in place, which Escape closes.
 
 ### Files mode
 
@@ -430,7 +417,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the code, else the code alone), in the reader's language: never the server's sentence, which is English and written
   for agents. A field is checked in place: what is wrong with it is said under it (a name refused, a field left empty,
   an address that is not one), never in the browser's own bubble.
-- What can be done to a message or a task appears on hover and on keyboard focus of its row; on a touch screen it is
+- What can be done to a message or a schedule appears on hover and on keyboard focus of its row; on a touch screen it is
   always there. Nothing is reachable by hover alone.
 - **Right click is never the only way.** The menu of an entry (a file or folder in the explorer, a tab, a channel,
   a member's name, a group) opens by right click, by the context-menu key or Shift+F10 on the focused row, and by a
@@ -442,7 +429,7 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape
   gives up, and a refused name is said under the field, which stays.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen
-  ("移除任務 12") and a second press does it; moving away disarms it. No browser dialogs.
+  ("確定移除這個排程") and a second press does it; moving away disarms it. No browser dialogs.
 - **A destruction that cannot be undone floats**: a centred panel over a dimmed page, its button armed only when the
   thing's name is typed (a project's name, not its address; a channel's deletion asks without typing), and that
   button is the one red. A new project is made with its name (and repository); the server gives its address. Escape and a click

@@ -77,7 +77,9 @@ GLYPHS = {
     "save": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
     "chevron": '<path d="M7 10l5 5 5-5"/>',
     "invite": '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 19.5c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5"/><path d="M19 7v6M16 10h6"/>',
-    "tasks": '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17"/>',
+    # The work page (the dashboard and scheduled messages): four tiles.
+    "dashboard": '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/>'
+                 '<rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
     "search": '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
     "gear": '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1'
             'M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>',
@@ -271,10 +273,10 @@ def _repo_link(tr: Translator, repo: str) -> str:
 
 
 # The rail's buttons in their order: (page, glyph, word, full name, id). Members, groups and the project's settings
-# are reached from the project menu; tasks and scheduled messages are the work page's tabs.
+# are reached from the project menu; the dashboard and scheduled messages are the work page's tabs.
 RAIL = (("messages", "chat", "rail.chat", "nav.messages", "rail-chat"), ("dm", "dm", "rail.dm", "nav.dm", "rail-dm"),
         ("files", "files", "rail.files", "nav.files", "rail-files"), ("agent", "my", "rail.my", "nav.my", "rail-my"),
-        ("work", "tasks", "rail.work", "nav.work", "rail-work"))
+        ("work", "dashboard", "rail.work", "nav.work", "rail-work"))
 # The modes whose second column the button of the mode one is in folds away (rail.js): (fold key, the column's id).
 FOLDS = {"messages": ("chat", "side"), "dm": ("dm", "side"), "files": ("files", "explorer"),
          "agent": ("agent", "agent-side"), "work": ("work", "work-side")}
@@ -652,7 +654,8 @@ def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> st
 
 
 def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) -> dict[str, str]:
-    """The reader's own settings: their name and avatar in this project (#me-avatar, drawn by me.js), their GitHub
+    """The reader's own settings: their name, status (one line) and avatar in this project (#me-avatar, drawn by
+    me.js), their GitHub
     account as a fact, the language and the look of the pages (profile); their computers and connectors (me.js draws
     them from /api/my and /api/me/computers); who writes their changes to the shared files, the server with their
     GitHub authorization or one of their computers (writing: me.js, from /api/me/writer, /api/me/computers and
@@ -666,6 +669,9 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) ->
     profile = (f'<form class="stack set-form" id="me-name">'
                f'{_field(tr, "me.name", "name", me["name"], REQUIRED_40)}'
                f'<p class="dim">{e(tr("me.name_hint"))}</p>{_save_row(tr)}</form>'
+               f'<form class="stack set-form" id="me-status">'
+               f'{_field(tr, "me.status", "title", me["status"], ' maxlength="200"')}'
+               f'<p class="dim">{e(tr("me.status_hint"))}</p>{_save_row(tr)}</form>'
                f'<dl class="set-facts"><dt>{e(tr("me.github"))}</dt><dd class="mono">{e(me["github_login"])}</dd></dl>'
                f'<h3 class="set-sub">{e(tr("me.avatar"))}</h3>'
                f'<div id="me-avatar" class="avatar-set"></div><p class="dim">{e(tr("me.avatar_hint"))}</p>'
@@ -763,9 +769,9 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
     """Chat (`dm` None) and private messages (`dm` the other member's name, "" for none chosen yet): the project menu
     in the top-left cell, the channels or the conversations under it, the place's name (which opens its settings or
     the other member's card), the member list toggle and the search icon in the top-right cell, the chosen place in
-    the middle, and the right column showing one thing at a time (the member list with each agent's tasks, or
+    the middle, and the right column showing one thing at a time (the member list with each member's status, or
     search). The second column's lists are the frame's (frame.js); the page scripts keep the rest current through the
-    JSON API (messages.js, tasks.js, people.js, search.js; right.js decides what the right column shows). What the
+    JSON API (messages.js, statuses.js, people.js, search.js; right.js decides what the right column shows). What the
     scripts need is in data- attributes. `refused` (a sentence and a status): a private conversation that cannot be
     had, answered in the same frame with the sentence in the place of the conversation and nothing to write with."""
     if refused is not None:
@@ -775,8 +781,7 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
         return layout(tr, tr("dm.title"), body, person, frame, "dm", status=status, page_class="room-page",
                       corner=_project_button(tr, frame), column=_dm_side(tr, frame), bar=bar)
     data = {"slug": frame["slug"], "me": person["name"], "mode": "chat" if dm is None else "dm",
-            "place": dm or "", "can-edit-tasks": "1" if view["can_edit_tasks"] else "",
-            "can-manage-channels": "1" if view.get("can_manage_channels") else ""}
+            "place": dm or "", "can-manage-channels": "1" if view.get("can_manage_channels") else ""}
     room = (f'<div id="chat" class="room" {_attrs(data)}>'
             f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
             f'{e(tr("msg.older"))}</button></div>'
@@ -815,7 +820,7 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
                   column=_side(tr, frame) if dm is None else _dm_side(tr, frame), bar=_chat_bar(tr),
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                           "render.js", "paths.js", "right.js", "tasks.js", "people.js", "emoji.js", "messages.js",
+                           "render.js", "paths.js", "right.js", "statuses.js", "people.js", "emoji.js", "messages.js",
                            "search.js"])
 
 
@@ -872,10 +877,11 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
     """The agent page (m1f6_contract.md section 10), in the frame's four cells: the project menu top left; every agent
     of the project in the second column (#agent-list), by group; top right the chosen
     agent (#agent-head: name, kind, owner, model, presence) with its person's acts (#agent-acts) and "invite agent";
-    the page is the chosen agent's timeline (#agent-timeline: its messages and changes of state, newest at the
-    bottom; #tl-filter: what concerns it, or everything), with a composer (#tl-composer) that its own person writes to
-    it with. agentpage.js draws all of it from
-    the members (frame.js) and the timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
+    the page is the chosen agent's status (#agent-status: title, body, when it was updated, overdue, and for its
+    person how often to update it) over its timeline (#agent-timeline: its messages and changes of state, newest at
+    the bottom; #tl-filter: what concerns it, or everything), with a composer (#tl-composer) that its own person
+    writes to it with. agentpage.js draws all of it from the members (frame.js), the statuses (/api/statuses) and the
+    timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
     slug, mine = frame["slug"], set(frame["perms"])
     column = (f'<nav id="agent-side" class="column agent-side" aria-label="{e(tr("agp.list"))}"><div class="side-inner">'
               f'<div id="agent-list" class="agent-list"></div></div></nav>')
@@ -889,6 +895,7 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
                       f'aria-pressed="{"true" if k == "concerns" else "false"}">{e(tr("agp.filter." + k))}</button>'
                       for k in ("concerns", "all"))
     body = (f'<section id="agent-timeline" class="room timeline" aria-label="{e(tr("agp.timeline"))}" {_attrs(data)}>'
+            f'<section id="agent-status" class="agent-status" aria-label="{e(tr("agp.status"))}" hidden></section>'
             f'<div id="tl-filter" class="seg tl-filter" role="group" aria-label="{e(tr("agp.filter"))}">{filters}</div>'
             f'<div id="tl-scroller" class="scroller"><p id="tl-older" class="tl-note" hidden></p>'
             f'<ol id="tl-list" class="messages" aria-live="polite"></ol></div>'
@@ -900,20 +907,20 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
                   corner=_project_button(tr, frame), column=column, bar=bar,
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                           "render.js", "paths.js", "people.js", "agentpage.js"])
+                           "render.js", "paths.js", "people.js", "statuses.js", "agentpage.js"])
 
 
 # The work page's tabs: (tab, its address under /{slug}/work, its word).
-WORK_TABS = (("tasks", "", "ag.tab.tasks"), ("schedules", "/schedules", "ag.tab.schedules"))
+WORK_TABS = (("dashboard", "", "ag.tab.dashboard"), ("schedules", "/schedules", "ag.tab.schedules"))
 
 
 def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str, view: dict[str, Any]) -> tuple[str, int]:
-    """The work page (m1f6_contract.md section 11; the tabs as m1f5_agent_page_design.md built them): the task table
-    and the scheduled messages as two tabs at their own addresses, in the frame's four cells: the project menu top
-    left, the current tab's scopes as the second column (#work-side, drawn by workpage.js), the tabs (#work-tabs) and
-    the tab's one action top right, the tab's list as the page. Each tab is drawn from the JSON API by its script
-    (tasktable.js, schedules.js); the form for a new schedule (#schedule-form) is in the page only for who may create
-    one."""
+    """The work page (m1f6_contract.md section 11; the tabs as m1f5_agent_page_design.md built them): the dashboard
+    (m1s_contract.md section 5) and the scheduled messages as two tabs at their own addresses, in the frame's four
+    cells: the project menu top left, the current tab's scopes as the second column (#work-side, drawn by
+    workpage.js), the tabs (#work-tabs) and the tab's one action top right, the tab's content as the page. Each tab is
+    drawn from the JSON API by its script (dashboard.js, schedules.js); the form for a new schedule (#schedule-form) is
+    in the page only for who may create one."""
     slug = frame["slug"]
     base = f"/{q(slug)}/work"
     tabs = []
@@ -921,23 +928,21 @@ def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str
         cur = ' aria-selected="true" aria-current="page"' if k == tab else ' aria-selected="false"'
         tabs.append(f'<a class="ag-tab" role="tab" href="{e(base + path)}" data-tab="{k}"{cur}>{e(tr(key))}</a>')
     action = ""
-    if tab == "tasks" and view["can_edit_tasks"]:
-        action = _action(tr, "task-new", "tt.post_task", 'aria-expanded="false"')
-    elif tab == "schedules" and view["can_create"]:
+    if tab == "schedules" and view["can_create"]:
         action = _action(tr, "schedule-new", "sch.new", 'aria-expanded="false" aria-controls="schedule-form"')
     bar = (f'<nav id="work-tabs" class="ag-tabs" role="tablist" aria-label="{e(tr("ag.tabs"))}">{"".join(tabs)}</nav>'
            f'<span class="spacer"></span>{action}')
     column = (f'<nav id="work-side" class="column agent-side" aria-label="{e(tr("ag.scopes"))}">'
               f'<div id="work-scopes" class="side-inner"></div></nav>')
-    data = {"slug": slug, "me": person["name"], "tab": tab, "can-edit-tasks": "1" if view["can_edit_tasks"] else "",
+    data = {"slug": slug, "me": person["name"], "tab": tab,
             "can-manage": "1" if view["can_manage"] else "", "can-create": "1" if view["can_create"] else ""}
     styles: list[str] = []
-    if tab == "tasks":
-        content = '<div id="task-table" class="ag-view"></div>'
-        # A task's body is Markdown with mathematics (render.js), as a message.
+    if tab == "dashboard":
+        content = '<div id="dashboard" class="ag-view"></div>'
+        # A status's body is Markdown with mathematics (render.js), as a message.
         styles = ["vendor/katex/katex.min.css"]
         scripts = ["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                   "render.js", "people.js", "tasks.js", "workpage.js", "tasktable.js"]
+                   "render.js", "paths.js", "people.js", "statuses.js", "workpage.js", "dashboard.js"]
     else:
         data.update({"places": view["places"], "min-every": view["min_every_s"]})
         form = '<form id="schedule-form" class="ag-form sch-form" hidden></form>' if view["can_create"] else ""

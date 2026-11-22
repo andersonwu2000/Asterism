@@ -1,5 +1,5 @@
 // The work page (#work-page; m1f6_contract.md section 11, the tabs as m1f5_agent_page_design.md built them): what its
-// two tabs (tasktable.js, schedules.js) share, Asterism.workPage.
+// two tabs (dashboard.js, schedules.js) share, Asterism.workPage.
 // - The scope of the tab shown is the address's query, changed in place with history.pushState (the data is already
 //   loaded); an unknown value shows the tab's first scope. The second column (#work-scopes) lists the tab's scopes as
 //   chat lists its places, under small headings: the chosen one is the current place, a count is plain dim text and
@@ -22,9 +22,9 @@
   var G = A.workPage = {
     slug: SLUG, me: root.dataset.me, tab: TAB, api: "/" + encodeURIComponent(SLUG) + "/api/",
     home: "/" + encodeURIComponent(SLUG) + "/work",
-    canEditTasks: !!root.dataset.canEditTasks, canManage: !!root.dataset.canManage, canCreate: !!root.dataset.canCreate
+    canManage: !!root.dataset.canManage, canCreate: !!root.dataset.canCreate
   };
-  G.base = G.home + (TAB === "tasks" ? "" : "/" + TAB);
+  G.base = G.home + (TAB === "dashboard" ? "" : "/" + TAB);
   var tab = null;              // what the tab registered: {scopes(), current(), draw(), title(), busy()}
   var pending = false;
 
@@ -77,7 +77,7 @@
       if (x.count) {
         var c = make("span", "count", String(x.count));
         c.setAttribute("aria-hidden", "true");
-        a.append(c, make("span", "vh", t("tt.count", {n: x.count})));
+        a.append(c, make("span", "vh", t("ag.n", {n: x.count})));
       }
       li.appendChild(a);
       ul.appendChild(li);
@@ -191,7 +191,7 @@
     box.appendChild(p);
     requestAnimationFrame(function () {
       if (opened[key] || !p.isConnected || p.scrollHeight <= p.clientHeight + 1) return;
-      var more = A.button("btn tt-more", t("tt.more"), function () {
+      var more = A.button("btn tt-more", t("ag.more"), function () {
         opened[key] = true;
         p.classList.remove("clamped");
         more.remove();

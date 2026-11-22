@@ -6,13 +6,13 @@
 //   order, holding the online members whose highest such group it is; "online" for the other online members;
 //   "offline" for every offline member. In a channel only who may read it (its permissions' readers). A row keeps the
 //   name's width; what an agent is doing stays by it (frame.js, S.workMark), the owner note goes first. Under each
-//   agent, its task (tasks.js: its title, when its body was last updated, the overdue mark; a person holds none), and on the agents'
-//   side, first, the tasks nobody holds, folded, with "open in the task table". A member's row has a "..."
+//   member, its status (1s, statuses.js): an agent's title on one line, cut with an ellipsis, with "更新於 3 小時前" and
+//   the overdue mark; a person's title; the reader's own entry sets it in place (one line). A member's row has a "..."
 //   control, right click, the context-menu key or Shift+F10 for the member's menu;
-// - a profile card (a popover: name, kind, presence, groups with x and +, an agent's tasks, and mention, private
-//   message, open in settings), opened by any name marked data-member (in a message, the member list); the member's
-//   menu gives the same acts, with the groups as a submenu of check boxes, for an agent "new task" and "open in the
-//   task table", and removal at the foot.
+// - a profile card (a popover: name, kind, presence, its status, groups with x and +, and mention, private message,
+//   open in settings), opened by any name marked data-member (in a message, the member list); the member's menu gives
+//   the same acts, with the groups as a submenu of check boxes, for an agent "open on the dashboard", and removal at
+//   the foot.
 // Default groups (owner, human, ai) are never shown as groups here: only in the settings layer.
 // The data is /api/members as the frame reads it (Asterism.side) or as the settings layer holds it.
 "use strict";
@@ -113,8 +113,8 @@
     return R;
   };
 
-  // An agent's state in words (frame.js, S.workText): working or idle while online, after "has a task" when it holds
-  // one, or "has a task, idle" for one idle too long; nothing while offline or for a person.
+  // An agent's state in words (frame.js, S.workText): working or idle while online; nothing while offline or for a
+  // person.
   P.stateWord = function (who, isAgent) {
     return isAgent && S ? S.workText(who) : "";
   };
@@ -188,7 +188,7 @@
   // ------------------------------------------------------------------ in chat and private messages
   var chat = document.getElementById("chat");
   if (!chat || !A.side) return;
-  var S = A.side, T = A.tasks;
+  var S = A.side, St = A.statuses;
 
   function view() { return S.members; }
   function rulesNow() { return view() ? P.rules(view()) : null; }
@@ -271,16 +271,14 @@
     groups.appendChild(chips);
     card.appendChild(groups);
 
-    var mine = T ? T.of(name) : [];
-    if (found.isAgent) {
-      var tasks = make("section", "card-sec");
-      tasks.appendChild(make("h3", "", t("people.tasks")));
-      if (!mine.length) tasks.appendChild(make("p", "dim small", t("people.no_tasks")));
-      var ul = make("ul", "card-tasks");
-      mine.forEach(function (x) { ul.appendChild(make("li", "", x.title)); });
-      if (mine.length) tasks.appendChild(ul);
-      card.appendChild(tasks);
-    }
+    // Its status: an agent's title with when it was updated and the overdue mark, a person's title.
+    var st = who.status || {};
+    var status = make("section", "card-sec");
+    status.appendChild(make("h3", "", t("people.status")));
+    status.appendChild(make("p", st.title ? "card-status" : "dim small", st.title || t("people.no_status")));
+    var upd = found.isAgent && St ? St.updated(st) : null;
+    if (upd) status.appendChild(upd);
+    card.insertBefore(status, groups);
 
     var acts = make("div", "card-acts");
     if (A.chat) {
@@ -316,13 +314,10 @@
 
   // ------------------------------------------------------------------ the menu of a member
 
-  // A new task for a member is written in the member list, under the member.
-  function newTask(found) {
-    if (!T) return;
-    side = found.isAgent ? "agents" : "people";
-    A.store.set(SIDE_KEY, side);
-    if (A.right && A.right.current !== "members") A.right.show("members", {remember: true});
-    T.startAdding(found.who.name);
+  function dashboardHref(name) {
+    var a = view() && view().agents.filter(function (x) { return x.name === name; })[0];
+    var own = a && P.rules(view()).plainOf(a)[0];
+    return "/" + encodeURIComponent(SLUG) + "/work" + (own ? "?group=" + encodeURIComponent(own.name) : "");
   }
 
   P.menu = function (name, where, opener) {
@@ -331,10 +326,7 @@
     if (A.chat) items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
     if (mayMessage(found)) items.push({label: t("people.message"), href: dmHref(name)});
     if (found) {
-      if (T && found.isAgent && T.canEdit && T.mayGive(name) && T.groupsFor(name).length) {
-        items.push({label: t("task.add"), run: function () { newTask(found); }});
-      }
-      if (T && found.isAgent) items.push({label: t("task.open_table"), href: T.tableHref("agent=" + encodeURIComponent(name))});
+      if (found.isAgent) items.push({label: t("people.open_dashboard"), href: dashboardHref(name)});
       var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) { after(r, null); });
       if (boxes.length) items.push({label: t("people.groups"), items: boxes});
       if (rules.mayManage()) items.push({label: t("people.open_settings"), href: settingsHref(name)});
@@ -408,10 +400,7 @@
     acts.addEventListener("click", function () { P.menu(who.name, {anchor: acts}, acts); });
     line.append(b, acts);
     li.appendChild(line);
-    if (T && found.isAgent) {
-      li.appendChild(T.block(T.of(who.name), "m:" + who.name));
-      if (T.adding && T.adding.member === who.name) li.appendChild(T.addForm(who.name));
-    }
+    li.appendChild(statusLine(found));
     return li;
   }
 
@@ -436,39 +425,22 @@
     });
   }
 
-  function unheld() {
-    var box = make("section", "psec punheld"), list = T.unheld();
-    if (!list.length && !T.canEdit) return null;
-    var head = make("div", "psec-head");
-    var fold = A.button("ptask-fold psec-fold", t("task.unheld", {n: list.length}));
-    var open = !!T.open.unheld || (T.adding && T.adding.member === "");
-    fold.setAttribute("aria-expanded", String(open));
-    fold.dataset.key = "fold:unheld";
-    var inner = make("div", "punheld-body");
-    inner.id = "unheld-body";
-    inner.hidden = !open;
-    fold.setAttribute("aria-controls", inner.id);
-    fold.addEventListener("click", function () {
-      T.open.unheld = inner.hidden;
-      inner.hidden = !inner.hidden;
-      fold.setAttribute("aria-expanded", String(!inner.hidden));
-    });
-    head.appendChild(fold);
-    var table = make("a", "btn quiet tadd-btn", t("task.open_table"));
-    table.href = T.tableHref("");
-    table.dataset.key = "table:unheld";
-    head.appendChild(table);
-    if (T.canEdit && !(T.adding && T.adding.member === "")) {
-      var add = A.button("btn quiet tadd-btn", "+ " + t("task.add"), function () { T.open.unheld = true; T.startAdding(""); });
-      add.dataset.key = "add:unheld";
-      head.appendChild(add);
+  // A member's status under its row: an agent's title (one line, the whole of it in its tooltip), when it was updated
+  // and the overdue mark; a person's title; the reader's own, set in place.
+  function statusLine(found) {
+    var who = found.who, st = who.status || {}, box = make("div", "pstatus");
+    if (!found.isAgent && who.name === ME && St) {
+      box.appendChild(St.mine(st.title || "", function () { S.loadMembers(); }));
+      return box;
     }
-    box.appendChild(head);
-    var ul = make("ul", "ptask-list");
-    list.forEach(function (x) { ul.appendChild(T.row(x)); });
-    inner.appendChild(ul);
-    if (T.adding && T.adding.member === "") inner.appendChild(T.addForm(""));
-    box.appendChild(inner);
+    if (st.title) {
+      var text = make("span", "pstatus-text", st.title);
+      text.title = st.title;
+      box.appendChild(text);
+    }
+    var upd = found.isAgent && st.title && St ? St.updated(st, "pstatus-updated") : null;
+    if (found.isAgent && !st.title && st.overdue && St) upd = St.updated({overdue: true}, "pstatus-updated");
+    if (upd) box.appendChild(upd);
     return box;
   }
 
@@ -484,10 +456,6 @@
     drawSwitch();
     A.keepFocus(body, function () {
       body.textContent = "";
-      if (side === "agents" && T && T.data) {
-        var u = unheld();
-        if (u) body.appendChild(u);
-      }
       var list = side === "agents" ? v.agents : v.people;
       // In a channel, only who may read it (as Discord's member list); in a private conversation, everyone.
       var may = readers.place === S.current && readers.names ? readers.names[side] : null;
@@ -516,7 +484,7 @@
     // The member's menu from the row (right click, the context-menu key and Shift+F10 come from the name button).
     body.addEventListener("contextmenu", function (ev) {
       var row = ev.target.closest(".prow");
-      if (!row || ev.target.closest("[data-member]") || ev.target.closest(".ptask")) return;
+      if (!row || ev.target.closest("[data-member]") || ev.target.closest(".pstatus")) return;
       var b = row.querySelector("[data-member]");
       if (!b) return;
       ev.preventDefault();
@@ -525,7 +493,7 @@
   }
 
   function redraw() {
-    if (T && T.busy()) return;
+    if (St && St.busy()) return;
     drawList();
   }
 
@@ -545,7 +513,7 @@
   var setCurrent = S.setCurrent;
   S.setCurrent = function (place) { setCurrent(place); loadReaders(); };
 
-  if (T) T.onChange(function () { drawList(); });
+  if (St) St.onChange(function () { drawList(); });
   S.onMembers(function () {
     loadReaders();
     redraw();

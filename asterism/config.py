@@ -35,10 +35,8 @@ class Settings:
     replay_keep_s: float            # the answer to a request with an Idempotency-Key is kept this long
     person_beat_s: float            # an open page of a project tells the server every this long that it is open
     person_offline_after_s: float   # a person whose last page beat is older than this is offline
-    task_hour_s: float              # one hour of a task's update_every_h (shorter in tests)
-    task_done_keep_s: float         # a done task stays listed this long, then it is deleted
+    status_hour_s: float            # one hour of an agent's update_every_h (shorter in tests)
     active_s: float                 # an agent whose session did something this recently is working (1x)
-    stale_s: float                  # an agent holding a task and idle this long is marked "has a task, idle"
     write_wait_s: float             # a write handed to the person's chosen computer is waited for this long (w2)
 
     @property
@@ -95,10 +93,8 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     replay_keep_s=_env_s("ASTERISM_REPLAY_KEEP_S", 86400),
                     person_beat_s=_env_s("ASTERISM_PERSON_BEAT_S", 20),
                     person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60),
-                    task_hour_s=_env_s("ASTERISM_TASK_HOUR_S", 3600),
-                    task_done_keep_s=_env_s("ASTERISM_TASK_DONE_KEEP_S", 604800),
+                    status_hour_s=_env_s("ASTERISM_STATUS_HOUR_S", 3600),
                     active_s=_env_s("ASTERISM_ACTIVE_S", 120),
-                    stale_s=_env_s("ASTERISM_STALE_S", 1800),
                     write_wait_s=_env_s("ASTERISM_WRITE_WAIT_S", 60))
 
 

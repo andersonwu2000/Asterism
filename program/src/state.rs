@@ -32,12 +32,16 @@ use std::time::Duration;
 pub fn home() -> PathBuf {
     let h = match std::env::var_os("ASTERISM_HOME").filter(|v| !v.is_empty()) {
         Some(h) => PathBuf::from(h),
-        None => {
-            let base = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
-            base.filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(".asterism")
-        }
+        None => default_home(),
     };
     // Absolute, because the resident program is started inside this folder and is told it again.
+    std::path::absolute(&h).unwrap_or(h)
+}
+
+/// The folder used when ASTERISM_HOME is not set: `.asterism` in the user's home folder.
+pub fn default_home() -> PathBuf {
+    let base = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
+    let h = base.filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(".asterism");
     std::path::absolute(&h).unwrap_or(h)
 }
 

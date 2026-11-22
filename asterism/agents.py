@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from . import messaging, notices, presence, projects, tasks, util
+from . import messaging, notices, presence, projects, statuses, util
 from .errors import ApiError, bad_request, conflict, invalid_credential
 from .projects import Actor, Project
 from .store import Store
@@ -354,13 +354,13 @@ def ack(c: Caller, ids: Any) -> dict[str, Any]:
     return messaging.ack(c.pj, messaging.agent_member(_agent(c)), ids)
 
 
-def task_list(c: Caller) -> dict[str, Any]:
-    return tasks.agent_tasks(c.pj, _agent(c))
+def status_list(c: Caller) -> dict[str, Any]:
+    return statuses.agent_statuses(c.pj, _agent(c))
 
 
-def task_update(c: Caller, args: dict[str, Any]) -> dict[str, Any]:
+def set_status(c: Caller, args: dict[str, Any]) -> dict[str, Any]:
     """An argument left out is not a change: `args` goes on as it came."""
-    return tasks.agent_update(c.pj, _agent(c), args)
+    return statuses.agent_set(c.pj, _agent(c), args)
 
 
 async def wait(c: Caller, timeout_s: Any, disconnected: Callable[[], Awaitable[Any]] | None = None) -> dict[str, Any]:

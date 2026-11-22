@@ -51,23 +51,15 @@
   S.presence = presence;
 
   // What an agent is doing, in words (1x): while online, working or idle (its session did something within the last
-  // two minutes, or not), after "has a task" when it holds one; nothing while offline (the hollow mark says that).
+  // two minutes, or not); nothing while offline (the hollow mark says that).
   S.workText = function (a) {
     if (!a || !a.online) return "";
-    if (a.stale) return t("nav.stale");
-    return (a.busy ? [t("nav.busy")] : []).concat(t(a.work === "active" ? "nav.active" : "nav.idle")).join(" · ");
+    return t(a.work === "active" ? "nav.active" : "nav.idle");
   };
-  // The same beside an agent's name: one word in `cls` (brighter while it works), or, for an agent that holds a task
-  // and has been idle too long, the dashed tag after a triangle (the overdue mark's shape: never a colour alone).
+  // The same beside an agent's name: one word in `cls` (brighter while it works).
   S.workMark = function (a, cls) {
     var text = S.workText(a);
     if (!text) return null;
-    if (a.stale) {
-      var tag = make("span", "tag overdue work-stale", text);
-      var lang = document.documentElement.lang || undefined;
-      if (a.last_active) tag.title = t("nav.stale_hint", {when: new Date(a.last_active).toLocaleString(lang)});
-      return tag;
-    }
     return make("span", (cls || "note") + (a.work === "active" ? " working" : ""), text);
   };
 
@@ -186,10 +178,12 @@
     if (raw === membersRaw) return S.members;
     membersRaw = raw;
     var d = {};
-    (r.data.people || []).forEach(function (x) { d[x.name] = {kind: "person", online: !!x.online, avatar: x.avatar || null}; });
+    (r.data.people || []).forEach(function (x) {
+      d[x.name] = {kind: "person", online: !!x.online, avatar: x.avatar || null, status: x.status || null};
+    });
     (r.data.agents || []).forEach(function (a) {
-      d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, busy: !!a.busy, work: a.work, stale: !!a.stale,
-                   last_active: a.last_active, avatar: a.avatar || null};
+      d[a.name] = {kind: "agent", online: !!a.online, owner: a.owner, work: a.work, last_active: a.last_active,
+                   avatar: a.avatar || null, status: a.status || null};
     });
     S.directory = d;
     S.members = r.data;

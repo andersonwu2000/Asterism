@@ -25,7 +25,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import (accounts, agents, assets, avatars, computers, config, downloads, files, messaging, oauth, pages, projects,
-               replays, schedules, tasks, timeline, tools, upkeep, usertokens, util, writer, writes)
+               replays, schedules, statuses, timeline, tools, upkeep, usertokens, util, writer, writes)
 from .errors import ApiError, bad_request, not_signed_in
 from .i18n import LOCALES, Translator, pick_locale
 from .projects import Actor, Project
@@ -553,35 +553,19 @@ async def api_member_remove(request: Request) -> Any:
     return projects.remove_member(pj, actor, request.path_params["name"])
 
 
-async def api_tasks(request: Request) -> Any:
+async def api_statuses(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    return tasks.table(pj, actor)
+    return statuses.board(pj, actor)
 
 
-def _for_people(request: Request, e: tasks.NotAnAgent) -> ApiError:
-    """The refusal of a person named as responsible, in the reader's language (agents get tasks.NOT_AN_AGENT)."""
-    return bad_request(e.code, tr_for(request)("task.not_an_agent", name=e.name))
-
-
-async def api_task_create(request: Request) -> Any:
+async def api_my_status(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    try:
-        return tasks.person_create(pj, actor, await body_json(request))
-    except tasks.NotAnAgent as e:
-        raise _for_people(request, e) from None
+    return statuses.person_set(pj, actor, await body_json(request))
 
 
-async def api_task_change(request: Request) -> Any:
+async def api_agent_update_every(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
-    try:
-        return tasks.person_change(pj, actor, request.path_params["tid"], await body_json(request))
-    except tasks.NotAnAgent as e:
-        raise _for_people(request, e) from None
-
-
-async def api_task_remove(request: Request) -> Any:
-    pj, actor = member_actor(request, request.path_params["slug"])
-    return tasks.person_remove(pj, actor, request.path_params["tid"])
+    return statuses.set_every(pj, actor, request.path_params["name"], await body_json(request))
 
 
 async def api_my(request: Request) -> Any:
@@ -753,12 +737,12 @@ async def agent_wait(request: Request, c: agents.Caller) -> Any:
     return await agents.wait(c, request.query_params.get("timeout_s"), disconnect_watch(request))
 
 
-async def agent_tasks(request: Request, c: agents.Caller) -> Any:
-    return agents.task_list(c)
+async def agent_statuses(request: Request, c: agents.Caller) -> Any:
+    return agents.status_list(c)
 
 
-async def agent_task(request: Request, c: agents.Caller) -> Any:
-    return agents.task_update(c, await body_json(request))
+async def agent_status(request: Request, c: agents.Caller) -> Any:
+    return agents.set_status(c, await body_json(request))
 
 
 async def agent_ack(request: Request, c: agents.Caller) -> Any:
@@ -1083,9 +1067,10 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
     me = messaging.person_member(pj, actor.person_id)
     mine = projects.permissions(pj, actor)
     pa = projects.people_and_agents(pj, work=True)
-    directory = {x["name"]: {"kind": "person", "online": x["online"], "avatar": x["avatar"]} for x in pa["people"]}
-    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "busy": a["busy"],
-                                  "work": a["work"], "stale": a["stale"], "avatar": a["avatar"]}
+    directory = {x["name"]: {"kind": "person", "online": x["online"], "avatar": x["avatar"], "status": x["status"]}
+                 for x in pa["people"]}
+    directory.update({a["name"]: {"kind": "agent", "online": a["online"], "owner": a["owner"], "work": a["work"],
+                                  "status": a["status"], "avatar": a["avatar"]}
                       for a in pa["agents"]})
     info = projects.info(pj)
     # The channels the reader may read (an override may grant one without the project's read), and private
@@ -1117,7 +1102,7 @@ async def messages_page(request: Request) -> Response:
         return ctx
     person, pj, actor = ctx
     mine = projects.permissions(pj, actor)
-    view = {"can_edit_tasks": "edit_tasks" in mine, "can_manage_channels": "manage_channels" in mine}
+    view = {"can_manage_channels": "manage_channels" in mine}
     return html(pages.messages(tr_for(request), person, _frame(pj, actor), view))
 
 
@@ -1135,7 +1120,7 @@ async def dm_page(request: Request) -> Response:
         messaging.require_read(pj, me)
     except ApiError as e:
         return page_error(request, e, person)
-    view = {"can_edit_tasks": "edit_tasks" in projects.permissions(pj, actor), "can_manage_channels": False}
+    view = {"can_manage_channels": False}
     if name:
         # A conversation that cannot be had is answered inside the frame, saying who may have it (m1f7 section 4).
         try:
@@ -1163,7 +1148,7 @@ async def agents_page(request: Request) -> Response:
 
 
 def _work_page(request: Request, tab: str) -> Response:
-    """The work page at one of its tabs: tasks (/{slug}/work, and the former /{slug}/agent/tasks) and scheduled
+    """The work page at one of its tabs: the dashboard (/{slug}/work, and the former /{slug}/agent/tasks) and scheduled
     messages (/{slug}/work/schedules, and the former /{slug}/agent/schedules and /{slug}/schedules). The scope of a
     tab is in the query and is the page script's business."""
     ctx = _page_context(request, request.path_params["slug"])
@@ -1171,8 +1156,7 @@ def _work_page(request: Request, tab: str) -> Response:
         return ctx
     person, pj, actor = ctx
     mine = projects.permissions(pj, actor)
-    view = {"can_create": {"create_schedule", "post"} <= mine, "can_manage": "manage_members" in mine,
-            "can_edit_tasks": "edit_tasks" in mine}
+    view = {"can_create": {"create_schedule", "post"} <= mine, "can_manage": "manage_members" in mine}
     if tab == "schedules":
         view["min_every_s"] = config.get().schedule_min_every_s
         view["places"] = {"channels": messaging.channel_names(pj, messaging.person_member(pj, actor.person_id)),
@@ -1183,8 +1167,8 @@ def _work_page(request: Request, tab: str) -> Response:
     return html(pages.work(tr_for(request), person, _frame(pj, actor), tab, view))
 
 
-async def tasks_page(request: Request) -> Response:
-    return _work_page(request, "tasks")
+async def dashboard_page(request: Request) -> Response:
+    return _work_page(request, "dashboard")
 
 
 async def schedules_page(request: Request) -> Response:
@@ -1217,7 +1201,9 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
         me = None
         if scope == "me":
             acc = accounts.person(store().accounts(), actor.person_id)
+            row = pj.db.execute("SELECT status_title FROM people WHERE person_id = ?", (actor.person_id,)).fetchone()
             me = {"name": projects.person_name(pj, actor.person_id), "github_login": acc["github_login"],
+                  "status": row["status_title"] if row else "",
                   "my": projects.my_view(pj, actor), "computers": computers.mine(store(), actor.person_id),
                   "writer": writer.state(store().accounts(), actor.person_id)}
     except ApiError as e:
@@ -1370,9 +1356,9 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/members", members_page),
         Route("/{slug}/my", agents_page),
         Route("/{slug}/agent", agents_page),
-        Route("/{slug}/agent/tasks", tasks_page),
+        Route("/{slug}/agent/tasks", dashboard_page),
         Route("/{slug}/agent/schedules", schedules_page),
-        Route("/{slug}/work", tasks_page),
+        Route("/{slug}/work", dashboard_page),
         Route("/{slug}/work/schedules", schedules_page),
         Route("/{slug}/admin", admin_page),
         Route("/{slug}/settings", settings_page),
@@ -1390,8 +1376,10 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/project", api(api_project_change), methods=["POST"]),
         Route("/{slug}/api/project/delete", api(api_project_delete), methods=["POST"]),
         Route("/{slug}/api/me/name", api(api_my_name), methods=["POST"]),
+        Route("/{slug}/api/me/status", api(api_my_status), methods=["POST"]),
         Route("/{slug}/api/me/avatar", api(api_my_avatar), methods=["POST"]),
         Route("/{slug}/api/agents/{name}/avatar", api(api_agent_avatar), methods=["POST"]),
+        Route("/{slug}/api/agents/{name}/update-every", api(api_agent_update_every), methods=["POST"]),
         Route("/{slug}/api/avatars/{kind}/{name}", api_avatar, methods=["GET"]),
         Route("/{slug}/api/members", api(api_members)),
         Route("/{slug}/api/invites", api(api_invites, 201), methods=["POST"]),
@@ -1436,10 +1424,7 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/files/rename", api(api_files_rename), methods=["POST"]),
         Route("/{slug}/api/me/writer", api(api_my_writer), methods=["POST"]),
         Route("/{slug}/api/presence", api(api_presence), methods=["POST"]),
-        Route("/{slug}/api/tasks", api(api_tasks), methods=["GET"]),
-        Route("/{slug}/api/tasks", api(api_task_create, 201), methods=["POST"]),
-        Route("/{slug}/api/tasks/{tid:int}", api(api_task_change), methods=["POST"]),
-        Route("/{slug}/api/tasks/{tid:int}/remove", api(api_task_remove), methods=["POST"]),
+        Route("/{slug}/api/statuses", api(api_statuses), methods=["GET"]),
         Route("/{slug}/api/agent/register", agent_api(agent_register, "after"), methods=["POST"]),
         Route("/{slug}/api/agent/leave", agent_api(agent_leave, None), methods=["POST"]),
         Route("/{slug}/api/agent/whoami", agent_api(agent_whoami)),
@@ -1447,8 +1432,8 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/agent/send", agent_api(agent_send), methods=["POST"]),
         Route("/{slug}/api/agent/messages", agent_api(agent_messages)),
         Route("/{slug}/api/agent/wait", agent_api(agent_wait)),
-        Route("/{slug}/api/agent/tasks", agent_api(agent_tasks)),
-        Route("/{slug}/api/agent/task", agent_api(agent_task), methods=["POST"]),
+        Route("/{slug}/api/agent/statuses", agent_api(agent_statuses)),
+        Route("/{slug}/api/agent/status", agent_api(agent_status), methods=["POST"]),
         Route("/{slug}/api/agent/ack", agent_api(agent_ack, None), methods=["POST"]),
         Route("/{slug}/api/computer/sessions", api(computer_sessions), methods=["POST"]),
         Route("/{slug}/api/computer/poll", api(computer_poll)),

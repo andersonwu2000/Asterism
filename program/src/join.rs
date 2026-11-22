@@ -224,7 +224,7 @@ pub fn run(home: &Path, raw: &[String]) -> i32 {
             }
         }
         Some(p) => {
-            if !add_to_product(p, &exe) {
+            if !add_to_product(p, &exe, home) {
                 println!(
                     "Where things stand: this computer's approval is stored (running join again needs a new link but \
                      no new approval) and the resident program is installed; only adding the tools to {p} is left. \
@@ -257,7 +257,7 @@ pub fn remove_command(product: &str) -> Vec<String> {
 
 /// Add `asterism mcp` to the product's MCP servers with the product's own command, replacing an older entry
 /// of the same name. False (and what to run by hand is printed) when that cannot be done.
-fn add_to_product(product: &str, exe: &str) -> bool {
+fn add_to_product(product: &str, exe: &str, home: &Path) -> bool {
     let add = add_command(product, exe);
     let shown = push::shown(&add);
     let Some((found, shell)) = push::command(product) else {
@@ -278,6 +278,16 @@ fn add_to_product(product: &str, exe: &str) -> bool {
     match run(&add) {
         Ok((st, _, _)) if st.success() => {
             println!("Added the MCP server {SERVER_NAME} to {product}.");
+            // Codex does not pass its environment on to the tools it starts: a state folder other than the
+            // default one is written into the entry, or its tools would act for what the default folder holds.
+            if product == "codex" && home != state::default_home() {
+                if let Err(e) = crate::allow::codex_home(home) {
+                    println!(
+                        "Codex could not be told that Asterism's folder here is {} ({e}); its tools will use the default folder.",
+                        home.display()
+                    );
+                }
+            }
             let name = crate::allow::display(product);
             // Whoever runs join: the person agreed to this when they made the invitation link (the page says
             // so). Not a reason to fail the join: the tools work, only with a prompt the person can answer.

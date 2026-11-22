@@ -107,7 +107,7 @@ fn claude_settings() -> PathBuf {
 /// Whether `asterism-local` is among the product's MCP servers (user scope), read from the product's files.
 pub fn added(product: &str) -> bool {
     match product {
-        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t).is_some()),
+        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t, CODEX_KEY).is_some()),
         _ => {
             // Claude Code keeps its user-scope servers in .claude.json: inside CLAUDE_CONFIG_DIR when that is
             // set, else in the home folder itself.
@@ -126,7 +126,7 @@ pub fn added(product: &str) -> bool {
 /// Whether the product runs Asterism's tools without asking (read only).
 pub fn allowed(product: &str) -> bool {
     match product {
-        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t).is_some_and(|s| s.2)),
+        "codex" => fs::read_to_string(codex_config()).is_ok_and(|t| codex_section(&t, CODEX_KEY).is_some_and(|s| s.2)),
         _ => fs::read(claude_settings())
             .ok()
             .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
@@ -136,8 +136,8 @@ pub fn allowed(product: &str) -> bool {
 }
 
 /// The section `[mcp_servers.asterism-local]` of a Codex config: (its header line, the line after its end,
-/// whether it holds the approval key), in lines as `split_inclusive('\n')` gives them.
-fn codex_section(text: &str) -> Option<(usize, usize, bool)> {
+/// whether it holds `key`), in lines as `split_inclusive('\n')` gives them.
+fn codex_section(text: &str, key: &str) -> Option<(usize, usize, bool)> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let is_header = |l: &str| {
         let compact: String = l.trim().chars().filter(|c| !c.is_whitespace()).collect();
@@ -146,7 +146,7 @@ fn codex_section(text: &str) -> Option<(usize, usize, bool)> {
     let start = lines.iter().position(|l| is_header(l))?;
     let end = lines[start + 1..].iter().position(|l| l.trim_start().starts_with('[')).map_or(lines.len(), |i| start + 1 + i);
     let has_key = lines[start + 1..end].iter().any(|l| {
-        l.split_once('=').is_some_and(|(k, _)| k.trim().trim_matches(|c| c == '"' || c == '\'') == CODEX_KEY)
+        l.split_once('=').is_some_and(|(k, _)| k.trim().trim_matches(|c| c == '"' || c == '\'') == key)
     });
     Some((start, end, has_key))
 }
@@ -154,11 +154,26 @@ fn codex_section(text: &str) -> Option<(usize, usize, bool)> {
 /// `codex mcp add` has no option for this and does not keep a `-c` override, so the key is added to the
 /// section that command wrote: one line inserted after the section's last line, nothing else touched.
 fn codex(path: &Path) -> Result<(), String> {
+    codex_line(path, CODEX_KEY, &format!("{CODEX_KEY} = \"approve\""))
+}
+
+/// Tell Codex which state folder its `asterism mcp` uses: Codex does not pass its own environment on to the
+/// tools it starts, so the folder is written into the entry's `env` (ASTERISM_HOME), the same way as the
+/// approval key. An entry that has an `env` already is left as it is.
+pub fn codex_home(home: &Path) -> Result<(), String> {
+    let quoted = home.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    codex_line(&codex_config(), "env", &format!("env = {{ ASTERISM_HOME = \"{quoted}\" }}"))
+}
+
+/// One `line` added after the last line of the section `[mcp_servers.asterism-local]`, unless the section
+/// holds `key` already (as a key, or as its own sub-table); nothing else touched.
+fn codex_line(path: &Path, key: &str, line: &str) -> Result<(), String> {
     let text = fs::read_to_string(path).map_err(|e| format!("cannot read {} ({e})", path.display()))?;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let (start, end, has_key) =
-        codex_section(&text).ok_or("there is no section [mcp_servers.asterism-local] in it")?;
-    if has_key {
+        codex_section(&text, key).ok_or("there is no section [mcp_servers.asterism-local] in it")?;
+    let sub_table = format!("[mcp_servers.asterism-local.{key}]");
+    if has_key || lines.iter().any(|l| l.chars().filter(|c| !c.is_whitespace()).collect::<String>() == sub_table) {
         return Ok(());
     }
     // After the last line of the section that is not blank, in the file's own line ending.
@@ -171,7 +186,7 @@ fn codex(path: &Path) -> Result<(), String> {
             if !l.ends_with('\n') {
                 out.push_str(eol);
             }
-            out.push_str(&format!("{CODEX_KEY} = \"approve\"{eol}"));
+            out.push_str(&format!("{line}{eol}"));
         }
     }
     replace(path, out.as_bytes()).map_err(|e| format!("cannot write {} ({e})", path.display()))

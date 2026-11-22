@@ -1,5 +1,6 @@
 // The reader's own settings (the settings layer at /{slug}/me; settings.js switches its sections):
-// - profile: the name in this project (#me-name: sent, then the page again, so every place shows it), the avatar
+// - profile: the name in this project (#me-name: sent, then the page again, so every place shows it), the status in
+//   this project (#me-status: one line, a mood or a few words about oneself, saved in place; 1s), the avatar
 //   in this project (#me-avatar: the picture or the monogram, "choose a picture" and "remove", A.side.pickAvatar), the
 //   language of the pages (#me-locale: kept with the account, then the page again in it) and the look (#me-theme:
 //   dark, light, or the system's, kept in this browser as before);
@@ -50,6 +51,20 @@
         return;
       }
       window.location.reload();
+    });
+  }
+
+  var statusForm = document.getElementById("me-status");
+  if (statusForm) {
+    statusForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var out = statusForm.querySelector(".out");
+      out.textContent = "";
+      var r = await A.request(API + "me/status", null, {title: statusForm.elements.title.value});
+      if (!r.ok) { A.fieldError(statusForm.elements.title, A.refusal("st.refused", r.data)); return; }
+      statusForm.elements.title.value = r.data.title;
+      A.saved(out);
+      if (A.side) A.side.loadMembers();
     });
   }
 

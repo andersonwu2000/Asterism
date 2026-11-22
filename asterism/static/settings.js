@@ -156,7 +156,6 @@
     var name = make("td", "mcell-name"), line = make("div", "mline");
     line.append(A.side ? A.side.presence(isAgent ? {kind: "agent", online: who.online} : {kind: "person"}) : make("span"),
                 make("span", "mname" + (isAgent ? " mono" : ""), who.name));
-    if (isAgent && who.busy) line.appendChild(make("span", "word", t("mem.busy")));
     name.appendChild(line);
     var kind = make("td", "dim", isAgent ? t("mem.agent_of", {owner: who.owner}) + " · " +
                                           t(who.online ? "presence.online" : "presence.offline") : t("mem.kind_person"));
@@ -425,7 +424,6 @@
     text.appendChild(make("span", "mname" + (isAgent ? " mono" : ""), who.name));
     var sub = [];
     if (isAgent) sub.push(t("mem.agent_of", {owner: who.owner}), t(who.online ? "presence.online" : "presence.offline"));
-    if (isAgent && who.busy) sub.push(t("mem.busy"));
     if (sub.length) text.appendChild(make("span", "msub", sub.join(" · ")));
     li.append(A.side ? A.side.presence(isAgent ? {kind: "agent", online: who.online} : {kind: "person"}) : make("span"), text);
     return li;

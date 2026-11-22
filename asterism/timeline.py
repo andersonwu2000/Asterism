@@ -1,7 +1,7 @@
 """An agent's timeline, for the agent page: the messages it sent or was handed, and its changes of state (online,
-offline with the reason, a task given to it, taken, released, finished or removed), oldest first.
+offline with the reason, a new status), oldest first.
 
-The changes of state are written down where they are decided (notices.sync for presence, tasks.py for tasks) in
+The changes of state are written down where they are decided (notices.sync for presence, statuses.py for statuses) in
 the project's database, from f6b on; earlier ones are not recovered. Each is kept with the newest message id at the
 moment it happened, so the timeline places it among the messages without comparing clocks. Nothing is announced:
 this is a record for people to read, never something an agent is handed.
@@ -19,24 +19,21 @@ from typing import Any
 
 from . import messaging, util
 from .errors import bad_request, not_found
-from .messaging import Member
 from .projects import Actor, Project
 
-STATES = ("online", "offline", "task_given", "task_taken", "task_released", "task_done", "task_removed")
+STATES = ("online", "offline", "status")
 LIMIT_DEFAULT, LIMIT_MAX = 50, 200
 _STATE_CURSOR = re.compile(r"s(\d{1,18})")
 _NEVER = 1 << 62                    # larger than any id
 
 
-def note(pj: Project, agent_id: int, state: str, reason: str | None = None, task_id: int | None = None,
-         by: Member | None = None) -> None:
-    """Write down one change of an agent's state (outside any other transaction of the caller)."""
+def note(pj: Project, agent_id: int, state: str, reason: str | None = None, title: str | None = None) -> None:
+    """Write down one change of an agent's state (outside any other transaction of the caller). `title`: a status's
+    new title ('' when it was cleared)."""
     with pj.db:
         newest = pj.db.execute("SELECT coalesce(max(id), 0) FROM messages").fetchone()[0]
-        pj.db.execute("INSERT INTO agent_states (agent_id, state, reason, task_id, by_kind, by_id, after_message, at) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                      (agent_id, state, reason, task_id, by.kind if by else None, by.id if by else None, newest,
-                       util.now()))
+        pj.db.execute("INSERT INTO agent_states (agent_id, state, reason, title, after_message, at) "
+                      "VALUES (?, ?, ?, ?, ?, ?)", (agent_id, state, reason, title, newest, util.now()))
 
 
 def _cursor(pj: Project, agent_id: int, before: Any) -> tuple[int, int, int]:
@@ -57,36 +54,19 @@ def _cursor(pj: Project, agent_id: int, before: Any) -> tuple[int, int, int]:
     raise bad_request("bad_request", "before is a message id, or a state's id (s12).")
 
 
-def _by_name(pj: Project, kind: str | None, mid: int | None) -> str | None:
-    if kind == "person":
-        r = pj.db.execute("SELECT name FROM people WHERE person_id = ?", (mid,)).fetchone()
-    elif kind == "agent":
-        r = pj.db.execute("SELECT name FROM agents WHERE id = ?", (mid,)).fetchone()
-    else:
-        return None
-    return r["name"] if r else None
-
-
-def _state_view(pj: Project, r: sqlite3.Row) -> dict[str, Any]:
+def _state_view(r: sqlite3.Row) -> dict[str, Any]:
     out: dict[str, Any] = {"kind": "state", "id": f"s{r['id']}", "at": util.iso(r["at"]), "state": r["state"]}
     if r["reason"]:
         out["reason"] = r["reason"]
-    if r["task_id"] is not None:
-        out["task"] = r["task_id"]
-    who = _by_name(pj, r["by_kind"], r["by_id"])
-    if who:
-        out["by"] = who
+    if r["state"] == "status":
+        out["title"] = r["title"] or ""
     return out
 
 
 def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only: Any = None) -> dict[str, Any]:
     """The newest `limit` items of the agent's timeline older than `before`, oldest first, and whether there are
     older ones. `only` "concerns": of the messages, only those the agent sent, those that mention it and its private
-    conversation with the reader (the changes of state all the same).
-
-    Each event once: the system's message telling the agent of a change of its task is left out where the change is
-    one of its changes of state (written down just before that message was posted, so the message's id is the one
-    after the state's `after_message`)."""
+    conversation with the reader (the changes of state all the same)."""
     if only not in (None, "", "concerns"):
         raise bad_request("bad_request", "only is concerns, or nothing for everything.")
     me = messaging.person_member(pj, actor.person_id)
@@ -112,11 +92,8 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
         f"UNION SELECT message_id FROM levels WHERE reader_kind = 'agent' AND reader_id = ? AND seen IS NOT NULL "
         f"UNION SELECT id FROM messages WHERE place = ?) "
         f"AND m.id < ? AND (m.place IN ({','.join('?' * len(chans)) or 'NULL'}) OR m.place = ?) "
-        f"AND NOT (m.sender_kind = 'system' AND m.notice IS NULL AND EXISTS (SELECT 1 FROM agent_states s "
-        f"WHERE s.agent_id = ? AND s.state IN ('task_given', 'task_taken', 'task_released', 'task_done', 'task_removed') "
-        f"AND s.after_message = m.id - 1)) "
         f"{concerns}ORDER BY m.id DESC LIMIT ?",
-        (a["id"], a["id"], a["id"], private, below, *chans, private, a["id"],
+        (a["id"], a["id"], a["id"], private, below, *chans, private,
          *((a["id"], private, json.dumps(a["name"])) if concerns else ()), n + 1)).fetchall()
     states = pj.db.execute(
         "SELECT * FROM agent_states WHERE agent_id = ? AND (after_message < ? OR (after_message = ? AND id < ?)) "
@@ -133,5 +110,5 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
             sent = r["sender_kind"] == "agent" and r["sender_id"] == a["id"]
             items.append({"kind": "message", "message": shown[r["id"]], "dir": "sent" if sent else "received"})
         else:
-            items.append(_state_view(pj, r))
+            items.append(_state_view(r))
     return {"items": items, "more": more}

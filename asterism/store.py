@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS people (
     person_id INTEGER PRIMARY KEY, -- id in the accounts database
     name TEXT NOT NULL UNIQUE,
     joined REAL NOT NULL,
-    last_beat REAL                 -- the latest beat of an open page of the project (presence); NULL never
+    last_beat REAL,                -- the latest beat of an open page of the project (presence); NULL never
+    status_title TEXT NOT NULL DEFAULT '', -- the person's status in this project (1s): one line, 0 to 200 characters
+    status_at REAL                 -- when it last changed; NULL: never
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -122,7 +124,13 @@ CREATE TABLE IF NOT EXISTS agents (
     announced INTEGER,             -- the presence last announced in #general (1 online, 0 offline, NULL never)
     last_tool REAL,                -- the latest call of an agent endpoint other than poll and ack
     quiet_since REAL,              -- its session left its computer's list then; going offline not announced yet
-    model TEXT                     -- the model its session last said it runs on (X-Asterism-Model); NULL: unknown
+    model TEXT,                    -- the model its session last said it runs on (X-Asterism-Model); NULL: unknown
+    status_title TEXT NOT NULL DEFAULT '', -- its status (1s), written by itself: one line, 0 to 200 characters
+    status_body TEXT NOT NULL DEFAULT '',  -- 0 to 10,000 characters, kept as written; empty when the title is
+    status_at REAL,                -- when the agent last set it (set_status), changed or not; NULL: never
+    update_every_h INTEGER,        -- its person wants the status updated at least this often (hours); NULL: not asked
+    update_every_at REAL,          -- when update_every_h was last set
+    status_reminded REAL           -- when it was last reminded of an update due (statuses.UPDATE_DUE)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agents_session ON agents(person_id, session) WHERE session IS NOT NULL;
 CREATE TABLE IF NOT EXISTS superseded (
@@ -209,8 +217,8 @@ CREATE TABLE IF NOT EXISTS messages (
     notice INTEGER,                -- 1: a notice of presence (never asks for an answer); NULL: any other message
     schedule_id INTEGER,           -- the schedule that posted it; NULL: posted by hand (or by the system)
     sender_model TEXT,             -- an agent sender's model when it was sent; NULL: unknown, or not an agent
-    task_id INTEGER,               -- the task whose body update it asks for (tasks.UPDATE_DUE): an update of that
-                                   -- body by its holder answers it; NULL: any other message
+    asks_status INTEGER,           -- 1: it asks its agent for a status update (statuses.UPDATE_DUE), which the
+                                   -- agent's next set_status answers; NULL: any other message
     edited REAL,                   -- when its author (a person) last edited its text (1y); NULL: never
     deleted REAL                   -- when it was deleted (1y): its text is gone for good ('') and its place kept;
                                    -- NULL: not deleted
@@ -284,27 +292,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS subscriptions_agent ON subscriptions(agent_id, expires);
-CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- increasing, never used twice
-    group_id INTEGER NOT NULL,     -- fixed when the task is made
-    title TEXT NOT NULL,           -- one line, 1 to 200 characters
-    body TEXT NOT NULL DEFAULT '', -- 0 to 10,000 characters, kept as written; its holder keeps it current
-    responsible_kind TEXT,         -- person, agent; NULL: nobody is responsible
-    responsible_id INTEGER,
-    assigned_by INTEGER,           -- the person who locked it (only while an agent is responsible); NULL: not locked
-    created REAL NOT NULL,         -- when it was posted
-    posted_kind TEXT,              -- who posted it: person, agent; NULL: unknown (posted before f7)
-    posted_id INTEGER,
-    taken REAL,                    -- when the agent responsible now was given it or took it; NULL: nobody holds it,
-                                   -- or unknown (taken before f7)
-    body_at REAL,                  -- when the body last changed; NULL: not since it was posted
-    update_every_h INTEGER,        -- its holder owes a body update at least this often (hours); NULL: not asked
-    reminded REAL,                 -- when its holder was last reminded of an update due (tasks.UPDATE_DUE)
-    done INTEGER NOT NULL DEFAULT 0, -- 1: finished. It holds no agent (the responsible columns keep who finished
-                                   -- it) and is deleted ASTERISM_TASK_DONE_KEEP_S after done_at
-    done_at REAL
-);
-CREATE INDEX IF NOT EXISTS tasks_responsible ON tasks(responsible_kind, responsible_id);
 CREATE TABLE IF NOT EXISTS avatars (
     member_kind TEXT NOT NULL,     -- person, agent: a member's picture in this project (1z), set by the person (an
     member_id INTEGER NOT NULL,    -- agent's by its person)
@@ -348,11 +335,9 @@ CREATE INDEX IF NOT EXISTS replays_created ON replays(created);
 CREATE TABLE IF NOT EXISTS agent_states (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- an agent's changes of state, for its timeline (timeline.py); kept since f6b
     agent_id INTEGER NOT NULL,
-    state TEXT NOT NULL,           -- online, offline, task_given, task_taken, task_released, task_done, task_removed
+    state TEXT NOT NULL,           -- online, offline, status
     reason TEXT,                   -- offline: why (presence.OFFLINE_BECAUSE)
-    task_id INTEGER,               -- a task change: the task's number
-    by_kind TEXT,                  -- a task change: who made it (person, agent; NULL: the system)
-    by_id INTEGER,
+    title TEXT,                    -- status: the new title ('' when cleared)
     after_message INTEGER NOT NULL, -- the newest message id when it happened: the timeline puts it after that message
     at REAL NOT NULL
 );
@@ -372,22 +357,22 @@ ACCOUNTS_ADDED_COLUMNS = {
 }
 ADDED_COLUMNS = {
     "agents": [("offline_reason", "TEXT"), ("announced", "INTEGER"), ("last_tool", "REAL"), ("quiet_since", "REAL"),
-               ("model", "TEXT")],
+               ("model", "TEXT"), ("status_title", "TEXT NOT NULL DEFAULT ''"),
+               ("status_body", "TEXT NOT NULL DEFAULT ''"), ("status_at", "REAL"), ("update_every_h", "INTEGER"),
+               ("update_every_at", "REAL"), ("status_reminded", "REAL")],
     "credentials": [("via", "TEXT", "CASE kind WHEN 'connector' THEN 'connector' ELSE 'device' END"),
                     ("last_poll", "REAL"), ("connected", "INTEGER"), ("quotas", "TEXT"), ("quotas_at", "REAL"),
                     ("git", "INTEGER"), ("machine", "TEXT"), ("version", "TEXT")],
     "computer_sessions": [("active_at", "REAL")],
     # Until tasks came, every message from the system was a notice of presence.
     "messages": [("notice", "INTEGER", "CASE sender_kind WHEN 'system' THEN 1 END"), ("schedule_id", "INTEGER"),
-                 ("sender_model", "TEXT"), ("task_id", "INTEGER"), ("edited", "REAL"), ("deleted", "REAL")],
+                 ("sender_model", "TEXT"), ("asks_status", "INTEGER"), ("edited", "REAL"), ("deleted", "REAL")],
     # The groups that existed before groups had an order keep the order of their ids; default groups have none.
     "groups": [("position", "INTEGER", "CASE kind WHEN 'default' THEN NULL ELSE (SELECT count(*) FROM groups g2 "
                                        "WHERE g2.kind != 'default' AND g2.id < groups.id) END"),
                ("separate", "INTEGER NOT NULL DEFAULT 0")],
-    "people": [("last_beat", "REAL")],
-    # Who posted a task and when it was taken were not kept before f7: unknown (NULL) for the tasks of then. The
-    # columns of 1t (title, body, tracking, done) come with the rebuild that drops `text` (DROPPED_COLUMNS).
-    "tasks": [("posted_kind", "TEXT"), ("posted_id", "INTEGER"), ("taken", "REAL")],
+    "people": [("last_beat", "REAL"), ("status_title", "TEXT NOT NULL DEFAULT ''"), ("status_at", "REAL")],
+    "agent_states": [("title", "TEXT")],
     # Until f6 the system's notices went to #general, the channel every project was created with.
     "project": [("notice_channel", "INTEGER", "(SELECT id FROM channels WHERE name = 'general')")],
 }
@@ -402,41 +387,37 @@ ADDED_INDEXES = {
 # group, once (custom groups are never touched). Once, since f6: people set the permissions of human and ai, so a
 # permission taken away must not come back at the next start. Each (group, permission) is written down in `upgrades`
 # when given, or when the database has no such group yet (it is made with the permissions of today).
-ADDED_PERMISSIONS = {"human": ["edit_tasks"], "owner": ["coordinate_tasks", "manage_channels"]}
+ADDED_PERMISSIONS = {"owner": ["manage_channels"]}
+
+# Permissions withdrawn after they shipped: taken out of every group's list when a database is opened (a list that
+# holds none of them is left as it is). The task board was withdrawn in 1s, with the permissions and the switch that
+# only served it.
+DROPPED_PERMISSIONS = ("assign_tasks", "edit_tasks", "coordinate_tasks", "others_assign")
 
 # The four switches of an ownership group were columns until f6; since then they are permissions of that group, kept
 # in its JSON list. A database made by an earlier version has the switches that were on moved into the list, and the
-# columns dropped, when opened.
+# columns dropped, when opened (others_assign then goes with the tasks, DROPPED_PERMISSIONS).
 SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_regroup")
 
 
 # Tables dropped after they shipped: a database made by an earlier version loses them when opened. Pins were retired
-# in 1z, commands to agents on 2026-11-18 (their indexes go with the tables).
-DROPPED_TABLES = ("device_requests", "pins", "commands")
+# in 1z, commands to agents on 2026-11-18, tasks in 1s (their indexes go with the tables).
+DROPPED_TABLES = ("device_requests", "pins", "commands", "tasks")
 
 # Data an earlier version allowed and this one does not, made right when a database is opened: (table, statement).
 # Each statement leaves a database that is already right unchanged, so running it on every opening is safe.
 DATA_FIXES = (
-    # f5: a task is given to an agent or to nobody. A task a person held becomes nobody's, without a lock (a lock is
-    # only ever held over an agent's task); nobody is told.
-    ("tasks", "UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL "
-              "WHERE responsible_kind = 'person'"),
     # f7: the owner group takes no channel override (its people are never denied, so one had no effect but to
     # mislead); one set before is dropped.
     ("channel_overrides", "DELETE FROM channel_overrides WHERE group_id IN "
                           "(SELECT id FROM groups WHERE kind = 'default' AND name = 'owner')"),
-    # 1t: an agent holds at most one task that is not done. One that holds several keeps the newest (taken last; the
-    # higher id among equals); the others go back to the board, without a lock (a lock is only ever held over an
-    # agent's task); nobody is told.
-    ("tasks", "UPDATE tasks SET responsible_kind = NULL, responsible_id = NULL, assigned_by = NULL, taken = NULL "
-              "WHERE done = 0 AND responsible_kind = 'agent' AND EXISTS (SELECT 1 FROM tasks n WHERE n.done = 0 "
-              "AND n.responsible_kind = 'agent' AND n.responsible_id = tasks.responsible_id "
-              "AND (coalesce(n.taken, 0) > coalesce(tasks.taken, 0) "
-              "OR (coalesce(n.taken, 0) = coalesce(tasks.taken, 0) AND n.id > tasks.id)))"),
     # Commands to agents were withdrawn on 2026-11-18: their deliveries (kind command, for the agent's program, never
     # for the agent) go, so that none is ever handed to an agent as a message. The system's replies that told their
     # outcomes stay, as written (their English text).
     ("deliveries", "DELETE FROM deliveries WHERE kind = 'command'"),
+    # Tasks were withdrawn in 1s: the changes of tasks in agents' timelines go with them (they named tasks that no
+    # longer exist).
+    ("agent_states", "DELETE FROM agent_states WHERE state NOT IN ('online', 'offline', 'status')"),
 )
 
 
@@ -476,6 +457,12 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
     for table, (columns, move) in dropped_columns.items():
         if _has_table(conn, table):
             _rebuild(conn, table, columns, move)
+    if _has_table(conn, "groups"):
+        for gid, raw in conn.execute("SELECT id, permissions FROM groups").fetchall():
+            perms = json.loads(raw)
+            if set(perms) & set(DROPPED_PERMISSIONS):
+                conn.execute("UPDATE groups SET permissions = ? WHERE id = ?",
+                             (json.dumps([p for p in perms if p not in DROPPED_PERMISSIONS]), gid))
     for table, sql in DATA_FIXES:
         if _has_table(conn, table):
             conn.execute(sql)
@@ -495,34 +482,20 @@ def _move_switches(conn: sqlite3.Connection, moved: list[str]) -> None:
     conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
 
 
-TASK_TITLE_MAX = 200
-
-
-def _split_task_text(conn: sqlite3.Connection, moved: list[str]) -> None:
-    """1t: a task's `text` (up to 2,000 characters) becomes its title (the first line, every run of whitespace one
-    space, cut to 200 characters) and its body (the rest, without the blank lines around it)."""
-    have = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
-    for name in ("title", "body"):
-        if name not in have:
-            conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
-    for r in conn.execute("SELECT id, text FROM tasks").fetchall():
-        first, _, rest = (r[1] or "").strip().partition("\n")
-        title = " ".join(first.split())[:TASK_TITLE_MAX] or "-"
-        conn.execute("UPDATE tasks SET title = ?, body = ? WHERE id = ?", (title, rest.strip("\r\n"), r[0]))
-
-
 # Columns dropped after they shipped: table -> (the columns, what keeps what they held). A table that still has one of
 # them is rebuilt without them (_rebuild), so this happens once.
 # - groups: the four switches of an ownership group were columns until f6; since then they are permissions of that
 #   group, kept in its JSON list.
-# - tasks: a task was one `text` until 1t; since then it is a title and a body.
+# - messages, agent_states: what pointed at a task (the message asking for a task's body update; a task's change in
+#   a timeline, and who made it) goes with the tasks (1s). Nothing is carried over.
 # - people: the computer a person chose to write the repository's files was a credential of each project until w3;
 #   since then it is a machine id kept with the account (accounts' people.writer). Nothing is carried over: the
 #   account's choice starts as none (the hub had no computer chosen when w3 came), so the person is on the server
 #   path until they choose again.
 # Only a project's database has these tables (the accounts database has a `people` of its own: never rebuilt).
-DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "tasks": (("text",), _split_task_text),
-                   "people": (("writer",), lambda conn, moved: None)}
+DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "people": (("writer",), lambda conn, moved: None),
+                   "messages": (("task_id",), lambda conn, moved: None),
+                   "agent_states": (("task_id", "by_kind", "by_id"), lambda conn, moved: None)}
 
 
 def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
@@ -530,7 +503,8 @@ def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
     """A table that still has dropped columns: `move` keeps what they held, and the table is rebuilt without them by
     copy, as SQLite's own procedure for a change ALTER TABLE cannot make (the hub's SQLite, 3.34, has no DROP COLUMN,
     which came with 3.35): the table of today's schema is made under another name, every row copied with its id (so
-    whatever points at a row still does), the old table dropped, the new one renamed and its indexes made again. All
+    whatever points at a row still does), the old table dropped, the new one renamed, its indexes made again (those
+    on its added columns too) and its AUTOINCREMENT counter kept, so that no id is ever used twice. All
     of it is one transaction, with foreign keys off (a pragma that can only change outside a transaction) and
     `foreign_key_check` empty before it commits; on any failure nothing is changed. A table without the columns is
     left alone."""
@@ -540,11 +514,14 @@ def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
         return
     body = re.search(rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", PROJECT_SCHEMA, re.S).group(1)
     indexes = re.findall(rf"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON {table}\(.*?\);", PROJECT_SCHEMA)
+    indexes += ADDED_INDEXES.get(table, [])
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
         move(conn, moved)
+        seq = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone() \
+            if _has_table(conn, "sqlite_sequence") else None
         have = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         conn.execute(f"DROP TABLE IF EXISTS {table}_rebuilt")
         conn.execute(f"CREATE TABLE {table}_rebuilt ({body}\n)")
@@ -552,6 +529,8 @@ def _rebuild(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
         conn.execute(f"INSERT INTO {table}_rebuilt ({keep}) SELECT {keep} FROM {table}")
         conn.execute(f"DROP TABLE {table}")
         conn.execute(f"ALTER TABLE {table}_rebuilt RENAME TO {table}")
+        if seq is not None:
+            conn.execute("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = ?", (seq[0], table))
         for sql in indexes:
             conn.execute(sql)
         broken = conn.execute("PRAGMA foreign_key_check").fetchall()

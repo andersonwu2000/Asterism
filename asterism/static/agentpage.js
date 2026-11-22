@@ -1,5 +1,6 @@
-// The agent page (#agent-timeline; m1f6_contract.md section 10), from the members (frame.js) and one agent's timeline
-// (/api/agents/{name}/timeline). All texts come from the page's message catalogue.
+// The agent page (#agent-timeline; m1f6_contract.md section 10), from the members (frame.js), the statuses
+// (statuses.js) and one agent's timeline (/api/agents/{name}/timeline). All texts come from the page's message
+// catalogue.
 // - The second column (#agent-list): every agent of the project by group (1z: there is no other sorting): sections by
 //   the custom groups in their order, then each person's agent group; an agent under the first custom group it is in,
 //   else under its person's agent group, else under AI. A row: presence, name, model, what it is doing.
@@ -7,21 +8,22 @@
 //   first of my agents, else the first listed. The rail's agent button returns to it. Top right (#agent-head): its
 //   presence, name, model, kind and owner; at the right its acts where the reader may (its groups as check boxes, and
 //   removing it from the project, floating), and "invite agent".
-//   Beside a name, what it is doing (frame.js, S.workMark: working or idle, has a task, has a task but idle). Top right
-//   also what it holds, in one line, and for an agent of the reader's own its quota (/api/my; 1x).
-// - The page: its timeline, as a conversation: the messages that concern it (it sent them, they name it, or they are
-//   the reader's private conversation with it; #tl-filter, remembered) or every message it sent or was handed, that
-//   the reader may read, with where it was, and its changes of state (online, offline with the reason, a task given,
-//   taken, released or removed) as quiet lines between them, each event once (the server leaves out the system's
-//   message about a change of task that is such a line); newest at the bottom, older ones loaded on scrolling up, new
-//   ones asked for every few seconds (the reader's place is kept: new things arrive at the end).
+//   Beside a name, what it is doing (frame.js, S.workMark: working or idle). Top right also, for an agent of the
+//   reader's own, its quota (/api/my; 1x).
+// - The page: first its status (#agent-status, 1s): the title, the body (Markdown with mathematics, folded, opened in
+//   place), "更新於 3 小時前" and the overdue mark; for its own person "要求每 __ 小時更新", for others how often its
+//   person asks. Then its timeline, as a conversation: the messages that concern it (it sent them, they name it, or
+//   they are the reader's private conversation with it; #tl-filter, remembered) or every message it sent or was
+//   handed, that the reader may read, with where it was, and its changes of state (online, offline with the reason,
+//   a new status) as quiet lines between them; newest at the bottom, older ones loaded on scrolling up, new ones
+//   asked for every few seconds (the reader's place is kept: new things arrive at the end).
 // - Its own person talks to it here: the composer (#tl-composer) sends a private message to it. Anybody else sees the
 //   timeline with one quiet line instead (only its person and that person's agents write to an agent privately).
 "use strict";
 (function () {
   var A = window.Asterism, root = document.getElementById("agent-timeline");
   if (!A || !root || !A.side || !A.renderText) return;
-  var t = A.t, make = A.make, S = A.side, P = A.people;
+  var t = A.t, make = A.make, S = A.side, P = A.people, St = A.statuses;
   var SLUG = root.dataset.slug, ME = root.dataset.me, API = "/" + encodeURIComponent(SLUG) + "/api/";
   var HOME = "/" + encodeURIComponent(SLUG) + "/agent";
   var PAGE = 50, EVERY_MS = 4000, LANG = document.documentElement.lang || undefined;
@@ -31,7 +33,8 @@
     head: document.getElementById("agent-head"), acts: document.getElementById("agent-acts"),
     scroll: document.getElementById("tl-scroller"), items: document.getElementById("tl-list"),
     older: document.getElementById("tl-older"), form: document.getElementById("tl-composer"),
-    text: document.getElementById("tl-text"), out: document.getElementById("tl-out")
+    text: document.getElementById("tl-text"), out: document.getElementById("tl-out"),
+    status: document.getElementById("agent-status")
   };
   var owner = make("p", "tl-owner");
   owner.hidden = true;
@@ -39,7 +42,6 @@
 
   var FILTER_KEY = "asterism-agent-filter:" + SLUG, filterBox = document.getElementById("tl-filter");
   var filter = A.store.get(FILTER_KEY, "concerns") === "all" ? "all" : "concerns";
-  var tasks = [];                  // the project's tasks (/api/tasks), for the chosen agent's in the top-right cell
   var chosen = "";                 // the agent shown
   var gen = 0;                     // a new choice makes the answers for the earlier one stale
   var entries = [];                // the timeline's items shown, oldest first
@@ -89,7 +91,7 @@
                 make("span", "place-name", a.name));
     var model = A.modelTag(a.model);
     if (model) link.appendChild(model);
-    var state = S.workMark(a, "busy");
+    var state = S.workMark(a, "work-word");
     if (state) link.appendChild(state);
     li.appendChild(link);
     return li;
@@ -133,8 +135,6 @@
     if (model) el.head.appendChild(model);
     var state = S.workMark(a, "agent-state");
     if (state) el.head.appendChild(state);
-    var doing = taskLine(a.name);
-    if (doing) el.head.appendChild(doing);
     var quota = quotaLine(a);
     if (quota) el.head.appendChild(quota);
     var kind = A.MSG["kind." + a.kind] ? t("kind." + a.kind) : a.kind;
@@ -189,19 +189,34 @@
     }
   }
 
-  // What the agent holds, in one line after its name: its task's number and title (cut with an ellipsis), "+n" for more
-  // (only from before 1t), a link to the board at this agent; nothing when it holds none (a done task holds nobody).
-  function taskLine(name) {
-    var mine = tasks.filter(function (x) { return !x.done && x.responsible === name; });
-    if (!mine.length) return null;
-    var a = make("a", "agent-tasks");
-    a.href = "/" + encodeURIComponent(SLUG) + "/work?agent=" + encodeURIComponent(name);
-    a.dataset.key = "agent-tasks";
-    a.title = mine.map(function (x) { return x.id + " " + x.title; }).join("\n");
-    a.append(make("span", "mono", String(mine[0].id)), make("span", "agent-task-text", mine[0].title));
-    if (mine.length > 1) a.appendChild(make("span", "agent-task-more", t("agp.more_tasks", {n: mine.length - 1})));
-    a.setAttribute("aria-label", t("agp.tasks_label", {n: mine.length, text: mine[0].title}));
-    return a;
+  // Its status (statuses.js): the title, the body, when it was updated and the overdue mark; how often its person asks
+  // for an update, which its own person sets here. Hidden until the statuses are read.
+  function drawStatus() {
+    var box = el.status;
+    if (!box || !St) return;
+    var a = find(chosen), st = a ? St.agent(a.name) : null;
+    box.hidden = !st;
+    if (!st) { box.textContent = ""; return; }
+    A.keepFocus(box, function () {
+      box.textContent = "";
+      if (st.title) {
+        box.appendChild(make("h2", "agent-status-title", st.title));
+        box.appendChild(St.body(st.body, "agp:" + a.name));
+      } else {
+        box.appendChild(make("p", "agent-status-none", t("db.no_status")));
+      }
+      var upd = St.updated(st), every = st.update_every_h && a.owner !== ME ? t("st.every", {n: st.update_every_h}) : "";
+      var line = make("div", "agent-status-track");
+      if (upd) line.appendChild(upd);
+      if (every) line.appendChild(make("span", "", every));
+      if (line.childNodes.length) box.appendChild(line);
+      if (a.owner === ME) box.appendChild(St.everyControl(st, function () { St.load(true); }));
+    });
+  }
+  // A number being written in "要求每 __ 小時更新" is not thrown away by a redraw.
+  function writingStatus() {
+    var x = document.activeElement;
+    return !!(el.status && x && el.status.contains(x) && x.tagName === "INPUT");
   }
   // The quota of an agent of the reader's own, as its computer's program last reported it for its product (1x): only
   // the reader's own (/api/my); the reset times in its title.
@@ -224,21 +239,6 @@
     if (raw === mineRaw) return;
     mineRaw = raw;
     mine = r.data;
-    A.keepFocus(el.head.parentNode, drawHead);
-  }
-  var tasksRaw = "";
-  async function loadTasks() {
-    var r = await A.request(API + "tasks");
-    if (!r.ok) return;
-    var seen = {}, out = [];
-    (r.data.groups || []).forEach(function (g) {
-      g.tasks.forEach(function (x) { if (!seen[x.id]) { seen[x.id] = true; out.push(x); } });
-    });
-    out.sort(function (x, y) { return x.id - y.id; });
-    var raw = JSON.stringify(out);
-    if (raw === tasksRaw) return;
-    tasksRaw = raw;
-    tasks = out;
     A.keepFocus(el.head.parentNode, drawHead);
   }
 
@@ -318,9 +318,8 @@
 
   function stateText(x) {
     if (x.state === "online" || x.state === "offline") return t("agp.state." + x.state);
-    var self = x.by === chosen, key = "agp.state." + x.state + (self && A.MSG["agp.state." + x.state + "_self"] ? "_self" : "");
-    if (!A.MSG[key]) return x.state;
-    return t(key, {task: x.task, by: x.by || t("agp.someone")});
+    if (x.state === "status") return x.title ? t("agp.state.status", {title: x.title}) : t("agp.state.status_cleared");
+    return x.state;
   }
 
   function stateRow(x) {
@@ -444,6 +443,7 @@
     draw();
     drawList();
     drawHead();
+    drawStatus();
     drawComposer();
     if (name) loadFirst();
   }
@@ -462,7 +462,7 @@
       window.history[push ? "pushState" : "replaceState"](null, "", url);
     }
     if (name && A.rail && A.rail.agentKey) A.store.set(A.rail.agentKey, url);
-    if (name === chosen) { drawList(); drawHead(); drawComposer(); return; }
+    if (name === chosen) { drawList(); drawHead(); drawStatus(); drawComposer(); return; }
     start(name);
     if (A.rail) A.rail.closeDrawer(false);
   }
@@ -477,12 +477,15 @@
     if (!chosen || !find(chosen)) { choose(fromAddress(), false); return; }
     drawList();
     drawHead();
+    if (!writingStatus()) drawStatus();
     drawComposer();
   });
   S.loadMembers();
   setInterval(news, EVERY_MS);
-  loadTasks();
-  setInterval(loadTasks, EVERY_MS);
+  if (St) {
+    St.onChange(function () { if (!writingStatus()) drawStatus(); });
+    St.follow();
+  }
   loadMine();
   setInterval(loadMine, 30000);
 

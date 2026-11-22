@@ -110,7 +110,7 @@
   --explorer-w: 272px;
   --rail-w: 72px;
   --reading-w: 880px;
-  --task-w: 340px;
+  --right-w: 340px;
   --gutter: 24px;
 }
 
@@ -141,7 +141,7 @@ code, kbd, pre, .mono { font-family: var(--font-mono); }
 a { color: var(--color-ink); text-decoration-line: underline; text-decoration-color: var(--color-edge-strong);
     text-underline-offset: 3px; }
 a:hover { text-decoration-color: var(--color-ink-dim); }
-/* A hyperlink in rendered Markdown (messages, task bodies, files) is the one link hue (--color-link). */
+/* A hyperlink in rendered Markdown (messages, statuses, files) is the one link hue (--color-link). */
 .text a[href] { color: var(--color-link); text-decoration-color: currentColor; text-decoration-thickness: 1px; }
 
 :focus { outline: none; }
@@ -441,10 +441,8 @@ td .muted, td small { color: var(--color-ink-dim); }
 .place .note + .count, .place .note + .pill { margin-left: 4px; }
 .place .count { font-size: 12px; font-weight: 400; color: var(--color-ink-dim); }
 .place .note { font-size: 12px; font-weight: 400; color: var(--color-ink-dim); white-space: nowrap; }
-/* What an agent is doing (1x): the word is brighter while it works; held too long idle, the overdue mark's shape. */
-.note.working, .prow-state.working, .busy.working, .agent-state.working { color: var(--color-ink); }
-.place .work-stale, .agent-list .work-stale { margin-left: auto; flex: none; }
-.prow-btn .work-stale, .agent-head .work-stale { flex: none; }
+/* What an agent is doing (1x): the word is brighter while it works. */
+.note.working, .prow-state.working, .work-word.working, .agent-state.working { color: var(--color-ink); }
 .place .note + .note { margin-left: 4px; }
 .place-row { position: relative; }
 /* A channel's gear (its settings): shown on hover and keyboard focus of the row; on a touch screen always. */
@@ -627,7 +625,7 @@ td .muted, td small { color: var(--color-ink-dim); }
 }
 .fold-row:hover { color: var(--color-ink); }
 
-/* What can be done to a message or a task: shown on hover and on keyboard focus of its row; on touch, always. */
+/* What can be done to a message or a schedule: shown on hover and on keyboard focus of its row; on touch, always. */
 .acts {
   position: absolute; top: -14px; right: var(--gutter); z-index: 2;
   display: flex; align-items: center; gap: 2px; padding: 2px;
@@ -739,10 +737,7 @@ td .muted, td small { color: var(--color-ink-dim); }
 .mention-option .model-tag, .mention-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mention-mark { flex: none; width: 10px; height: 10px; }
 
-/* The right column: one panel at a time (the task table, the member list, search results), or none. */
-/* A task's acts float just above its row, as a message's do, so showing them moves nothing under the pointer. */
-.tedit { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; }
-.tedit textarea { font-size: 13px; }
+/* The right column: one panel at a time (the member list, search results), or none. */
 .right-close { display: none; }
 
 /* The member list: people, then agents online and offline. */
@@ -755,7 +750,7 @@ td .muted, td small { color: var(--color-ink-dim); }
   text-align: left;
 }
 .prow-btn:hover { background: var(--color-wash-2); background-image: none; }
-/* Names never shrink first (m1f7): the name keeps its width, busy or idle stays beside it, the model tag shrinks, and
+/* Names never shrink first (m1f7): the name keeps its width, working or idle stays beside it, the model tag shrinks, and
    the owner (the note at the right) shrinks first and goes. */
 .prow-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prow-name.mono { font-size: 13px; }
@@ -774,8 +769,7 @@ td .muted, td small { color: var(--color-ink-dim); }
 .card-sub { margin: 0; font-size: 13px; color: var(--color-ink-dim); }
 .card-sec { border-top: 1px solid var(--color-edge); padding-top: 8px; }
 .card-sec h3 { font-size: 12px; margin-bottom: 4px; }
-.card-tasks { list-style: none; margin: 0; padding: 0; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
-.card-tasks li { overflow-wrap: anywhere; }
+.card-status { margin: 0 0 2px; font-size: 13px; overflow-wrap: anywhere; }
 .card-acts { display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--color-edge); padding-top: 10px; }
 .card-out:empty { display: none; }
 .chip-plus { width: 26px; padding: 0; }
@@ -797,11 +791,11 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .search-hint { margin: 8px 4px; font-size: 13px; max-width: 46ch; }
 
 /* ------------------------------------------------------------------ the agent page */
-/* The second column: the sort switch over every agent, in sections; a row is presence, name, model, busy. */
+/* The second column: every agent, in sections; a row is presence, name, model, what it is doing. */
 .agent-list { display: flex; flex-direction: column; gap: 20px; }
 .agent-list .place-name { flex: none; max-width: 100%; font-family: var(--font-mono); font-size: 13px; }
 .agent-list .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-list .busy { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--color-ink-dim); white-space: nowrap; }
+.agent-list .work-word { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--color-ink-dim); white-space: nowrap; }
 .agent-list .side-note, .agent-none { padding: 0 8px; font-size: 13px; color: var(--color-ink-dim); }
 /* The top-right cell: the chosen agent (its name in mono, 600; the facts dim) and its person's acts at the right. */
 .agent-head { display: flex; align-items: center; gap: 4px 8px; min-width: 0; margin: 0 0 0 8px; font: 400 14px/1.3 var(--font-ui); }
@@ -814,13 +808,13 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
                            text-overflow: ellipsis; white-space: nowrap; }
 .agent-head .agent-facts { flex: 0 1000 auto; min-width: 0; font-size: 13px; color: var(--color-ink-dim); overflow: hidden;
                            text-overflow: ellipsis; white-space: nowrap; }
-/* What the agent holds, in one line: the first task's number and text, "+n" for more; a link to the board. */
-.agent-tasks { display: flex; align-items: baseline; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 28rem;
-               font-size: 13px; color: var(--color-ink-dim); text-decoration: none; white-space: nowrap; }
-.agent-tasks:hover { color: var(--color-ink); }
-.agent-tasks .mono { flex: none; font-size: 12px; }
-.agent-task-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.agent-task-more { flex: none; }
+/* The chosen agent's status over its timeline (1s): the title, the body, when it was updated, how often to update. */
+.agent-status { margin: 12px var(--gutter) 0; padding: 10px 14px; background: var(--color-surface-2);
+                border: 1px solid var(--color-edge); border-radius: var(--r-container); }
+.agent-status-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow-wrap: anywhere; }
+.agent-status-none { margin: 0; font-size: 13px; color: var(--color-ink-dim); }
+.agent-status-track { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 4px; font-size: 12px;
+                      color: var(--color-ink-dim); }
 .tl-filter { align-self: center; margin: 10px var(--gutter) 0; }
 .agent-acts { display: flex; align-items: center; gap: 4px; flex: none; }
 .agent-acts:empty { display: none; }
@@ -875,8 +869,8 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .ag-item > .row-acts { grid-column: 2; grid-row: 1; align-self: start; }
 .ag-item > .ag-side-btn { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .ag-item > .out { grid-column: 1 / -1; }
-.ag-item > .out:empty, .tt-task > .out:empty, .sch-item > .out:empty { display: none; }
-.ag-item:hover > .row-acts, .ag-item:focus-within > .row-acts, .tt-task:hover > .row-acts, .tt-task:focus-within > .row-acts,
+.ag-item > .out:empty, .sch-item > .out:empty { display: none; }
+.ag-item:hover > .row-acts, .ag-item:focus-within > .row-acts,
 .sch-item:hover > .row-acts, .sch-item:focus-within > .row-acts { opacity: 1; pointer-events: auto; }
 .row-acts[aria-expanded="true"] { opacity: 1; pointer-events: auto; background: var(--color-wash-2); color: var(--color-ink); }
 .row-acts .glyph { margin: auto; }
@@ -887,63 +881,48 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .ag-empty + .btn { margin: 4px; }
 .ag-chip { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 12px; padding: 0 2px 0 8px; min-height: 26px;
            border-radius: var(--r-micro); background: var(--color-wash-3); font: 12px/1.2 var(--font-mono); }
-/* The task table: one section per group, a sub-head per agent, the tasks with their numbers. */
-.tt-group + .tt-group { margin-top: 26px; }
-.tt-ghead { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px; }
-.tt-gname { font-weight: 600; }
-.tt-gname.mono { font-size: 13px; }
-.tt-n { font-size: 12px; color: var(--color-ink-dim); }
-.tt-ahead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 4px 2px; font-size: 13px;
-            color: var(--color-ink-dim); }
-.tt-ahead .mono { color: var(--color-ink); font-weight: 600; }
-.tt-list { list-style: none; margin: 0; padding: 0; }
-.tt-task { position: relative; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto 24px; gap: 2px 8px;
-           align-items: start; padding: 6px 4px 6px 18px; border-radius: var(--r-micro); }
-.tt-task:hover, .tt-task:focus-within { background: var(--color-wash-2); }
-.tt-id { font: 12px/21px var(--font-mono); color: var(--color-ink-dim); text-align: right; }
+/* Long text folded (a schedule's text, G.clamp): "顯示全部" opens it in place. */
 .tt-body { grid-column: 2; min-width: 0; }
 .tt-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tt-text.clamped { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .tt-more { min-height: 24px; margin-top: 2px; padding: 0 6px; font-size: 12px; color: var(--color-ink-dim); border-color: transparent;
            background: transparent; }
-.tt-task > .tag { grid-column: 3; margin-top: 1px; }
-.tt-task > .row-acts { grid-column: 4; }
-.tt-task > .out, .tt-task > .tremove, .tt-task > .tedit { grid-column: 2 / -1; }
-.tt-task > .tremove { justify-self: start; min-height: 26px; font-size: 12px; }
 .tt-empty { padding: 4px 4px 4px 22px; font-size: 13px; color: var(--color-ink-dim); }
-/* The bounty board (m1f7): 待接 then 進行中; a card's quiet line (who posted it, when, the group it is open to as a
-   quiet tag) and, for a task held, the holder (presence, name, model, since when, the lock). */
-h2.tt-gname { margin: 0; font-size: 14px; }
-.tt-meta, .tt-holder { grid-column: 2 / 4; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0;
-                       font-size: 12px; color: var(--color-ink-dim); }
-.tt-meta { margin-top: 2px; }
-.tt-meta .tt-open { margin-left: 4px; }
-.tt-holder { margin-top: 4px; font-size: 13px; }
-.tt-holder .tt-agent { flex: none; color: var(--color-ink); font-weight: 600; font-size: 13px; }
-.tt-holder .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tt-since { font-size: 12px; }
-/* 1t: a card's title, and its body as Markdown with mathematics, folded after about six lines. */
-.tt-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow-wrap: anywhere; }
-.tt-bodytext { margin-top: 2px; }
-.tt-bodytext:empty { display: none; }
-.tt-md { font-size: 13px; }
-.tt-md.folded { max-height: 9em; overflow: hidden;
+/* A status (1s): its body as Markdown with mathematics, folded after about six lines. */
+.st-bodytext { margin-top: 2px; }
+.st-bodytext:empty { display: none; }
+.st-md { font-size: 13px; }
+.st-md.folded { max-height: 9em; overflow: hidden;
                 -webkit-mask-image: linear-gradient(to bottom, currentColor 60%, transparent);
                 mask-image: linear-gradient(to bottom, currentColor 60%, transparent); }
-.tt-task.done .tt-title { font-weight: 500; color: var(--color-ink-dim); }
-.tt-finished .tt-agent { color: var(--color-ink); font-weight: 600; }
 /* The overdue mark: a word in a dashed tag after a triangle, so it never rests on colour. */
 .tag.overdue { border-style: dashed; color: var(--color-ink); gap: 4px; }
 .tag.overdue::before { content: ""; flex: none; width: 0; height: 0; border-left: 4px solid transparent;
                        border-right: 4px solid transparent; border-bottom: 7px solid currentColor; }
-.t-updated { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
-.ptask-updated { flex-basis: 100%; font-size: 12px; }
-/* "要求每 __ 小時更新內容": the number in the sentence. */
-.ag-field > .tt-every-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px;
-                              font-weight: 400; color: var(--color-ink); }
-.ag-field .tt-every-line input.tt-every-n { flex: none; width: 5.5em; }
-.tt-warn:empty { display: none; }
-.tt-warn { color: var(--color-ink); }
+.st-updated { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 12px;
+              color: var(--color-ink-dim); }
+/* "要求每 __ 小時更新": the number in the sentence, saved in place. */
+.st-every { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; font-size: 13px; }
+.st-every-line { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.st-every input.st-every-n { flex: none; width: 5.5em; }
+.st-every .btn { min-height: 28px; font-size: 12px; }
+.st-every .out:empty { display: none; }
+/* The dashboard (1s): one card per agent. */
+.db-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px;
+           grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.db-card { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 14px; background: var(--color-surface-2);
+           border: 1px solid var(--color-edge); border-radius: var(--r-container); }
+.db-card.overdue { border-style: dashed; }
+.db-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.db-name { flex: none; max-width: 60%; font-weight: 600; color: var(--color-ink); text-decoration: none; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+.db-name:hover { text-decoration: underline; }
+.db-head .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-state { flex: none; margin-left: auto; font-size: 12px; color: var(--color-ink-dim); white-space: nowrap; }
+.db-state.working { color: var(--color-ink); }
+.db-facts, .db-track { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 12px; color: var(--color-ink-dim); }
+.db-title { margin: 6px 0 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow-wrap: anywhere; }
+.db-none { margin: 6px 0 0; font-size: 13px; color: var(--color-ink-dim); }
 /* A form's acts at its right: the outcome, then cancel, then the act (the same order in every floating panel). */
 .form-acts { justify-content: flex-end; }
 .form-acts > .out { margin-right: auto; }
@@ -952,10 +931,9 @@ h2.tt-gname { margin: 0; font-size: 14px; }
 .field-error { display: block; margin-top: 2px; font-size: 13px; color: var(--color-ink); }
 .field-error:empty { display: none; }
 [aria-invalid="true"] { border-color: var(--color-ink-dim); }
-/* A form in place (a new task, a new or changed schedule). */
+/* A form in place (a new or changed schedule). */
 .ag-form { display: grid; gap: 10px; margin: 0 0 20px; padding: 14px; background: var(--color-surface-2);
            border: 1px solid var(--color-edge); border-radius: var(--r-container); }
-.tt-group > .ag-form { margin: 4px 0 8px; }
 .ag-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 16px; }
 .ag-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ag-field > span:first-child, .sch-label { font-size: 12px; font-weight: 500; color: var(--color-ink-dim); }
@@ -1515,7 +1493,7 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 
 /* The right column: the member list or search, one at a time. */
 .right-panel {
-  grid-column: 2; grid-row: 1; width: var(--task-w); min-height: 0;
+  grid-column: 2; grid-row: 1; width: var(--right-w); min-height: 0;
   display: flex; flex-direction: column; background: var(--color-surface); border-left: 1px solid var(--color-edge);
 }
 .right-head { display: flex; align-items: center; gap: 6px; min-height: 48px; padding: 8px 8px 8px 12px; }
@@ -1532,7 +1510,7 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 .seg-btn:hover { background: var(--color-wash-2); color: var(--color-ink); }
 .seg-btn[aria-pressed="true"] { background: var(--color-wash-3); color: var(--color-ink); }
 
-/* The member list: sections (groups shown separately, online, offline); under a name, the member's tasks. */
+/* The member list: sections (groups shown separately, online, offline); under a name, the member's status. */
 .psec { margin-top: 12px; }
 .psec h3 { padding: 0 8px 4px; font-size: 12px; font-weight: 600; }
 .prow { border-radius: var(--r-control); }
@@ -1540,41 +1518,20 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
 .prow-line .prow-btn { flex: 1; min-width: 0; }
 .prow:hover .row-acts, .prow:focus-within .row-acts { opacity: 1; pointer-events: auto; }
 .prow .row-acts { margin-right: 4px; }
-.prow .row-acts .glyph, .ptask .row-acts .glyph { margin: auto; }
-.ptasks { padding: 0 6px 4px 26px; }
-.ptasks:empty { display: none; }
-.ptask-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
-.ptask {
-  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-height: 24px; padding: 0 2px 0 6px;
-  border-radius: var(--r-micro); font-size: 13px; color: var(--color-ink-dim);
-}
-.ptask:hover, .ptask:focus-within { background: var(--color-wash-2); color: var(--color-ink); }
-.ptask-text { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ptask .tag { flex: none; font-size: 11px; line-height: 16px; }
-.ptask .row-acts { width: 22px; height: 22px; min-height: 22px; }
-.ptask .out { flex-basis: 100%; font-size: 12px; }
-.ptask .out:empty { display: none; }
-.ptask .tremove { flex: none; min-height: 24px; padding: 0 8px; font-size: 12px; }
-.ptask .tedit { flex-basis: 100%; }
-.ptask-fold {
-  min-height: 24px; padding: 0 6px; border: 0; background: transparent; color: var(--color-ink-dim);
-  font: 500 12px/1.2 var(--font-ui); border-radius: var(--r-micro);
-}
-.ptask-fold::before {
-  content: ""; display: inline-block; flex: none; width: 5px; height: 5px; margin-right: 4px; border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--quick) ease;
-}
-.ptask-fold[aria-expanded="true"]::before { transform: rotate(45deg); }
-.ptask-fold:hover { background: var(--color-wash-2); color: var(--color-ink); }
-.punheld { margin-top: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--color-edge); }
-.psec-head { display: flex; align-items: center; gap: 4px; }
-.psec-head .tadd-btn { min-height: 26px; padding: 0 6px; font-size: 12px; }
-.psec-head > .ptask-fold { margin-right: auto; }
-.punheld-body { padding: 2px 6px 0 8px; }
-.tadd { display: flex; flex-direction: column; gap: 6px; margin: 6px 6px 8px 26px; }
-.punheld .tadd { margin-left: 0; }
-.tadd input { width: 100%; font-size: 13px; }
-.tadd .out:empty { display: none; }
+.prow .row-acts .glyph { margin: auto; }
+/* A member's status under its row (1s): one line, cut with an ellipsis; an agent's with when it was updated. */
+.pstatus { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 0 6px 4px 52px; font-size: 13px;
+           color: var(--color-ink-dim); }
+.pstatus:empty { display: none; }
+.pstatus-text { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-mine { flex: 1 1 100%; min-width: 0; }
+.st-mine-btn { display: block; width: 100%; min-height: 24px; padding: 0 6px; border: 0; border-radius: var(--r-micro);
+               background: transparent; color: var(--color-ink-dim); font: 400 13px/24px var(--font-ui); text-align: left;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-mine-btn:hover { background: var(--color-wash-2); color: var(--color-ink); }
+.st-mine-form { display: flex; flex-direction: column; gap: 2px; }
+.st-mine-form input { width: 100%; font-size: 13px; }
+.st-mine-form .out:empty { display: none; }
 
 /* Groups in the settings layer: the others in their order, then the default groups, each a row of its own, marked. */
 .place .default-mark { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--color-ink-dim); }
@@ -1666,13 +1623,9 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
     display: flex; align-items: center; gap: 6px; margin: 0 0 14px; padding: 0 6px; min-height: 32px; border: 0;
     background: transparent; font-weight: 600; color: var(--color-ink);
   }
-  .tt-task { grid-template-columns: 28px minmax(0, 1fr) 24px; padding-left: 4px; }
-  .tt-task > .tag { grid-column: 2; grid-row: 2; justify-self: start; }
-  .tt-task > .row-acts { grid-column: 3; grid-row: 1; }
   .groups-page.has-detail { grid-template-columns: minmax(0, 1fr); }
   .groups-page.has-detail .groups-list { display: none; }
   .gd-back { display: inline-flex; }
-  .tt-meta, .tt-holder { grid-column: 2 / -1; }
   .msg { grid-template-columns: 52px minmax(0, 1fr); }
   .msg .gutter { padding-right: 8px; }
 }
@@ -1709,7 +1662,7 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   .msg.cont .gutter time { opacity: 1; }
   .reaction-add { opacity: 1; }
   .prow .row-acts { opacity: 1; pointer-events: auto; }
-  .ag-item > .row-acts, .tt-task > .row-acts, .sch-item > .row-acts { opacity: 1; pointer-events: auto; }
+  .ag-item > .row-acts, .sch-item > .row-acts { opacity: 1; pointer-events: auto; }
   .place-gear { opacity: 1; pointer-events: auto; background: transparent; }
   .place-row .place { padding-right: 32px; }
 }

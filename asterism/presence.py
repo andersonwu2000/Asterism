@@ -37,13 +37,6 @@ def held(a: sqlite3.Row) -> bool:
     return a["offline_reason"] in HOLDS
 
 
-def busy(db: sqlite3.Connection, a: sqlite3.Row) -> bool:
-    """The agent holds a task that is not done; otherwise it is idle. The one definition every rule that needs it
-    calls (notices, channel messages without a mention, the member lists, the announcement of an open task)."""
-    return db.execute("SELECT 1 FROM tasks WHERE done = 0 AND responsible_kind = 'agent' AND responsible_id = ? LIMIT 1",
-                      (a["id"],)).fetchone() is not None
-
-
 def subscribed(db: sqlite3.Connection, agent_id: int) -> bool:
     return db.execute("SELECT 1 FROM subscriptions WHERE agent_id = ? AND expires > ?",
                       (agent_id, util.now())).fetchone() is not None
@@ -113,16 +106,14 @@ def last_activity(db: sqlite3.Connection, a: sqlite3.Row) -> float | None:
 
 def work(slug: str, a: sqlite3.Row, db: sqlite3.Connection, online: bool | None = None) -> dict[str, object]:
     """What the agent is doing, for people (1x; agents never read it): `work` active (it did something within
-    ASTERISM_ACTIVE_S), idle (online, not active) or offline; `last_active` (ISO or None); `stale`: it holds a task
-    and has been idle for longer than ASTERISM_STALE_S. Holding a task (busy) is apart from all three."""
+    ASTERISM_ACTIVE_S), idle (online, not active) or offline; `last_active` (ISO or None)."""
     s = config.get()
     if online is None:
         online = is_online(slug, a, db)
     t = last_activity(db, a)
     ago = util.now() - t if t is not None else None
     state = "offline" if not online else "active" if ago is not None and ago < s.active_s else "idle"
-    stale = state == "idle" and ago is not None and ago > s.stale_s and busy(db, a)
-    return {"work": state, "last_active": util.iso(t), "stale": stale}
+    return {"work": state, "last_active": util.iso(t)}
 
 
 def opened(slug: str, agent_id: int, session: str, waker: asyncio.Event) -> None:
