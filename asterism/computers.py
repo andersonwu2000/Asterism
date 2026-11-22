@@ -347,8 +347,9 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                     left = deadline - loop.time()
                     out: list[dict[str, Any]] = writer.take(pj.slug, cred_id)
                     for a in served:
-                        # As in the per-session poll: an open wait takes the messages, a held agent gets nothing.
-                        if messaging.waiting(pj.slug, a["id"]) or presence.held(a):
+                        # As in the per-session poll: an open wait takes the messages; a held agent is still
+                        # handed what it is given (1o).
+                        if messaging.waiting(pj.slug, a["id"]):
                             continue
                         me = messaging.agent_member(a)
                         session = a["session"][len(LOCAL):] if a["session"].startswith(LOCAL) else a["session"]
@@ -384,7 +385,8 @@ def ack(c: Caller, ids: Any) -> dict[str, Any]:
     if not isinstance(ids, list):
         raise bad_request("bad_request", "deliveries must be a list of delivery ids.")
     for a in c.pj.db.execute("SELECT * FROM agents WHERE credential_id = ?", (cred_id,)).fetchall():
-        messaging.ack(c.pj, messaging.agent_member(a), ids)
+        if messaging.ack(c.pj, messaging.agent_member(a), ids):
+            notices.handshake(c.pj, a["id"])        # a handshake ends a hold (1o)
     return {}
 
 

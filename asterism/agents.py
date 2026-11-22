@@ -248,7 +248,7 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
             pj.db.execute("UPDATE agents SET last_poll = ?, last_active = ? WHERE id = ? AND session = ?",
                           (util.now(), util.now(), aid, sid))
 
-    if not presence.is_online(pj.slug, a, pj.db) and not presence.held(a):
+    if not presence.reachable(pj.slug, a, pj.db):
         messaging.drop_unheard(pj, me)
     mark()
     presence.opened(pj.slug, aid, sid, waker)
@@ -264,11 +264,10 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
                 now = pj.db.execute("SELECT * FROM agents WHERE id = ?", (aid,)).fetchone()
                 if now is None or now["session"] != sid:
                     return {}
-                # An open wait takes the messages (its end wakes us); an agent held offline gets nothing
-                # until its session calls a tool (that wakes us too); an agent its computer's connection
-                # serves gets its deliveries there (that connection going away wakes us).
-                if not messaging.waiting(pj.slug, aid) and not presence.held(now) \
-                        and not presence.via_computer(pj.slug, now, pj.db):
+                # An open wait takes the messages (its end wakes us); an agent held offline is still handed
+                # what it is given, and its acknowledgement brings it back (1o); an agent its computer's
+                # connection serves gets its deliveries there (that connection going away wakes us).
+                if not messaging.waiting(pj.slug, aid) and not presence.via_computer(pj.slug, now, pj.db):
                     ds = messaging.hand_out(pj, me)
                     if ds:
                         return {"deliveries": ds}
@@ -297,7 +296,7 @@ async def poll(c: Caller, timeout: float, disconnected: Callable[[], Awaitable[A
 
 def active(c: Caller) -> None:
     """The session called a tool (an agent endpoint other than poll and ack): the agent itself is alive.
-    That is what the reminder rule counts, and it ends a hold (`unanswered`, `silent`)."""
+    That is what the reminder rule counts, and it ends a hold (`unanswered`)."""
     try:
         a = bound_agent(c)
     except ApiError:
@@ -351,7 +350,11 @@ def messages(c: Caller, where: Any, mid: Any, before: Any, limit: Any, every: An
 
 
 def ack(c: Caller, ids: Any) -> dict[str, Any]:
-    return messaging.ack(c.pj, messaging.agent_member(_agent(c)), ids)
+    """An acknowledgement is a handshake: one that acknowledges something ends a hold (1o)."""
+    a = _agent(c)
+    if messaging.ack(c.pj, messaging.agent_member(a), ids):
+        notices.handshake(c.pj, a["id"])
+    return {}
 
 
 def status_list(c: Caller) -> dict[str, Any]:

@@ -1,5 +1,6 @@
-"""Changes of an agent's presence: holding it offline (`unanswered`, `silent`), bringing it back, and the one
-notice per change that the system posts in the project's notice channel.
+"""Changes of an agent's presence: holding it offline (`unanswered`, a failed handshake), bringing it back (a tool
+call, or a handshake that succeeds: an acknowledgement, a 2xx to an event), and the one notice per change that the
+system posts in the project's notice channel.
 
 sync() compares what presence says now with what was last announced (agents.announced, kept in the
 database so a restart neither repeats nor loses a change) and posts the notice when they differ, writing the
@@ -101,15 +102,24 @@ def sync_computer(pj: Project, cred_id: int) -> None:
 
 
 def hold(pj: Project, agent_id: int, reason: str) -> None:
-    """Make the agent offline until its session calls a tool, whatever its poll or subscription does."""
+    """Make the agent offline until its session calls a tool or a handshake succeeds, whatever its poll or
+    subscription does. It is still sent what it is given through the path it has (presence.reachable)."""
     with pj.db:
         pj.db.execute("UPDATE agents SET offline_reason = ? WHERE id = ? AND offline_reason IS NULL", (reason, agent_id))
     sync(pj, agent_id)
 
 
+def handshake(pj: Project, agent_id: int) -> None:
+    """A handshake succeeded (an acknowledgement of a delivery, a 2xx to an event): it ends a hold as a tool call
+    does (1o)."""
+    a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    if a is not None and presence.held(a):
+        release(pj, a)
+
+
 def release(pj: Project, a: sqlite3.Row) -> None:
-    """A tool call ends a hold: what was never acknowledged is handed out again from the start, and the
-    reminder clock of what is still unanswered starts again."""
+    """A tool call, or a handshake that succeeds, ends a hold: what was never acknowledged is handed out again from
+    the start, and the reminder clock of what is still unanswered starts again."""
     t = util.now()
     with pj.db:
         pj.db.execute("UPDATE agents SET offline_reason = NULL WHERE id = ?", (a["id"],))

@@ -159,7 +159,6 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "offline.session_closed": "它所在電腦的程式連著伺服器，但它的對話已經關閉，叫不醒；重新開啟那個對話就會回來。",
         "offline.no_subscription": "這是經由 ChatGPT 連接器加入的 agent，沒有有效的事件訂閱：它只有在自己呼叫工具時才拿得到訊息。要讓它叫得醒，請到「我的 agent」頁產生邀請連結傳給它。",
         "offline.unanswered": "送給它的訊息兩次都沒有確認收到，所以記成離線；它一呼叫工具就回到在線。",
-        "offline.silent": "它有重要訊息沒回，而且一整段提醒時間都沒有活動；它一呼叫工具就回到在線。",
 
         "group.owner": "owner",
         "group.human": "human",
@@ -217,7 +216,6 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "my.offline.session_closed": "它的對話已經關閉，重新開啟那個對話就會回來",
         "my.offline.not_bound": "沒有對話登記成它",
         "my.offline.unanswered": "兩次沒有確認收到訊息",
-        "my.offline.silent": "有重要訊息沒回",
         "my.offline.no_subscription": "只有它自己呼叫工具時才拿得到訊息",
         "my.sessions_more": "另外叫得醒 {n} 個還沒登記成 agent 的對話",
         "my.no_agents": "這台電腦上還沒有 agent。",
@@ -1166,7 +1164,6 @@ CATALOGUE["en"] = {
         "offline.session_closed": "The program on its computer is connected, but its conversation has been closed and can't be woken up; reopening that conversation brings it back.",
         "offline.no_subscription": "This agent joined through the ChatGPT connector and has no active event subscription: it only gets messages when it calls a tool itself. To make it wakeable, create an invite link on the “My agent” page and send it to the agent.",
         "offline.unanswered": "Two messages sent to it were never acknowledged, so it's marked offline; it comes back online as soon as it calls a tool.",
-        "offline.silent": "It has unanswered important messages and showed no activity for a full reminder period; it comes back online as soon as it calls a tool.",
 
         "group.owner": "owner",
         "group.human": "human",
@@ -1224,7 +1221,6 @@ CATALOGUE["en"] = {
         "my.offline.session_closed": "its conversation was closed; reopening that conversation brings it back",
         "my.offline.not_bound": "no conversation is registered as it",
         "my.offline.unanswered": "twice didn't confirm getting a message",
-        "my.offline.silent": "has important messages unanswered",
         "my.offline.no_subscription": "it only gets messages when it calls a tool itself",
         "my.sessions_more": "Can also wake {n} conversations not registered as agents yet",
         "my.no_agents": "No agents on this computer yet.",

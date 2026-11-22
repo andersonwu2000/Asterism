@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS agents (
     last_session TEXT,             -- the last session ever bound; a different one raises the generation
     last_active REAL,
     last_poll REAL,                -- start or end of the latest presence poll of the bound session
-    offline_reason TEXT,           -- unanswered or silent: held offline until its session calls a tool
+    offline_reason TEXT,           -- unanswered: held offline until a tool call or a handshake that succeeds
     announced INTEGER,             -- the presence last announced in #general (1 online, 0 offline, NULL never)
     last_tool REAL,                -- the latest call of an agent endpoint other than poll and ack
     quiet_since REAL,              -- its session left its computer's list then; going offline not announced yet

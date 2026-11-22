@@ -531,6 +531,7 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     asker = orig["sender_id"] if orig is not None and orig["sender_kind"] == "agent" and _asked(pj, orig, sender) else None
     switches: dict[int, dict[str, bool]] = {}
     online: dict[int, bool] = {}
+    reach: dict[int, bool] = {}
     levels: dict[str, str] = {}
     woken: list[int] = []
     for r in readers:
@@ -543,11 +544,14 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
         else:
             a = agent_rows[r.id]
             online[r.id] = presence.is_online(pj.slug, a, pj.db)
+            # An agent held offline is still sent what it is given while its path is there (1o); a mention's
+            # result still says offline.
+            reach[r.id] = online[r.id] or presence.reachable(pj.slug, a, pj.db)
             if r.person_id not in switches:
                 switches[r.person_id] = projects.switches(pj, r.person_id)
             sw = switches[r.person_id]
             own = sender.kind != "system" and sender.person_id == r.person_id
-            heard = channel and not mentioned and r.key not in muted and online[r.id] and r.id in recent
+            heard = channel and not mentioned and r.key not in muted and reach[r.id] and r.id in recent
             if fixed is not None:
                 level = _scheduled_level(fixed, r.key in muted, own, sw["others_mention"], sw["others_channel"])
             elif own and (mentioned or not channel):
@@ -560,10 +564,10 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
                 level = "normal"
             else:
                 level = "muted"
-            if level == "important" or (level == "normal" and online[r.id]):
+            if level == "important" or (level == "normal" and reach[r.id]):
                 pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
                               "VALUES (?, 'message', ?, 'pending', ?, ?)",
-                              (r.id, mid, "push" if online[r.id] else "return", t))
+                              (r.id, mid, "push" if reach[r.id] else "return", t))
                 woken.append(r.id)
         levels[r.key] = level
     pj.db.executemany("INSERT INTO levels (message_id, reader_kind, reader_id, level) VALUES (?, ?, ?, ?)",
@@ -676,7 +680,7 @@ def post_to_agent(pj: Project, a: sqlite3.Row, text: str, asks_status: bool = Fa
     me = agent_member(a)
     place = private_place(me, me)
     t = util.now()
-    online = presence.is_online(pj.slug, a, pj.db)
+    online = presence.reachable(pj.slug, a, pj.db)
     with pj.db:
         mid = pj.db.execute("INSERT INTO messages (place, sender_kind, sender_id, sender_person, sender_name, text, "
                             "reply_to, hop, mentions, sent, asks_status) VALUES (?, 'system', NULL, NULL, 'system', "
@@ -808,7 +812,8 @@ def drop_unreadable(pj: Project, me: Member) -> None:
 def hand_out(pj: Project, me: Member) -> list[dict[str, Any]]:
     """What a poll (its session's or its computer's) hands out now: new deliveries, and those handed out once
     and not acknowledged in time (same id). They stay open until acknowledged. One handed out twice is left to
-    the background task, which makes the agent offline (`unanswered`). When it holds messages kept while the
+    the background task, which makes the agent offline (`unanswered`; it is still handed what is new, and an
+    acknowledgement brings it back). When it holds messages kept while the
     agent was offline (`how` return) and more is unread than it carries, the last of them says how much."""
     drop_unreadable(pj, me)
     t = util.now()
@@ -874,16 +879,18 @@ def finish(pj: Project, me: Member, rows: list[sqlite3.Row], how: str | None) ->
             util.log("delivered", project=pj.slug, message=d["message_id"], to=me.name, how=how or d["how"])
 
 
-def ack(pj: Project, me: Member, ids: Any) -> dict[str, Any]:
+def ack(pj: Project, me: Member, ids: Any) -> int:
+    """Acknowledge deliveries handed out to `me`; how many it acknowledged (a handshake when more than none)."""
     if not isinstance(ids, list):
         raise bad_request("bad_request", "deliveries must be a list of delivery ids.")
     ids = [i for i in ids if isinstance(i, int) and not isinstance(i, bool)]
-    if ids:
-        marks = ",".join("?" * len(ids))
-        rows = pj.db.execute(f"SELECT * FROM deliveries WHERE agent_id = ? AND state = 'out' AND id IN ({marks})",
-                             (me.id, *ids)).fetchall()
-        finish(pj, me, rows, None)
-    return {}
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    rows = pj.db.execute(f"SELECT * FROM deliveries WHERE agent_id = ? AND state = 'out' AND id IN ({marks})",
+                         (me.id, *ids)).fetchall()
+    finish(pj, me, rows, None)
+    return len(rows)
 
 
 def take_for_wait(pj: Project, me: Member) -> list[dict[str, Any]]:

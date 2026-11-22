@@ -3,7 +3,7 @@ the latest poll is also written to the database, so a restart does not flip ever
 programs reconnect.
 
 Online, the one definition every part of the server uses: the agent is bound to a session, it is not held
-offline (`unanswered` or `silent`, until its session calls a tool), and
+offline (`unanswered`: a handshake failed, until a tool call, an acknowledgement or a 2xx to an event), and
 - a local agent (Claude Code, Codex): either its session has a presence poll of its own open, or had one
   less than ASTERISM_OFFLINE_AFTER_S ago (the per-session API); or the credential its session came
   through has a computer poll open, or had one less than ASTERISM_OFFLINE_AFTER_S ago, and the bound
@@ -11,7 +11,8 @@ offline (`unanswered` or `silent`, until its session calls a tool), and
 - a connector agent (ChatGPT): it has a live event subscription.
 
 A local agent's deliveries go out through one path only: the computer poll while via_computer() holds,
-otherwise its own per-session poll.
+otherwise its own per-session poll. An agent held offline is still sent what it is given through the path it has
+(reachable(), 1o): the next handshake that succeeds brings it back.
 
 The background task (upkeep) is woken through kick() whenever something may have changed what is due.
 """
@@ -23,7 +24,7 @@ from collections import defaultdict
 
 from . import config, util
 
-HOLDS = ("unanswered", "silent")
+HOLDS = ("unanswered",)
 
 _open: dict[tuple[str, int, str], int] = defaultdict(int)
 _wakers: dict[tuple[str, int], set[asyncio.Event]] = defaultdict(set)
@@ -71,7 +72,7 @@ def via_computer(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> bool:
         and reported(db, a["credential_id"], a["session"])
 
 
-OFFLINE_BECAUSE = ("not_bound", "no_computer", "session_closed", "no_subscription", "unanswered", "silent")
+OFFLINE_BECAUSE = ("not_bound", "no_computer", "session_closed", "no_subscription", "unanswered")
 
 
 def offline_because(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> str | None:
@@ -80,6 +81,17 @@ def offline_because(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> str | 
         return "not_bound"
     if held(a):
         return a["offline_reason"]
+    return _no_path(slug, a, db)
+
+
+def reachable(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> bool:
+    """There is a path to hand the agent its deliveries now: it is online, or held offline (a failed handshake)
+    while its poll or subscription is there. What it is given is sent through that path (1o)."""
+    return bool(a["session"]) and _no_path(slug, a, db) is None
+
+
+def _no_path(slug: str, a: sqlite3.Row, db: sqlite3.Connection) -> str | None:
+    """Why there is no path to a bound agent (one of OFFLINE_BECAUSE), or None when there is one."""
     if a["kind"] == "chatgpt":
         return None if subscribed(db, a["id"]) else "no_subscription"
     if polling(slug, a) or (a["last_poll"] and util.now() - a["last_poll"] < config.get().offline_after_s):

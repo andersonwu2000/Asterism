@@ -7,7 +7,8 @@ Webhooks signatures, callback addresses resolved and pinned to a public address,
 What this server adds: subscriptions live in the project's database (a restart keeps them), and the
 attempts follow the delivery rules of the contract: a 2xx to an event hands it over (`delivered`, how
 `event`); no 2xx, one more attempt after ASTERISM_REDELIVER_AFTER_S; then the agent is offline
-(`unanswered`). The POSTs run in tasks of their own, never in a sender's request.
+(`unanswered`). Offline that way, it is still sent each new delivery while its subscription lives, and the next
+2xx brings it back (1o). The POSTs run in tasks of their own, never in a sender's request.
 
 The signing secret is kept in clear (it is needed to sign) and is never logged; neither are callback paths,
 bodies or signatures.
@@ -346,7 +347,8 @@ def expire(pj: Project, t: float) -> None:
 
 
 def launch_due(pj: Project, t: float) -> None:
-    """Start sending what is due for the connector agents that are online and not in a `wait`."""
+    """Start sending what is due for the connector agents that have a live subscription (online, or held offline
+    by a failed handshake: 1o) and are not in a `wait`."""
     rows = pj.db.execute("SELECT d.* FROM deliveries d JOIN agents a ON a.id = d.agent_id WHERE a.kind = 'chatgpt' "
                          "AND (d.state = 'pending' OR (d.state = 'out' AND d.attempts < 2 AND d.handed_out <= ?)) "
                          "ORDER BY d.id", (t - config.get().redeliver_after_s,)).fetchall()
@@ -354,7 +356,7 @@ def launch_due(pj: Project, t: float) -> None:
         if (pj.slug, d["id"]) in _flying or messaging.waiting(pj.slug, d["agent_id"]):
             continue
         a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (d["agent_id"],)).fetchone()
-        if a is None or not presence.is_online(pj.slug, a, pj.db):
+        if a is None or not presence.reachable(pj.slug, a, pj.db):
             continue
         _flying.add((pj.slug, d["id"]))
         task = asyncio.get_running_loop().create_task(_send(pj, d["id"]))
@@ -426,6 +428,7 @@ async def _send(pj: Project, delivery_id: int) -> None:
             return                                  # a local session took the agent over meanwhile
         if ok:
             messaging.finish(pj, messaging.agent_member(a), [d], "event")
+            notices.handshake(pj, a["id"])         # a 2xx is a handshake: it ends a hold (1o)
             return
         with pj.db:
             pj.db.execute("UPDATE deliveries SET state = 'out', handed_out = ?, attempts = attempts + 1 WHERE id = ?",

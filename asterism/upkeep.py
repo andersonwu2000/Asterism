@@ -1,7 +1,7 @@
 """The one background task: everything time makes due.
 
-- reminders for important messages an agent has not answered, and `silent` for an agent that did nothing
-  in a whole reminder period;
+- reminders for important messages an agent has not answered (one more only after a period in which the agent
+  called a tool; silence is not offline, 1o);
 - `unanswered` for an agent whose delivery handed out twice was not acknowledged;
 - events to the connector agents (sent in tasks of their own) and their second attempts;
 - expired event subscriptions;
@@ -48,7 +48,8 @@ def _unanswered(pj: Project, t: float) -> None:
 
 def _remind(pj: Project, f, t: float) -> None:
     """One follow-up that fell due: the first reminder; then another one if the agent called a tool in the
-    period that ended, else the agent is offline (`silent`). While the agent is offline the clock waits."""
+    period that ended, else none: the follow-up waits a period more and the agent stays online (1o). While there
+    is no path to the agent the clock waits too."""
     period = config.get().remind_after_s
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (f["agent_id"],)).fetchone()
     if a is None:
@@ -58,13 +59,11 @@ def _remind(pj: Project, f, t: float) -> None:
     if not pj.db.execute("SELECT 1 FROM followups WHERE agent_id = ? AND message_id = ?",
                          (f["agent_id"], f["message_id"])).fetchone():
         return
-    if not presence.is_online(pj.slug, a, pj.db):
+    quiet = f["reminders"] and not (a["last_tool"] and a["last_tool"] > f["period"])
+    if quiet or not presence.reachable(pj.slug, a, pj.db):
         with pj.db:
             pj.db.execute("UPDATE followups SET period = ?, due = ? WHERE agent_id = ? AND message_id = ?",
                           (t, t + period, f["agent_id"], f["message_id"]))
-        return
-    if f["reminders"] and not (a["last_tool"] and a["last_tool"] > f["period"]):
-        notices.hold(pj, a["id"], "silent")
         return
     with pj.db:
         pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
@@ -113,6 +112,8 @@ def server_started(store: Store) -> None:
             continue
         with db:
             db.execute("UPDATE agents SET quiet_since = ? WHERE quiet_since IS NOT NULL", (t,))
+            # The hold `silent` was withdrawn in 1o: an agent held so is released.
+            db.execute("UPDATE agents SET offline_reason = NULL WHERE offline_reason = 'silent'")
             db.execute("UPDATE agents SET last_poll = ? WHERE last_poll IS NOT NULL AND announced = 1 "
                        "AND session IS NOT NULL AND offline_reason IS NULL AND quiet_since IS NULL", (t,))
             db.execute("UPDATE credentials SET last_poll = ? WHERE last_poll IS NOT NULL AND connected = 1 "
