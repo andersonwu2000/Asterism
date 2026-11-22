@@ -13,8 +13,7 @@ from test_m1b import DESCRIPTIONS, SLUG, build_world, connector_token
 
 CHATGPT_UA, CODEX_UA = "openai-mcp/1.0.0", "openai-mcp/1.0.0 (Codex)"
 CODEX_CONNECTOR = ("This is the Asterism connector of your ChatGPT account. It cannot wake a Codex conversation, so it is "
-                   "not used from Codex. Use the Asterism tools of the local MCP server named `asterism-local` instead: "
-                   "call its `register` with your agent name and takeover=true, and use only those tools from now on. If "
+                   "not used from Codex. Use the Asterism tools of the local MCP server named `asterism-local` instead. If "
                    "this conversation has no `asterism-local` tools, ask your user for an agent invitation link (from the "
                    "\"my agents\" page of the project) and follow it.")
 
