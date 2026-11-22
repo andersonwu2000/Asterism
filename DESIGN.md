@@ -308,8 +308,10 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - Under it the agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
   older items loaded on scrolling up, new ones arriving at the end. A switch over it (remembered): **找它的和它說的**
   (the default: what it sent, what mentions it, and the reader's private conversation with it) or **全部** (everything
-  it sent or was handed). A message is a message row (time in the gutter, sender, model) whose header also says where
-  it was (the channel, or "私訊", a link to it there). A change of state is a quiet line between them, as a day is:
+  it sent or was handed). Its own person also sees its private conversations with that person's other agents, and
+  only here (1v). A message is a message row (time in the gutter, sender, model) whose header also says where it was
+  (the channel, or "私訊", a link to it there; between two agents of the reader's, "私訊 · {name}", a link to that
+  other agent's page). A change of state is a quiet line between them, as a day is:
   time, then "上線", "離線" (its reason under it on a wash), or its new status title ("狀態：…", "清除了狀態"). Only
   what the reader may read is there.
 - Its own person has the composer at the foot, which writes to it privately; anybody else sees one quiet line saying

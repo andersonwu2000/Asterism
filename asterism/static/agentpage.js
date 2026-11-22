@@ -13,7 +13,8 @@
 // - The page: first its status (#agent-status, 1s): the title, the body (Markdown with mathematics, folded, opened in
 //   place), "更新於 3 小時前" and the overdue mark; for its own person "要求每 __ 小時更新", for others how often its
 //   person asks. Then its timeline, as a conversation: the messages that concern it (it sent them, they name it, or
-//   they are the reader's private conversation with it; #tl-filter, remembered) or every message it sent or was
+//   they are the reader's private conversation with it, and, for its own person, its private conversations with
+//   that person's other agents, labelled 私訊 · {name} (1v); #tl-filter, remembered) or every message it sent or was
 //   handed, that the reader may read, with where it was, and its changes of state (online, offline with the reason,
 //   a new status) as quiet lines between them; newest at the bottom, older ones loaded on scrolling up, new ones
 //   asked for every few seconds (the reader's place is kept: new things arrive at the end).
@@ -282,13 +283,27 @@
     return when;
   }
 
-  // Where a message was: a channel, or the private conversation with the reader; a link to it there.
+  // Where a message was: a channel, or the private conversation with the reader, a link to it there; or (1v) the
+  // agent's private conversation with another agent of the reader's ("私訊 · {name}"), a link to that agent's page.
   function placeLink(m) {
+    if (m["with"]) {
+      var other = make("a", "tl-place", t("agp.private_with", {name: m["with"]}));
+      other.href = href(m["with"]);
+      other.dataset.agent = m["with"];
+      return other;
+    }
     var a = make("a", "tl-place", m["private"] ? t("agp.private") : m["in"]);
     var base = "/" + encodeURIComponent(SLUG), at = "?m=" + encodeURIComponent(m.id);
     a.href = m["private"] ? base + "/dm/" + encodeURIComponent(m["in"]) + at : base + at + "#" + encodeURIComponent(m["in"]);
     return a;
   }
+  // That other agent's page opens in place.
+  el.items.addEventListener("click", function (ev) {
+    var a = ev.target.closest && ev.target.closest("a[data-agent]");
+    if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button !== 0 || !find(a.dataset.agent)) return;
+    ev.preventDefault();
+    choose(a.dataset.agent, true);
+  });
 
   function messageRow(x) {
     var m = x.message;

@@ -7,8 +7,9 @@ moment it happened, so the timeline places it among the messages without compari
 this is a record for people to read, never something an agent is handed.
 
 A reader sees only what they may read: messages of the channels they may read, and the private conversation between
-the agent and themselves (a person is in no other private conversation of an agent); the changes of state with the
-project's read permission, as the member list.
+the agent and themselves; the agent's own person also its private conversations with that person's other agents
+(1v: on this page only; nowhere else are they the person's to read); the changes of state with the project's read
+permission, as the member list.
 """
 from __future__ import annotations
 
@@ -65,8 +66,10 @@ def _state_view(r: sqlite3.Row) -> dict[str, Any]:
 
 def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only: Any = None) -> dict[str, Any]:
     """The newest `limit` items of the agent's timeline older than `before`, oldest first, and whether there are
-    older ones. `only` "concerns": of the messages, only those the agent sent, those that mention it and its private
-    conversation with the reader (the changes of state all the same)."""
+    older ones. `only` "concerns": of the messages, only those the agent sent, those that mention it, its private
+    conversation with the reader and, for its own person, with that person's other agents (the changes of state all
+    the same). A message of the latter kind is named from the agent's side: `in` and `with` the other agent, at
+    level normal for the reader."""
     if only not in (None, "", "concerns"):
         raise bad_request("bad_request", "only is concerns, or nothing for everything.")
     me = messaging.person_member(pj, actor.person_id)
@@ -80,21 +83,27 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
     agent = messaging.agent_member(a)
     chans = sorted(messaging.readable(pj, me))
     private = messaging.private_place(me, agent)
+    # Its own person also reads its private conversations with that person's other agents (1v).
+    pairs = [messaging.private_place(agent, messaging.agent_member(o)) for o in pj.db.execute(
+        "SELECT * FROM agents WHERE person_id = ? AND id != ? ORDER BY id", (actor.person_id, a["id"]))] \
+        if a["person_id"] == actor.person_id else []
+    places = [private, *pairs]
+    marks = ",".join("?" * len(places))
     # The agent's messages, each set from its own index (what it sent; what was delivered to it or it read in full;
-    # its private conversation with the reader), then what the reader may read of them.
+    # its private conversations the reader may read), then what the reader may read of them.
     # Mentions are kept as a JSON list of names; a name is quoted there exactly as json.dumps writes it.
-    concerns = ("AND (m.sender_kind = 'agent' AND m.sender_id = ? OR m.place = ? OR instr(m.mentions, ?) > 0) "
+    concerns = (f"AND (m.sender_kind = 'agent' AND m.sender_id = ? OR m.place IN ({marks}) OR instr(m.mentions, ?) > 0) "
                 if only == "concerns" else "")
     rows = pj.db.execute(
         f"SELECT m.* FROM messages m WHERE m.id IN ("
         f"SELECT id FROM messages WHERE sender_kind = 'agent' AND sender_id = ? "
         f"UNION SELECT message_id FROM deliveries WHERE agent_id = ? AND kind IN ('message', 'notice') "
         f"UNION SELECT message_id FROM levels WHERE reader_kind = 'agent' AND reader_id = ? AND seen IS NOT NULL "
-        f"UNION SELECT id FROM messages WHERE place = ?) "
-        f"AND m.id < ? AND (m.place IN ({','.join('?' * len(chans)) or 'NULL'}) OR m.place = ?) "
+        f"UNION SELECT id FROM messages WHERE place IN ({marks})) "
+        f"AND m.id < ? AND (m.place IN ({','.join('?' * len(chans)) or 'NULL'}) OR m.place IN ({marks})) "
         f"{concerns}ORDER BY m.id DESC LIMIT ?",
-        (a["id"], a["id"], a["id"], private, below, *chans, private,
-         *((a["id"], private, json.dumps(a["name"])) if concerns else ()), n + 1)).fetchall()
+        (a["id"], a["id"], a["id"], *places, below, *chans, *places,
+         *((a["id"], *places, json.dumps(a["name"])) if concerns else ()), n + 1)).fetchall()
     states = pj.db.execute(
         "SELECT * FROM agent_states WHERE agent_id = ? AND (after_message < ? OR (after_message = ? AND id < ?)) "
         "ORDER BY after_message DESC, id DESC LIMIT ?", (a["id"], after_below, after_below, id_below, n + 1)).fetchall()
@@ -103,7 +112,10 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
                     key=lambda x: x[0], reverse=True)
     more = len(merged) > n
     page = list(reversed(merged[:n]))
-    shown = {m["id"]: m for m in messaging.views(pj, [r for _, k, r in page if k == "m"], me)}
+    msgs = [r for _, k, r in page if k == "m"]
+    shown = {m["id"]: m for m in messaging.views(pj, [r for r in msgs if r["place"] not in pairs], me)}
+    for m in messaging.views(pj, [r for r in msgs if r["place"] in pairs], me, side=agent):
+        shown[m["id"]] = dict(m, **{"with": m["in"]})
     items: list[dict[str, Any]] = []
     for _, k, r in page:
         if k == "m":

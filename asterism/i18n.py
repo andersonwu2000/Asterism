@@ -885,6 +885,7 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "agp.start": "時間線從這裡開始。",
         "agp.older": "正在載入較早的項目…",
         "agp.private": "私訊",
+        "agp.private_with": "私訊 · {name}",
         "agp.state.online": "上線",
         "agp.state.offline": "離線",
 
@@ -1890,6 +1891,7 @@ CATALOGUE["en"] = {
         "agp.start": "The timeline starts here.",
         "agp.older": "Loading earlier items…",
         "agp.private": "Private",
+        "agp.private_with": "Private · {name}",
         "agp.state.online": "Came online",
         "agp.state.offline": "Went offline",
 

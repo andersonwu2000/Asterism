@@ -240,8 +240,9 @@ def _place_for(pj: Project, place: str, me: Member, names: dict[str, str]) -> st
     return names[other]
 
 
-def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str, Any]]:
-    """Message objects as `me` gets them."""
+def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member, side: Member | None = None) -> list[dict[str, Any]]:
+    """Message objects as `me` gets them. `side`: a private conversation `me` is not part of is named as seen from
+    this member of it (the agent page shows a person their agents' conversations with each other, 1v)."""
     rows = list(rows)
     if not rows:
         return []
@@ -256,7 +257,7 @@ def views(pj: Project, rows: Iterable[sqlite3.Row], me: Member) -> list[dict[str
         own = r["sender_kind"] == me.kind and r["sender_id"] == me.id
         # Members who joined after a message was sent have no level for it.
         level = levels.get(r["id"]) or ("normal" if own or me.kind == "person" else "muted")
-        m: dict[str, Any] = {"id": r["id"], "in": _place_for(pj, r["place"], me, names), "from": r["sender_name"],
+        m: dict[str, Any] = {"id": r["id"], "in": _place_for(pj, r["place"], side or me, names), "from": r["sender_name"],
                              "from_kind": r["sender_kind"], "relation": relation(me, r)}
         if r["sender_kind"] == "agent" and r["sender_model"]:
             m["model"] = r["sender_model"]
