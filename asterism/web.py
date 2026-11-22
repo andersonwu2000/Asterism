@@ -922,7 +922,7 @@ async def mcp(request: Request) -> Response:
     answer = await tools.handle(caller_for, msg, disconnect_watch(request))
     if answer is None:
         return Response(status_code=202)
-    _log_mcp_call(slug, caller, msg, answer)
+    _log_mcp_call(request, slug, caller, msg, answer)
     return JSONResponse(answer, headers={"Cache-Control": "no-store"})
 
 
@@ -934,9 +934,49 @@ def _mcp_name(raw: Any) -> str | None:
     return _MCP_NAME_DROP.sub("", raw)[:40] if isinstance(raw, str) else None
 
 
-def _log_mcp_call(slug: str, caller: agents.Caller, msg: Any, answer: dict[str, Any]) -> None:
-    """One line per authenticated JSON-RPC request: names and the outcome, never arguments, texts, tokens or
-    session ids."""
+def _printable(raw: Any, most: int) -> str:
+    """Text fit for the log: its printable characters only, at most `most` of them."""
+    return "".join(c for c in str(raw) if c.isprintable())[:most]
+
+
+MCP_LIST_MOST = 30                  # header names, _meta keys: at most this many in a log line
+
+
+def _who_calls(request: Request, method: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Who calls the connector, for the log (1q): the user agent, the names of the x- headers, the client's name at
+    initialize, the key names of a tool call's _meta. Never a value but the user agent's; the values only while the
+    server traces (ASTERISM_MCP_TRACE=1), the session id then only as the start of its digest, and never the
+    Authorization header or a cookie (neither begins with x-)."""
+    xs = sorted({_printable(k.lower(), 60): v for k, v in request.headers.items() if k.lower().startswith("x-")}.items())
+    xs = xs[:MCP_LIST_MOST]
+    out: dict[str, Any] = {"ua": _printable(request.headers.get("user-agent", ""), 80), "hdr": [k for k, _ in xs]}
+    info = params.get("clientInfo") if method == "initialize" else None
+    if isinstance(info, dict) and isinstance(info.get("name"), str) and info["name"]:
+        version = info.get("version")
+        out["client"] = _printable(info["name"] + (f"/{version}" if isinstance(version, str) and version else ""), 80)
+    meta = params.get("_meta") if method == "tools/call" else None
+    keys = sorted(meta)[:MCP_LIST_MOST] if isinstance(meta, dict) else None
+    if keys is not None:
+        out["meta"] = [_printable(k, 60) for k in keys]
+    if config.get().mcp_trace:
+        def shown(k: str, v: str) -> str:
+            return util.digest(v)[:8] if k == "x-openai-session" else _printable(v, 120)
+
+        def value(v: Any) -> Any:
+            if isinstance(v, str):
+                return _printable(v, 120)
+            if isinstance(v, (bool, int, float)):
+                return v
+            return json.dumps(v, ensure_ascii=False, default=str)[:200]
+        out["trace"] = {"hdr": {k: shown(k, v) for k, v in xs}}
+        if keys is not None:
+            out["trace"]["meta"] = {_printable(k, 60): value(meta[k]) for k in keys}
+    return out
+
+
+def _log_mcp_call(request: Request, slug: str, caller: agents.Caller, msg: Any, answer: dict[str, Any]) -> None:
+    """One line per authenticated JSON-RPC request: names and the outcome, with who calls (_who_calls), never
+    arguments, texts, tokens or session ids."""
     method = _mcp_name(msg.get("method")) if isinstance(msg, dict) else None
     params = msg.get("params") if isinstance(msg, dict) and isinstance(msg.get("params"), dict) else {}
     raw_tool = params.get("name") if method == "tools/call" else None
@@ -951,7 +991,7 @@ def _log_mcp_call(slug: str, caller: agents.Caller, msg: Any, answer: dict[str, 
         a = None
     util.log("mcp_call", project=slug, person=caller.person_id, method=method,
              tool=_mcp_name(raw_tool) if method == "tools/call" else None, agent=a["name"] if a else None,
-             outcome=outcome)
+             outcome=outcome, **_who_calls(request, method, params))
 
 
 # --------------------------------------------------------------------------- OAuth authorization server

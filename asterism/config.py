@@ -38,6 +38,7 @@ class Settings:
     status_hour_s: float            # one hour of an agent's update_every_h (shorter in tests)
     active_s: float                 # an agent whose session did something this recently is working (1x)
     write_wait_s: float             # a write handed to the person's chosen computer is waited for this long (w2)
+    mcp_trace: bool                 # ASTERISM_MCP_TRACE=1: the connector's log lines also carry values (1q; off)
 
     @property
     def secure_cookies(self) -> bool:
@@ -95,7 +96,8 @@ def load(data: Path, port: int | None = None, test_mode: bool = False) -> Settin
                     person_offline_after_s=_env_s("ASTERISM_PERSON_OFFLINE_AFTER_S", 60),
                     status_hour_s=_env_s("ASTERISM_STATUS_HOUR_S", 3600),
                     active_s=_env_s("ASTERISM_ACTIVE_S", 120),
-                    write_wait_s=_env_s("ASTERISM_WRITE_WAIT_S", 60))
+                    write_wait_s=_env_s("ASTERISM_WRITE_WAIT_S", 60),
+                    mcp_trace=os.environ.get("ASTERISM_MCP_TRACE", "").strip() == "1")
 
 
 def use(s: Settings) -> Settings:
