@@ -3,8 +3,10 @@
 A place is a channel ('#name') or a private conversation between two members. Every message gets, when it is
 sent, one row per reader with its level for that reader; nothing recomputes it later. An agent that should
 hear a message (level important or normal) gets a delivery record; a poll (its session's or its computer's)
-hands deliveries out and they are acknowledged. An important message handed over to an agent starts a follow-up that the background
-task (upkeep) turns into reminders until the agent answers it. The system posts notices in the project's notice
+hands deliveries out and they are acknowledged. For an agent a message is important when it mentions it (in a
+private conversation too, 1p: otherwise a private message is normal, and still handed over); an important message
+handed over to an agent starts a follow-up that the background task (upkeep) turns into at most two reminders until
+the agent answers it. The system posts notices in the project's notice
 channel (projects.notice_channel, #general unless the project chose another) when an
 agent goes online or offline, and reminds an agent privately of a status update due (statuses.py). A schedule's
 run (schedules.py) goes through the same path as a person's message, with its own level for every reader.
@@ -360,6 +362,13 @@ def parse_mentions(pj: Project, text: str) -> tuple[list[tuple[str, str, Any]], 
     return found, unknown
 
 
+def _private_mention(pj: Project, text: str, place: str, sender: Member) -> list[tuple[str, str, Any]]:
+    """The mention a private message can make (1p): of the other member of its conversation, which makes it important
+    for that member. Any other name in it is plain text."""
+    keys = _private_keys(place)
+    return [f for f in parse_mentions(pj, text)[0] if f[1] == "member" and f[2].key in keys and f[2] != sender]
+
+
 def _group_member_keys(pj: Project, group_ids: Iterable[int]) -> set[str]:
     ids = list(group_ids)
     if not ids:
@@ -424,7 +433,7 @@ def send(pj: Project, sender: Member, to: Any, text: Any, reply_to: Any) -> dict
         if first:
             util.log("reply_chain_reminded", project=pj.slug, agent=sender.name, reply_to=rid, hop=hop)
             raise ApiError(409, "reply_chain", CHAIN_REMINDER.format(n=hop))
-    found, unknown = parse_mentions(pj, text) if place.startswith("#") else ([], [])
+    found, unknown = parse_mentions(pj, text) if place.startswith("#") else (_private_mention(pj, text, place, sender), [])
     mid, results = _post(pj, sender, place, text, orig, hop, found)
     return {"id": mid, "hop": hop, "mentions": results + [{"name": n, "result": "unknown"} for n in unknown]}
 
@@ -555,17 +564,21 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
             heard = channel and not mentioned and r.key not in muted and reach[r.id] and r.id in recent
             if fixed is not None:
                 level = _scheduled_level(fixed, r.key in muted, own, sw["others_mention"], sw["others_channel"])
-            elif own and (mentioned or not channel):
+            elif own and mentioned:
                 level = "important"
             elif not own and mentioned and sw["others_mention"]:
                 level = "important"
+            elif not channel:
+                level = "normal"                # 1p: a private message is important only by a mention of its reader
             elif asker == r.id:
                 level = "normal"
             elif heard and (own or sw["others_channel"]):
                 level = "normal"
             else:
                 level = "muted"
-            if level == "important" or (level == "normal" and reach[r.id]):
+            # A normal private message is handed over as an important one is, at once or when the agent is back (1p);
+            # a normal channel message only to an agent that can be reached now.
+            if level == "important" or (level == "normal" and (reach[r.id] or not channel)):
                 pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
                               "VALUES (?, 'message', ?, 'pending', ?, ?)",
                               (r.id, mid, "push" if reach[r.id] else "return", t))
@@ -844,11 +857,13 @@ def next_due(pj: Project, me: Member) -> float | None:
 
 
 def drop_unheard(pj: Project, me: Member) -> None:
-    """An agent coming back online gets its important messages; normal ones that were waiting stay unread."""
+    """An agent coming back online gets its important messages and its private ones (1p); the normal channel messages
+    that were waiting stay unread."""
     with pj.db:
         pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND kind = 'message' "
-                      "AND state IN ('pending', 'out') AND message_id IN (SELECT message_id FROM levels "
-                      "WHERE reader_kind = 'agent' AND reader_id = ? AND level = 'normal')",
+                      "AND state IN ('pending', 'out') AND message_id IN (SELECT l.message_id FROM levels l "
+                      "JOIN messages m ON m.id = l.message_id WHERE l.reader_kind = 'agent' AND l.reader_id = ? "
+                      "AND l.level = 'normal' AND m.place LIKE '#%')",
                       (util.now(), me.id, me.id))
 
 

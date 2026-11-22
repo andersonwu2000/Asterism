@@ -46,10 +46,14 @@ def _unanswered(pj: Project, t: float) -> None:
         _guard(pj, "unanswered", lambda aid=r["agent_id"]: notices.hold(pj, aid, "unanswered"))
 
 
+MAX_REMINDERS = 2                  # an unanswered important message is reminded about at most this often (1p)
+
+
 def _remind(pj: Project, f, t: float) -> None:
     """One follow-up that fell due: the first reminder; then another one if the agent called a tool in the
     period that ended, else none: the follow-up waits a period more and the agent stays online (1o). While there
-    is no path to the agent the clock waits too."""
+    is no path to the agent the clock waits too. After the second reminder the follow-up is over (due NULL,
+    unanswered): the message stays important and unread, and nothing reminds of it again (1p)."""
     period = config.get().remind_after_s
     a = pj.db.execute("SELECT * FROM agents WHERE id = ?", (f["agent_id"],)).fetchone()
     if a is None:
@@ -68,8 +72,10 @@ def _remind(pj: Project, f, t: float) -> None:
     with pj.db:
         pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
                       "VALUES (?, 'reminder', ?, 'pending', 'push', ?)", (a["id"], f["message_id"], t))
+        over = f["reminders"] + 1 >= MAX_REMINDERS
         pj.db.execute("UPDATE followups SET reminders = reminders + 1, period = ?, due = ? "
-                      "WHERE agent_id = ? AND message_id = ?", (t, t + period, f["agent_id"], f["message_id"]))
+                      "WHERE agent_id = ? AND message_id = ?",
+                      (t, None if over else t + period, f["agent_id"], f["message_id"]))
     util.log("reminded", project=pj.slug, agent=a["name"], about=f["message_id"])
     messaging.notify(pj.slug, a["id"])
 
@@ -114,6 +120,8 @@ def server_started(store: Store) -> None:
             db.execute("UPDATE agents SET quiet_since = ? WHERE quiet_since IS NOT NULL", (t,))
             # The hold `silent` was withdrawn in 1o: an agent held so is released.
             db.execute("UPDATE agents SET offline_reason = NULL WHERE offline_reason = 'silent'")
+            # At most two reminders (1p): a follow-up that had as many is over.
+            db.execute("UPDATE followups SET due = NULL WHERE answered IS NULL AND reminders >= ?", (MAX_REMINDERS,))
             db.execute("UPDATE agents SET last_poll = ? WHERE last_poll IS NOT NULL AND announced = 1 "
                        "AND session IS NOT NULL AND offline_reason IS NULL AND quiet_since IS NULL", (t,))
             db.execute("UPDATE credentials SET last_poll = ? WHERE last_poll IS NOT NULL AND connected = 1 "

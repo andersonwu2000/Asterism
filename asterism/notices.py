@@ -119,13 +119,14 @@ def handshake(pj: Project, agent_id: int) -> None:
 
 def release(pj: Project, a: sqlite3.Row) -> None:
     """A tool call, or a handshake that succeeds, ends a hold: what was never acknowledged is handed out again from
-    the start, and the reminder clock of what is still unanswered starts again."""
+    the start, and the reminder clock of what is still unanswered starts again (a follow-up that is over stays over,
+    and the reminders already sent still count: at most two, 1p)."""
     t = util.now()
     with pj.db:
         pj.db.execute("UPDATE agents SET offline_reason = NULL WHERE id = ?", (a["id"],))
         pj.db.execute("UPDATE deliveries SET state = 'pending', attempts = 0 WHERE agent_id = ? AND state = 'out'",
                       (a["id"],))
-        pj.db.execute("UPDATE followups SET period = ?, due = ?, reminders = 0 WHERE agent_id = ? AND answered IS NULL",
-                      (t, t + config.get().remind_after_s, a["id"]))
+        pj.db.execute("UPDATE followups SET period = ?, due = ? WHERE agent_id = ? AND answered IS NULL "
+                      "AND due IS NOT NULL", (t, t + config.get().remind_after_s, a["id"]))
     sync(pj, a["id"])
     messaging.notify(pj.slug, a["id"])

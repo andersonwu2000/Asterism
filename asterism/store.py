@@ -273,7 +273,8 @@ CREATE TABLE IF NOT EXISTS followups (
     message_id INTEGER NOT NULL,
     handed REAL NOT NULL,
     period REAL NOT NULL,          -- start of the current reminder period
-    due REAL,                      -- when the next reminder (or the silence check) falls due; NULL when answered
+    due REAL,                      -- when the next reminder falls due; NULL when answered, or over (two reminders
+                                   -- sent, 1p: the message stays unanswered, nothing reminds of it again)
     reminders INTEGER NOT NULL DEFAULT 0,
     answered REAL,
     PRIMARY KEY (agent_id, message_id)
