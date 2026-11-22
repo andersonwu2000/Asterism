@@ -11,7 +11,7 @@ import secrets
 import httpx
 import pytest
 
-from test_m1b import ENV, SLUG, build_world
+from test_m1b import ENV, SLUG, build_world, until
 
 UNIT_S = 2
 
@@ -108,6 +108,9 @@ def test_only_the_agents_person_asks_for_updates_and_a_late_agent_is_reminded(s)
     assert not [m for m in s.bob.read() if "asked for a status update" in m["text"]], "nobody else is told"
     assert set_status(s.a1, title="Back on it [s4]").status_code == 200
     assert statuses(s.a1)["a1"]["overdue"] is False
+    assert s.a1.take("Your person asked for a status update every 1 h", timeout=UNIT_S + 8) and         until(lambda: statuses(s.a1)["a1"]["overdue"], UNIT_S + 8)
+    assert set_status(s.a1, title="Back on it [s4]").status_code == 200, "the same status again: still on it"
+    assert statuses(s.a1)["a1"]["overdue"] is False, "any set_status is an update, changed or not"
     assert every(s.alice, "a1", None).status_code == 200
     assert statuses(s.a1)["a1"]["update_every_h"] is None
 
