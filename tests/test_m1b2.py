@@ -92,15 +92,15 @@ def test_an_unanswered_important_message_is_followed_by_one_reminder(v):
 
 
 def test_an_active_agent_is_reminded_again_and_a_silent_one_goes_offline(v):
-    busy, idle = fresh(v, "r2"), fresh(v, "r3")
+    active, idle = fresh(v, "r2"), fresh(v, "r3")
     sent = v.alice.say("@r2 @r3 please answer [f2]")
-    busy.take("[f2]")
+    active.take("[f2]")
     idle.take("[f2]")
     end = time.time() + REMIND_S * 2 + 2.5
     while time.time() < end:                               # r2 keeps working without answering; r3 does nothing,
-        tool_call(busy)                                    # though its helper acknowledges everything
+        tool_call(active)                                  # though its helper acknowledges everything
         time.sleep(0.8)
-    assert len(of_kind(busy, "reminder")) >= 2 and v.alice.is_online("r2"), "seen alive: reminded again, not offline"
+    assert len(of_kind(active, "reminder")) >= 2 and v.alice.is_online("r2"), "seen alive: reminded again, not offline"
     assert until(lambda: not v.alice.is_online("r3"), 6), "no tool call in a whole period: offline, open poll or not"
     assert len(of_kind(idle, "reminder")) == 1
     assert logged(v, "agent_offline", agent="r3", reason="silent")
@@ -110,9 +110,9 @@ def test_an_active_agent_is_reminded_again_and_a_silent_one_goes_offline(v):
     m = system_messages(v.alice, off)[0]
     assert (m["from"], m["relation"], m["level"]) == ("system", "system", "important"), "alice was waiting for r3's answer"
     assert system_messages(v.bob, off)[0]["level"] == "muted"
-    time.sleep(1.5)                                        # r2 holds no task: a change of state is not sent to it
-    assert not notices(busy, off), "only agents that hold a task are sent a change that may move the work around"
-    seen = [m for m in busy.messages(place="#general", limit=200).json()["messages"] if m["text"] == off]
+    time.sleep(1.5)                                        # a change of presence is not sent to agents (1s)
+    assert not notices(active, off), "no agent is sent a notice of presence"
+    seen = [m for m in active.messages(place="#general", limit=200).json()["messages"] if m["text"] == off]
     assert seen and seen[0]["level"] == "muted", "it is there to read, muted"
     assert not notices(v.b1, off), "an agent of someone else is not told"
 
@@ -126,8 +126,8 @@ def test_an_active_agent_is_reminded_again_and_a_silent_one_goes_offline(v):
     assert on and on[-1]["level"] == "normal"
     idle.say("sorry, here [f2a]", reply_to=sent["id"])
     idle.say("and this [f3a]", reply_to=late["id"])
-    busy.say("done [f2b]", reply_to=sent["id"])
-    leave(busy)
+    active.say("done [f2b]", reply_to=sent["id"])
+    leave(active)
     leave(idle)
 
 
@@ -156,20 +156,12 @@ def test_notices_reach_only_those_close_to_the_agent(v):
     assert seen and (seen[0]["level"], seen[0]["from"], seen[0]["reply_to"]) == ("normal", "system", None)
     assert system_messages(v.bob, on)[0]["level"] == "muted" and system_messages(v.carol, on)[0]["level"] == "muted"
     time.sleep(1.5)
-    assert not notices(v.a1, on) and not notices(v.b1, on), "no agent holds a task yet, so none is woken by the notice"
+    assert not notices(v.a1, on) and not notices(v.b1, on), "no agent is sent a notice of presence (1s)"
 
-    r = v.alice.c.post(f"/{SLUG}/api/groups", json={"name": "lemma-team", "permissions": []})
-    assert r.status_code == 201, r.text
-    for member in ("alice", "bob", "n1"):                   # a person gives an agent only groups the person is in
-        r = v.alice.c.post(f"/{SLUG}/api/members/{member}/groups", json={"add": ["lemma-team"], "remove": []})
-        assert r.status_code == 200, r.text
-    r = n1.c.post(f"/{SLUG}/api/agent/task", json={"group": "lemma-team", "text": "hold the lemma [nt]", "responsible": "n1"})
-    assert r.status_code == 200, r.text
-    off = "n1 is offline. Its tasks:" + chr(10) + f"{r.json()['task']['id']} [lemma-team] hold the lemma [nt]"
     leave(n1)
-    assert until(lambda: system_messages(v.bob, off), 5)
-    assert system_messages(v.bob, off)[0]["level"] == "normal", "bob shares a custom group with n1, whose work is unattended now"
-    assert system_messages(v.carol, off)[0]["level"] == "muted", "the default groups do not count"
+    assert until(lambda: system_messages(v.alice, off), 5)
+    assert system_messages(v.alice, off)[0]["level"] == "muted", "going offline moves no work: muted for those close too"
+    assert not notices(v.a1, off) and not notices(v.b1, off)
     assert logged(v, "agent_offline", agent="n1", reason="left") and logged(v, "agent_online", agent="n1")
     time.sleep(REMIND_S + 1.5)
     assert not [d for d in of_kind(v.a1, "reminder")], "nobody is reminded about a notice"

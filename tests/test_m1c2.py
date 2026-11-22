@@ -30,7 +30,7 @@ def s(tmp_path_factory):
     `human` only reads and posts; what it held beyond that is held by `planners`, which alice and bob are in, carol not
     (default groups are never left by hand, f6: a person is limited through the default group's permissions)."""
     world = build_world(tmp_path_factory.mktemp("datac2"), ENVS)
-    more = ["create_channel", "create_schedule", "assign_tasks", "manage_own_agents", "edit_tasks"]
+    more = ["create_channel", "create_schedule", "manage_own_agents"]
     assert world.alice.c.post(f"/{SLUG}/api/groups", json={"name": "planners", "permissions": ["read", "post"] + more}).status_code == 201
     for who in ("alice", "bob"):
         r = world.alice.c.post(f"/{SLUG}/api/members/{who}/groups", json={"add": ["planners"], "remove": []})
@@ -139,15 +139,13 @@ def test_a_schedule_posts_in_its_creators_name_at_its_own_level(s):
 
 
 def test_normal_and_muted_schedules(s):
-    r = s.a1.c.post(f"/{SLUG}/api/agent/task", json={"group": "alice-agents", "text": "busy with this [sc]", "responsible": "a1"})
-    assert r.status_code == 200, r.text
     assert s.alice.c.post(f"/{SLUG}/api/channels/general/mute", json={"muted": True, "agent": "a2"}).status_code == 200
     assert s.carol.c.post(f"/{SLUG}/api/channels/general/mute", json={"muted": True}).status_code == 200
     try:
         made(schedule(s.alice, text="for whoever is around [sc3]", level="normal"))
         d = s.a1.take("[sc3]")
         assert d["message"]["level"] == "normal" and d["frame"].endswith("(Asterism message. No answer needed.)"), \
-            "its own user's schedule reaches it though it is busy: the schedule's level decides"
+            "its own user's schedule reaches it: the schedule's level decides"
         s.a2.absent("[sc3]", 1.0)
         s.b1.absent("[sc3]", 0.2)
         assert one_run(s.bob, "[sc3]")["level"] == "normal" and one_run(s.carol, "[sc3]")["level"] == "muted"
@@ -158,8 +156,6 @@ def test_normal_and_muted_schedules(s):
     finally:
         s.alice.c.post(f"/{SLUG}/api/channels/general/mute", json={"muted": False, "agent": "a2"})
         s.carol.c.post(f"/{SLUG}/api/channels/general/mute", json={"muted": False})
-        tid = r.json()["task"]["id"]
-        s.a1.c.post(f"/{SLUG}/api/agent/task", json={"id": tid, "remove": True})
 
 
 def test_a_schedule_goes_where_its_creator_may_write(s):

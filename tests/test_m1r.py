@@ -36,10 +36,10 @@ def texts(person, tag: str) -> list[dict]:
     return [m for m in person.read("#general") if tag in m["text"]]
 
 
-def tasks_with(person, tag: str) -> list[dict]:
-    got = person.c.get(f"/{SLUG}/api/tasks")
+def status_of(agent) -> dict:
+    got = agent.c.get(f"/{SLUG}/api/agent/statuses")
     assert got.status_code == 200, got.text
-    return [x for g in got.json()["groups"] for x in g["tasks"] if tag in x["title"]]
+    return next(x for x in got.json()["statuses"] if x["agent"] == agent.name)
 
 
 # ------------------------------------------------------------------ agents
@@ -80,10 +80,10 @@ def test_a_key_used_for_something_else_is_refused(r):
     other = r.a1.c.post(f"/{SLUG}/api/agent/send", json={"to": "#general", "text": "second [r4]"}, headers=k(kk))
     assert other.status_code == 422 and other.json()["error"] == "key_reused", other.text
     assert isinstance(other.json().get("message"), str) and other.json()["message"]
-    elsewhere = r.a1.c.post(f"/{SLUG}/api/agent/task", json={"group": "alice-agents", "text": "first [r4]"}, headers=k(kk))
+    elsewhere = r.a1.c.post(f"/{SLUG}/api/agent/status", json={"title": "first [r4]"}, headers=k(kk))
     assert elsewhere.status_code == 422 and elsewhere.json()["error"] == "key_reused", elsewhere.text
     assert [m["text"] for m in texts(r.alice, "[r4]")] == ["first [r4]"]
-    assert tasks_with(r.alice, "[r4]") == []
+    assert "[r4]" not in status_of(r.a1)["title"]
 
 
 def test_the_same_body_written_differently_is_the_same_request(r):
@@ -107,15 +107,16 @@ def test_a_refusal_is_kept_and_given_again(r):
     assert again.headers.get("idempotent-replayed") == "true"
 
 
-def test_an_agents_task_made_twice_with_one_key_is_made_once(r):
+def test_an_agents_status_set_twice_with_one_key_is_written_once(r):
     kk = key()
-    body = {"group": "alice-agents", "text": "one task [r7]"}
-    first = r.a1.c.post(f"/{SLUG}/api/agent/task", json=body, headers=k(kk))
-    again = r.a1.c.post(f"/{SLUG}/api/agent/task", json=body, headers=k(kk))
+    body = {"title": "one status [r7]"}
+    first = r.a1.c.post(f"/{SLUG}/api/agent/status", json=body, headers=k(kk))
+    again = r.a1.c.post(f"/{SLUG}/api/agent/status", json=body, headers=k(kk))
     assert first.status_code == 200, first.text
-    assert again.status_code == 200 and again.json()["task"]["id"] == first.json()["task"]["id"]
-    assert len(tasks_with(r.alice, "[r7]")) == 1
-    assert r.alice.c.post(f"/{SLUG}/api/tasks/{first.json()['task']['id']}/remove").status_code == 200
+    assert again.status_code == 200 and again.json() == first.json(), again.text
+    assert again.headers.get("idempotent-replayed") == "true"
+    assert "idempotent-replayed" not in first.headers
+    assert status_of(r.a1)["title"] == "one status [r7]"
 
 
 def test_a_bad_key_is_refused_and_nothing_is_done(r):
@@ -169,14 +170,17 @@ def test_a_persons_message_sent_twice_with_one_key_is_posted_once(r):
     assert other.status_code == 201 and "idempotent-replayed" not in other.headers, "a key is the caller's"
 
 
-def test_a_persons_task_and_pin_with_one_key_are_made_once(r):
+def test_a_persons_schedule_and_channel_with_one_key_are_made_once(r):
     kk = key()
-    body = {"group": "human", "text": "page task [r12]"}
-    first = r.alice.c.post(f"/{SLUG}/api/tasks", json=body, headers=k(kk))
-    again = r.alice.c.post(f"/{SLUG}/api/tasks", json=body, headers=k(kk))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86_400))      # it never runs here
+    body = {"to": "#general", "text": "page schedule [r12]", "level": "muted", "start_at": later}
+    first = r.alice.c.post(f"/{SLUG}/api/schedules", json=body, headers=k(kk))
+    again = r.alice.c.post(f"/{SLUG}/api/schedules", json=body, headers=k(kk))
     assert first.status_code == 201 and again.status_code == 201, (first.text, again.text)
-    assert len(tasks_with(r.alice, "[r12]")) == 1
-    assert r.alice.c.post(f"/{SLUG}/api/tasks/{first.json()['task']['id']}/remove").status_code == 200
+    assert again.headers.get("idempotent-replayed") == "true"
+    made = [x for x in r.alice.c.get(f"/{SLUG}/api/schedules").json()["schedules"] if "[r12]" in x["text"]]
+    assert len(made) == 1, made
+    assert r.alice.c.post(f"/{SLUG}/api/schedules/{made[0]['id']}/remove").status_code == 200
     pk = key()
     chan = {"name": "keyed-once"}                          # pins retired (1z): a channel is made once instead
     one = r.alice.c.post(f"/{SLUG}/api/channels", json=chan, headers=k(pk))

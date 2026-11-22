@@ -12,8 +12,6 @@ import pytest
 from test_m1b import ENV, SLUG, Agent, build_world, until
 from test_m1j import Computer, redeem
 
-STALE_S = 3
-
 
 def new_link(person) -> str:
     r = person.c.post(f"/{SLUG}/api/my/agent-invites")
@@ -23,7 +21,7 @@ def new_link(person) -> str:
 
 @pytest.fixture(scope="module")
 def x(tmp_path_factory):
-    world = build_world(tmp_path_factory.mktemp("datax"), dict(ENV, ASTERISM_STALE_S=str(STALE_S), ASTERISM_ACTIVE_S="60"))
+    world = build_world(tmp_path_factory.mktemp("datax"), dict(ENV, ASTERISM_ACTIVE_S="60"))
     world.pc = None
     try:                                   # a failure while setting up must not leave the server running
         cred = redeem(new_link(world.alice), computer="pc-x").json()["credential"]
@@ -72,10 +70,6 @@ def test_the_work_state_follows_the_sessions_last_activity(x):
     x.pc.c.post(f"/{SLUG}/api/computer/sessions",
                 json={"sessions": [{"session": "s-x1", "product": "claude-code", "active_at": now - 600}]})
     assert agent(x, "cody")["work"] == "idle"
-    r = x.alice.c.post(f"/{SLUG}/api/tasks", json={"group": "ai", "title": "held and left [x2]", "responsible": "cody"})
-    assert r.status_code == 201, r.text
-    assert until(lambda: agent(x, "cody")["stale"] is True, STALE_S + 4), "holds a task, idle too long"
-    assert agent(x, "cody")["busy"] is True, "busy is still busy"
 
 
 def test_quotas_are_kept_and_shown_only_to_their_person(x):

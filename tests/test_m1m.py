@@ -92,7 +92,7 @@ def test_the_program_reads_claude_codes_model_from_the_session_record(exe, v, ho
         assert not m.tool("send", to="#general", text="from the program [m5]")[1]
         assert agent_row(v.alice, "mona")["model"] == "claude-fable-5-2", "the main chain's last answer, not a side chain"
         claude_record(cfg, sid, [{"type": "assistant", "message": {"model": "claude-opus-5-5", "content": []}}])
-        assert not m.tool("tasks")[1]
+        assert not m.tool("whoami")[1]
         assert agent_row(v.alice, "mona")["model"] == "claude-opus-5-5", "read again at each call"
     finally:
         m.kill()

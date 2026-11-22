@@ -1,6 +1,5 @@
-"""f7: what the two reviews asked for that a test can hold: tasks remember who posted them and when they were taken;
-the owner group takes no channel override; unused invitations are listed and revoked; a private conversation that
-is not allowed is answered inside the frame.
+"""f7: what the two reviews asked for that a test can hold: the owner group takes no channel override; unused
+invitations are listed and revoked; a private conversation that is not allowed is answered inside the frame.
 
     python -m pytest tests/test_m1f7.py -q
 """
@@ -19,28 +18,6 @@ def w(tmp_path_factory):
     world = build_world(tmp_path_factory.mktemp("dataf7"))
     yield world
     world.srv.stop()
-
-
-def task(person, tid) -> dict:
-    groups = person.c.get(f"/{SLUG}/api/tasks").json()["groups"]
-    return next(x for g in groups for x in g["tasks"] if x["id"] == tid)
-
-
-def test_a_task_remembers_who_posted_it_and_when_it_was_taken(w):
-    r = w.carol.c.post(f"/{SLUG}/api/tasks", json={"group": "ai", "text": "a bounty [b1]"})
-    assert r.status_code == 201, r.text
-    tid = r.json()["task"]["id"]
-    t = task(w.alice, tid)
-    assert t["posted_by"] == "carol" and t["posted_at"] and t["taken_at"] is None, t
-    r = w.a1.c.post(f"/{SLUG}/api/agent/task", json={"id": tid, "responsible": "a1"})
-    assert r.status_code == 200, r.text
-    t = task(w.alice, tid)
-    assert t["taken_at"] and t["posted_by"] == "carol"
-    mine = w.a1.c.get(f"/{SLUG}/api/agent/tasks").json()["tasks"]
-    assert next(x for x in mine if x["id"] == tid)["posted_by"] == "carol", "agents see it too"
-    made_by_agent = w.a2.c.post(f"/{SLUG}/api/agent/task", json={"group": "ai", "text": "an agent's bounty [b1]"})
-    assert made_by_agent.status_code == 200, made_by_agent.text
-    assert task(w.alice, made_by_agent.json()["task"]["id"])["posted_by"] == "a2"
 
 
 def test_the_owner_group_takes_no_channel_override(w):

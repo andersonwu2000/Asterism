@@ -120,7 +120,7 @@ def test_the_mcp_face_answers_the_protocol(srv):
     assert "tools" in r.json()["result"]["capabilities"]
     assert post({"jsonrpc": "2.0", "method": "notifications/initialized"}).status_code == 202
     names = [t["name"] for t in post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]]
-    assert names == ["register", "leave", "whoami", "send", "messages", "wait", "tasks", "task_update"]
+    assert names == ["register", "leave", "whoami", "send", "messages", "wait", "statuses", "set_status"]
     assert post({"jsonrpc": "2.0", "id": 3, "method": "resources/list"}).json()["error"]["code"] == -32601
     assert post({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "nope"}}).json()["error"]["code"] == -32602
     assert post([{"jsonrpc": "2.0", "id": 5, "method": "ping"}]).json()["error"]["code"] == -32600
@@ -177,7 +177,7 @@ def test_every_page_renders_and_escapes(srv):
     _, q = connector_token(srv, alice)
     consent = alice.get("/oauth/authorize", params=q)
     assert consent.status_code == 200 and all(k in consent.text for k in
-                                              ("others_mention", "others_channel", "others_assign", "others_regroup"))
+                                              ("others_mention", "others_channel", "others_regroup"))
     assert httpx.get(srv + "/lab/members", follow_redirects=False).headers["location"].startswith("/login?next=")
     bob = signed_in(srv, "bob")
     assert bob.get("/lab/members").status_code == 403 and bob.get("/lab/admin").status_code == 403

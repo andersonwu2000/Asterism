@@ -37,13 +37,14 @@ def test_the_old_switch_columns_are_moved_and_then_dropped(u):
     db.close()
     u.srv.start()
     groups = {g["name"]: g for g in u.alice.c.get(f"/{SLUG}/api/members").json()["groups"]}
-    assert {"others_mention", "others_assign"} <= set(groups["alice-agents"]["permissions"]), groups["alice-agents"]
+    assert "others_mention" in groups["alice-agents"]["permissions"], groups["alice-agents"]
     assert not {"others_channel", "others_regroup"} & set(groups["alice-agents"]["permissions"])
+    assert "others_assign" not in groups["alice-agents"]["permissions"], "a switch that only served tasks is dropped (1s)"
     u.srv.stop()
     db = sqlite3.connect(str(path))
     cols = [r[1] for r in db.execute("PRAGMA table_info(groups)")]
     assert not set(OLD) & set(cols), cols
-    assert db.execute("PRAGMA foreign_key_check").fetchall() == [], "memberships and tasks still point at their groups"
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == [], "memberships still point at their groups"
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     perms = json.loads(db.execute("SELECT permissions FROM groups WHERE name = 'alice-agents'").fetchone()[0])
     assert "others_mention" in perms

@@ -276,7 +276,7 @@ def test_a_session_registers_as_an_agent_of_its_person(srv, alice, cred_a):
     assert a.register("fern").json()["how"] == "same"
     assert a.register("moss").status_code == 409, "one session is one agent; it must leave first"
     my = alice.get(f"/{SLUG}/api/my").json()
-    assert my["switches"] == {"others_mention": False, "others_channel": False, "others_assign": False, "others_regroup": False}
+    assert my["switches"] == {"others_mention": False, "others_channel": False, "others_regroup": False}
     assert any(a_["name"] == "fern" for a_ in my["agents"]) and any(c["kind"] == "computer" for c in my["credentials"])
 
 

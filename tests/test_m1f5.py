@@ -1,11 +1,9 @@
-"""Frontend f5: tasks are given to agents (or to nobody), the default groups go by their names, files mode reworked
-(a source dropdown, a search field above the tree, preview tabs).
+"""Frontend f5: the default groups go by their names, files mode reworked (a source dropdown, a search field above
+the tree, preview tabs).
 
     python -m pytest tests/test_m1f5.py -q
 """
 from __future__ import annotations
-
-import sqlite3
 
 import pytest
 
@@ -14,52 +12,9 @@ from test_m1b import ROOT, SLUG, build_world
 
 @pytest.fixture(scope="module")
 def t(tmp_path_factory):
-    data = tmp_path_factory.mktemp("dataf5")
-    world = build_world(data)
-    world.data = data
+    world = build_world(tmp_path_factory.mktemp("dataf5"))
     yield world
     world.srv.stop()
-
-
-def p_make(person, **body):
-    return person.c.post(f"/{SLUG}/api/tasks", json=body)
-
-
-def table(person) -> dict[int, dict]:
-    r = person.c.get(f"/{SLUG}/api/tasks")
-    assert r.status_code == 200, r.text
-    return {x["id"]: x for g in r.json()["groups"] for x in g["tasks"]}
-
-
-def test_a_person_is_never_given_a_task(t):
-    r = p_make(t.alice, group="human", text="for a person [t1]", responsible="bob")
-    assert r.status_code == 400 and r.json()["error"] == "not_an_agent", r.text
-    assert "bob" in r.json()["message"]
-    open_one = p_make(t.alice, group="human", text="for nobody [t1]")
-    assert open_one.status_code == 201, open_one.text
-    tid = open_one.json()["task"]["id"]
-    r = t.alice.c.post(f"/{SLUG}/api/tasks/{tid}", json={"responsible": "carol"})
-    assert r.status_code == 400 and r.json()["error"] == "not_an_agent", r.text
-    assert table(t.alice)[tid]["responsible"] is None
-    r = t.a1.c.post(f"/{SLUG}/api/agent/task", json={"id": tid, "responsible": "alice"})
-    assert r.status_code == 400 and r.json()["error"] == "not_an_agent", r.text
-    assert "alice" in r.json()["message"] and "agent" in r.json()["message"]
-    given = p_make(t.alice, group="ai", text="for an agent [t1]", responsible="a1")
-    assert given.status_code == 201 and given.json()["task"]["responsible"] == "a1"
-
-
-def test_a_task_a_person_held_before_becomes_nobodys(t):
-    made = p_make(t.alice, group="human", text="held by a person before [t2]")
-    tid = made.json()["task"]["id"]
-    t.srv.stop()
-    db = sqlite3.connect(str(t.data / "projects" / f"{SLUG}.db"))
-    pid = db.execute("SELECT person_id FROM people WHERE name = 'bob'").fetchone()[0]
-    with db:
-        db.execute("UPDATE tasks SET responsible_kind = 'person', responsible_id = ? WHERE id = ?", (pid, tid))
-    db.close()
-    t.srv.start()
-    got = table(t.alice)[tid]
-    assert got["responsible"] is None and got["responsible_kind"] is None and got["assigned_by"] is None, got
 
 
 def test_the_default_groups_go_by_their_names(t):

@@ -8,7 +8,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from test_m1b import ROOT, SLUG, Person, build_world
+from test_m1b import ROOT, SLUG, Person, build_world, until
 
 
 @pytest.fixture(scope="module")
@@ -79,10 +79,10 @@ def test_the_switches_are_permissions_of_a_persons_agent_group(w):
     w.alice.switches(others_mention=True)
     perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
     assert "others_mention" in perms
-    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": perms + ["others_assign"]})
+    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": perms + ["others_channel"]})
     assert r.status_code == 200, r.text
     perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
-    assert "others_assign" in perms
+    assert "others_channel" in perms
     assert w.bob.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": []}).status_code == 403
     r = w.alice.c.post(f"/{SLUG}/api/groups", json={"name": "wrongly", "permissions": ["read", "others_mention"]})
     assert r.status_code == 400, "only a person's agent group carries them"
@@ -202,10 +202,11 @@ def test_general_is_a_channel_like_the_others_and_notices_go_where_the_project_s
     assert w.alice.c.post(f"/{SLUG}/api/project", json={"notice_channel": "#nowhere"}).status_code in (400, 404)
     assert w.alice.c.post(f"/{SLUG}/api/project", json={"notice_channel": "#lobby"}).status_code == 200
     assert w.alice.c.post(f"/{SLUG}/api/channels/town/delete").status_code == 200
-    r = w.alice.c.post(f"/{SLUG}/api/tasks", json={"group": "ai", "text": "where is it told [p5]", "responsible": "a2"})
-    assert r.status_code == 201, r.text
-    told = [m for m in w.alice.read("#lobby") if m["from_kind"] == "system" and "[p5]" in m["text"]]
-    assert told, "the task change is announced in the notice channel"
+    w.a2.c.post(f"/{SLUG}/api/agent/leave")
+    told = until(lambda: [m for m in w.alice.read("#lobby") if m["from_kind"] == "system" and m["text"] == "a2 is offline."], 6)
+    assert told, "a change of presence is announced in the notice channel"
+    w.a2.register("a2")
+    assert until(lambda: w.alice.is_online("a2"), 6)
 
 
 def test_an_allow_in_a_channel_grants_what_the_project_does_not(w):

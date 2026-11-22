@@ -50,11 +50,11 @@ def groups_of(person: Person, member: str) -> list[str]:
 
 def test_a_custom_groups_permissions_can_be_changed(g):
     assert make(g.alice, "team", ["read"]).status_code == 201
-    r = change(g.alice, "team", ["edit_tasks", "read", "post"])
+    r = change(g.alice, "team", ["manage_own_agents", "read", "post"])
     assert r.status_code == 200, r.text
-    assert r.json() == {"name": "team", "kind": "custom", "permissions": ["read", "post", "edit_tasks"]}, \
+    assert r.json() == {"name": "team", "kind": "custom", "permissions": ["read", "post", "manage_own_agents"]}, \
         "the answer is the group, its permissions in the catalogue's order"
-    assert group(g.bob, "team")["permissions"] == ["read", "post", "edit_tasks"]
+    assert group(g.bob, "team")["permissions"] == ["read", "post", "manage_own_agents"]
     assert change(g.alice, "team", []).status_code == 200 and group(g.alice, "team")["permissions"] == []
 
     assert err(change(g.alice, "team", ["read", "fly"])) == "invalid_permissions"
@@ -68,7 +68,7 @@ def test_a_custom_groups_permissions_can_be_changed(g):
     assert change(g.bob, "alice-agents", mine + ["read"]).status_code == 403, "only its person sets a person's agent group"
     assert change(g.alice, "alice-agents", mine + ["read"]).status_code == 200, "it carries ordinary permissions too"
     assert change(g.alice, "alice-agents", mine).status_code == 200
-    assert "edit_tasks" in group(g.alice, "human")["permissions"]
+    assert "manage_own_agents" in group(g.alice, "human")["permissions"]
 
 
 def test_a_change_takes_effect_at_once(g):
@@ -103,16 +103,11 @@ def test_nobody_hands_out_or_takes_away_what_they_do_not_hold(g):
     assert change(g.bob, "team", ["read"]).status_code == 403
 
 
-def test_a_custom_group_can_be_removed_when_it_holds_no_task(g):
+def test_a_custom_group_can_be_removed(g):
     assert make(g.alice, "lemma", ["read"]).status_code == 201
     for member in ("alice", "bob", "a1"):
         assert put(g.alice, member, add=["lemma"]).status_code == 200
-    held = g.alice.c.post(f"/{SLUG}/api/tasks", json={"group": "lemma", "text": "The open question [rm1]"})
-    assert held.status_code == 201, held.text
-    r = remove(g.alice, "lemma")
-    assert r.status_code == 409 and err(r) == "conflict" and "1" in r.json()["message"], "its tasks are dealt with first"
-    assert group(g.alice, "lemma") is not None and "lemma" in groups_of(g.alice, "a1")
-    assert g.alice.c.post(f"/{SLUG}/api/tasks/{held.json()['task']['id']}/remove").status_code == 200
+    assert "lemma" in groups_of(g.alice, "a1")
 
     r = remove(g.alice, "lemma")
     assert r.status_code == 200 and r.json() == {"removed": "lemma"}

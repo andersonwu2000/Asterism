@@ -658,32 +658,41 @@ def test_uninstall_stops_an_older_resident_program(exe, v, home, tmp_path):
             old.kill()
 
 
-# ------------------------------------------------------------------ the task tools
+# ------------------------------------------------------------------ the status tools (1s; tasks withdrawn)
 
-def test_the_program_has_the_task_tools(exe, v, home):
+def test_the_program_has_the_status_tools(exe, v, home):
     join(exe, home, v, "--client", "none")
-    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-tk-1")
+    m = Mcp(exe, home, CLAUDE_CODE_SESSION_ID="s-st-1")
     try:
-        schema = m.tools["task_update"]["inputSchema"]
-        assert set(schema["properties"]) == {"id", "group", "title", "body", "responsible", "update_every_h", "done", "remove"}
-        assert not schema.get("required")
-        assert not m.tools["tasks"]["inputSchema"].get("properties")
+        assert "tasks" not in m.tools and "task_update" not in m.tools
+        schema = m.tools["set_status"]["inputSchema"]
+        assert set(schema["properties"]) == {"title", "body"} and not schema.get("required")
+        assert not m.tools["statuses"]["inputSchema"].get("properties")
         assert not m.tool("register", name="tara")[1]
-        made, bad = m.tool("task_update", group="alice-agents", text="Through the program [tk1]", responsible="tara")
-        assert not bad and made["task"]["responsible"] == "tara" and made["task"]["assigned_by"] is None, made
-        tid = made["task"]["id"]
-        got, bad = m.tool("tasks")
-        assert not bad and tid in [x["id"] for x in got["tasks"]], got
+        made, bad = m.tool("set_status", title="Through the program [st1]", body="first step")
+        assert not bad, made
+        got, bad = m.tool("statuses")
+        mine = next(x for x in got["statuses"] if x["agent"] == "tara")
+        assert not bad and mine["title"] == "Through the program [st1]" and mine["body"] == "first step", got
         who, bad = m.tool("whoami")
-        assert not bad and next(a for a in who["agents"] if a["name"] == "tara")["busy"] is True
-        changed, bad = m.tool("task_update", id=tid, responsible="")
-        assert not bad and changed["task"]["responsible"] is None, "an empty string means nobody"
-        msg, bad = m.tool("task_update", id=tid, text="x" * 2_001)
+        assert not bad and "busy" not in next(a for a in who["agents"] if a["name"] == "tara")
+        msg, bad = m.tool("set_status", title="x" * 201)
         assert bad and isinstance(msg, str), "a refusal is the server's sentence"
-        gone, bad = m.tool("task_update", id=tid, remove=True)
-        assert not bad and gone["removed"] == tid
+        cleared, bad = m.tool("set_status", title="")
+        assert not bad and next(x for x in m.tool("statuses")[0]["statuses"] if x["agent"] == "tara")["title"] == ""
     finally:
         m.kill()
+
+
+def test_join_tells_codex_which_asterism_folder_its_tools_use(exe, v, home, tmp_path):
+    """Codex does not pass its environment on to the tools it starts: without this, a program kept in a folder other
+    than the default one would start its tools against the default folder (found 2026-11-22)."""
+    import tomllib
+    folder = tmp_path / "codex_home_env"
+    folder.mkdir()
+    join(exe, home, v, "--client", "codex", CODEX_HOME=str(folder))
+    e = tomllib.loads((folder / "config.toml").read_text(encoding="utf-8"))["mcp_servers"]["asterism-local"]
+    assert Path(e.get("env", {}).get("ASTERISM_HOME", "")).resolve() == Path(home).resolve(), e
 
 
 def test_the_program_reads_everything_unread_in_one_call(exe, v, home):

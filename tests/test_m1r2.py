@@ -1,4 +1,4 @@
-"""A write that is retried is done once, through the program: `asterism mcp` keys `send` and `task_update`, tries again
+"""A write that is retried is done once, through the program: `asterism mcp` keys `send` and `set_status`, tries again
 by itself when the answer is lost, and reuses the key when the agent repeats a call that failed.
 
 A proxy between the program and the server loses answers on purpose (the request reaches the server and is done; the
@@ -93,9 +93,11 @@ def tagged(v, tag: str) -> list[dict]:
     return [m for m in v.alice.read("#general") if tag in m["text"]]
 
 
-def tasks_with(v, tag: str) -> list[dict]:
-    got = v.alice.c.get(f"/{SLUG}/api/tasks").json()["groups"]
-    return [x for g in got for x in g["tasks"] if tag in x["title"]]
+def statuses_noted(v, agent: str, tag: str) -> list[dict]:
+    """The status changes in the agent's timeline whose title carries the tag."""
+    r = v.alice.c.get(f"/{SLUG}/api/agents/{agent}/timeline", params={"limit": 50})
+    assert r.status_code == 200, r.text
+    return [x for x in r.json()["items"] if x["kind"] == "state" and x["state"] == "status" and tag in x["title"]]
 
 
 def started(exe, home, sid: str, name: str) -> Mcp:
@@ -171,16 +173,16 @@ def test_a_server_away_for_the_whole_time_is_reported_and_nothing_is_posted(exe,
         m.kill()
 
 
-def test_a_task_whose_answer_is_lost_is_made_once(exe, v, home):
+def test_a_status_whose_answer_is_lost_is_written_once(exe, v, home):
     join_through_proxy(exe, home, v)
     m = started(exe, home, "s-rr-5", "ruth")
     try:
-        v.proxy.lose["/api/agent/task"] = 1
-        got, bad = m.tool("task_update", group="alice-agents", text="through a cut [p5]")
+        v.proxy.lose["/api/agent/status"] = 1
+        got, bad = m.tool("set_status", title="through a cut [p5]")
         assert not bad, got
-        found = tasks_with(v, "[p5]")
-        assert len(found) == 1
-        assert v.alice.c.post(f"/{SLUG}/api/tasks/{found[0]['id']}/remove").status_code == 200
+        keys = v.proxy.keys("/api/agent/status")[-2:]
+        assert len(keys) == 2 and keys[0] and keys[0] == keys[1], f"the retry carries the same key: {keys}"
+        assert len(statuses_noted(v, "ruth", "[p5]")) == 1, "the replayed write writes nothing more"
     finally:
         m.kill()
 
@@ -190,7 +192,7 @@ def test_reads_carry_no_key(exe, v, home):
     m = started(exe, home, "s-rr-6", "rita")
     try:
         assert not m.tool("messages", all=True)[1]
-        assert not m.tool("tasks")[1]
+        assert not m.tool("statuses")[1]
         reads = [key for (meth, p, key) in v.proxy.seen if meth == "GET" and "/api/agent/" in p]
         assert reads and all(key is None for key in reads)
     finally:

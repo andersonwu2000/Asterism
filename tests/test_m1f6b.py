@@ -1,5 +1,5 @@
 """f6b: the agent page lists every agent and shows one agent's timeline (its messages and state changes, as far as the
-reader may read them), where its own person can talk to it; tasks and scheduled messages are one page.
+reader may read them), where its own person can talk to it; the dashboard and scheduled messages are one page.
 
     python -m pytest tests/test_m1f6b.py -q
 """
@@ -80,10 +80,11 @@ def test_the_agent_page_and_the_work_page(w):
     assert page.status_code == 200 and 'id="agent-list"' in page.text and 'id="agent-timeline"' in page.text
     for path in ("/agent", "/my"):
         assert 'id="invite-agent"' in w.alice.c.get(f"/{SLUG}{path}").text, path
-    for path, tab in (("/work", "tasks"), ("/work/schedules", "schedules"), ("/agent/tasks", "tasks"),
+    for path, tab in (("/work", None), ("/work/schedules", "schedules"), ("/agent/tasks", None),
                       ("/agent/schedules", "schedules"), ("/schedules", "schedules")):
         r = w.alice.c.get(f"/{SLUG}{path}")
         assert r.status_code == 200, path
-        assert 'id="work-tabs"' in r.text and f'data-tab="{tab}"' in r.text, path
+        assert 'id="work-tabs"' in r.text, path
+        assert (f'data-tab="{tab}"' if tab else "儀表板") in r.text, path      # 1s: the task tab is the dashboard
     rail = w.alice.c.get(f"/{SLUG}").text.split('id="rail"', 1)[1].split("</nav>", 1)[0]
     assert f'href="/{SLUG}/agent"' in rail and f'href="/{SLUG}/work"' in rail
