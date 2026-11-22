@@ -485,7 +485,10 @@
     var place = state.place;
     var r = await get("messages", {"in": place, after: id - 1, limit: 1});
     var m = r.ok && place === state.place ? (r.data.messages || [])[0] : null;
-    if (m && m.id === id) replaceItem(m, focusKey);
+    if (m && m.id === id) {
+      replaceItem(m, focusKey);
+      followWait(m);
+    }
   }
 
   async function remove(li, id) {
@@ -908,6 +911,7 @@
     known.clear();
     el.list.textContent = "";
     el.out.textContent = "";
+    state.waitLine = null;
     loadDraft();
     drawTitle(place);
     opened.forEach(function (fn) { fn(place); });
@@ -984,6 +988,7 @@
       if (!r.ok || place !== state.place) return;
       var all = r.data.messages || [], last = state.last;
       all.forEach(function (m) { if (m.id <= last && known.has(m.id)) replaceItem(m); });
+      all.forEach(followWait);
       var fresh = all.filter(function (m) { return m.id > last; });
       if (fresh.length) {
         var bottom = atBottom();
@@ -1008,18 +1013,28 @@
   }
 
   // The result line after sending: who it waits for (1h: the sender may still change or take it back), else who
-  // was mentioned and is offline; who it did not reach.
+  // was mentioned and is offline; who it did not reach. {wait, rest}: the waiting part and the others, apart, so
+  // that the waiting part alone can go when the message waits no longer (followWait).
   function outcome(mentions, waiting) {
     var by = {offline: [], closed: [], unknown: []};
     (mentions || []).forEach(function (m) {
       if (by[m.result]) by[m.result].push(m.name);
     });
-    var parts = [];
-    if (waiting && waiting.length) parts.push(waitingText(waiting, true));
-    else if (by.offline.length) parts.push(t("msg.sent_offline", {names: by.offline.join(", ")}));
-    if (by.closed.length) parts.push(t("msg.sent_closed", {names: by.closed.join(", ")}));
-    if (by.unknown.length) parts.push(t("msg.sent_unknown", {names: by.unknown.join(", ")}));
-    return parts.join(" ");
+    var wait = waiting && waiting.length ? waitingText(waiting, true) : "", rest = [];
+    if (!wait && by.offline.length) rest.push(t("msg.sent_offline", {names: by.offline.join(", ")}));
+    if (by.closed.length) rest.push(t("msg.sent_closed", {names: by.closed.join(", ")}));
+    if (by.unknown.length) rest.push(t("msg.sent_unknown", {names: by.unknown.join(", ")}));
+    return {wait: wait, rest: rest.join(" ")};
+  }
+
+  // The result line said that the message just sent waits (1h): once the page reads it again and it waits no longer
+  // (handed over, or deleted), that part goes; the rest of the line stays. A line changed since (another send, a
+  // refusal) is not this one, and is left alone.
+  function followWait(m) {
+    var w = state.waitLine;
+    if (!w || m.id !== w.id || (m.waiting && m.waiting.length && !m.deleted)) return;
+    if (el.out.textContent === w.shown) el.out.textContent = w.rest;
+    state.waitLine = null;
   }
 
   // The input grows with its text up to a limit (CSS max-height), then scrolls.
@@ -1077,12 +1092,12 @@
   var at = {options: [], active: -1, start: -1, shut: -1};
 
   // What is being completed at the caret, or null: {kind, start, end, query}, where kind is
-  // - "@": a name to mention (a channel only: a private message mentions nobody);
+  // - "@": a name to mention (in a private conversation only its other member, whom a mention asks for an answer: 1p);
   // - "#": a channel's name (any place).
   function atToken() {
     if (el.text.selectionStart !== el.text.selectionEnd) return null;
     var caret = el.text.selectionStart, before = el.text.value.slice(0, caret), m;
-    if (isChannel(state.place) && (m = AT_QUERY.exec(before))) {
+    if (state.place && (m = AT_QUERY.exec(before))) {
       return {kind: "@", start: caret - m[2].length - 1, end: caret, query: m[2]};
     }
     if ((m = /(^|[^A-Za-z0-9._#-])#([a-z0-9-]*)$/.exec(before))) {
@@ -1092,7 +1107,16 @@
   }
 
   // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups.
+  // In a private conversation only its other member (the place is that member's name).
   function mentionable() {
+    if (!isChannel(state.place)) {
+      var d = A.side.directory[state.place] || {kind: "person"};
+      var a = A.side.members ? (A.side.members.agents || []).filter(function (x) { return x.name === state.place; })[0] : null;
+      var one = a ? {name: a.name, kind: "agent", model: a.model, who: a,
+                     note: a.owner === ME ? t("nav.my_agent") : t("msg.agent_of", {owner: a.owner})}
+                  : {name: state.place, kind: d.kind, note: d.kind === "agent" && d.owner === ME ? t("nav.my_agent") : ""};
+      return [Object.assign(one, {key: one.name, insert: "@" + one.name + " "})];
+    }
     var v = A.side.members, out = [];
     if (v) {
       var agents = v.agents || [];
@@ -1238,7 +1262,9 @@
       el.text.value = "";
       grow();
       setReply(null);
-      el.out.textContent = outcome(r.data.mentions, r.data.waiting);
+      var said = outcome(r.data.mentions, r.data.waiting);
+      el.out.textContent = [said.wait, said.rest].filter(Boolean).join(" ");
+      state.waitLine = said.wait ? {id: r.data.id, shown: el.out.textContent, rest: said.rest} : null;
     }
     try { sessionStorage.removeItem(DRAFT + place); } catch (err) { /* nothing kept */ }
     await news();

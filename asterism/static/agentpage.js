@@ -434,6 +434,7 @@
       // A message whose waiting changed (1h: handed over, or deleted) is drawn again in its place.
       var changed = false, index = new Map(entries.map(function (x, i) { return [keyOf(x), i]; }));
       got.forEach(function (x) {
+        if (x.kind === "message") followWait(x.message);
         var i = index.get(keyOf(x));
         if (x.kind !== "message" || i === undefined) return;
         var was = entries[i].message;
@@ -560,18 +561,92 @@
     var r = await A.request(API + "messages", null, {to: chosen, text: text});
     if (!r.ok) { el.out.textContent = A.refusal("agp.send", r.data); return; }
     el.text.value = "";
-    el.out.textContent = "";
+    // 1h: the message waits for the agent, which is away; the line goes when it waits no longer (followWait).
+    el.out.textContent = r.data.waiting && r.data.waiting.length
+      ? t("msg.waiting_change", {names: r.data.waiting.join(t("msg.names_sep"))}) : "";
+    waitLine = el.out.textContent ? {id: r.data.id, shown: el.out.textContent} : null;
     grow();
     await news();
     toBottom();
   }
+  var waitLine = null;
+  function followWait(m) {
+    if (!waitLine || m.id !== waitLine.id || (m.waiting && m.waiting.length && !m.deleted)) return;
+    if (el.out.textContent === waitLine.shown) el.out.textContent = "";
+    waitLine = null;
+  }
+
+  // "@" completes the one member a mention can name here (1p, 1h): this agent, whose private conversation with its
+  // person this composer writes in. The same list and keys as chat's: arrows move, Enter or Tab take, Escape shuts.
+  var AT_QUERY = /(^|[^A-Za-z0-9._-])@([^\s@#\/"'`<>]{0,40})$/;
+  var atList = make("ul", "mention-list"), atShut = -1, atStart = -1;
+  atList.id = "tl-mention-list";
+  atList.setAttribute("role", "listbox");
+  atList.setAttribute("aria-label", t("msg.at_label"));
+  atList.hidden = true;
+  el.form.appendChild(atList);
+  el.text.setAttribute("aria-autocomplete", "list");
+  el.text.setAttribute("aria-controls", atList.id);
+  el.text.setAttribute("aria-expanded", "false");
+  function atToken() {
+    if (el.text.selectionStart !== el.text.selectionEnd) return null;
+    var caret = el.text.selectionStart, m = AT_QUERY.exec(el.text.value.slice(0, caret));
+    return m ? {start: caret - m[2].length - 1, end: caret, query: m[2]} : null;
+  }
+  function atClose() {
+    atList.hidden = true;
+    el.text.setAttribute("aria-expanded", "false");
+    el.text.removeAttribute("aria-activedescendant");
+  }
+  function atDraw() {
+    var tok = atToken(), a = find(chosen);
+    if (!tok) atShut = -1;
+    if (!tok || !a || tok.start === atShut || a.name.toLowerCase().indexOf(tok.query.toLowerCase()) < 0) { atClose(); return; }
+    atStart = tok.start;
+    var li = make("li", "mention-option");
+    li.id = "tl-mention-opt-0";
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", "true");
+    li.appendChild(S.presence({kind: "agent", online: !!a.online}));
+    li.appendChild(make("span", "mono mention-name", a.name));
+    var model = A.modelTag(a.model);
+    if (model) li.appendChild(model);
+    var work = S.workText(a);
+    if (work) li.appendChild(make("span", "dim", work));
+    li.appendChild(make("span", "dim mention-note", t("nav.my_agent")));
+    li.addEventListener("mousedown", function (ev) { ev.preventDefault(); atChoose(); });
+    atList.replaceChildren(li);
+    atList.hidden = false;
+    el.text.setAttribute("aria-expanded", "true");
+    el.text.setAttribute("aria-activedescendant", li.id);
+  }
+  function atChoose() {
+    var tok = atToken(), a = find(chosen);
+    if (!tok || !a) { atClose(); return; }
+    var put = "@" + a.name + " ", v = el.text.value;
+    el.text.value = v.slice(0, tok.start) + put + v.slice(tok.end).replace(/^ /, "");
+    var caret = tok.start + put.length;
+    el.text.setSelectionRange(caret, caret);
+    atClose();
+    grow();
+    el.text.focus();
+  }
   el.text.addEventListener("keydown", function (ev) {
+    var composing = ev.isComposing || ev.keyCode === 229;
+    if (!atList.hidden && !composing) {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); return; }   // one name: it stays chosen
+      if ((ev.key === "Enter" && !ev.shiftKey) || ev.key === "Tab") { ev.preventDefault(); atChoose(); return; }
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); atShut = atStart; atClose(); return; }
+    }
     // Enter sends; Shift+Enter is a new line; Enter that ends an input-method composition does neither.
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+    if (ev.key === "Enter" && !ev.shiftKey && !composing) {
       ev.preventDefault();
       send();
     }
   });
-  el.text.addEventListener("input", grow);
+  el.text.addEventListener("input", function () { grow(); atDraw(); });
+  el.text.addEventListener("keyup", function (ev) { if (/^(ArrowLeft|ArrowRight|Home|End)$/.test(ev.key)) atDraw(); });
+  el.text.addEventListener("click", atDraw);
+  el.text.addEventListener("blur", atClose);
   el.form.addEventListener("submit", function (ev) { ev.preventDefault(); send(); });
 })();

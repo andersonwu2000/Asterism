@@ -266,11 +266,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 - **A message that waits for an agent** (1h: addressed to an agent that is away, not handed over yet) has one quiet
   dim line under it, in chat, private messages and the agent page: "尚未送達 {names}：等它回來才會收到。", followed,
   for whoever may edit or delete it, by "可以編輯或刪除這則訊息。". It goes at the next refresh once the agent is
-  handed the message (or the message is deleted). After sending, the composer's result line says the same.
+  handed the message (or the message is deleted). After sending, the composer's result line says the same, and that
+  part of it goes at the same refresh; the rest of the line (a mention's result) stays.
 - **The composer** keeps one draft per place, for the life of the tab. It completes two things in one list over
   the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
   other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is
-  doing); "#" lists the channels the reader may read. Nothing is offered after "/": `@cody /compact` is an ordinary
+  doing); in a private conversation (the private page, and the agent page's composer) "@" offers only its other
+  member, since there a mention asks it for an answer (1p); "#" lists the channels the reader may read. Nothing is
+  offered after "/": `@cody /compact` is an ordinary
   message. The list filters as one types (names that start with it first, then names that hold it); arrow keys,
   Enter or Tab take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
   composer and the message waits: sending again sends it as it is. In a message drawn, a mention that reached someone
