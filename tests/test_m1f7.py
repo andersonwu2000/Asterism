@@ -43,8 +43,12 @@ def test_unused_invitations_are_listed_and_revoked(w):
     assert dora.c.post(path).status_code in (400, 404, 410), "a revoked invitation no longer works"
 
 
-def test_a_private_conversation_not_allowed_is_answered_inside_the_frame(w):
+def test_an_agents_private_address_leads_to_its_page_and_an_unknown_one_is_answered_inside_the_frame(w):
+    """1g: a conversation with an agent is on the agent page, so its old address leads there for anybody (it used to
+    be refused inside the frame for whoever was not its person). A name that is nobody's is still answered inside the
+    frame."""
     r = w.bob.c.get(f"/{SLUG}/dm/a1")
-    assert r.status_code == 403 and 'id="rail"' in r.text, r.status_code
-    assert "alice" in r.text, "it says whose agent it is"
+    assert r.status_code == 303 and r.headers["location"] == f"/{SLUG}/agent?name=a1", r.status_code
+    r = w.bob.c.get(f"/{SLUG}/dm/nobody-here")
+    assert r.status_code == 404 and 'id="rail"' in r.text, r.status_code
     assert httpx.get(f"{w.srv.url}/{SLUG}/dm/a1", follow_redirects=False).status_code in (302, 303, 401)
