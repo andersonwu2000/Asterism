@@ -82,11 +82,17 @@ Depth is stepped surface lightness, never a shadow.
 - **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.
   What is important for the reader still shows its inverted pill there: muting a place silences its talk, not a
   message that names the reader.
+- **A log entry** (the agent page's 動態): one line of time (mono, dim), a mark and a sentence without its subject (the
+  agent): ↗ what it sent, ↙ what it was handed, its presence mark for 上線 and 離線, three lines for a status; the
+  message's text after it as a dim excerpt on the same line. Ink for what the agent did or was asked (sent, a status,
+  a message important for it, one that has not reached it, going offline), the dim ink for what it was only handed and
+  for 上線. A level for the agent is a quiet tag (重要), never the inverted pill (that means "needs the reader"). A
+  hairline spine joins the marks of a day. A deleted message's excerpt is "訊息已刪除" in faint italic and opens nothing.
 - **An avatar** is a member's picture in one project (a person sets their own in 個人; an agent's is set by its person
   on the agent page): in the member's shape, a person's a rounded square and an agent's a disc, 128×128 kept, drawn
   at 16 to 64 px; without one, the first letter of the name on `--color-wash-3` in the dim ink. It is identity, never
   state: the presence mark stays beside it. It shows in a message's header, the member list, the profile card, the
-  agent page (its list, the chosen agent, the timeline) and the dashboard's cards, and the reader's own on the rail.
+  agent page (its list, the chosen agent, 對話) and the dashboard's cards, and the reader's own on the rail.
   Always beside the name, never instead of it, so it says nothing to screen readers.
 - **Who is there** is shape and fill, 10 px: shape says who, fill says state.
   - an agent: a disc; a person: a square with a 2 px radius;
@@ -215,17 +221,19 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the outcome: who may read the channel now, people and agents by name. Below 600 px each group is a block of two
   named lines, read and post.
 - Chat, private messages, files, agent and work are **modes**; the settings layer is not. Outside chat, the chat button
-  carries the count of channel messages important for the reader as the inverted pill, and outside private messages
-  the private-messages button the same for private conversations; in its own mode a button carries nothing, the
-  second column says it.
-- The second column belongs to the mode: in chat the channels; in private messages the conversations (newest first,
-  with their unread marks, and a + that offers, as a menu, the members one may write to privately); in files the
+  carries the count of channel messages important for the reader as the inverted pill, outside private messages
+  the private-messages button the same for the conversations with people, and outside the agent page the agent
+  button the same for the conversations with agents (while it carries one, it leads to 對話 of the agent that wrote
+  last); in its own mode a button carries nothing, the second column says it.
+- The second column belongs to the mode: in chat the channels; in private messages the conversations with people
+  (newest first, with their unread marks, and a + that offers, as a menu, the other people; not drawn when there is
+  nobody else); in files the
   explorer; on the agent page every agent of the project; on the work page the current tab's **list of scopes**; in
   settings the sections. A list of scopes looks
   like chat's places: short rows under small headings, the chosen one the current place, the others dim, a count as
   plain dim text.
 - Each mode remembers its place: the chat button returns to the place last open, files reopens its tabs, the agent
-  button returns to the agent last chosen, the work button to the tab and scope last shown.
+  button returns to the agent and view last shown, the work button to the tab and scope last shown.
 - **Files use the whole page.** Browsing, reading and editing files never sit beside the chat; the rail switches
   between them.
 - Prose is held to a **reading column** of at most 880 px, centred in its area. Wide content (tables, code, display
@@ -243,35 +251,40 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   only who may read the channel. Under a member's name, its status: an agent's title on one line, cut with an
   ellipsis, with "更新於…" and the overdue mark; a person's title. The reader's own entry sets theirs in place (one
   line: Enter saves, Escape gives up). A member's row has its menu (a "..." control, right click, the context-menu
-  key or Shift+F10); an agent's has "open on the dashboard".
+  key or Shift+F10); an agent's has "open on the dashboard", and 對話 (my agent) or 動態 (another's) where a person's
+  has private message.
 - **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
   presence, its status, groups as chips (× and + for who may change them; never the default groups), and the acts
-  mention, private message (only where the server allows it) and open in settings. Escape closes it; the focus goes
+  mention, private message (a person) or 對話 / 動態 on its agent page (an agent), and open in settings. Escape closes it; the focus goes
   back to the name.
 - **Private messages** have a page of their own (`/{slug}/dm/{name}`; the bare address opens the newest
-  conversation): the conversation in the middle with the same composer and top bar as chat. An older address of a
-  private conversation in chat leads there. A conversation that cannot be had (another person's agent) is answered in
-  the same frame, with the sentence saying who may write to it where the conversation would be.
+  conversation with a person): the conversation in the middle with the same composer and top bar as chat. An older
+  address of a private conversation in chat leads there. An agent's address there leads to its agent page (1g). With
+  no conversation, the room says what to do ("還沒有私訊。按左邊的＋，和專案裡的人開始私訊。", or, with nobody else in
+  the project, "這個專案還沒有其他人可以私訊。") and, on its own line, "和 agent 的對話在 agent 頁。" with the link
+  開啟 agent 頁; once there are conversations nothing here names the agents.
 - Below 900 px the rail and the left cells live together in a drawer opened from the start of the top-right cell: the
   top-left cell (the project's name with its menu, the source in files, the project's name in settings) is the head
   of the second column there. The right column is a sheet over the messages that starts closed. Nothing scrolls
   sideways at 360 px.
 - Lists that update (messages, statuses, schedules, the explorer) never move what the reader is looking at: new things
-  arrive at the end, and an editor that is open survives a refresh.
+  arrive at the end (in a log, which is newest first, at the top; the reader's place is kept either way), and an
+  editor that is open survives a refresh.
 - **New messages.** Opening a place draws a quiet line "新訊息" (a day's line in ink) above its first unread message.
   Messages that arrive while the reader is scrolled up stay unread until the end is seen, and a pill over the foot of
   the list says "↓ 新訊息", or, as the inverted pill, "↓ 有人找你" when one of them is important for the reader; it goes
   to the first of them, then to the end. The browser tab's title starts with the count of messages important for the
   reader in the whole project: `(2) #general · Asterism`.
 - **A message that waits for an agent** (1h: addressed to an agent that is away, not handed over yet) has one quiet
-  dim line under it, in chat, private messages and the agent page: "尚未送達 {names}：等它回來才會收到。", followed,
+  dim line under it, in chat, private messages and 對話 (in 動態 the entry's sentence says it): "尚未送達
+  {names}：等它回來才會收到。", followed,
   for whoever may edit or delete it, by "可以編輯或刪除這則訊息。". It goes at the next refresh once the agent is
   handed the message (or the message is deleted). After sending, the composer's result line says the same, and that
   part of it goes at the same refresh; the rest of the line (a mention's result) stays.
 - **The composer** keeps one draft per place, for the life of the tab. It completes two things in one list over
   the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
   other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is
-  doing); in a private conversation (the private page, and the agent page's composer) "@" offers only its other
+  doing); in a private conversation (the private page and 對話) "@" offers only its other
   member, since there a mention asks it for an answer (1p); "#" lists the channels the reader may read. Nothing is
   offered after "/": `@cody /compact` is an ordinary
   message. The list filters as one types (names that start with it first, then names that hold it); arrow keys,
@@ -298,31 +311,48 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ### The agent page
 
-- `/{slug}/agent` (the former `/my` answers with the same page); the chosen agent is the address's query
-  (`?name=`), changed in place; without one, the first of my agents, else the first listed.
+- Addresses: `/{slug}/agent` (the former `/my` answers with the same page) returns where the rail last was; on a
+  first visit the first of my agents with unread, else the first of mine, else the first listed. `?name=a1` shows a1
+  in the reader's default view; `&view=activity` its 動態; `&m=123` its 對話 at that message (`m` leaves the address
+  once shown). `/{slug}/dm/a1` leads there for anybody (a redirect, with `m`). A view the reader does not have, an
+  unknown value or an unknown name is dropped (the address replaced). Back and forward move through agents and views.
 - The second column is every agent of the project **by group**, with no other sorting: sections by the custom
   groups in their order, then each person's agent group; an agent under the first custom group it is in, else under
   its person's agent group, else under AI. A row is a place row: presence, avatar, name (mono), the model tag, and
-  what it is doing (工作中, 閒置) at the right; the chosen one is the current place.
-- Top left the project menu. Top right the chosen agent: presence, name (mono, 600), model tag, what it is doing, for
-  an agent of the reader's own its quota in dim, then
-  kind · owner in dim (dropped below 900 px); at the right what the reader may do to it (its groups as a menu of check
-  boxes, its avatar for its own person, remove from the project, which floats), then "邀請 agent" (the project menu's
-  panel), only for who may.
-- The page starts with the chosen agent's **status**, in a quiet box: its title (600), its body (folded, opened in
-  place), "更新於 3 小時前" with the overdue mark, and for its own person "要求每 __ 小時更新" (set or clear, in place);
-  for others, how often its person asks, as dim text.
-- Under it the agent's **timeline**, drawn as a conversation: newest at the bottom, a line for each day,
-  older items loaded on scrolling up, new ones arriving at the end. A switch over it (remembered): **找它的和它說的**
-  (the default: what it sent, what mentions it, and the reader's private conversation with it) or **全部** (everything
-  it sent or was handed). Its own person also sees its private conversations with that person's other agents, and
-  only here (1v). A message is a message row (time in the gutter, sender, model) whose header also says where it was
-  (the channel, or "私訊", a link to it there; between two agents of the reader's, "私訊 · {name}", a link to that
-  other agent's page). A change of state is a quiet line between them, as a day is:
-  time, then "上線", "離線" (its reason under it on a wash), or its new status title ("狀態：…", "清除了狀態"). Only
-  what the reader may read is there.
-- Its own person has the composer at the foot, which writes to it privately; anybody else sees one quiet line saying
-  who can. With no agent at all, the column says so and the page is empty.
+  what it is doing (工作中, 閒置) at the right; an agent of mine whose conversation has unread messages has its name in
+  ink at 600 and the count after the work word (the inverted pill when one is important). The chosen one is the
+  current place. A row with a count opens 對話; another row of mine opens the view I chose last; another person's
+  agent opens 動態.
+- Top left the project menu. Top right the chosen agent: avatar, presence, name (mono, 600; never cut first), model
+  tag, what it is doing, for an agent of the reader's own its quota in dim, then kind · owner in dim (the quota and
+  kind · owner leave the bar below 900 px); at the right **one "…" control** ("這個 agent 的動作", drawn only when it has
+  an item) whose menu holds 群組 ▸ (check boxes), 頭像 ▸ (its own person) and, after a separator, 移出專案 (floats, the
+  name typed); the outcome of an act is said beside the control for a moment. Then "邀請 agent", only for who may.
+- **The head** both views share: while the agent is offline, one 13 px line "離線：{why}" (離線 in ink, the reason
+  dim); then the **status** as a disclosure: a card whose title line is the button (a 12 px chevron at its end; the
+  title at 600, one line with an ellipsis while closed, whole when open; "還沒有狀態。" dim without one), and under it
+  always "更新於 3 小時前" with the overdue mark. Opened: below 900 px the facts of the bar, the body (folded, 顯示全部 in
+  place), and for its own person "要求每 __ 小時更新" (set or clear), for others how often its person asks, dim. It
+  starts open at 900 px and wider, closed below; the reader's choice is kept per project.
+- **Two views**, a tab line drawn as the work page's tabs: **對話** and **動態**. My own agent opens in 對話, anybody
+  else's in 動態, which is then its only view (the tab current, not a link), with one quiet line under the log: "只有
+  {owner} 和 {owner} 的 agent 能私訊 {name}。要找它，在頻道裡提及 @{name}。" The 對話 tab carries the conversation's count
+  only while the list is out of sight (below 900 px, or the left cells folded) and 動態 is shown.
+- **對話** is the private page's own room (the same list, acts, unread line and read position, drafts, composer), not a
+  copy: what was the private conversation with the agent. The composer's placeholder says what `@name` does there.
+  Only seeing its end with the view in front reads a message; 動態 never does.
+- **動態** is a log (see "A log entry"): newest first, in the reading column, nothing to write with. Its own line, not
+  scrolling: the filter (**找它的和它說的**, the default: what it sent, what names it, its private conversations and
+  its changes of state; or **全部**: also what it was handed in channels without being named; remembered) and, at the
+  right, **全部展開** (pressed it reads 全部收合 and every row is open; not kept between visits). Day headings sticky
+  at the top ("今天 · 11月23日 週一", "昨天 · …", else the date). Three or more entries alike in a row in one day (same
+  direction and place, none important for the agent, none waiting) fold into one row ("在 #general 收到 4 則訊息 ·
+  13:58–14:03") that opens to them. A row opens in place to the whole message (rendered as a message is), its reply
+  line, 已編輯, the waiting line, and a foot with the time, the model and the link to where it is (a channel, "在對話開
+  啟", or, between two agents of the reader's, the other agent's 動態). Older entries load at the foot (and by
+  "載入更早的動態"); new ones come in at the top, and when the reader is scrolled down nothing moves and a plain pill
+  "↑ 新動態" leads back up. Loading, empty, the beginning and "現在讀不到它的動態。" are said at the foot.
+- With no agent at all, the column says so and the page is empty.
 
 ### The work page
 

@@ -69,7 +69,8 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
     older ones. `only` "concerns": of the messages, only those the agent sent, those that mention it, its private
     conversation with the reader and, for its own person, with that person's other agents (the changes of state all
     the same). A message of the latter kind is named from the agent's side: `in` and `with` the other agent, at
-    level normal for the reader."""
+    level normal for the reader. Every message the agent was given carries `agent_level`, its own level for it
+    (1g)."""
     if only not in (None, "", "concerns"):
         raise bad_request("bad_request", "only is concerns, or nothing for everything.")
     me = messaging.person_member(pj, actor.person_id)
@@ -116,6 +117,13 @@ def timeline(pj: Project, actor: Actor, name: str, before: Any, limit: Any, only
     shown = {m["id"]: m for m in messaging.views(pj, [r for r in msgs if r["place"] not in pairs], me)}
     for m in messaging.views(pj, [r for r in msgs if r["place"] in pairs], me, side=agent):
         shown[m["id"]] = dict(m, **{"with": m["in"]})
+    # 1g: the agent's own level of each message it was given (none for what it sent itself).
+    if msgs:
+        marks = ",".join("?" * len(msgs))
+        for r in pj.db.execute(f"SELECT message_id, level FROM levels WHERE reader_kind = 'agent' AND reader_id = ? "
+                               f"AND message_id IN ({marks})", (a["id"], *[r["id"] for r in msgs])):
+            if r["message_id"] in shown:
+                shown[r["message_id"]]["agent_level"] = r["level"]
     items: list[dict[str, Any]] = []
     for _, k, r in page:
         if k == "m":

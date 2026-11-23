@@ -2,8 +2,8 @@
 // what is important from it; the messages pages read the places), the members from /api/members (the presence marks,
 // the member list, the profile cards), and the second column of chat (#side-channels: the channels, each with a small
 // lock when some members may not read it, its settings mark and menu: right click, the context-menu key or Shift+F10: mark as read, mute, copy its address, its
-// settings, create a channel) and of private messages (#dm-list: the conversations, newest first, and #dm-new, a
-// menu of the members one may write to privately). Every page of the project also tells the server it is open
+// settings, create a channel) and of private messages (#dm-list: the conversations with people, newest first, and
+// #dm-new, a menu of the other people; a conversation with an agent is on the agent page, 1g). Every page of the project also tells the server it is open
 // (POST /api/presence at once and every few seconds, data-beat on the rail): that is a person's presence.
 // Avatars (1z): S.avatar draws a member's picture (or the monogram), S.pickAvatar sets one (the page crops and
 // scales it); the pictures drawn follow the members as they are read again.
@@ -34,12 +34,16 @@
 
   // ------------------------------------------------------------------ the lists
 
-  // A channel is chat's (/slug#%23name); a private conversation has a page of its own (/slug/dm/name).
+  // A channel is chat's (/slug#%23name); a private conversation with a person has a page of its own (/slug/dm/name),
+  // one with an agent is that agent's 對話 on the agent page (/slug/agent?name=, 1g).
   function hrefOf(place) {
-    var base = "/" + encodeURIComponent(SLUG);
-    return place.charAt(0) === "#" ? base + "#" + encodeURIComponent(place) : base + "/dm/" + encodeURIComponent(place);
+    var base = "/" + encodeURIComponent(SLUG), who = S.directory[place];
+    if (place.charAt(0) === "#") return base + "#" + encodeURIComponent(place);
+    if (who && who.kind === "agent") return base + "/agent?name=" + encodeURIComponent(place);
+    return base + "/dm/" + encodeURIComponent(place);
   }
   S.hrefOf = hrefOf;
+  S.counts = counts;
 
   // Shape says who (a square for a person, a disc for an agent), fill says state (filled while online).
   function presence(who) {
@@ -147,6 +151,7 @@
         lists["private"].textContent = "";
         var seen = false;
         p["private"].forEach(function (c) {
+          if (c.kind === "agent") return;               // on the agent page (1g)
           if (c["with"] === S.current) seen = true;
           lists["private"].appendChild(privateItem(c["with"], c.unread, c.important));
         });
@@ -327,13 +332,13 @@
     window.location.href = hrefOf(place);
   }
 
-  // #dm-new: the members one may write to privately (two people; a person and their own agent), as a menu.
+  // #dm-new: the other people, as a menu (a conversation with an agent is on the agent page, 1g).
   var dmNew = document.getElementById("dm-new");
   if (dmNew) {
     dmNew.addEventListener("click", function () {
       var choices = A.parseJSON(dmNew.dataset.choices, []) || [];
       A.menu({label: t("nav.start_private"), anchor: dmNew}, choices.map(function (c) {
-        return {label: c.agent ? t("msg.my_agent", {name: c.name}) : c.name, run: function () { go(c.name); }};
+        return {label: c.name, run: function () { go(c.name); }};
       }), dmNew);
     });
   }

@@ -801,7 +801,7 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
 .agent-list .side-note, .agent-none { padding: 0 8px; font-size: 13px; color: var(--color-ink-dim); }
 /* The top-right cell: the chosen agent (its name in mono, 600; the facts dim) and its person's acts at the right. */
 .agent-head { display: flex; align-items: center; gap: 4px 8px; min-width: 0; margin: 0 0 0 8px; font: 400 14px/1.3 var(--font-ui); }
-.agent-head .agent-name { flex: none; max-width: 60%; font-family: var(--font-mono); font-weight: 600; overflow: hidden;
+.agent-head .agent-name { flex: none; max-width: 70%; font-family: var(--font-mono); font-weight: 600; overflow: hidden;
                           text-overflow: ellipsis; white-space: nowrap; }
 .agent-head .model-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-head .agent-state { flex: none; font-size: 13px; color: var(--color-ink-dim); white-space: nowrap; }
@@ -810,28 +810,117 @@ mark { background: var(--color-wash-3); color: var(--color-ink); font-weight: 60
                            text-overflow: ellipsis; white-space: nowrap; }
 .agent-head .agent-facts { flex: 0 1000 auto; min-width: 0; font-size: 13px; color: var(--color-ink-dim); overflow: hidden;
                            text-overflow: ellipsis; white-space: nowrap; }
-/* The chosen agent's status over its timeline (1s): the title, the body, when it was updated, how often to update. */
-.agent-status { margin: 12px var(--gutter) 0; padding: 10px 14px; background: var(--color-surface-2);
+/* The agent page (1g): a head both views share (the offline line, the status as a disclosure), the tab line, then the
+   view: 對話 (the private page's room) or 動態 (a log). The head and the tab line do not scroll; each view has its own
+   scroller. */
+.agent-room > .agent-page-views { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; min-height: 0;
+                                  min-width: 0; }
+.agent-top { flex: none; }
+.agent-offline { margin: 10px var(--gutter) 0; font-size: 13px; }
+.agent-offline .off-word { color: var(--color-ink); }
+.agent-offline .off-why { color: var(--color-ink-dim); }
+.agent-status { margin: 10px var(--gutter) 0; padding: 10px 14px; background: var(--color-surface-2);
                 border: 1px solid var(--color-edge); border-radius: var(--r-container); }
-.agent-status-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow-wrap: anywhere; }
-.agent-status-none { margin: 0; font-size: 13px; color: var(--color-ink-dim); }
+.status-line { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px; padding: 0; border: 0;
+               background: none; color: var(--color-ink); font: inherit; text-align: left; }
+button.status-line { cursor: pointer; border-radius: var(--r-micro); }
+button.status-line:hover .status-title { text-decoration: underline; text-decoration-color: var(--color-edge-strong); }
+.status-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 21px; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+.agent-status.open .status-title { white-space: normal; overflow-wrap: anywhere; }
+.status-line.dim .status-title { font-size: 13px; font-weight: 400; color: var(--color-ink-dim); }
+.status-chev { flex: none; width: 12px; height: 12px; color: var(--color-ink-faint); transform: rotate(-90deg);
+               transition: transform var(--quick) ease; }
+.agent-status.open .status-chev { transform: none; }
 .agent-status-track { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 4px; font-size: 12px;
                       color: var(--color-ink-dim); }
-.tl-filter { align-self: center; margin: 10px var(--gutter) 0; }
+.agent-status-more { margin-top: 8px; }
+.agent-status-more > * + * { margin-top: 8px; }
+.agent-status-facts, .agent-status-every { margin: 0; font-size: 12px; color: var(--color-ink-dim); }
+.agent-views { flex: none; height: 40px; margin: 6px 0 0; padding: 0 var(--gutter); border-bottom: 1px solid var(--color-edge); }
+.agent-views .ag-tab { gap: 6px; }
+.agent-views .ag-tab:not([href]) { cursor: default; }
+.agent-views .tab-count { display: inline-flex; align-items: center; }
+.agent-views .tab-count .count { font-size: 12px; font-weight: 400; color: var(--color-ink-dim); }
+.agent-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.agent-view > .room { flex: 1; }
 .agent-acts { display: flex; align-items: center; gap: 4px; flex: none; }
 .agent-acts:empty { display: none; }
-/* The page: the chosen agent's timeline, as a conversation (newest at the bottom), with the composer under it. */
-.agent-room > .room { grid-column: 1; grid-row: 1; }
+.agent-said { flex: 0 1 auto; min-width: 0; max-width: 30%; font-size: 12px; color: var(--color-ink-dim); overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+.agent-said:empty { display: none; }
+.tl-filter { flex: none; }
 .tl-note { margin: 0; padding: 12px var(--gutter) 0; text-align: center; font-size: 12px; color: var(--color-ink-dim); }
-.tl-dir { font-size: 12px; color: var(--color-ink-dim); }
-.tl-place { font-size: 12px; color: var(--color-ink-dim); }
-/* A change of state is a quiet line between the messages, as a day is. */
-.tl-state { display: grid; grid-template-columns: 64px minmax(0, 1fr); padding: 4px var(--gutter) 4px 0; font-size: 13px;
-            color: var(--color-ink-dim); }
-.tl-state time { justify-self: end; padding-right: 12px; font: 400 12px/20px var(--font-mono); }
-.tl-state .tl-why { grid-column: 2; margin-top: 2px; padding: 6px 8px; background: var(--color-wash);
-                    border-radius: var(--r-micro); }
-.tl-owner { padding: 6px var(--gutter) 14px; font-size: 13px; color: var(--color-ink-dim); }
+.tl-note[hidden] { display: none; }
+.tl-owner { flex: none; margin: 0; padding: 6px var(--gutter) 14px; font-size: 13px; color: var(--color-ink-dim);
+            border-top: 1px solid var(--color-edge); }
+
+/* 動態, a log (1g): newest first in the reading column; one line per entry (time, mark, a sentence without its subject,
+   a dim excerpt), folded; a spine joins the marks of a day; brightness says whose act it was. */
+.log-tools { flex: none; display: flex; align-items: center; gap: 8px; width: min(880px, 100%); margin: 10px auto 0;
+             padding: 0 var(--gutter); box-sizing: border-box; }
+.log-pill-line { position: relative; height: 0; z-index: 3; width: min(880px, 100%); margin: 0 auto; }
+.log-pill-line .news-pill { bottom: auto; top: 8px; }
+.log { list-style: none; width: min(880px, 100%); margin: 0 auto; padding: 4px var(--gutter) 8px; box-sizing: border-box; }
+.act-day { position: sticky; top: 0; z-index: 2; padding: 12px 0 4px; background: var(--color-bg); font-size: 12px;
+           font-weight: 600; color: var(--color-ink-dim); }
+.act { position: relative; }
+.act::before { content: ""; position: absolute; left: 65.5px; top: 0; bottom: 0; width: 1px; background: var(--color-edge); }
+.act.first::before { top: 16px; }
+.act.last::before { bottom: auto; height: 16px; }
+.act.first.last::before { display: none; }
+.act-run .act::before { display: none; }
+.act-line { position: relative; display: grid; grid-template-columns: 48px 20px minmax(0, 1fr) 16px; align-items: center;
+            gap: 0 8px; width: 100%; min-height: 32px; padding: 0 6px 0 0; border: 0; border-radius: 6px; background: none;
+            color: inherit; font: inherit; text-align: left; }
+button.act-line { cursor: pointer; }
+button.act-line:hover, button.act-line:focus-visible { background: var(--color-wash-2); }
+.act-time { align-self: start; font: 400 12px/32px var(--font-mono); color: var(--color-ink-dim); text-align: right; }
+.act-mark { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; align-self: start;
+            height: 32px; }
+.act-mark > * { background: var(--color-bg); box-shadow: 0 0 0 2px var(--color-bg); }
+.act-mark .glyph { width: 16px; height: 16px; }
+button.act-line:hover .act-mark > *, button.act-line:focus-visible .act-mark > * { background: transparent; box-shadow: none; }
+.act-text { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+            font-size: 13px; line-height: 20px; padding: 6px 0; }
+.act-sentence { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.act.ink { color: var(--color-ink); }
+.act.dim { color: var(--color-ink-dim); }
+.act-excerpt { flex: 1 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-ink-dim);
+               font-weight: 400; }
+.act-excerpt.deleted { color: var(--color-ink-faint); font-style: italic; }
+.act-text .tag { flex: none; font-size: 11px; line-height: 16px; }
+.act-undelivered { flex: none; font-size: 12px; color: var(--color-ink); }
+.act-why, .act-span { color: var(--color-ink-dim); font-weight: 400; }
+.act.wrap .act-text { white-space: normal; }
+.act.wrap .act-sentence { overflow: visible; overflow-wrap: anywhere; }
+.act-chev { align-self: start; margin-top: 10px; width: 12px; height: 12px; color: var(--color-ink-faint);
+            transform: rotate(-90deg); transition: transform var(--quick) ease; }
+.act.open > .act-line .act-chev { transform: none; }
+.act-body { margin: 2px 0 8px 76px; padding: 8px 12px; background: var(--color-wash); border-radius: 8px; font-size: 13px;
+            color: var(--color-ink); white-space: normal; }
+.act-body > * + * { margin-top: 6px; }
+.act-reply, .act-foot { margin: 0; font-size: 12px; color: var(--color-ink-dim); }
+.act-foot .model-tag { vertical-align: baseline; }
+.act-open { color: inherit; }
+.act-open:hover { color: var(--color-ink); }
+.act-run { list-style: none; margin: 0 0 6px; padding: 0; }
+.act > .act-run { margin-left: 0; }
+@media (max-width: 599.98px) {
+  .act-line { grid-template-columns: 40px 20px minmax(0, 1fr) 16px; min-height: 44px; }
+  .act::before { left: 57.5px; }
+  .act-text { flex-wrap: wrap; white-space: normal; gap: 0 6px; }
+  .act-sentence { white-space: nowrap; }
+  .act.wrap .act-sentence { white-space: normal; }
+  .act-excerpt { flex: 1 1 100%; white-space: nowrap; }
+  .act-body { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .act-chev, .status-chev { transition: none; }
+}
+/* The private page without a conversation: what to do, and where the conversations with agents are (1g). */
+.messages .dm-empty p { margin: 0 0 8px; }
+.agent-list .work-word + .count, .agent-list .work-word + .pill { margin-left: 4px; }
 /* The work page: its tabs, drawn as the files tabs are: ink and a 2 px underline for the current one, dim for the others; no counts. */
 .ag-tabs { display: flex; align-items: stretch; align-self: stretch; gap: 2px; min-width: 0; margin-left: 4px; }
 .ag-tab {
@@ -1621,10 +1710,8 @@ a.icon-btn { display: inline-flex; align-items: center; justify-content: center;
   }
   .right-close { display: inline-flex; }
   .bar-title { margin-left: 4px; }
-  .agent-head .agent-facts { display: none; }
+  .agent-head .agent-facts, .agent-head .agent-quota { display: none; }
   .agent-acts .btn { padding: 0 8px; }
-  .tl-state { grid-template-columns: 52px minmax(0, 1fr); }
-  .tl-state time { padding-right: 8px; }
   /* The work page: the tabs and the action as a round icon button; the scope named over the list. */
   .ag-tabs { margin-left: 0; }
   .ag-tab { padding: 0 9px; }

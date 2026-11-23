@@ -102,10 +102,14 @@ GLYPHS = {
     "dots": '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
     "grip": '<circle cx="9" cy="7" r="1"/><circle cx="15" cy="7" r="1"/><circle cx="9" cy="12" r="1"/>'
             '<circle cx="15" cy="12" r="1"/><circle cx="9" cy="17" r="1"/><circle cx="15" cy="17" r="1"/>',
+    # The agent page's log (1g): what the agent sent (up and out), what it was handed (down and in), a status (lines).
+    "sent": '<path d="M7 17L17 7"/><path d="M9 7h8v8"/>',
+    "got": '<path d="M17 7L7 17"/><path d="M15 17H7V9"/>',
+    "lines": '<path d="M5 7h14M5 12h14M5 17h9"/>',
 }
 
 # The glyphs the page scripts draw (A.glyph clones them from this template).
-SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip", "lock", "react", "edit", "bin", "reply")
+SCRIPT_GLYPHS = ("sliders", "chevron", "dots", "grip", "lock", "react", "edit", "bin", "reply", "sent", "got", "lines")
 
 
 def glyph(name: str, size: int = 20, extra: str = "") -> str:
@@ -298,8 +302,9 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
             fold = f' data-fold="{FOLDS[page][0]}" aria-controls="{FOLDS[page][1]}" aria-expanded="true"'
             title = tr("rail.fold_hint", name=tr(full))
         count = ""
-        if page in ("messages", "dm"):
-            k = (f["important"] if page == "messages" else f["important_private"]) if here != page else 0
+        if page in ("messages", "dm", "agent"):
+            total = {"messages": "important", "dm": "important_private", "agent": "important_agents"}[page]
+            k = f[total] if here != page else 0
             count = (f'<span id="{ident}-count" class="rail-count"{"" if k else " hidden"}>'
                      f'<span class="pill" aria-hidden="true">{e(k)}</span>'
                      f'<span class="vh">{e(tr("rail.important", k=k))}</span></span>')
@@ -350,15 +355,18 @@ def _side(tr: Translator, f: dict[str, Any]) -> str:
 
 
 def _dm_side(tr: Translator, f: dict[str, Any]) -> str:
-    """Private messages' second column: the conversations, newest first, with their unread marks (frame.js keeps them
-    current), and "new conversation", a menu of the members one may write to privately (frame.js)."""
+    """Private messages' second column: the conversations with people, newest first, with their unread marks
+    (frame.js keeps them current), and "new conversation", a menu of the other people (frame.js), drawn only when there
+    is anybody. A conversation with an agent lives on the agent page (1g)."""
     slug, directory = f["slug"], f["directory"]
     rows = []
     for p in f["places"]["private"]:
+        if p.get("kind") != "person":
+            continue
         rows.append(_place_link(tr, slug, p["with"],
                                 f'{presence_mark(tr, directory.get(p["with"]))}<span class="place-name">{e(p["with"])}</span>',
                                 p["unread"], p["important"], False))
-    choices = [{"name": n, "agent": False} for n in f["people"]] + [{"name": n, "agent": True} for n in f["agents"]]
+    choices = [{"name": n} for n in f["people"]]
     plus = ""
     if choices:
         label = e(tr("nav.start_private"))
@@ -805,17 +813,10 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
         return layout(tr, tr("dm.title"), body, person, frame, "dm", status=status, page_class="room-page",
                       corner=_project_button(tr, frame), column=_dm_side(tr, frame), bar=bar)
     data = {"slug": frame["slug"], "me": person["name"], "mode": "chat" if dm is None else "dm",
-            "place": dm or "", "can-manage-channels": "1" if view.get("can_manage_channels") else ""}
-    room = (f'<div id="chat" class="room" {_attrs(data)}>'
-            f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
-            f'{e(tr("msg.older"))}</button></div>'
-            f'<ol id="messages" class="messages" aria-live="polite"></ol></div>'
-            f'<form id="composer" class="composer"><div id="reply-target" class="reply-target" hidden><span></span>'
-            f'<button type="button" id="reply-cancel" class="quiet-btn">{e(tr("msg.reply_cancel"))}</button></div>'
-            f'<div class="composer-box"><textarea id="text" rows="1" maxlength="4000" aria-label="{e(tr("msg.input_label"))}" '
-            f'placeholder="{e(tr("msg.input_hint"))}"></textarea>'
-            f'{_send_button(tr)}</div>'
-            f'<div class="out composer-out" id="composer-out" aria-live="polite"></div></form></div>')
+            "place": dm or "", "can-manage-channels": "1" if view.get("can_manage_channels") else "",
+            # 1g: whether there is anybody to write to privately (the empty private page says what to do).
+            "people": "1" if frame["people"] else ""}
+    room = _room(tr, data, tr("msg.input_label"), tr("msg.input_hint"))
     sides = "".join(f'<button type="button" class="seg-btn" data-side="{k}" aria-pressed="{"true" if k == "people" else "false"}">'
                     f'{e(tr("people.side_" + k))}</button>' for k in ("people", "agents"))
     close = e(tr("people.close"))
@@ -846,6 +847,21 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
                            "render.js", "paths.js", "right.js", "statuses.js", "people.js", "emoji.js", "messages.js",
                            "search.js"])
+
+
+def _room(tr: Translator, data: dict[str, str], label: str, hint: str) -> str:
+    """The middle of a conversation (messages.js): the list with "older" at its top, the composer with the reply target
+    and the result line. The same room serves chat, private messages and the agent page's Conversation (1g)."""
+    return (f'<div id="chat" class="room" {_attrs(data)}>'
+            f'<div id="scroller" class="scroller"><div class="older-row"><button type="button" id="older" class="btn quiet" hidden>'
+            f'{e(tr("msg.older"))}</button></div>'
+            f'<ol id="messages" class="messages" aria-live="polite"></ol></div>'
+            f'<form id="composer" class="composer"><div id="reply-target" class="reply-target" hidden><span></span>'
+            f'<button type="button" id="reply-cancel" class="quiet-btn">{e(tr("msg.reply_cancel"))}</button></div>'
+            f'<div class="composer-box"><textarea id="text" rows="1" maxlength="4000" aria-label="{e(label)}" '
+            f'placeholder="{e(hint)}"></textarea>'
+            f'{_send_button(tr)}</div>'
+            f'<div class="out composer-out" id="composer-out" aria-live="polite"></div></form></div>')
 
 
 VIEWS = (("rendered", "files.view_rendered"), ("source", "files.view_source"), ("split", "files.view_split"))
@@ -898,14 +914,16 @@ def _action(tr: Translator, ident: str, label_key: str, attrs: str) -> str:
 
 
 def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tuple[str, int]:
-    """The agent page (m1f6_contract.md section 10), in the frame's four cells: the project menu top left; every agent
-    of the project in the second column (#agent-list), by group; top right the chosen
-    agent (#agent-head: name, kind, owner, model, presence) with its person's acts (#agent-acts) and "invite agent";
-    the page is the chosen agent's status (#agent-status: title, body, when it was updated, overdue, and for its
-    person how often to update it) over its timeline (#agent-timeline: its messages and changes of state, newest at
-    the bottom; #tl-filter: what concerns it, or everything), with a composer (#tl-composer) that its own person
-    writes to it with. agentpage.js draws all of it from the members (frame.js), the statuses (/api/statuses) and the
-    timeline (/api/agents/{name}/timeline); the chosen agent is the address's query."""
+    """The agent page (m1g_agent_page_design.md), in the frame's four cells: the project menu top left; every agent of
+    the project in the second column (#agent-list), by group, with the unread count of the reader's conversation with
+    each; top right the chosen agent (#agent-head), one "..." control (#agent-acts: groups, avatar, removal) and
+    "invite agent". The page: a head both views share (#agent-offline, a line only while the agent is offline;
+    #agent-status, the status as a disclosure), the tab line (#agent-views: Conversation and Activity), and the views: Conversation
+    (#agent-conversation), the reader's private conversation with the agent, which is the private page's own room
+    (messages.js, mode "agent"); Activity (#agent-timeline), its activity as a log, newest first, one folded line per entry
+    (#tl-filter, #tl-expand, #tl-list), with the line for whoever cannot write to it (#tl-other). agentpage.js draws
+    the list, the head, the status and the log from the members (frame.js), the statuses (/api/statuses) and the
+    timeline (/api/agents/{name}/timeline); the agent and the view are the address's query (?name=, &view=, &m=)."""
     slug, mine = frame["slug"], set(frame["perms"])
     column = (f'<nav id="agent-side" class="column agent-side" aria-label="{e(tr("agp.list"))}"><div class="side-inner">'
               f'<div id="agent-list" class="agent-list"></div></div></nav>')
@@ -913,25 +931,40 @@ def agent(tr: Translator, person: dict[str, Any], frame: dict[str, Any]) -> tupl
     if "manage_own_agents" in mine:
         invite = _action(tr, "invite-agent", "ag.invite", 'data-act="invite-agent" aria-haspopup="dialog"')
     bar = (f'<h1 id="agent-head" class="agent-head"></h1><span class="spacer"></span>'
+           f'<span id="agent-said" class="agent-said" role="status"></span>'
            f'<div id="agent-acts" class="agent-acts" role="group" aria-label="{e(tr("agp.acts"))}"></div>{invite}')
     data = {"slug": slug, "me": person["name"]}
-    filters = "".join(f'<button type="button" class="seg-btn" data-filter="{k}" '
+    tabs = "".join(f'<a class="ag-tab" role="tab" href="/{e(q(slug))}/agent" data-view="{k}" aria-selected="false">'
+                   f'<span class="tab-word">{e(tr("agp.view." + k))}</span><span class="tab-count" hidden></span></a>'
+                   for k in ("chat", "activity"))
+    filters = "".join(f'<button type="button" class="seg-btn" data-filter="{k}" title="{e(tr("agp.filter." + k + "_hint"))}" '
                       f'aria-pressed="{"true" if k == "concerns" else "false"}">{e(tr("agp.filter." + k))}</button>'
                       for k in ("concerns", "all"))
-    body = (f'<section id="agent-timeline" class="room timeline" aria-label="{e(tr("agp.timeline"))}" {_attrs(data)}>'
+    room = _room(tr, {"slug": slug, "me": person["name"], "mode": "agent", "place": ""},
+                 tr("agp.input_label"), "")
+    body = (f'<div id="agent-page" class="agent-page-views" {_attrs(data)}>'
+            f'<div class="agent-top"><p id="agent-offline" class="agent-offline" hidden></p>'
             f'<section id="agent-status" class="agent-status" aria-label="{e(tr("agp.status"))}" hidden></section>'
+            f'<nav id="agent-views" class="ag-tabs agent-views" role="tablist" aria-label="{e(tr("agp.views"))}">{tabs}</nav>'
+            f'</div>'
+            f'<section id="agent-conversation" class="agent-view" aria-label="{e(tr("agp.view.chat"))}" hidden>{room}</section>'
+            f'<section id="agent-timeline" class="agent-view log-view" aria-label="{e(tr("agp.timeline"))}" hidden>'
+            f'<div class="log-tools" role="group" aria-label="{e(tr("agp.tools"))}">'
             f'<div id="tl-filter" class="seg tl-filter" role="group" aria-label="{e(tr("agp.filter"))}">{filters}</div>'
-            f'<div id="tl-scroller" class="scroller"><p id="tl-older" class="tl-note" hidden></p>'
-            f'<ol id="tl-list" class="messages" aria-live="polite"></ol></div>'
-            f'<form id="tl-composer" class="composer" hidden><div class="composer-box">'
-            f'<textarea id="tl-text" rows="1" maxlength="4000" aria-label="{e(tr("agp.input_label"))}"></textarea>'
-            f'{_send_button(tr)}</div>'
-            f'<div class="out composer-out" id="tl-out" aria-live="polite"></div></form></section>')
+            f'<span class="spacer"></span>'
+            f'<button type="button" id="tl-expand" class="btn quiet" aria-pressed="false">{e(tr("agp.expand_all"))}</button></div>'
+            f'<div class="log-pill-line"><button type="button" id="tl-news" class="news-pill" hidden></button></div>'
+            f'<div id="tl-scroller" class="scroller log-scroller"><ol id="tl-list" class="log" aria-live="polite"></ol>'
+            f'<p id="tl-foot" class="tl-note" role="status"></p>'
+            f'<div class="older-row"><button type="button" id="tl-older" class="btn quiet" hidden>'
+            f'{e(tr("agp.older_button"))}</button></div></div>'
+            f'<p id="tl-other" class="tl-owner" hidden></p></section></div>')
     return layout(tr, tr("agp.title"), body, person, frame, "agent", page_class="room-page agent-room",
                   corner=_project_button(tr, frame), column=column, bar=bar,
                   styles=["vendor/katex/katex.min.css"],
                   scripts=["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
-                           "render.js", "paths.js", "people.js", "statuses.js", "agentpage.js"])
+                           "render.js", "paths.js", "statuses.js", "people.js", "emoji.js", "messages.js",
+                           "agentpage.js"])
 
 
 # The work page's tabs: (tab, its address under /{slug}/work, its word).

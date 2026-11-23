@@ -1,6 +1,7 @@
 // The messages pages, middle column: chat (#chat data-mode="chat": a channel, named by the address's hash) and
 // private messages (data-mode="dm": the conversation the address names, /slug/dm/name; the bare /slug/dm opens the
-// newest one). The place's name is in the top bar (a channel's opens its settings, a private conversation's the other
+// newest one). The same room is the agent page's 對話 (data-mode="agent", 1g): the reader's conversation with the agent
+// chosen there, opened by the agent page (Asterism.chat.show), marked read only while it is in front. The place's name is in the top bar (a channel's opens its settings, a private conversation's the other
 // member's card); then its messages and the composer. A message shows no number: its id stays in the page's data
 // (the row's id) for replies and jumps. An address with ?m=<id> opens its place at that message. It speaks only the
 // project's JSON API (/api/messages, /api/read) and asks for news every few seconds; the places (and their unread
@@ -33,7 +34,8 @@
   if (!root || !A || !A.renderText || !A.side) return;
   var t = A.t, make = A.make;
 
-  var SLUG = root.dataset.slug, MODE = root.dataset.mode === "dm" ? "dm" : "chat", ME = root.dataset.me || "";
+  var SLUG = root.dataset.slug, ME = root.dataset.me || "";
+  var MODE = root.dataset.mode === "dm" || root.dataset.mode === "agent" ? root.dataset.mode : "chat";
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var PAGE = 50, NEWS_EVERY_MS = 4000, GROUP_MS = 5 * 60 * 1000, WATCH = 50;
   var LANG = document.documentElement.lang || undefined;
@@ -62,20 +64,25 @@
   // Chat: the channel the hash names, by default the first channel the reader may read (the second column's first).
   // Private messages: the conversation the address names.
   function placeFromHash() {
-    if (MODE === "dm") return root.dataset.place || "";
+    if (MODE !== "chat") return root.dataset.place || "";
     var raw = window.location.hash.slice(1);
     try { raw = decodeURIComponent(raw); } catch (err) { raw = ""; }
     var first = document.querySelector("#side-channels a.place[data-place]");
     return raw || (first ? first.dataset.place : "");
   }
   function isChannel(place) { return !!place && place.charAt(0) === "#"; }
-  function inThisMode(place) { return MODE === "dm" ? !!place && !isChannel(place) : isChannel(place); }
-  // The address of `place`, opened at the message `id` (when given): chat's for a channel, private messages' else.
+  function inThisMode(place) { return MODE === "chat" ? isChannel(place) : !!place && !isChannel(place); }
+  function isAgent(place) { var d = A.side.directory[place]; return !!d && d.kind === "agent"; }
+  // The address of `place`, opened at the message `id` (when given): chat's for a channel, the agent page's 對話 for a
+  // conversation with an agent (1g), private messages' else.
   function addressOf(place, id) {
     var base = "/" + encodeURIComponent(SLUG), at = id ? "?m=" + encodeURIComponent(id) : "";
-    return isChannel(place) ? base + at + "#" + encodeURIComponent(place)
-                            : base + "/dm/" + encodeURIComponent(place) + at;
+    if (isChannel(place)) return base + at + "#" + encodeURIComponent(place);
+    if (isAgent(place)) return base + "/agent?name=" + encodeURIComponent(place) + (id ? "&m=" + encodeURIComponent(id) : "");
+    return base + "/dm/" + encodeURIComponent(place) + at;
   }
+  // The agent page's 對話 is read only while it is in front (its panel shown); 動態 never marks anything read.
+  function inFront() { return MODE !== "agent" || root.offsetParent !== null; }
 
   // The browser tab's title: "(n) place · Asterism", n the messages important for the reader in the whole project.
   var TAIL = document.title.split(DOT).slice(-1)[0] || "";
@@ -748,7 +755,7 @@
   function atBottom() { return el.scroll.scrollHeight - el.scroll.scrollTop - el.scroll.clientHeight < 40; }
   function toBottom() { el.scroll.scrollTop = el.scroll.scrollHeight; }
   // Whether the reader sees the end of the list: the tab is shown and the list is at its foot.
-  function caughtUp() { return !document.hidden && atBottom(); }
+  function caughtUp() { return !document.hidden && inFront() && atBottom(); }
   // Scroll so that `row` is at the top of the list's view (a little under it).
   function toTop(row) {
     el.scroll.scrollTop += row.getBoundingClientRect().top - el.scroll.getBoundingClientRect().top - 8;
@@ -859,6 +866,13 @@
   // (people.js, by data-member).
   function drawTitle(place) {
     var b = el.title;
+    if (!b) {                             // the agent page: the agent is in the top bar already
+      if (MODE === "agent") {
+        el.text.placeholder = t("agp.input_hint", {name: place});
+        el.text.setAttribute("aria-label", t("agp.input_label"));
+      }
+      return;
+    }
     b.textContent = place;
     if (isChannel(place)) {
       delete b.dataset.member;
@@ -871,24 +885,37 @@
     }
     b.title = b.getAttribute("aria-label");
   }
-  el.title.addEventListener("click", function () {
-    if (isChannel(state.place) && A.project) A.project.openSettings(A.side.settingsHref(state.place.slice(1)));
-  });
+  if (el.title) {
+    el.title.addEventListener("click", function () {
+      if (isChannel(state.place) && A.project) A.project.openSettings(A.side.settingsHref(state.place.slice(1)));
+    });
+  }
 
-  // Private messages with no conversation chosen: the newest one, else a sentence and no composer.
+  // Private messages with no conversation chosen: the newest one with a person, else what to do: start one with a
+  // person (or there is nobody), and where the conversations with agents are (1g); no composer.
   function nothingChosen() {
-    var newest = state.places["private"][0];
+    if (MODE === "agent") return;                     // the agent page chooses (Asterism.chat.show)
+    var newest = state.places["private"].filter(function (p) { return p.kind !== "agent"; })[0];
     if (newest) {
       root.dataset.place = newest["with"];
       history.replaceState(null, "", addressOf(newest["with"]));
       open(newest["with"]);
       return;
     }
-    el.title.textContent = "";
-    el.title.hidden = true;
+    if (el.title) {
+      el.title.textContent = "";
+      el.title.hidden = true;
+    }
     el.form.hidden = true;
     el.list.textContent = "";
-    el.list.appendChild(make("li", "empty", t("msg.private_none")));
+    var li = make("li", "empty dm-empty");
+    li.appendChild(make("p", "", t(root.dataset.people ? "dm.none_room" : "dm.none_alone")));
+    var note = make("p", "");
+    var link = make("a", "", t("dm.agents_link"));
+    link.href = "/" + encodeURIComponent(SLUG) + "/agent";
+    note.append(t("dm.agents_note") + " ", link);
+    li.appendChild(note);
+    el.list.appendChild(li);
   }
 
   var target = null;                      // a message to open the next place at (Asterism.chat.openAt)
@@ -898,7 +925,7 @@
     var at = target;
     target = null;
     state.place = place;
-    el.title.hidden = false;
+    if (el.title) el.title.hidden = false;
     el.form.hidden = false;
     if (A.rail && MODE === "chat") A.store.set(A.rail.chatPlaceKey, place);
     state.first = 0;
@@ -938,7 +965,8 @@
         if (line && line.getBoundingClientRect().top < el.scroll.getBoundingClientRect().top) toTop(line);
       }
       takeMention();
-      await markRead();
+      // Read now, unless this is the agent page's 對話 and it is not in front: then when it comes to the front.
+      if (inFront()) await markRead();
       await loadPlaces();
     } finally {
       state.busy = false;
@@ -962,8 +990,32 @@
     if (typeof text === "string" && text) insert(text);
   }
 
+  // The agent page's 對話 (1g): what the list's scroll was when it went behind 動態, so that it comes back there.
+  var behind = null;
   A.chat = {
     place: function () { return state.place; },
+    mode: MODE,
+    // Open the conversation with `place` (at the message `id` when given) without leaving the page: the agent page.
+    show: function (place, id) {
+      if (id) target = id;
+      root.dataset.place = place;
+      behind = null;
+      return open(place);
+    },
+    // The room went behind another view, and came to the front again: its place in the list is kept, and what is in
+    // sight at the end is read now.
+    hide: function () { behind = atBottom() ? -1 : el.scroll.scrollTop; },
+    reveal: function () {
+      if (behind === -1 || behind === null) toBottom(); else el.scroll.scrollTop = behind;
+      if (behind === null) {
+        var line = el.list.querySelector("li.unread-line");
+        if (line && line.getBoundingClientRect().top < el.scroll.getBoundingClientRect().top) toTop(line);
+      }
+      behind = null;
+      seen();
+    },
+    // The composer, for whoever brings the room to the front with the keyboard.
+    focus: function () { el.text.focus(); },
     onOpen: function (fn) { opened.push(fn); if (state.place) fn(state.place); },
     // "@name " into the composer (the profile card's and the member menu's "mention").
     mention: function (name) { insert("@" + name + " "); },
@@ -971,7 +1023,7 @@
     // mode opens in its own page.
     openAt: function (place, id) {
       if (place === state.place && document.getElementById("m-" + id)) { jumpTo(id); return; }
-      if (!inThisMode(place) || MODE === "dm") { window.location.href = addressOf(place, id); return; }
+      if (!inThisMode(place) || MODE !== "chat") { window.location.href = addressOf(place, id); return; }
       target = id;
       if (placeFromHash() === place) open(place); else window.location.hash = encodeURIComponent(place);
     }
@@ -1321,6 +1373,7 @@
   el.older.addEventListener("click", loadOlder);
   // Chat's places are its hash; a private conversation named there (an older address) has its own page now.
   function start() {
+    if (MODE === "agent") return;                     // the agent page opens its conversation itself
     var place = placeFromHash();
     if (!place) { nothingChosen(); return; }          // no channel the reader may read, or no conversation chosen
     if (MODE === "chat" && !isChannel(place)) { window.location.replace(addressOf(place)); return; }
@@ -1331,7 +1384,7 @@
   window.addEventListener("focus", takeMention);
   setInterval(news, NEWS_EVERY_MS);
   // ?m=<id>: open the place at that message (a search result from the other mode's page); then a plain address.
-  var asked = new URLSearchParams(window.location.search).get("m");
+  var asked = MODE === "agent" ? null : new URLSearchParams(window.location.search).get("m");
   if (asked && /^\d{1,18}$/.test(asked)) {
     target = Number(asked);
     history.replaceState(null, "", window.location.pathname + window.location.hash);

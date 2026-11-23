@@ -9,10 +9,11 @@
 //   member, its status (1s, statuses.js): an agent's title on one line, cut with an ellipsis, with "更新於 3 小時前" and
 //   the overdue mark; a person's title; the reader's own entry sets it in place (one line). A member's row has a "..."
 //   control, right click, the context-menu key or Shift+F10 for the member's menu;
-// - a profile card (a popover: name, kind, presence, its status, groups with x and +, and mention, private message,
-//   open in settings), opened by any name marked data-member (in a message, the member list); the member's menu gives
-//   the same acts, with the groups as a submenu of check boxes, for an agent "open on the dashboard", and removal at
-//   the foot.
+// - a profile card (a popover: name, kind, presence, its status, groups with x and +, and mention, private message
+//   for a person or, for an agent, 對話 (one's own) or 動態 (anybody else's) on its agent page (1g), open in settings),
+//   opened by any name marked data-member (in a message, the member list); the member's menu gives the same acts, with
+//   the groups as a submenu of check boxes, for an agent "open on the dashboard", and removal at the foot. The card and
+//   the menu work wherever the room is (#chat): chat, private messages and the agent page.
 // Default groups (owner, human, ai) are never shown as groups here: only in the settings layer.
 // The data is /api/members as the frame reads it (Asterism.side) or as the settings layer holds it.
 "use strict";
@@ -196,10 +197,14 @@
     return "/" + encodeURIComponent(SLUG) + "/settings/members?m=" + encodeURIComponent(name);
   }
   function dmHref(name) { return "/" + encodeURIComponent(SLUG) + "/dm/" + encodeURIComponent(name); }
-  // A private conversation: two people; a person and their own agent.
-  function mayMessage(found) {
-    if (!found || found.who.name === ME) return false;
-    return !found.isAgent || found.who.owner === ME;
+  // Where one talks with a member, or reads it (1g): another person, a private conversation; an agent, its page, in
+  // 對話 for one's own agent and 動態 for anybody else's. Null for oneself.
+  function talk(found) {
+    if (!found || found.who.name === ME) return null;
+    if (!found.isAgent) return {label: t("people.message"), href: dmHref(found.who.name)};
+    var page = "/" + encodeURIComponent(SLUG) + "/agent?name=" + encodeURIComponent(found.who.name);
+    return found.who.owner === ME ? {label: t("people.agent_chat"), href: page}
+                                  : {label: t("people.agent_activity"), href: page + "&view=activity"};
   }
   function kindText(found) {
     return found.isAgent ? t("mem.agent_of", {owner: found.who.owner}) : t("people.person");
@@ -287,9 +292,10 @@
         A.chat.mention(name);
       }));
     }
-    if (mayMessage(found)) {
-      var pm = make("a", "btn", t("people.message"));
-      pm.href = dmHref(name);
+    var way = talk(found);
+    if (way) {
+      var pm = make("a", "btn", way.label);
+      pm.href = way.href;
       pm.addEventListener("click", function () { A.popup.close(false); });
       acts.appendChild(pm);
     }
@@ -324,7 +330,8 @@
     var rules = rulesNow(), found = rules ? rules.find(name) : null;
     var items = [{label: t("people.profile"), run: function () { P.card(name, opener); }}];
     if (A.chat) items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
-    if (mayMessage(found)) items.push({label: t("people.message"), href: dmHref(name)});
+    var way = talk(found);
+    if (way) items.push(way);
     if (found) {
       if (found.isAgent) items.push({label: t("people.open_dashboard"), href: dashboardHref(name)});
       var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) { after(r, null); });

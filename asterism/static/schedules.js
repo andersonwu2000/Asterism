@@ -148,11 +148,16 @@
     return span;
   }
 
-  // Where the last message it posted is: a channel's in chat, a private one (only mine to open) on its page.
+  // Where the last message it posted is: a channel's in chat, a private one (only mine to open) on its page: a
+  // person's in private messages, an agent's in its 對話 on the agent page (1g).
   function lastHref(s) {
-    var base = "/" + encodeURIComponent(G.slug);
+    var base = "/" + encodeURIComponent(G.slug), who = S && S.directory[s.to];
     if (!isMember(s.to)) return base + "?m=" + s.last_message + "#" + encodeURIComponent(s.to);
-    return s.by === ME ? base + "/dm/" + encodeURIComponent(s.to) + "?m=" + s.last_message : null;
+    if (s.by !== ME) return null;
+    if (who && who.kind === "agent") {
+      return base + "/agent?name=" + encodeURIComponent(s.to) + "&m=" + s.last_message;
+    }
+    return base + "/dm/" + encodeURIComponent(s.to) + "?m=" + s.last_message;
   }
 
   function item(s) {

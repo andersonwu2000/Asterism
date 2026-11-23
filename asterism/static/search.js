@@ -132,8 +132,11 @@
 
   // ------------------------------------------------------------------ the results
 
+  // A conversation with an agent is on the agent page (1g): "和 {name} 的對話".
   function placeLabel(place) {
-    return place.charAt(0) === "#" ? place : t("msg.private_with", {name: place});
+    if (place.charAt(0) === "#") return place;
+    var who = A.side && A.side.directory[place];
+    return t(who && who.kind === "agent" ? "srch.with_agent" : "msg.private_with", {name: place});
   }
   function when(iso) {
     return new Date(iso).toLocaleString(LANG, {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",

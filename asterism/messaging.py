@@ -1099,8 +1099,10 @@ def channels_view(pj: Project, me: Member) -> dict[str, Any]:
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
         "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))] if reads_private(pj, me) else []
     names: dict[str, str] = {}
-    private = [{"with": _place_for(pj, p, me, names), "unread": counts.get(p, (0, 0))[0],
-                "important": counts.get(p, (0, 0))[1]} for p in mine]
+    # `kind` (1g): what the other member is, read from the place, so a former member has it too; a conversation with
+    # an agent lives on the agent page.
+    private = [{"with": _place_for(pj, p, me, names), "kind": (_other_key(p, me) or "person:").split(":")[0],
+                "unread": counts.get(p, (0, 0))[0], "important": counts.get(p, (0, 0))[1]} for p in mine]
     return {"channels": channels, "private": private}
 
 

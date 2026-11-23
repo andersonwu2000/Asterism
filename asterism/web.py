@@ -1123,7 +1123,9 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
             "connector": f"{config.get().public_url}/{pj.slug}/mcp",
             "places": places, "beat_s": config.get().person_beat_s,
             "important": sum(c["important"] for c in places["channels"]),
-            "important_private": sum(p["important"] for p in places["private"]),
+            # 1g: the private button counts the conversations with people, the agent button those with agents.
+            "important_private": sum(p["important"] for p in places["private"] if p["kind"] == "person"),
+            "important_agents": sum(p["important"] for p in places["private"] if p["kind"] == "agent"),
             "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
             "perms": [p for p in projects.PERMISSIONS if p in mine],
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",
@@ -1158,6 +1160,13 @@ async def dm_page(request: Request) -> Response:
         return ctx
     person, pj, actor = ctx
     name = request.path_params.get("name", "")
+    # 1g: a conversation with an agent lives on the agent page; its old address leads there, for anybody.
+    if name and pj.db.execute("SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone():
+        to = f"/{urllib.parse.quote(pj.slug)}/agent?name={urllib.parse.quote(name)}"
+        m = request.query_params.get("m", "")
+        if re.fullmatch(r"\d{1,18}", m):
+            to += f"&m={m}"
+        return RedirectResponse(to, status_code=303)
     tr = tr_for(request)
     me = messaging.person_member(pj, actor.person_id)
     try:

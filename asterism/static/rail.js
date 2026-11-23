@@ -24,7 +24,8 @@
   // ------------------------------------------------------------------ the chat button
 
   var chat = document.getElementById("rail-chat");
-  var counts = {chat: document.getElementById("rail-chat-count"), dm: document.getElementById("rail-dm-count")};
+  var counts = {chat: document.getElementById("rail-chat-count"), dm: document.getElementById("rail-dm-count"),
+                my: document.getElementById("rail-my-count")};
 
   // Where the chat button goes: the place last open in chat, else the project's address (its first channel).
   R.chatHref = function () {
@@ -45,6 +46,7 @@
     if (typeof last === "string" && (last === base || last.indexOf(base + "/") === 0 || last.indexOf(base + "?") === 0)) {
       button.href = last;
     }
+    button.dataset.back = button.href;          // where it goes when no count sends it elsewhere
   }
   returnTo("rail-my", "agent", R.agentKey, "/agent");
   returnTo("rail-work", "work", R.workKey, "/work");
@@ -55,12 +57,24 @@
     count.firstChild.textContent = String(k);
     count.lastChild.textContent = t("rail.important", {k: k});
   }
+  // The private button counts the conversations with people, the agent button those with agents (1g); while the
+  // agent button carries a count it leads to 對話 of the agent that wrote last.
   function showCount(places) {
-    var inChannels = 0, inPrivate = 0;
+    var inChannels = 0, inPrivate = 0, inAgents = 0, wrote = null;
     (places.channels || []).forEach(function (c) { inChannels += c.important || 0; });
-    (places["private"] || []).forEach(function (p) { inPrivate += p.important || 0; });
+    (places["private"] || []).forEach(function (p) {
+      if (p.kind !== "agent") { inPrivate += p.important || 0; return; }
+      inAgents += p.important || 0;
+      if (!wrote && p.important) wrote = p["with"];   // newest first
+    });
     if (HERE !== "messages") showOne(counts.chat, inChannels);
     if (HERE !== "dm") showOne(counts.dm, inPrivate);
+    if (HERE !== "agent") {
+      showOne(counts.my, inAgents);
+      var my = document.getElementById("rail-my");
+      if (my && wrote) my.href = "/" + encodeURIComponent(SLUG) + "/agent?name=" + encodeURIComponent(wrote);
+      else if (my && my.dataset.back) my.href = my.dataset.back;
+    }
   }
   if (A.side) A.side.onChange(showCount);
 
