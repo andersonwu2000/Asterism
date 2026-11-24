@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from test_m1b import SLUG, build_world, mention
+from test_m1b import SLUG, build_world, mention, until
 
 
 @pytest.fixture(scope="module")
@@ -72,3 +72,28 @@ def test_the_switches_that_opened_an_agent_to_others_are_gone(w):
     for page in (f"/{SLUG}", f"/{SLUG}/me/agents", f"/{SLUG}/settings/groups"):
         html = w.alice.c.get(page).text
         assert "別人可以 @" not in html and "別人的頻道訊息" not in html, page
+
+
+def test_a_reply_from_its_own_side_reaches_an_agent(w):
+    """1e, section 1a: replying to an agent's message is speaking to it. From its own side such a reply is handed to
+    it as a normal message even when its message had mentioned nobody (an hourly report, say); from another person's
+    side only the answer to its own question is."""
+    report = w.a2.say("the hourly report, addressed to nobody [e7]", to="#general")
+    w.alice.say("a word on your report [e7a]", reply_to=report["id"])
+    got = w.a2.take("[e7a]")["message"]
+    assert (got["level"], got["relation"], got["reply_to"]) == ("normal", "your own user", report["id"])
+    w.a1.say("and from an agent of the same person [e7b]", to="#general", reply_to=report["id"])
+    assert w.a2.take("[e7b]")["message"]["level"] == "normal"
+    w.bob.say("and from somebody else [e7c]", reply_to=report["id"])
+    w.a2.absent("[e7c]", 1.5)
+    asked = w.alice.say("@a2 and this reply wants an answer [e7d]", reply_to=report["id"])
+    assert w.a2.take("[e7d]")["message"]["level"] == "important"
+    w.a2.say("answered [e7e]", reply_to=asked["id"])
+
+    # Like a private message, it waits for an agent that is away, and says so meanwhile.
+    w.a2._stop.set()
+    assert until(lambda: not w.alice.is_online("a2"), 12)
+    late = w.alice.say("for when you are back [e8]", reply_to=report["id"])
+    assert late.get("waiting") == ["a2"], late
+    w.a2.online()
+    assert w.a2.take("[e8]", 12)["message"]["level"] == "normal"
