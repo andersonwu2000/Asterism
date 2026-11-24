@@ -581,19 +581,22 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
             # 1e: an agent is reached from its own side only (its person, an agent of its person): a mention by
             # anybody else does not call it, and nothing is handed over because it spoke in the channel lately.
             own = sender.kind != "system" and sender.person_id == r.person_id
+            # 1e section 1a: replying to the agent's message is speaking to it; from its own side that reaches it.
+            own_reply = own and orig is not None and orig["sender_kind"] == "agent" and orig["sender_id"] == r.id
             if fixed is not None:
                 level = _scheduled_level(fixed, r.key in muted, own)
             elif own and mentioned:
                 level = "important"
-            elif not channel:
+            elif not channel or own_reply:
                 level = "normal"                # 1p: a private message is important only by a mention of its reader
             elif asker == r.id:
                 level = "normal"                # the answer to its own question, whoever answers
             else:
                 level = "muted"
-            # A normal private message is handed over as an important one is, at once or when the agent is back (1p);
-            # a normal channel message only to an agent that can be reached now.
-            if level == "important" or (level == "normal" and (reach[r.id] or not channel)):
+            # A normal private message, and a reply from its own side to the agent's message (1e 1a), is handed over as
+            # an important one is, at once or when the agent is back (1p); another normal channel message only to an
+            # agent that can be reached now.
+            if level == "important" or (level == "normal" and (reach[r.id] or not channel or own_reply)):
                 pj.db.execute("INSERT INTO deliveries (agent_id, kind, message_id, state, how, created) "
                               "VALUES (?, 'message', ?, 'pending', ?, ?)",
                               (r.id, mid, "push" if reach[r.id] else "return", t))
@@ -871,14 +874,15 @@ def next_due(pj: Project, me: Member) -> float | None:
 
 
 def drop_unheard(pj: Project, me: Member) -> None:
-    """An agent coming back online gets its important messages and its private ones (1p); the normal channel messages
-    that were waiting stay unread."""
+    """An agent coming back online gets its important messages, its private ones (1p) and the replies from its own
+    side to its messages (1e section 1a); the other normal channel messages that were waiting stay unread."""
     with pj.db:
         pj.db.execute("UPDATE deliveries SET state = 'dropped', done = ? WHERE agent_id = ? AND kind = 'message' "
                       "AND state IN ('pending', 'out') AND message_id IN (SELECT l.message_id FROM levels l "
                       "JOIN messages m ON m.id = l.message_id WHERE l.reader_kind = 'agent' AND l.reader_id = ? "
-                      "AND l.level = 'normal' AND m.place LIKE '#%')",
-                      (util.now(), me.id, me.id))
+                      "AND l.level = 'normal' AND m.place LIKE '#%' AND NOT (coalesce(m.sender_person, -1) = ? "
+                      "AND m.reply_to IN (SELECT id FROM messages WHERE sender_kind = 'agent' AND sender_id = ?)))",
+                      (util.now(), me.id, me.id, me.person_id, me.id))
 
 
 def _follow(pj: Project, me: Member, mids: list[int], t: float) -> None:
