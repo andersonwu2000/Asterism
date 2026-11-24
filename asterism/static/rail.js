@@ -51,30 +51,72 @@
   returnTo("rail-my", "agent", R.agentKey, "/agent");
   returnTo("rail-work", "work", R.workKey, "/work");
 
-  function showOne(count, k) {
+  // A count (2a): `n` unread for the reader (not muted), `k` of them important. The inverted pill with k when there
+  // is any; else, when anything is unread, the mark without a number; else nothing.
+  function showOne(count, n, k) {
+    shownTotal.n += n;
+    shownTotal.k += k;
     if (!count) return;
-    count.hidden = !k;
-    count.firstChild.textContent = String(k);
-    count.lastChild.textContent = t("rail.important", {k: k});
+    count.dataset.unread = String(n);
+    count.dataset.important = String(k);
+    count.hidden = !n && !k;
+    count.classList.toggle("quiet", !k);
+    var pill = count.querySelector(".pill"), dot = count.querySelector(".rail-dot"), said = count.querySelector(".vh");
+    pill.hidden = !k;
+    pill.textContent = String(k);
+    if (dot) dot.hidden = !!k || !n;
+    said.textContent = k ? t("rail.important", {k: k}) : n ? t("rail.unread") : "";
   }
   // The private button counts the conversations with people, the agent button those with agents (1g); while the
-  // agent button carries a count it leads to 對話 of the agent that wrote last.
+  // agent button carries a mark (the pill, or the unread bar: 2a) it leads to 對話 of the newest such conversation.
+  // Below 900 px the rail is in the drawer: its opener (#side-open) carries the same mark while the drawer is closed
+  // (2a): the inverted pill with what the rail's buttons count as important, else the bar when something is unread.
+  var shownTotal = {n: 0, k: 0}, opener = document.getElementById("side-open"), openerCount = null;
+  if (opener) {
+    openerCount = A.make("span", "rail-count side-count");
+    openerCount.hidden = true;
+    var pill = A.make("span", "pill"), dot = A.make("span", "rail-dot");
+    pill.setAttribute("aria-hidden", "true");
+    dot.setAttribute("aria-hidden", "true");
+    openerCount.append(pill, dot);
+    opener.appendChild(openerCount);
+    opener.dataset.label = opener.getAttribute("aria-label") || "";
+  }
+  function showOpener() {
+    if (!openerCount) return;
+    var n = shownTotal.n, k = shownTotal.k;
+    openerCount.dataset.unread = String(n);
+    openerCount.dataset.important = String(k);
+    openerCount.hidden = !n && !k;
+    openerCount.classList.toggle("quiet", !k);
+    openerCount.firstChild.hidden = !k;
+    openerCount.firstChild.textContent = String(k);
+    openerCount.lastChild.hidden = !!k || !n;
+    var said = k ? t("rail.important", {k: k}) : n ? t("rail.unread") : "";
+    opener.setAttribute("aria-label", opener.dataset.label + (said ? " · " + said : ""));
+  }
   function showCount(places) {
-    var inChannels = 0, inPrivate = 0, inAgents = 0, wrote = null;
-    (places.channels || []).forEach(function (c) { inChannels += c.important || 0; });
-    (places["private"] || []).forEach(function (p) {
-      if (p.kind !== "agent") { inPrivate += p.important || 0; return; }
-      inAgents += p.important || 0;
-      if (!wrote && p.important) wrote = p["with"];   // newest first
+    var k = {chat: 0, dm: 0, my: 0}, n = {chat: 0, dm: 0, my: 0}, wrote = null;
+    shownTotal = {n: 0, k: 0};
+    (places.channels || []).forEach(function (c) {
+      k.chat += c.important || 0;
+      n.chat += c.muted ? c.important || 0 : c.unread || 0;   // a muted channel counts only what is important
     });
-    if (HERE !== "messages") showOne(counts.chat, inChannels);
-    if (HERE !== "dm") showOne(counts.dm, inPrivate);
+    (places["private"] || []).forEach(function (p) {
+      var which = p.kind === "agent" ? "my" : "dm";
+      k[which] += p.important || 0;
+      n[which] += p.unread || 0;
+      if (which === "my" && !wrote && (p.important || p.unread)) wrote = p["with"];   // newest first: what the mark is about
+    });
+    if (HERE !== "messages") showOne(counts.chat, n.chat, k.chat);
+    if (HERE !== "dm") showOne(counts.dm, n.dm, k.dm);
     if (HERE !== "agent") {
-      showOne(counts.my, inAgents);
+      showOne(counts.my, n.my, k.my);
       var my = document.getElementById("rail-my");
       if (my && wrote) my.href = "/" + encodeURIComponent(SLUG) + "/agent?name=" + encodeURIComponent(wrote);
       else if (my && my.dataset.back) my.href = my.dataset.back;
     }
+    showOpener();
   }
   if (A.side) A.side.onChange(showCount);
 

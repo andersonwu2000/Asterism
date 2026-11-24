@@ -986,9 +986,11 @@ def _unread_rows(pj: Project, me: Member, place: str | None = None, limit: int |
     return pj.db.execute(sql, args).fetchall()
 
 
-def _counts(pj: Project, me: Member) -> dict[str, tuple[int, int]]:
-    """place -> (unread, of which important)."""
-    sql = ("SELECT m.place AS place, count(*) AS n, sum(l.level = 'important') AS k FROM levels l "
+def _counts(pj: Project, me: Member, heard: bool = False) -> dict[str, tuple[int, int]]:
+    """place -> (unread, of which important). `heard` (2a, people's pages): only what is not muted for the reader
+    counts as unread."""
+    n = "sum(l.level != 'muted')" if heard else "count(*)"
+    sql = (f"SELECT m.place AS place, {n} AS n, sum(l.level = 'important') AS k FROM levels l "
            "JOIN messages m ON m.id = l.message_id "
            "LEFT JOIN reads r ON r.reader_kind = l.reader_kind AND r.reader_id = l.reader_id AND r.place = m.place "
            "WHERE l.reader_kind = ? AND l.reader_id = ? AND l.message_id > coalesce(r.upto, 0)")
@@ -1077,16 +1079,47 @@ def agent_messages(pj: Project, me: Member, where: Any, mid: Any, before: Any, l
 
 # --------------------------------------------------------------------------- people
 
+def closed_to(pj: Project) -> dict[str, list[str]]:
+    """Channel name -> the names (sorted) of whom it is closed to (2a): the people and agents that may not read it,
+    and the groups that have members, none of whom may read it. Empty for a channel everybody reads."""
+    names = [r["name"] for r in pj.db.execute("SELECT name FROM channels ORDER BY id")]
+    reads: dict[str, set[str]] = {}                         # member key -> the channels it may read
+    who: dict[str, str] = {}
+    for r in pj.db.execute("SELECT person_id, name FROM people"):
+        key = f"person:{r['person_id']}"
+        who[key] = r["name"]
+        reads[key] = {n for n, have in projects.channel_access(pj, "person", r["person_id"]).items() if "read" in have}
+    for r in pj.db.execute("SELECT id, name FROM agents"):
+        key = f"agent:{r['id']}"
+        who[key] = r["name"]
+        reads[key] = {n for n, have in projects.channel_access(pj, "agent", r["id"]).items() if "read" in have}
+    members: dict[str, set[str]] = defaultdict(set)         # group name -> its member keys
+    for r in pj.db.execute("SELECT g.name AS g, m.member_kind AS kind, m.member_id AS id FROM group_members m "
+                           "JOIN groups g ON g.id = m.group_id"):
+        members[r["g"]].add(f"{r['kind']}:{r['id']}")
+    out: dict[str, list[str]] = {}
+    for n in names:
+        closed = {who[k] for k, chans in reads.items() if n not in chans}
+        closed |= {g for g, keys in members.items() if keys and not any(n in reads.get(k, set()) for k in keys)}
+        out[n] = sorted(closed)
+    return out
+
+
 def channels_view(pj: Project, me: Member) -> dict[str, Any]:
     """The channels `me` may read with their unread counts and mutes, and `me`'s private conversations (with the
-    project's read permission)."""
-    counts = _counts(pj, me)
+    project's read permission). For a person (2a): `unread` counts only what is not muted for them, and each channel
+    says to whom it is closed (`closed_to`: the composer offers none of them to mention there)."""
+    counts = _counts(pj, me, heard=me.kind == "person")
     muted = {r["channel"] for r in pj.db.execute("SELECT channel FROM mutes WHERE member_kind = ? AND member_id = ?",
                                                   (me.kind, me.id))}
     restricted = projects.restricted_channels(pj)
+    closed = closed_to(pj) if me.kind == "person" else {}
     channels = [{"name": n, "unread": counts.get("#" + n, (0, 0))[0], "important": counts.get("#" + n, (0, 0))[1],
                  "muted": n in muted, "restricted": n in restricted}
                 for n in channel_names(pj, me)]
+    for c in channels:
+        if me.kind == "person":
+            c["closed_to"] = closed.get(c["name"], [])
     mine = [r["place"] for r in pj.db.execute(
         "SELECT place FROM messages WHERE place LIKE 'p:%' AND (place LIKE ? OR place LIKE ?) "
         "GROUP BY place ORDER BY max(id) DESC", (f"p:{me.key}|%", f"p:%|{me.key}"))] if reads_private(pj, me) else []

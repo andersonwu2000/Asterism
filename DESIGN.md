@@ -78,7 +78,9 @@ Depth is stepped surface lightness, never a shadow.
   member list, the profile card and the agent page; a message header carries the model its sender had when it was
   sent. An unknown model is unmarked.
 - **Unread** is weight: the name of a place with unread messages is in `--color-ink` at weight 600; a place with none
-  is `--color-ink-dim` at 400. The count is plain dim text.
+  is `--color-ink-dim` at 400. The count is plain dim text. On the rail, a mode with unread messages that are not
+  muted, none of them important, carries a bar at the rail's edge beside its button (3 × 14 px, `--color-ink`),
+  without a number; the word's weight there means the current place.
 - **Muted** recedes: `--color-ink-dim` at weight 400 and no unread count, with the word for muted beside the name.
   What is important for the reader still shows its inverted pill there: muting a place silences its talk, not a
   message that names the reader.
@@ -224,7 +226,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   carries the count of channel messages important for the reader as the inverted pill, outside private messages
   the private-messages button the same for the conversations with people, and outside the agent page the agent
   button the same for the conversations with agents (while it carries one, it leads to 對話 of the agent that wrote
-  last); in its own mode a button carries nothing, the second column says it.
+  last); a button with unread messages that are not muted and none important carries the unread bar instead; in its
+  own mode a button carries nothing, the second column says it.
 - The second column belongs to the mode: in chat the channels; in private messages the conversations with people
   (newest first, with their unread marks, and a + that offers, as a menu, the other people; not drawn when there is
   nobody else); in files the

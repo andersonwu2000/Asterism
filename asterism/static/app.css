@@ -361,6 +361,17 @@ td .muted, td small { color: var(--color-ink-dim); }
 .rail-btn[aria-current] .rail-word { font-weight: 600; }
 .rail-count { position: absolute; top: -5px; right: -8px; display: inline-flex; }
 .rail-count .pill { min-width: 18px; padding: 0 5px; outline: 2px solid var(--color-surface); }
+/* Unread, none of it important (2a): a bar at the rail's edge, level with the middle of the tile, without a number;
+   no outline, no motion. The count is then static, so that the bar is placed against the tile. */
+.rail-count.quiet { position: static; }
+.rail-dot { position: absolute; left: calc((40px - var(--rail-w)) / 2); top: 50%; width: 3px; height: 14px;
+            margin-top: -7px; border-radius: 0 2px 2px 0; background: var(--color-ink); }
+/* The drawer's opener carries the same mark while the drawer is closed (below 900 px): the pill at its corner, the bar
+   at its left edge. */
+.side-open { position: relative; }
+.side-count { top: -4px; right: -6px; }
+.side-count .rail-dot { left: 0; }
+.side-open[aria-expanded="true"] .side-count { display: none; }
 .rail-foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 8px; }
 .rail-foot #theme-toggle { min-width: 52px; padding: 0 6px; font-size: 12px; }
 .rail-me {

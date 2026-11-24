@@ -303,11 +303,17 @@ def _rail(tr: Translator, person: Any, f: dict[str, Any], here: str) -> str:
             title = tr("rail.fold_hint", name=tr(full))
         count = ""
         if page in ("messages", "dm", "agent"):
-            total = {"messages": "important", "dm": "important_private", "agent": "important_agents"}[page]
-            k = f[total] if here != page else 0
-            count = (f'<span id="{ident}-count" class="rail-count"{"" if k else " hidden"}>'
-                     f'<span class="pill" aria-hidden="true">{e(k)}</span>'
-                     f'<span class="vh">{e(tr("rail.important", k=k))}</span></span>')
+            # 2a: how much is unread there for the reader, and how much of it is important: the inverted pill with the
+            # important number when there is any, else a mark without a number when anything is unread (rail.js
+            # keeps both current); nothing on the page the button leads to (its list says it).
+            suffix = {"messages": "", "dm": "_private", "agent": "_agents"}[page]
+            k, n = (f["important" + suffix], f["unread" + suffix]) if here != page else (0, 0)
+            said = tr("rail.important", k=k) if k else tr("rail.unread") if n else ""
+            count = (f'<span id="{ident}-count" class="rail-count{"" if k else " quiet"}" data-unread="{e(n)}" '
+                     f'data-important="{e(k)}"{"" if n or k else " hidden"}>'
+                     f'<span class="pill" aria-hidden="true"{"" if k else " hidden"}>{e(k)}</span>'
+                     f'<span class="rail-dot" aria-hidden="true"{" hidden" if k or not n else ""}></span>'
+                     f'<span class="vh">{e(said)}</span></span>')
         items.append(f'<li><a id="{ident}" class="rail-btn" href="{e(href)}" title="{e(title)}"{current}{fold}>'
                      f'<span class="rail-tile">{glyph(icon)}{count}</span><span class="rail-word">{e(tr(word))}</span></a></li>')
     data = {"slug": slug, "me": me, "here": here, "directory": f["directory"], "repo": f["repo"], "perms": f["perms"],

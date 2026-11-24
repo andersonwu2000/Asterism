@@ -1126,6 +1126,10 @@ def _frame(pj: Project, actor: Actor) -> dict[str, Any]:
             # 1g: the private button counts the conversations with people, the agent button those with agents.
             "important_private": sum(p["important"] for p in places["private"] if p["kind"] == "person"),
             "important_agents": sum(p["important"] for p in places["private"] if p["kind"] == "agent"),
+            # 2a: and what is unread there, not muted for the reader (a muted channel only with what is important).
+            "unread": sum(c["important"] if c["muted"] else c["unread"] for c in places["channels"]),
+            "unread_private": sum(p["unread"] for p in places["private"] if p["kind"] == "person"),
+            "unread_agents": sum(p["unread"] for p in places["private"] if p["kind"] == "agent"),
             "can_create": "create_channel" in mine, "can_admin": can_admin(pj, actor),
             "perms": [p for p in projects.PERMISSIONS if p in mine],
             "people": [r["name"] for r in pj.db.execute("SELECT name FROM people WHERE person_id != ? ORDER BY name",

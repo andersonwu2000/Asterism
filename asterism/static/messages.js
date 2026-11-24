@@ -1163,8 +1163,9 @@
     return null;
   }
 
-  // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups.
-  // In a private conversation only its other member (the place is that member's name).
+  // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups;
+  // in a channel none it is closed to (2a: its `closed_to`). In a private conversation only its other member (the
+  // place is that member's name).
   function mentionable() {
     if (!isChannel(state.place)) {
       var d = A.side.directory[state.place] || {kind: "person"};
@@ -1197,7 +1198,10 @@
         if (n !== ME) out.push({name: n, kind: d.kind, note: d.owner === ME ? t("nav.my_agent") : ""});
       });
     }
-    return out.map(function (o) { return Object.assign(o, {key: o.name, insert: "@" + o.name + " "}); });
+    var here = (state.places.channels || []).filter(function (c) { return "#" + c.name === state.place; })[0];
+    var closed = here && here.closed_to ? here.closed_to : [];
+    return out.filter(function (o) { return closed.indexOf(o.name) < 0; })
+              .map(function (o) { return Object.assign(o, {key: o.name, insert: "@" + o.name + " "}); });
   }
 
   // The channels the reader may read, in their order.
