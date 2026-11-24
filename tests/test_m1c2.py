@@ -122,20 +122,9 @@ def test_a_schedule_posts_in_its_creators_name_at_its_own_level(s):
         own.say("here [sc1a]", reply_to=m["id"])
     s.b1.absent("[sc1]")
     seen = [x for x in s.b1.messages(place="#general", limit=200).json()["messages"] if "[sc1]" in x["text"]]
-    assert seen and seen[0]["level"] == "muted", "bob has not opened his agents to others' mentions"
+    assert seen and seen[0]["level"] == "muted", "a run reaches only the agents of its creator's side (1e)"
     assert until(lambda: sch["id"] not in schedules(s.alice), 4), "a schedule that runs once is gone when it has run"
     assert logged(s, "schedule_run", schedule=sch["id"], message=m["id"])
-
-    s.bob.switches(others_mention=True)
-    try:
-        made(schedule(s.alice, text="and with the switch open [sc2]", level="important"))
-        d = s.b1.take("[sc2]")
-        assert (d["message"]["relation"], d["message"]["level"]) == ("another collaborator", "important")
-        for agent in (s.a1, s.a2, s.b1):
-            agent.take("[sc2]")
-            agent.say("noted [sc2a]", reply_to=d["message"]["id"])
-    finally:
-        s.bob.switches(others_mention=False)
 
 
 def test_normal_and_muted_schedules(s):

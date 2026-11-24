@@ -143,11 +143,14 @@ def test_tasks_and_busy_are_gone(s):
 
 
 def test_a_status_changes_no_delivery(s):
-    """Channel talk reaches an agent with a status as it reaches one without (busy is withdrawn)."""
-    s.a2.say("I follow this channel [s5]", to="#general")
+    """What reaches an agent without a status reaches one with a status (busy is withdrawn)."""
     assert set_status(s.a2, title="Deep in a proof [s5]").status_code == 200
-    s.alice.say("a thought for whoever listens [s5b]")
-    assert s.a2.take("[s5b]")["message"]["level"] == "normal"
+    called = s.alice.say("@a2 a thought for you [s5b]")
+    assert s.a2.take("[s5b]")["message"]["level"] == "important"
+    s.a2.say("noted [s5c]", reply_to=called["id"])
+    asked = s.a2.say("@alice which case first? [s5d]", to="#general")
+    s.alice.say("the even one [s5e]", reply_to=asked["id"])
+    assert s.a2.take("[s5e]")["message"]["level"] == "normal", "the answer to its own question, as without a status"
 
 
 # ------------------------------------------------------------------ the pages

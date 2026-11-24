@@ -76,15 +76,16 @@ def test_channel_permissions_need_manage_channels(w):
 
 def test_the_switches_are_permissions_of_a_persons_agent_group(w):
     own = "alice-agents"
-    w.alice.switches(others_mention=True)
+    w.alice.switches(others_regroup=True)
     perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
-    assert "others_mention" in perms
-    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": perms + ["others_channel"]})
+    assert "others_regroup" in perms
+    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": [p for p in perms if p != "others_regroup"]})
     assert r.status_code == 200, r.text
     perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
-    assert "others_channel" in perms
+    assert "others_regroup" not in perms
+    assert w.alice.c.get(f"/{SLUG}/api/my").json()["switches"] == {"others_regroup": False}, "the switch is that permission"
     assert w.bob.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": []}).status_code == 403
-    r = w.alice.c.post(f"/{SLUG}/api/groups", json={"name": "wrongly", "permissions": ["read", "others_mention"]})
+    r = w.alice.c.post(f"/{SLUG}/api/groups", json={"name": "wrongly", "permissions": ["read", "others_regroup"]})
     assert r.status_code == 400, "only a person's agent group carries them"
 
 

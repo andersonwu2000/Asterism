@@ -29,10 +29,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 SLUG = "lab"
-OFFLINE_S, RECENT_S, REDELIVER_S = 3, 8, 2
+OFFLINE_S, REDELIVER_S = 3, 2
 CLEAN = {k: v for k, v in os.environ.items() if not k.upper().startswith(("ASTERISM", "CLAUDE", "CODEX"))}
 ENV = dict(CLEAN, PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8", ASTERISM_OFFLINE_AFTER_S=str(OFFLINE_S),
-           ASTERISM_RECENT_SPEAKER_S=str(RECENT_S), ASTERISM_REDELIVER_AFTER_S=str(REDELIVER_S),
+           ASTERISM_REDELIVER_AFTER_S=str(REDELIVER_S),
            ASTERISM_REMIND_AFTER_S="3600", ASTERISM_ACCESS_TTL_S="3600")
 REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
 
@@ -360,64 +360,26 @@ def test_an_offline_agent_gets_its_important_messages_when_it_returns(w):
     w.a3 = a3
 
 
-def test_another_persons_mention_is_closed_until_the_owner_opens_it(w):
+def test_another_persons_mention_is_closed(w):
     sent = w.bob.say("@a1 can you help me? [ms1]")
     assert mention(sent, "a1")["result"] == "closed"
     w.a1.absent("[ms1]")
-    w.alice.switches(others_mention=True)
-    try:
-        sent = w.bob.say("@a1 can you help me now? [ms2]")
-        assert mention(sent, "a1")["result"] == "woken"
-        m = w.a1.take("[ms2]")["message"]
-        assert (m["level"], m["relation"]) == ("important", "another collaborator")
-        sent = w.b1.say("@a1 and me? [ms3]", to="#general")
-        assert mention(sent, "a1")["result"] == "woken"
-        m = w.a1.take("[ms3]")["message"]
-        assert (m["level"], m["relation"], m["from_kind"]) == ("important", "agent of another collaborator", "agent")
-    finally:
-        w.alice.switches(others_mention=False)
 
 
 def test_channel_messages_without_a_mention(w):
-    w.alice.say("nobody in particular [lv1]", to="#proofs")
-    w.a1.absent("[lv1]")                                   # a1 has not spoken in #proofs
     assert w.a1.say("I am working on lemma 2 here [lv0]", to="#proofs")["hop"] == 0
-    w.alice.say("fine, go on [lv2]", to="#proofs")
-    d = w.a1.take("[lv2]")
-    assert (d["message"]["level"], d["message"]["relation"]) == ("normal", "your own user")
-    assert d["frame"].endswith("\n(Asterism message. No answer needed.)")
-    w.a2.absent("[lv2]", 0.5)                              # a2 has not spoken there
-    w.a2.say("I can take lemma 3 [lv3]", to="#proofs")
-    assert w.a1.take("[lv3]")["message"]["relation"] == "agent of your own user"
-    w.bob.say("interesting [lv4]", to="#proofs")
-    w.a1.absent("[lv4]")                                   # another person, switch off
-    w.alice.switches(others_channel=True)
-    try:
-        w.bob.say("still interesting [lv5]", to="#proofs")
-        m = w.a1.take("[lv5]")["message"]
-        assert (m["level"], m["relation"]) == ("normal", "another collaborator")
-    finally:
-        w.alice.switches(others_channel=False)
+    w.alice.say("nobody in particular [lv1]", to="#proofs")
+    w.a1.absent("[lv1]")                                   # 1e: no mention by its own side, so it is not handed over
+    assert w.a1.unread("#proofs") >= 1, "what was not handed over is unread"
 
-    w.a1.say("still here [lv0]", to="#proofs")
     mute = f"/{SLUG}/api/channels/proofs/mute"
     assert w.bob.c.post(mute, json={"muted": True, "agent": "a1"}).status_code == 403, "only its own person mutes for an agent"
     assert w.alice.c.post(mute, json={"muted": True, "agent": "a1"}).status_code == 200
     try:
-        w.alice.say("quiet now [lv7]", to="#proofs")
-        w.a1.absent("[lv7]")
-        w.alice.say("@a1 except this [lv8]", to="#proofs")
+        w.alice.say("@a1 a mention goes through a muted channel [lv8]", to="#proofs")
         assert w.a1.take("[lv8]")["message"]["level"] == "important"
     finally:
         assert w.alice.c.post(mute, json={"muted": False, "agent": "a1"}).status_code == 200
-
-    w.a1.say("back [lv0]", to="#proofs")
-    w.alice.say("heard at once [lv9]", to="#proofs")
-    w.a1.take("[lv9]")
-    time.sleep(RECENT_S + 1.5)
-    w.alice.say("too late for at once [lv10]", to="#proofs")
-    w.a1.absent("[lv10]")                                  # it last spoke there longer ago than the window
-    assert w.a1.unread("#proofs") >= 1, "what was not handed over is unread"
 
 
 def test_an_answer_to_a_question_always_reaches_the_asker(w):

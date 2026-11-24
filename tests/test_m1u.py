@@ -1,5 +1,6 @@
-"""Upgrades of an existing database at start: the old switch columns of `groups` are moved into the permissions and
-then the table is rebuilt without them (SQLite before 3.35 has no DROP COLUMN, so the rebuild is by copy).
+"""Upgrades of an existing database at start: the old switch columns of `groups` are moved into the permissions (only
+the switches that still exist; the withdrawn ones are dropped) and then the table is rebuilt without them (SQLite
+before 3.35 has no DROP COLUMN, so the rebuild is by copy).
 
     python -m pytest tests/test_m1u.py -q
 """
@@ -32,14 +33,17 @@ def test_the_old_switch_columns_are_moved_and_then_dropped(u):
     with db:
         for c in OLD:                                  # as a database made before f6 looked
             db.execute(f"ALTER TABLE groups ADD COLUMN {c} INTEGER NOT NULL DEFAULT 0")
-        db.execute("UPDATE groups SET others_mention = 1, others_assign = 1 WHERE name = 'alice-agents'")
+        db.execute("UPDATE groups SET others_mention = 1, others_channel = 1, others_assign = 1, others_regroup = 1 "
+                   "WHERE name = 'alice-agents'")
+        db.execute("UPDATE groups SET others_mention = 1 WHERE name = 'bob-agents'")
         db.execute("DELETE FROM upgrades WHERE name = 'switches_moved'")
     db.close()
     u.srv.start()
     groups = {g["name"]: g for g in u.alice.c.get(f"/{SLUG}/api/members").json()["groups"]}
-    assert "others_mention" in groups["alice-agents"]["permissions"], groups["alice-agents"]
-    assert not {"others_channel", "others_regroup"} & set(groups["alice-agents"]["permissions"])
+    assert "others_regroup" in groups["alice-agents"]["permissions"], groups["alice-agents"]
+    assert not {"others_mention", "others_channel"} & set(groups["alice-agents"]["permissions"]), "withdrawn in 1e: dropped"
     assert "others_assign" not in groups["alice-agents"]["permissions"], "a switch that only served tasks is dropped (1s)"
+    assert "others_regroup" not in groups["bob-agents"]["permissions"], "a switch that was off is not turned on"
     u.srv.stop()
     db = sqlite3.connect(str(path))
     cols = [r[1] for r in db.execute("PRAGMA table_info(groups)")]
@@ -47,7 +51,7 @@ def test_the_old_switch_columns_are_moved_and_then_dropped(u):
     assert db.execute("PRAGMA foreign_key_check").fetchall() == [], "memberships still point at their groups"
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     perms = json.loads(db.execute("SELECT permissions FROM groups WHERE name = 'alice-agents'").fetchone()[0])
-    assert "others_mention" in perms
+    assert "others_regroup" in perms and "others_mention" not in perms
     db.close()
     u.srv.start()
     a1 = next(a for a in u.alice.c.get(f"/{SLUG}/api/members").json()["agents"] if a["name"] == "a1")
@@ -56,3 +60,20 @@ def test_the_old_switch_columns_are_moved_and_then_dropped(u):
     u.srv.start()                                      # and a second start changes nothing
     again = {g["name"]: g["permissions"] for g in u.alice.c.get(f"/{SLUG}/api/members").json()["groups"]}
     assert again["alice-agents"] == groups["alice-agents"]["permissions"]
+
+
+def test_the_withdrawn_switches_are_taken_out_of_the_stored_permissions_at_start(u):
+    """1e: a database written after f6 holds `others_mention` / `others_channel` as permissions; they go at start."""
+    u.srv.stop()
+    path = u.data / "projects" / f"{SLUG}.db"
+    db = sqlite3.connect(str(path))
+    with db:
+        perms = json.loads(db.execute("SELECT permissions FROM groups WHERE name = 'alice-agents'").fetchone()[0])
+        kept = [p for p in perms if p not in ("others_mention", "others_channel")]
+        db.execute("UPDATE groups SET permissions = ? WHERE name = 'alice-agents'",
+                   (json.dumps(kept + ["others_mention", "others_channel"]),))
+    db.close()
+    u.srv.start()
+    groups = {g["name"]: g["permissions"] for g in u.alice.c.get(f"/{SLUG}/api/members").json()["groups"]}
+    assert sorted(groups["alice-agents"]) == sorted(kept), groups["alice-agents"]
+    assert u.alice.c.get(f"/{SLUG}/api/my").json()["switches"] == {"others_regroup": "others_regroup" in kept}

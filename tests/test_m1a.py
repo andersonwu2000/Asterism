@@ -276,7 +276,7 @@ def test_a_session_registers_as_an_agent_of_its_person(srv, alice, cred_a):
     assert a.register("fern").json()["how"] == "same"
     assert a.register("moss").status_code == 409, "one session is one agent; it must leave first"
     my = alice.get(f"/{SLUG}/api/my").json()
-    assert my["switches"] == {"others_mention": False, "others_channel": False, "others_regroup": False}
+    assert my["switches"] == {"others_regroup": False}
     assert any(a_["name"] == "fern" for a_ in my["agents"]) and any(c["kind"] == "computer" for c in my["credentials"])
 
 
@@ -339,7 +339,7 @@ def test_an_agent_never_manages_and_groups_follow_the_owner(srv, alice, bob, cre
     # someone else, even with the permission, needs the owner's switch
     assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 403
     r = bob.post(f"/{SLUG}/api/my/switches", json={"others_regroup": True})
-    assert r.status_code == 200 and r.json()["switches"]["others_regroup"] is True and r.json()["switches"]["others_mention"] is False
+    assert r.status_code == 200 and r.json()["switches"] == {"others_regroup": True}
     assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 200
     assert "stewards" in agent_row(bob, "birch")["groups"]
     assert bob.post(f"/{SLUG}/api/my/switches", json={"others_regroup": False}).status_code == 200

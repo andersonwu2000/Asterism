@@ -191,7 +191,7 @@ def test_one_connection_serves_every_agent_of_the_computer(j):
     late = j.alice.say("@cody are you there? [c2]")
     assert mention(late, "cody")["result"] == "offline"
     time.sleep(1.5)
-    for_cody = lambda: [d for d in pc.tagged("[c2]") if d["agent"] == "cody"]      # cora, who just spoke here, hears it too
+    for_cody = lambda: [d for d in pc.tagged("[c2]") if d["agent"] == "cody"]
     assert not for_cody(), "nothing is handed out for a session the computer cannot wake"
     pc.report(("s-c1", "claude-code"), ("s-c2", "codex"))
     assert until(lambda: row(j, "cody")["online"], 5)
