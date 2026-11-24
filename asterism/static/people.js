@@ -203,10 +203,6 @@
   function kindText(found) {
     return found.isAgent ? t("mem.agent_of", {owner: found.who.owner}) : t("people.person");
   }
-  function after(r, out) {
-    if (r && !r.ok && out) out.textContent = A.refusal("mem.regroup", r.data);
-    return S.loadMembers();
-  }
   function dirOf(found) {
     return {kind: found.isAgent ? "agent" : "person", online: !!found.who.online};
   }
@@ -227,6 +223,9 @@
   if (typeof card.showPopover === "function") card.setAttribute("popover", "manual");
   document.body.appendChild(card);
   var shown = null;                    // {name, anchor}
+  // The sentence of the card's last act ({name, text}: a refusal, or that the members could not be read after it),
+  // kept while the card is drawn again: the reading that follows an act draws it again (2b).
+  var cardSaid = null;
 
   function fillCard(name) {
     var rules = rulesNow(), found = rules ? rules.find(name) : null;
@@ -258,11 +257,14 @@
     var groups = make("section", "card-sec");
     groups.appendChild(make("h3", "", t("people.groups")));
     var chips = make("div", "mtags");
+    // After an act on the groups: the card shows what the server holds now, with the refusal if there was one (or,
+    // when the members could not be read again, that sentence).
     function redo(r, from) {
       var key = from && from.dataset ? from.dataset.key : null;
-      after(r, out).then(function () {
+      var refused = r && !r.ok ? A.refusal("mem.regroup", r.data) : "";
+      S.loadMembers().then(function () {
         if (!shown || shown.name !== name) return;
-        if (r && !r.ok) return;
+        cardSaid = refused || failed ? {name: name, text: refused || t("people.failed")} : null;
         fillCard(name);
         var again = key && card.querySelector('[data-key="' + key.replace(/["\\]/g, "\\$&") + '"]');
         (again || card.querySelector("button") || card).focus();
@@ -310,6 +312,7 @@
       acts.appendChild(set);
     }
     card.append(acts, out);
+    if (cardSaid && cardSaid.name === name) out.textContent = cardSaid.text;
   }
 
   // The card by `anchor`; `back`: what opened it when that is not the anchor (a row of the member tree: the card is
@@ -318,8 +321,10 @@
     var owner = back || anchor;
     if (A.popup.isOpen(card) && shown && shown.anchor === owner) { A.popup.close(true); return; }
     var now = shown = {name: name, anchor: owner};
+    cardSaid = null;
     fillCard(name);
-    if (!A.popup.open(card, anchor, {back: back, onClose: function () { if (shown === now) shown = null; }})) {
+    function closed() { if (shown === now) { shown = null; cardSaid = null; } }
+    if (!A.popup.open(card, anchor, {back: back, onClose: closed})) {
       if (shown === now) shown = null;
       return;
     }
@@ -363,7 +368,12 @@
     }
     if (found) {
       if (found.isAgent) items.push({label: t("people.open_dashboard"), href: dashboardHref(name)});
-      var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) { after(r, null); });
+      var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) {
+        if (r && !r.ok) sayBy(opener, A.refusal("mem.regroup", r.data));
+        S.loadMembers().then(function () {
+          if (r && r.ok && failed) sayBy(opener, t("people.failed"));
+        });
+      });
       if (boxes.length) items.push({label: t("people.groups"), items: boxes});
       if (rules.mayManage()) items.push({label: t("people.open_settings"), href: settingsHref(name)});
       if (rules.mayRemove(found.who, found.isAgent)) {
@@ -374,6 +384,31 @@
     }
     A.menu(Object.assign({label: t("people.acts", {name: name})}, where), items, opener);
   };
+
+  // A refusal of an act chosen in a member's menu (a group's check box), or that the members could not be read after
+  // it: said in a small note under what the menu was opened from (the member's row, a name in a message), for a
+  // moment (DESIGN: interaction), and read out (a live region that stays on the page, empty while it says nothing). It
+  // floats: the reading that follows a refusal draws the list again, and the note stays where it was said (2b).
+  var SAID_MS = 8000, note = make("div", "said-note"), noteTimer = 0;
+  note.setAttribute("role", "status");
+  document.body.appendChild(note);
+  function unsay() { clearTimeout(noteTimer); note.textContent = ""; }
+  function sayBy(el, text) {
+    if (el && !el.isConnected && el.dataset && el.dataset.key) {       // a row drawn again since: the new one
+      el = document.querySelector('[data-key="' + el.dataset.key.replace(/["\\]/g, "\\$&") + '"]');
+    }
+    clearTimeout(noteTimer);
+    note.textContent = text;
+    var vw = document.documentElement.clientWidth, vh = window.innerHeight, w = note.offsetWidth, h = note.offsetHeight;
+    var r = el && el.isConnected && el.getClientRects().length ? el.getBoundingClientRect() : null;
+    var x = r ? r.left : (vw - w) / 2, y = r ? r.bottom + 4 : vh - h - 96;
+    if (r && y + h > vh - 8) y = r.top - 4 - h;
+    note.style.left = Math.max(8, Math.min(x, vw - 8 - w)) + "px";
+    note.style.top = Math.max(8, y) + "px";
+    noteTimer = setTimeout(unsay, SAID_MS);
+  }
+  document.addEventListener("pointerdown", function (ev) { if (note.textContent && !note.contains(ev.target)) unsay(); }, true);
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && note.textContent) unsay(); }, true);
 
   // Any name marked data-member: a click opens the card, right click or the menu keys the menu. The member tree has
   // its own (below).

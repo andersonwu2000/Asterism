@@ -190,13 +190,18 @@
     }
   }
 
+  // Whether the last reading of the members succeeded (frame.js tells after each).
+  var membersRead = true;
+  if (S.onMembersRead) S.onMembersRead(function (ok) { membersRead = ok; });
+
   // The one menu: 群組 (check boxes), 頭像 (its own person), then 移出專案 (floats, the name typed).
   function menuItems(a, opener) {
     var R = rules(), items = [];
     if (!R) return items;
     var boxes = P.groupItems(R, a, true, function (r) {
       if (r && !r.ok) said(A.refusal("mem.regroup", r.data));
-      S.loadMembers();
+      // The act went through, but the members could not be read again: the page would show what was there before.
+      S.loadMembers().then(function () { if (r && r.ok && !membersRead) said(t("people.failed")); });
     });
     if (boxes.length) items.push({label: t("people.groups"), items: boxes});
     if (isMine(a)) {

@@ -109,10 +109,30 @@
            !!(a && layer.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== "checkbox" && a.type !== "search");
   }
 
+  // The members could not be read: said over the section shown (members, groups) until a reading succeeds; at once
+  // when the reading followed an act (the page would otherwise show what was there before the act, without a word),
+  // after two in a row for the readings every 15 s (2b).
+  var stale = make("p", "my-stale", t("my.stale")), misses = 0;
+  stale.setAttribute("role", "status");
+  stale.hidden = true;
+  function placeStale(section) {
+    var sec = section === "members" || section === "groups"
+      ? layer.querySelector('.set-sec[data-section="' + section + '"]') : null;
+    if (!sec) { stale.remove(); return; }
+    var title = sec.querySelector("h2");
+    if (stale.parentNode !== sec) sec.insertBefore(stale, title ? title.nextSibling : sec.firstChild);
+  }
+
   async function load(force) {
     if (!force && busy()) return;
     var r = await A.request(API + "members");
-    if (!r.ok) return;
+    if (!r.ok) {
+      misses += 1;
+      if (force || misses >= 2) stale.hidden = false;
+      return;
+    }
+    misses = 0;
+    stale.hidden = true;
     var raw = JSON.stringify(r.data);
     if (raw === last && !force) return;
     if (!force && busy()) return;
@@ -123,6 +143,7 @@
   }
 
   function draw(section) {
+    placeStale(section);
     if (section === "members") drawMembers();
     else if (section === "groups") drawGroups();
   }

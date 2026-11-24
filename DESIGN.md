@@ -492,7 +492,12 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   letter move, → and ← open and close, Enter acts; a menu or a card opened from a row leaves the row's open state
   as it is. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
   box, not by hue. A list behind an item opens in its place with a way back, not as a second floating box.
-- The outcome of a menu's act (copied, refreshed, a refusal) is said on the row it acted on, for a moment.
+- The outcome of a menu's act (copied, refreshed, a refusal) is said on the row it acted on, for a moment. A member's
+  menu, whose list is drawn again by the reading that follows the act, says it in a small note under the row or the
+  name it was opened from, and the next opening shows what the server holds. No refusal is dropped without a word: a
+  card says it in the card (kept while the card is drawn again), and when the members cannot be read again after an
+  act the page says so (the member list, the card, the agent page beside its "…", the settings of members and groups
+  over the section).
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape
   gives up, and a refused name is said under the field, which stays.
 - **An act with a consequence confirms in place, in two steps**: the control changes to say what will happen

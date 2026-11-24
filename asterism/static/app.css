@@ -769,6 +769,13 @@ td .muted, td small { color: var(--color-ink-dim); }
 .card-why { margin: 0; border-top: 1px solid var(--color-edge); padding-top: 8px; font-size: 13px;
             color: var(--color-ink-dim); overflow-wrap: anywhere; }
 .card-why + .card-acts { border-top: 0; padding-top: 0; }
+/* A refusal of an act chosen in a member's menu, under what the menu was opened from, for a moment (people.js):
+   empty (and so unseen) while it says nothing; above the sheet and the drawer, below the top layer. */
+.said-note { position: fixed; z-index: 45; max-width: min(320px, calc(100vw - 16px)); }
+.said-note:not(:empty) {
+  padding: 8px 10px; font-size: 13px; line-height: 1.45; color: var(--color-ink); background: var(--color-surface-3);
+  border: 1px solid var(--color-edge-strong); border-radius: var(--r-control); overflow-wrap: anywhere;
+}
 .chip-plus { width: 26px; padding: 0; }
 .chip-plus .plus { transform: scale(0.75); }
 
