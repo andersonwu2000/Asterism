@@ -22,7 +22,6 @@ from typing import Any, Iterable
 
 from . import assets
 from .i18n import Translator
-from .projects import SWITCHES
 
 
 def e(v: Any) -> str:
@@ -538,7 +537,7 @@ def join(tr: Translator, person: dict[str, Any], code: str, preview: dict[str, A
 # The sections of the settings layer, under their small headings: (scope -> ((heading, (section, ...)), ...)).
 SETTINGS = {"project": (("set.group.project", ("overview",)), ("set.group.people", ("members", "groups", "invites"))),
             "channel": (("set.group.channel", ("overview", "permissions", "notifications")),),
-            "me": (("set.group.me", ("profile", "computers", "writing", "agents")),)}
+            "me": (("set.group.me", ("profile", "computers", "writing")),)}
 THEMES = ("dark", "light", "system")
 REQUIRED_40, REQUIRED_80 = ' required maxlength="40"', ' required maxlength="80"'
 REPO_INPUT = ' type="url" placeholder="https://github.com/owner/name" data-invalid="error.invalid_repo"'
@@ -582,7 +581,7 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
         what = title = tr("set.channel_title", name=channel["name"])
     parts = {}
     if scope == "me":
-        parts.update(_me_sections(tr, slug, me, frame["name"]))
+        parts.update(_me_sections(tr, me, frame["name"]))
     elif scope == "project":
         parts["overview"] = _project_overview(tr, frame, "project_settings" in mine)
         parts["members"] = (f'<p class="dim">{e(tr("mem.all_hint"))}</p>'
@@ -620,7 +619,7 @@ def settings(tr: Translator, person: dict[str, Any], frame: dict[str, Any], scop
         f'<h2 id="set-h-{x}" class="vh">{e(tr("set." + x))}</h2>{parts[x]}</section>' for x in sections)
     close = e(tr("set.close"))
     data = {"slug": slug, "scope": scope, "section": section, "base": base, "view": view, "catalogue": permissions,
-            "management": sorted(management), "switches": list(SWITCHES),
+            "management": sorted(management),
             **({"channel": channel["name"]} if channel else {}),
             **({"my": me["my"], "computers": me["computers"], "writer": me["writer"], "login": me["github_login"],
                 "project": frame["name"], "repo": frame["repo"]} if me else {})}
@@ -691,14 +690,13 @@ def _channel_overview(tr: Translator, name: str, can: bool, notices: bool) -> st
             f'<section class="danger-zone"><h3>{e(tr("chan.delete"))}</h3>{gone}</section>')
 
 
-def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) -> dict[str, str]:
+def _me_sections(tr: Translator, me: dict[str, Any], project: str) -> dict[str, str]:
     """The reader's own settings: their name, status (one line) and avatar in this project (#me-avatar, drawn by
     me.js), their GitHub
     account as a fact, the language and the look of the pages (profile); their computers and connectors (me.js draws
     them from /api/my and /api/me/computers); who writes their changes to the shared files, the server with their
     GitHub authorization or one of their computers (writing: me.js, from /api/me/writer, /api/me/computers and
-    can-write); what others may do with their agents (the permissions of their own agent group, each saved as it
-    changes)."""
+    can-write). (What others may do with their agents was a section of its own until 2b withdrew the last switch.)"""
     langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
                     f'aria-pressed="{"true" if loc == tr.locale else "false"}">{e(tr("me.lang." + loc))}</button>'
                     for loc in ("zh-TW", "en"))
@@ -718,19 +716,12 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) ->
                f'<p class="out" id="me-locale-out" aria-live="polite"></p>'
                f'<h3 class="set-sub">{e(tr("me.theme"))}</h3>'
                f'<div class="seg" role="group" id="me-theme" aria-label="{e(tr("me.theme"))}">{themes}</div>')
-    sw = me["my"]["switches"]
-    rows = "".join(f'<div class="perm-row"><input type="checkbox" id="me-sw-{k}" data-switch="{k}"{" checked" if sw.get(k) else ""}>'
-                   f'<label class="perm-text" for="me-sw-{k}"><span class="perm-name">{e(tr("switch." + k))}</span>'
-                   f'<span class="perm-hint">{e(tr("perm_hint." + k))}</span><span class="out" aria-live="polite"></span>'
-                   f'</label></div>' for k in SWITCHES)
-    agents = (f'<p class="dim">{e(tr("my.switches_hint"))}</p><div class="perm-list" id="me-switches">{rows}</div>'
-              f'<p><a href="/{e(q(slug))}/settings/groups?g={e(q(me["name"] + "-agents"))}">{e(tr("ag.group_settings"))}</a></p>')
     computers = (f'<p class="dim my-lead">{e(tr("my.lead", project=project))}</p>'
                  f'<p class="my-stale" id="me-stale" role="status" hidden>{e(tr("my.stale"))}</p>'
                  f'<div id="me-computers"></div>')
     writing = (f'<p class="dim my-lead">{e(tr("wr.lead"))}</p>'
                f'<div id="me-writing"></div>')
-    return {"profile": profile, "computers": computers, "writing": writing, "agents": agents}
+    return {"profile": profile, "computers": computers, "writing": writing}
 
 
 def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> str:
@@ -768,20 +759,13 @@ def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> 
             f'</div>{create}')
 
 
-def switch_boxes(tr: Translator, values: dict[str, bool]) -> str:
-    """The switches of the consent page, sent with its form."""
-    return "".join(f'<div class="check"><label><input type="checkbox" name="{k}" value="1"{" checked" if values.get(k) else ""}>'
-                   f' {e(tr("switch." + k))}</label></div>' for k in SWITCHES)
-
-
 def consent(tr: Translator, person: dict[str, Any], client_name: str, host: str, project_name: str,
-            params: dict[str, str], switches: dict[str, bool]) -> tuple[str, int]:
+            params: dict[str, str]) -> tuple[str, int]:
+    """The connector's consent page: what asks, for which project, approve or deny (2b: no switches any more)."""
     hidden = "".join(f'<input type="hidden" name="{e(k)}" value="{e(v)}">' for k, v in params.items()
-                     if k not in ("decision", "switches", *SWITCHES))
+                     if k != "decision")
     body = (f'<p>{e(tr("consent.ask", client=client_name, project=project_name, host=host))}</p>'
-            f'<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="switches" value="1">'
-            f'<h2>{e(tr("my.switches"))}</h2><p class="muted">{e(tr("my.switches_hint"))}</p>'
-            f'{switch_boxes(tr, switches)}'
+            f'<form method="post" action="/oauth/authorize">{hidden}'
             f'<p class="row"><button class="btn primary" name="decision" value="approve">{e(tr("consent.approve"))}</button> '
             f'<button class="btn" name="decision" value="deny">{e(tr("consent.deny"))}</button></p></form>')
     return layout(tr, tr("consent.title"), body, person)

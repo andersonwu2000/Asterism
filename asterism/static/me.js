@@ -17,8 +17,6 @@
 //   state and its acts: 撤銷授權 in two steps, 重新授權 and 改由伺服器寫入 leave for GitHub and come back here) and each
 //   computer of the account (改用這台電腦 in two steps: the server then deletes the GitHub authorization; disabled, with
 //   the reason, for one without git or with a program too old); then the outcome for this project in one sentence.
-// - what others may do with my agents (#me-switches): the permissions of my own agent group (since 1e only others_regroup), each saved as it
-//   changes.
 // Both lists are drawn again from the data every 15 s (never while a button is armed or a panel is open); two failed
 // refreshes in a row say so over the lists.
 "use strict";
@@ -132,20 +130,6 @@
     window.addEventListener("storage", markTheme);
     markTheme();
   }
-
-  // ------------------------------------------------------------------ what others may do with my agents
-
-  Array.prototype.forEach.call(layer.querySelectorAll("input[data-switch]"), function (box) {
-    var out = box.parentElement.querySelector(".out");
-    box.addEventListener("change", async function () {
-      var body = {};
-      body[box.dataset.switch] = box.checked;
-      out.textContent = "";
-      var r = await A.request(API + "my/switches", null, body);
-      if (!r.ok) { box.checked = !box.checked; out.textContent = A.refusal("grp.change", r.data); return; }
-      A.saved(out);
-    });
-  });
 
   // ------------------------------------------------------------------ shared by the two lists
 

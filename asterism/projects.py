@@ -23,11 +23,6 @@ DEFAULT_GROUPS = [
     ("human", ["read", "post", "create_channel", "create_schedule", "manage_own_agents"]),
     ("ai", ["read", "post"]),
 ]
-# The permissions only a person's own agent group (ownership) carries, set only by that person: what others may do
-# with that person's agents (until f6 they were called its switches, and the API still sets them that way too). Since
-# 1e an agent is reached from its own side only: the switches that let others mention it or let it hear their channel
-# talk are withdrawn; what remains is that others may change the groups of these agents.
-SWITCHES = ("others_regroup",)
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
 GROUP_NAME_RULE = ("A group's name is 1 to 40 letters or digits of any script, '.', '_' or '-', starting with a letter or "
@@ -466,14 +461,11 @@ def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, 
     return {"name": name, "kind": "custom", "permissions": perms}
 
 
-def _check_permissions(perms: Any, own: bool = False) -> list[str]:
-    """A list of permission names from the catalogue, returned in the catalogue's order; with `own` (a person's own
-    agent group) also what others may do with that person's agents (SWITCHES), which no other group carries."""
-    allowed = PERMISSIONS + list(SWITCHES) if own else PERMISSIONS
-    if not isinstance(perms, list) or not all(isinstance(p, str) and p in allowed for p in perms):
-        why = "" if own else (" (" + ", ".join(SWITCHES) + " are carried only by a person's own agent group)")
-        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS) + why)
-    return [p for p in allowed if p in perms]
+def _check_permissions(perms: Any) -> list[str]:
+    """A list of permission names from the catalogue, returned in the catalogue's order."""
+    if not isinstance(perms, list) or not all(isinstance(p, str) and p in PERMISSIONS for p in perms):
+        raise bad_request("invalid_permissions", "permissions must be a list drawn from: " + ", ".join(PERMISSIONS))
+    return [p for p in PERMISSIONS if p in perms]
 
 
 def _custom_group(pj: Project, actor: Actor, name: str, need: str) -> sqlite3.Row:
@@ -515,7 +507,8 @@ def order_groups(pj: Project, actor: Actor, names: Any) -> dict[str, Any]:
 def change_group_settings(pj: Project, actor: Actor, name: str, body: dict[str, Any]) -> dict[str, Any]:
     """Change a group: its name (custom groups, rename_group), its permissions (change_group), whether it is shown
     separately in the member list, or several of these. Showing separately: a custom group for who may manage groups;
-    a person's own agent group for that person or who may manage groups; never a default group."""
+    a person's own agent group for that person or who may manage groups (the member list places people by custom
+    groups only, 1l); never a default group."""
     if not {"name", "permissions", "separate"} & set(body):
         raise bad_request("invalid_request", "Say what to change: name, permissions or separate.")
     out: dict[str, Any] = {}
@@ -554,23 +547,23 @@ def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, 
     - a custom group, `human` and `ai` (as Discord's @everyone): manage_groups, and nobody gives or takes away a
       permission they do not hold themselves;
     - `owner` always holds every permission and is not changed;
-    - a person's own agent group: only that person sets it; besides the ordinary permissions (its agents still never
-      hold more than their person) it alone carries what others may do with that person's agents (SWITCHES)."""
+    - a person's own agent group: only that person sets it, with the ordinary permissions (its agents still never
+      hold more than their person)."""
     _person_only(actor)
     g = group_by_name(pj, name)
     if not g:
         raise not_found(f"There is no group '{name}'.")
     if g["kind"] == "ownership":
         if g["owner_person"] != actor.person_id:
-            raise forbidden(f"'{name}' holds the agents of {person_name(pj, g['owner_person'])}; only they set what others "
-                            f"may do with their agents.")
-        perms = _check_permissions(perms, own=True)
+            raise forbidden(f"'{name}' holds the agents of {person_name(pj, g['owner_person'])}; only they set its "
+                            f"permissions.")
+        perms = _check_permissions(perms)
     else:
         require(pj, actor, "manage_groups", "Changing groups needs the manage_groups permission.")
         if _is_owner_group(g):
             raise conflict(f"'{name}' always holds every permission; it is not changed.")
         perms = _check_permissions(perms)
-    touched, mine = set(json.loads(g["permissions"])) | set(perms), permissions(pj, actor) | set(SWITCHES)
+    touched, mine = set(json.loads(g["permissions"])) | set(perms), permissions(pj, actor)
     missing = [p for p in PERMISSIONS if p in touched and p not in mine]
     if missing:
         raise forbidden(f"'{name}' carries or would carry permissions you do not hold ({', '.join(missing)}), "
@@ -613,12 +606,14 @@ def remove_group(pj: Project, actor: Actor, name: str) -> dict[str, Any]:
 
 
 def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any) -> dict[str, Any]:
-    """Put a member into groups or take it out.
+    """Put a member into groups or take it out (2b: an agent the same way as a person).
 
-    - A person changes the groups of their own agents, but adds only groups they are in themselves.
-    - Anyone else needs manage_groups and, for an agent, its person's "others may change groups" switch;
-      they can only add or remove groups whose permissions they hold (nobody hands out more than they have).
-    - Ownership groups follow who owns an agent and are never edited here.
+    - Who may manage groups puts any member, a person or an agent, their own or somebody else's, into custom groups
+      or takes it out, without being in those groups; only groups whose permissions they hold (nobody hands out more
+      than they have).
+    - Without manage_groups a person changes only the groups of their own agents, adding only groups they are in
+      themselves.
+    - Default and ownership groups are never edited here (who is in them follows joining and ownership).
     - The project always keeps at least one person in `owner`.
     """
     _person_only(actor)
@@ -643,14 +638,16 @@ def change_groups(pj: Project, actor: Actor, target: str, add: Any, remove: Any)
     if agent:
         kind, mid = "agent", agent["id"]
         if agent["person_id"] == actor.person_id:
+            # One's own agent: the groups one is in, always (and taking it out of any); others with manage_groups.
             held = {g["name"] for g in groups_of(pj, "person", actor.person_id)}
-            for gname in add:
-                if gname not in held:
-                    raise forbidden(f"You can give your agent only groups you are in yourself; you are not in '{gname}'.")
+            beyond = [gname for gname in add if gname not in held]
+            if beyond and "manage_groups" not in mine:
+                raise forbidden(f"You can give your agent only groups you are in yourself; you are not in '{beyond[0]}'. "
+                                f"Putting it into other groups needs the manage_groups permission.")
+            _no_escalation([groups[gname] for gname in beyond], mine)
         else:
-            require(pj, actor, "manage_groups", "Changing another person's agent needs the manage_groups permission.")
-            if not switch_on(pj, agent["person_id"], "others_regroup"):
-                raise forbidden(f"{person_name(pj, agent['person_id'])} has not allowed others to change the groups of their agents.")
+            require(pj, actor, "manage_groups", "Changing the groups of another person's agent needs the manage_groups "
+                                                "permission.")
             _no_escalation(groups.values(), mine)
     elif person:
         kind, mid = "person", person["person_id"]
@@ -895,8 +892,6 @@ def group_list(pj: Project) -> list[dict[str, Any]]:
             position += 1
         if g["kind"] == "ownership":
             item["owner"] = owners.get(g["owner_person"], "")
-            # What others may do with that person's agents: its permissions, also by name.
-            item["switches"] = {k: k in item["permissions"] for k in SWITCHES}
         out.append(item)
     return out
 
@@ -908,36 +903,6 @@ def members_view(pj: Project, actor: Actor) -> dict[str, Any]:
     mine = permissions(pj, actor)
     return {"project": info(pj), **people_and_agents(pj, work=True), "groups": group_list(pj),
             "me": {"name": person_name(pj, actor.person_id), "permissions": [p for p in PERMISSIONS if p in mine]}}
-
-
-def switches(pj: Project, person_id: int) -> dict[str, bool]:
-    """What others may do with the person's agents: the permissions of the person's own agent group."""
-    g = ownership_group(pj, person_id)
-    have = set(json.loads(g["permissions"])) if g else set()
-    return {k: k in have for k in SWITCHES}
-
-
-def switch_on(pj: Project, person_id: int, which: str) -> bool:
-    return switches(pj, person_id)[which]
-
-
-def set_switches(pj: Project, actor: Actor, values: Any) -> dict[str, Any]:
-    """Only the person themselves sets what others may do with their agents (the permissions of their own group)."""
-    _person_only(actor)
-    if not isinstance(values, dict) or not set(values) <= set(SWITCHES) \
-            or not all(isinstance(v, bool) for v in values.values()):
-        raise bad_request("invalid_switches", "Send any of " + ", ".join(SWITCHES) + " as true or false.")
-    _set_switches(pj, actor, values, ownership_group(pj, actor.person_id))
-    return {"switches": switches(pj, actor.person_id)}
-
-
-def _set_switches(pj: Project, actor: Actor, values: dict[str, bool], g: sqlite3.Row) -> dict[str, Any]:
-    if values:
-        now = {**switches(pj, actor.person_id), **values}
-        perms = [p for p in json.loads(g["permissions"]) if p not in SWITCHES] + [k for k in SWITCHES if now[k]]
-        with pj.db:
-            pj.db.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), g["id"]))
-        util.log("switches_set", project=pj.slug, person=actor.person_id, switches=values)
 
 
 def credential_view(c: sqlite3.Row) -> dict[str, Any]:
@@ -971,8 +936,7 @@ def my_view(pj: Project, actor: Actor) -> dict[str, Any]:
             if c["quotas"] is not None:  # what its program last reported (1x); only its own person sees it
                 view["quotas"] = [dict(q, at=util.iso(c["quotas_at"])) for q in json.loads(c["quotas"])]
         creds.append(view)
-    return {"agents": agents, "credentials": creds, "switches": switches(pj, actor.person_id),
-            "program": downloads.program(config.get().data)}
+    return {"agents": agents, "credentials": creds, "program": downloads.program(config.get().data)}
 
 
 # --------------------------------------------------------------------------- credentials

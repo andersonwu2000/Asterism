@@ -195,7 +195,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   the GitHub authorization's state and acts first, then each computer of theirs; choosing a computer is two steps in
   place, since the server then deletes their GitHub authorization; a computer without git or with a program too old is
   shown with the reason and its button disabled; under the list, the outcome for this project in one sentence on a
-  wash, with at most one act); 別人能對我的 agent 做什麼. A setting that is changed is a form of one field with its button, saved
+  wash, with at most one act). There are no switches of what others may do with one's agents (the last was
+  withdrawn in 2b): an agent's groups are changed as a person's are. A setting that is changed is a form of one field with its button, saved
   where it is, its outcome said beside the button; a choice (a check box, a control of three) is saved as it is
   pressed. "Saved" is said the same everywhere: in place, at the row's end, for a moment, in a place kept for it so
   nothing moves. The invitations section makes one (its link shown once, with its copy control: only the link's digest
@@ -213,10 +214,14 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   opening on its own. A chosen group shows the list as a middle column (below 900 px "← 群組" over the group instead)
   and the group in two tabs: **設定** (its name,
   renamed there for a custom group; for a custom group the switch "在成員列表中分開顯示", which places people; its
-  permissions; for a person's own agent group
-  also what others may do with those agents; "remove group" at the foot) and **成員** (adding several at once: everyone
-  not in it yet as check boxes with a filter, one button adding those checked, another person's agent that may not be
-  moved disabled with why; read only for a default group: who is in one follows joining). "New group" opens its form
+  permissions, a person's own agent group's set only by that person; "remove group" at the foot) and **成員**
+  (adding several at once: one list of check boxes with a filter, the people and the agents not in it yet whom the
+  reader may put into it, one button adding those checked; each member with 移出 where the reader may take it out;
+  read only for a default group: who is in one follows joining). An agent's groups are changed as a person's: who
+  may manage groups puts any member, their own agent or somebody else's, into a custom group or takes it out, for a
+  group whose permissions they hold, without being in it themselves; without that permission a person changes only
+  their own agents' groups, putting them only into groups they are in. A member's menu and the agent page's "…"
+  offer 群組 with every custom group the reader may change for that member. "New group" opens its form
   in a floating panel, so nothing under it moves. A floating panel's buttons are at its right, cancel then the act. Default
   groups are never shown as groups anywhere else: a member's chips list only the other groups; in the members section
   of settings the default ones are a quiet line ("預設：owner・human"), never given or taken by hand.
@@ -280,7 +285,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   開啟 agent 頁; once there are conversations nothing here names the agents.
 - Below 900 px the rail and the left cells live together in a drawer opened from the start of the top-right cell: the
   top-left cell (the project's name with its menu, the source in files, the project's name in settings) is the head
-  of the second column there. The right column is a sheet over the messages that starts closed. Nothing scrolls
+  of the second column there. The right column is a sheet over the messages that starts closed; an act of a
+  member's card or menu that leads to the composer (提及) closes it first, so the composer is not behind it. Nothing scrolls
   sideways at 360 px.
 - Lists that update (messages, statuses, schedules, the explorer) never move what the reader is looking at: new things
   arrive at the end (in a log, which is newest first, at the top; the reader's place is kept either way), and an

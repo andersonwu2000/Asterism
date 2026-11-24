@@ -573,11 +573,6 @@ async def api_my(request: Request) -> Any:
     return projects.my_view(pj, actor)
 
 
-async def api_switches(request: Request) -> Any:
-    pj, actor = member_actor(request, request.path_params["slug"])
-    return projects.set_switches(pj, actor, await body_json(request))
-
-
 async def api_revoke(request: Request) -> Any:
     pj, actor = member_actor(request, request.path_params["slug"])
     return projects.revoke_credential(pj, actor, request.path_params["cred"])
@@ -1071,15 +1066,12 @@ async def oauth_authorize(request: Request) -> Response:
     decision = p.get("decision")
     if request.method == "GET" or decision not in ("approve", "deny"):
         host = urllib.parse.urlsplit(redirect).hostname or redirect
-        return html(pages.consent(tr, person, client["name"], host, projects.info(pj)["name"], params,
-                                  projects.switches(pj, actor.person_id)))
+        return html(pages.consent(tr, person, client["name"], host, projects.info(pj)["name"], params))
     if decision == "deny":
         util.log("oauth_denied", client=client["client_id"], person=person["id"])
         return RedirectResponse(oauth.back_to_client(redirect, error="access_denied", state=p.get("state")), status_code=302)
     try:
         projects.require(pj, actor, "manage_own_agents", "Authorising agents needs the manage_own_agents permission.")
-        if p.get("switches") == "1":        # the consent form always sends every switch
-            projects.set_switches(pj, actor, {k: p.get(k) in ("1", "on", "true") for k in projects.SWITCHES})
     except ApiError as e:
         return page_error(request, e, person)
     return RedirectResponse(oauth.approve(store(), person["id"], client, redirect, p), status_code=302)
@@ -1270,8 +1262,8 @@ def _settings(request: Request, scope: str, section: str, channel: str | None = 
 
 
 async def me_page(request: Request) -> Response:
-    """The reader's own settings: their name here, language and look, computers and connectors, what others may do
-    with their agents (/{slug}/me, /{slug}/me/{section})."""
+    """The reader's own settings: their name here, language and look, computers and connectors, writing shared files
+    (/{slug}/me, /{slug}/me/{section})."""
     return _settings(request, "me", request.path_params.get("section", ""))
 
 
@@ -1449,7 +1441,6 @@ def build_app(s: Store) -> ASGIApp:
         Route("/{slug}/api/members/{name}/groups", api(api_member_groups), methods=["POST"]),
         Route("/{slug}/api/members/{name}/remove", api(api_member_remove), methods=["POST"]),
         Route("/{slug}/api/my", api(api_my)),
-        Route("/{slug}/api/my/switches", api(api_switches), methods=["POST"]),
         Route("/{slug}/api/my/agent-invites", api(api_agent_invites, 201), methods=["POST"]),
         Route("/{slug}/api/my/credentials/{cred:int}/revoke", api(api_revoke), methods=["POST"]),
         Route("/{slug}/api/channels", api(api_channels), methods=["GET"]),

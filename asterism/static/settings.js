@@ -14,9 +14,8 @@
 //   moves it with "move up" / "move down" in the row's menu; under them the three default groups, owner, human and
 //   AI, each a row of its own marked "預設", not draggable; a chosen group, ?g= in the address, under "← 群組" on a
 //   narrow screen, in two tabs: settings (its name, renamed in place for a custom group; for a custom group "show
-//   separately in the member list"; its permissions; for a person's own agent group also what others may do with
-//   those agents; removal at the foot) and members (adding several at once from a list of check boxes with a filter; read only for a default
-//   group)), invitations (a new one's link shown once with its copy control; the unused ones listed, each revoked in
+//   separately in the member list"; its permissions; removal at the foot) and members (adding several at once from a
+//   list of check boxes with a filter, people and agents alike; read only for a default group)), invitations (a new one's link shown once with its copy control; the unused ones listed, each revoked in
 //   two steps).
 // - Channel: overview (rename; delete, floating, not for the notice channel), permissions (each group's read and post
 //   in the channel as three-state controls: deny, inherit, allow; owner's row says it always can; a person's agent
@@ -34,7 +33,6 @@
   var SLUG = layer.dataset.slug, SCOPE = layer.dataset.scope, BASE = layer.dataset.base, CHANNEL = layer.dataset.channel;
   var API = "/" + encodeURIComponent(SLUG) + "/api/";
   var CATALOGUE = A.parseJSON(layer.dataset.catalogue, []), MANAGEMENT = A.parseJSON(layer.dataset.management, []);
-  var SWITCHES = A.parseJSON(layer.dataset.switches, []);
   var EVERY_MS = 15000;
   var view = A.parseJSON(layer.dataset.view, null), last = JSON.stringify(view), rules = P.rules(view);
   var nav = document.getElementById("settings-nav"), heading = document.getElementById("settings-title");
@@ -454,7 +452,6 @@
     if (g.kind === "custom") box.appendChild(separateRow(g));
     box.appendChild(make("h3", "gd-sub", t("mem.perms_heading")));
     box.appendChild(permsBlock(g));
-    if (g.kind === "ownership") box.appendChild(agentPermsBlock(g));
     if (g.kind === "custom" && rules.mine("manage_groups") && rules.holdsAll(g.permissions)) {
       var sec = make("section", "gd-sec danger-zone");
       sec.appendChild(make("h3", "", t("mem.remove_group")));
@@ -557,23 +554,19 @@
     if (g.kind === "ownership") return g.owner === view.me.name;
     return rules.mine("manage_groups") && rules.holdsAll(g.permissions);
   }
-  // Everything a group may carry, in the catalogue's order: a person's own agent group also its own switches.
-  function carried(g) { return g.kind === "ownership" ? CATALOGUE.concat(SWITCHES) : CATALOGUE; }
-
   function permRow(g, p, editable) {
     var row = make("div", "perm-row"), box = make("input"), id = "perm-" + p;
-    var own = SWITCHES.indexOf(p) >= 0;          // a switch: only a person's own agent group carries it
     box.type = "checkbox";
     box.id = id;
     box.checked = g.permissions.indexOf(p) >= 0;
-    box.disabled = !editable || (!own && !rules.mine(p));
+    box.disabled = !editable || !rules.mine(p);
     box.dataset.key = "perm:" + g.name + ":" + p;
     var text = make("label", "perm-text");
     text.htmlFor = id;
     text.append(make("span", "perm-name", t("perm." + p)), make("span", "perm-hint", t("perm_hint." + p)));
     var out = make("span", "out");
     out.setAttribute("aria-live", "polite");
-    if (editable && !own && !rules.mine(p)) {
+    if (editable && !rules.mine(p)) {
       row.classList.add("unheld");
       text.appendChild(make("span", "perm-hint", t("mem.perm_unheld")));
     }
@@ -581,7 +574,7 @@
     row.append(box, text);
     row.dataset.text = (t("perm." + p) + " " + t("perm_hint." + p) + " " + p).toLowerCase();
     box.addEventListener("change", async function () {
-      var want = carried(g).filter(function (x) { return x === p ? box.checked : g.permissions.indexOf(x) >= 0; });
+      var want = CATALOGUE.filter(function (x) { return x === p ? box.checked : g.permissions.indexOf(x) >= 0; });
       out.textContent = "";
       var r = await A.request(API + "groups/" + encodeURIComponent(g.name), null, {permissions: want});
       if (!r.ok) {
@@ -622,30 +615,20 @@
     return box;
   }
 
-  // A person's own agent group: what others may do with that person's agents, set only by that person.
-  function agentPermsBlock(g) {
-    var box = make("div", "gd-perms"), editable = g.owner === view.me.name;
-    box.append(make("h3", "gd-sub", t("mem.agent_perms")), make("p", "dim", t("mem.agent_perms_hint", {owner: g.owner})));
-    var list = make("div", "perm-list");
-    SWITCHES.forEach(function (p) { list.appendChild(permRow(g, p, editable)); });
-    box.appendChild(list);
-    return box;
-  }
-
-  // Adding members to a group, several in one go: everyone not in it yet as a list of check boxes (people, then
-  // agents) with a filter, and one button that adds those checked. Another person's agent whose person keeps its groups
-  // closed is listed disabled, with why. What is checked survives the list being drawn again.
+  // Adding members to a group, several in one go: everyone the reader may put into it and is not in it yet, people
+  // then agents, as one list of check boxes with a filter, and one button that adds those checked (2b: an agent the
+  // same way as a person). What is checked survives the list being drawn again.
   var picked = {};                                  // group -> {name: true}
   function addBlock(g) {
     var sec = make("section", "gd-adding"), mine = picked[g.name] = picked[g.name] || {};
     var people = view.people.filter(function (x) { return x.groups.indexOf(g.name) < 0; });
     var agents = view.agents.filter(function (x) { return x.groups.indexOf(g.name) < 0; });
     var cands = people.map(function (x) { return [x, false]; }).concat(agents.map(function (x) { return [x, true]; }))
-      .filter(function (c) { return rules.mayAdd(c[0], c[1], g) || rules.closedToMe(c[0], c[1]); });
+      .filter(function (c) { return rules.mayAdd(c[0], c[1], g); });
     sec.appendChild(make("h3", "gd-sub", t("mem.add_heading")));
     if (!cands.length) { sec.appendChild(make("p", "dim", t("mem.add_none"))); return sec; }
     Object.keys(mine).forEach(function (n) {
-      if (!cands.some(function (c) { return c[0].name === n && rules.mayAdd(c[0], c[1], g); })) delete mine[n];
+      if (!cands.some(function (c) { return c[0].name === n; })) delete mine[n];
     });
     var list = make("div", "perm-list gd-pick"), out = make("span", "out");
     out.setAttribute("aria-live", "polite");
@@ -661,18 +644,15 @@
       Array.prototype.forEach.call(list.children, function (r) { r.hidden = !matches(r.dataset.name, q); });
     });
     cands.forEach(function (c, i) {
-      var who = c[0], isAgent = c[1], ok = rules.mayAdd(who, isAgent, g);
+      var who = c[0], isAgent = c[1];
       var row = make("div", "perm-row"), box = make("input"), text = make("label", "perm-text");
       box.type = "checkbox";
       box.id = "gadd-" + i;
       box.checked = !!mine[who.name];
-      box.disabled = !ok;
       box.dataset.key = "gadd:" + g.name + ":" + who.name;
       text.htmlFor = box.id;
       text.append(make("span", "perm-name" + (isAgent ? " mono" : ""), who.name),
-                  make("span", "perm-hint", isAgent ? (ok ? t("mem.agent_of", {owner: who.owner})
-                                                          : t("mem.closed_add", {owner: who.owner}))
-                                                    : t("mem.kind_person")));
+                  make("span", "perm-hint", isAgent ? t("mem.agent_of", {owner: who.owner}) : t("mem.kind_person")));
       row.dataset.name = (who.name + " " + (who.owner || "")).toLowerCase();
       row.append(box, text);
       box.addEventListener("change", function () {
@@ -733,8 +713,6 @@
           });
           acts.appendChild(b);
           li.appendChild(acts);
-        } else if (g.kind !== "ownership" && rules.closedToMe(who, isAgent)) {
-          li.appendChild(make("p", "mnote", t("mem.closed_regroup", {owner: who.owner})));
         }
         out = outOf(li);
         ul.appendChild(li);

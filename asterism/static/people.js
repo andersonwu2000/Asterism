@@ -40,10 +40,6 @@
       return null;
     };
     R.isDefault = function (g) { return !!g && (g.default || g.kind === "default"); };
-    function ownership(person) {
-      return view.groups.filter(function (g) { return g.kind === "ownership" && g.owner === person; })[0] || null;
-    }
-    R.ownership = ownership;
     R.label = function (g) {
       if (!g) return "";
       if (g.kind === "default" && A.MSG["group." + g.name]) return t("group." + g.name);
@@ -68,30 +64,22 @@
     };
     R.plainOf = function (who) { return R.ordered(who).filter(function (g) { return !R.isDefault(g); }); };
     R.defaultsOf = function (who) { return R.ordered(who).filter(R.isDefault); };
-    // May the reader put `who` into, or take it out of, the group `g`? Never a default group (who is in one follows
-    // joining) nor a person's own agent group (it follows ownership).
+    // May the reader take `who` out of the group `g` (mayRegroup), or put it in (mayAdd)? The server's rule (2b: an
+    // agent the same way as a person): who may manage groups, any member, for a group whose permissions they hold;
+    // without that, only one's own agent, put only into the groups one is in (and taken out of any). Never a default
+    // group (who is in one follows joining) nor a person's own agent group (it follows ownership).
+    function managed(g) { return mine("manage_groups") && holdsAll(g.permissions); }
+    function editable(g) { return !!g && g.kind !== "ownership" && !R.isDefault(g); }
     R.mayRegroup = function (who, isAgent, g) {
-      if (!g || g.kind === "ownership" || R.isDefault(g)) return false;
-      if (isAgent && who.owner === view.me.name) return true;           // one's own agent: groups one is in (adding)
-      if (!mine("manage_groups") || !holdsAll(g.permissions)) return false;
-      if (isAgent) {
-        var own = ownership(who.owner);
-        return !!(own && own.switches && own.switches.others_regroup);
-      }
-      return true;
+      if (!editable(g)) return false;
+      return (isAgent && who.owner === view.me.name) || managed(g);
     };
     R.mayAdd = function (who, isAgent, g) {
-      if (!R.mayRegroup(who, isAgent, g)) return false;
-      if (isAgent && who.owner === view.me.name) {
-        var me = view.people.filter(function (x) { return x.name === view.me.name; })[0];
-        return !!(me && me.groups.indexOf(g.name) >= 0);
-      }
-      return true;
-    };
-    R.closedToMe = function (who, isAgent) {      // another person's agent whose person keeps its groups closed
-      if (!isAgent || who.owner === view.me.name || !mine("manage_groups")) return false;
-      var own = ownership(who.owner);
-      return !(own && own.switches && own.switches.others_regroup);
+      if (!editable(g)) return false;
+      if (managed(g)) return true;
+      if (!isAgent || who.owner !== view.me.name) return false;
+      var me = view.people.filter(function (x) { return x.name === view.me.name; })[0];
+      return !!(me && me.groups.indexOf(g.name) >= 0);
     };
     R.mayRemove = function (who, isAgent) {
       if (isAgent) return who.owner === view.me.name || mine("manage_members");
@@ -222,6 +210,12 @@
   function dirOf(found) {
     return {kind: found.isAgent ? "agent" : "person", online: !!found.who.online};
   }
+  // A mention into the composer. Below 900 px the right column (the member list or search) is a sheet over the
+  // messages: it closes first, so that the composer the focus goes to is not behind it (2b).
+  function mention(name) {
+    if (A.right && A.right.isSheet() && A.right.current) A.right.show(null);
+    A.chat.mention(name);
+  }
 
   // ------------------------------------------------------------------ the profile card
 
@@ -300,7 +294,7 @@
       acts.appendChild(A.button("btn", other ? t("people.mention_owner_short", {owner: whom}) : t("people.mention"),
                                 function () {
                                   A.popup.close(false);
-                                  A.chat.mention(whom);
+                                  mention(whom);
                                 }));
     }
     var way = talk(found);
@@ -357,9 +351,9 @@
     if (A.chat) {
       if (otherSide(found)) {
         items.push({label: t("people.mention_owner", {owner: found.who.owner}),
-                    run: function () { A.chat.mention(found.who.owner); }});
+                    run: function () { mention(found.who.owner); }});
       } else {
-        items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
+        items.push({label: t("people.mention"), run: function () { mention(name); }});
       }
     }
     var way = talk(found);

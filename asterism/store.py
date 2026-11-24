@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,            -- default, ownership, custom
-    permissions TEXT NOT NULL,     -- JSON list; an ownership group's: what others may do with its person's agents
+    permissions TEXT NOT NULL,     -- JSON list; an ownership group's are set only by its person
     owner_person INTEGER,          -- ownership groups only
     created REAL NOT NULL,
     position INTEGER,              -- the order of the non-default groups (lower is higher); NULL for default groups
@@ -392,14 +392,15 @@ ADDED_PERMISSIONS = {"owner": ["manage_channels"]}
 
 # Permissions withdrawn after they shipped: taken out of every group's list when a database is opened (a list that
 # holds none of them is left as it is). The task board was withdrawn in 1s, with the permissions and the switch that
-# only served it; the switches that opened a person's agents to others (others_mention, others_channel) in 1e.
+# only served it; the switches that opened a person's agents to others (others_mention, others_channel) in 1e; the
+# last switch, that others may change the groups of a person's agents (others_regroup), in 2b, when who manages
+# groups came to change an agent's groups as a person's.
 DROPPED_PERMISSIONS = ("assign_tasks", "edit_tasks", "coordinate_tasks", "others_assign", "others_mention",
-                       "others_channel")
+                       "others_channel", "others_regroup")
 
-# The four switches of an ownership group were columns until f6; since then they are permissions of that group, kept
-# in its JSON list. A database made by an earlier version has the switches that were on moved into the list, and the
-# columns dropped, when opened (others_assign then goes with the tasks, others_mention and others_channel as
-# withdrawn in 1e: DROPPED_PERMISSIONS; others_regroup alone stays).
+# The four switches of an ownership group were columns until f6, then permissions of that group (in its JSON list);
+# every one of them is withdrawn since 2b. A database made before f6 still has the columns: they are dropped when it
+# is opened, and nothing of them is kept.
 SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_regroup")
 
 
@@ -472,23 +473,10 @@ def _upgrade(conn: sqlite3.Connection, added_columns: dict[str, list[tuple[str, 
     conn.commit()
 
 
-def _move_switches(conn: sqlite3.Connection, moved: list[str]) -> None:
-    """The switches that are on are moved into the ownership groups' permissions, unless an earlier start did that
-    already (`switches_moved`)."""
-    if conn.execute("SELECT 1 FROM upgrades WHERE name = 'switches_moved'").fetchone():
-        return
-    for r in conn.execute(f"SELECT id, permissions, {', '.join(moved)} FROM groups "
-                          f"WHERE kind = 'ownership'").fetchall():
-        perms = json.loads(r[1])
-        perms += [c for c in moved if r[c] and c not in perms]
-        conn.execute("UPDATE groups SET permissions = ? WHERE id = ?", (json.dumps(perms), r[0]))
-    conn.execute("INSERT INTO upgrades (name, at) VALUES ('switches_moved', ?)", (util.now(),))
-
-
 # Columns dropped after they shipped: table -> (the columns, what keeps what they held). A table that still has one of
 # them is rebuilt without them (_rebuild), so this happens once.
-# - groups: the four switches of an ownership group were columns until f6; since then they are permissions of that
-#   group, kept in its JSON list.
+# - groups: the four switches of an ownership group were columns until f6; every switch is withdrawn since 2b, so
+#   nothing is carried over (until 2b the ones that were on were moved into the group's permissions first).
 # - messages, agent_states: what pointed at a task (the message asking for a task's body update; a task's change in
 #   a timeline, and who made it) goes with the tasks (1s). Nothing is carried over.
 # - people: the computer a person chose to write the repository's files was a credential of each project until w3;
@@ -496,7 +484,7 @@ def _move_switches(conn: sqlite3.Connection, moved: list[str]) -> None:
 #   account's choice starts as none (the hub had no computer chosen when w3 came), so the person is on the server
 #   path until they choose again.
 # Only a project's database has these tables (the accounts database has a `people` of its own: never rebuilt).
-DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, _move_switches), "people": (("writer",), lambda conn, moved: None),
+DROPPED_COLUMNS = {"groups": (SWITCH_COLUMNS, lambda conn, moved: None), "people": (("writer",), lambda conn, moved: None),
                    "messages": (("task_id",), lambda conn, moved: None),
                    "agent_states": (("task_id", "by_kind", "by_id"), lambda conn, moved: None)}
 

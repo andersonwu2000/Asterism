@@ -47,6 +47,8 @@
     R.show(narrow.matches ? null : (R.before === "search" ? null : R.before));
   };
   R.onShow = function (fn) { R.listeners.push(fn); fn(R.current, null); };
+  // Whether the column is a sheet over the messages (below 900 px).
+  R.isSheet = function () { return narrow.matches; };
 
   Object.keys(toggles).forEach(function (k) {
     if (toggles[k]) toggles[k].addEventListener("click", function () { R.toggle(k); });

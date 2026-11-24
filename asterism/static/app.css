@@ -242,8 +242,6 @@ label { cursor: default; }
 .stack { display: flex; flex-direction: column; gap: 12px; max-width: 420px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field > span { font-size: 12px; font-weight: 500; color: var(--color-ink-dim); }
-.check { padding: 4px 0; }
-.check label { display: inline-flex; gap: 8px; align-items: baseline; }
 form.inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 .tag {
@@ -962,9 +960,6 @@ button.act-line:hover .act-mark > *, button.act-line:focus-visible .act-mark > *
 .sch-item:hover > .row-acts, .sch-item:focus-within > .row-acts { opacity: 1; pointer-events: auto; }
 .row-acts[aria-expanded="true"] { opacity: 1; pointer-events: auto; background: var(--color-wash-2); color: var(--color-ink); }
 .row-acts .glyph { margin: auto; }
-.ag-switches { display: flex; flex-direction: column; padding: 0 4px; }
-.ag-switches .check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 6px 0; }
-.ag-switches .out { font-size: 13px; color: var(--color-ink-dim); }
 .ag-empty { padding: 4px; color: var(--color-ink-dim); }
 .ag-empty + .btn { margin: 4px; }
 .ag-chip { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 12px; padding: 0 2px 0 8px; min-height: 26px;
@@ -1331,7 +1326,6 @@ dialog.gone::backdrop { background: var(--color-bg); opacity: 0.78; overflow: hi
 .macts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
 .mrow > .out { flex-basis: 100%; padding-left: 20px; }
 .mrow > .out:empty, .perm-row .out:empty { display: none; }
-.mnote { flex-basis: 100%; padding-left: 20px; font-size: 13px; color: var(--color-ink-dim); }
 .mempty { padding: 12px; color: var(--color-ink-dim); }
 .perm-set { gap: 0; }
 .perm-list { display: flex; flex-direction: column; border: 1px solid var(--color-edge); border-radius: var(--r-container);
