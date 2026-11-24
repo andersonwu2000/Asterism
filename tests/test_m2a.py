@@ -36,7 +36,15 @@ def rail(person) -> str:
     return r.text
 
 
+def read_all(person, place="#general"):
+    last = max(m["id"] for m in person.read(place))
+    assert person.c.post(f"/{SLUG}/api/read", json={"in": place, "upto": last}).status_code == 200
+
+
 def test_the_rail_says_what_is_unread_and_how_much_of_it_is_important(w):
+    # The world begins with the notices of the agents coming online, unread and normal for their person: they count.
+    assert count(rail(w.alice), "rail-chat-count")[2] == 0
+    read_all(w.alice)
     assert count(rail(w.alice), "rail-chat-count") == (False, 0, 0)
     w.bob.say("a remark, for nobody in particular [u1]")
     w.bob.say("and another [u2]")
@@ -50,8 +58,7 @@ def test_the_rail_says_what_is_unread_and_how_much_of_it_is_important(w):
     assert count(rail(w.alice), "rail-dm-count") == (True, 1, 1)
     assert count(rail(w.alice), "rail-my-count") == (True, 1, 1)
 
-    last = max(m["id"] for m in w.alice.read())
-    assert w.alice.c.post(f"/{SLUG}/api/read", json={"in": "#general", "upto": last}).status_code == 200
+    read_all(w.alice)
     assert count(rail(w.alice), "rail-chat-count") == (False, 0, 0), "read: nothing left"
 
 
