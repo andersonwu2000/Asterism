@@ -13,9 +13,9 @@
 //   a filter and "new group", a floating panel: who may manage groups drags a row to move it within its section, or
 //   moves it with "move up" / "move down" in the row's menu; under them the three default groups, owner, human and
 //   AI, each a row of its own marked "預設", not draggable; a chosen group, ?g= in the address, under "← 群組" on a
-//   narrow screen, in two tabs: settings (its name, renamed in place for a custom group; "show separately in the
-//   member list"; its permissions; for a person's own agent group also what others may do with those agents; removal
-//   at the foot) and members (adding several at once from a list of check boxes with a filter; read only for a default
+//   narrow screen, in two tabs: settings (its name, renamed in place for a custom group; for a custom group "show
+//   separately in the member list"; its permissions; for a person's own agent group also what others may do with
+//   those agents; removal at the foot) and members (adding several at once from a list of check boxes with a filter; read only for a default
 //   group)), invitations (a new one's link shown once with its copy control; the unused ones listed, each revoked in
 //   two steps).
 // - Channel: overview (rename; delete, floating, not for the notice channel), permissions (each group's read and post
@@ -440,11 +440,10 @@
     return input;
   }
 
-  // Who may switch "show separately": for a custom group who may manage groups; for a person's agents that person
-  // or who may manage groups.
+  // Who may switch "show separately" (a custom group's: it places people in the member list, 1l): who may manage
+  // groups.
   function maySeparate(g) {
-    if (rules.isDefault(g)) return false;
-    return rules.mine("manage_groups") || (g.kind === "ownership" && g.owner === view.me.name);
+    return g.kind === "custom" && rules.mine("manage_groups");
   }
 
   function settingsTab(g) {
@@ -452,7 +451,7 @@
     box.appendChild(nameBlock(g));
     box.appendChild(make("p", "dim", g.kind === "ownership" ? t("mem.kind.ownership", {owner: g.owner})
                                                             : t("mem.kind." + g.kind, {name: g.name})));
-    if (!rules.isDefault(g)) box.appendChild(separateRow(g));
+    if (g.kind === "custom") box.appendChild(separateRow(g));
     box.appendChild(make("h3", "gd-sub", t("mem.perms_heading")));
     box.appendChild(permsBlock(g));
     if (g.kind === "ownership") box.appendChild(agentPermsBlock(g));

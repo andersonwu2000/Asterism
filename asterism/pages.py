@@ -807,8 +807,8 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
     """Chat (`dm` None) and private messages (`dm` the other member's name, "" for none chosen yet): the project menu
     in the top-left cell, the channels or the conversations under it, the place's name (which opens its settings or
     the other member's card), the member list toggle and the search icon in the top-right cell, the chosen place in
-    the middle, and the right column showing one thing at a time (the member list with each member's status, or
-    search). The second column's lists are the frame's (frame.js); the page scripts keep the rest current through the
+    the middle, and the right column showing one thing at a time (the member list: people with their agents under them, each with
+    its status; or search). The second column's lists are the frame's (frame.js); the page scripts keep the rest current through the
     JSON API (messages.js, statuses.js, people.js, search.js; right.js decides what the right column shows). What the
     scripts need is in data- attributes. `refused` (a sentence and a status): a private conversation that cannot be
     had, answered in the same frame with the sentence in the place of the conversation and nothing to write with."""
@@ -823,15 +823,17 @@ def messages(tr: Translator, person: dict[str, Any], frame: dict[str, Any], view
             # 1g: whether there is anybody to write to privately (the empty private page says what to do).
             "people": "1" if frame["people"] else ""}
     room = _room(tr, data, tr("msg.input_label"), tr("msg.input_hint"))
-    sides = "".join(f'<button type="button" class="seg-btn" data-side="{k}" aria-pressed="{"true" if k == "people" else "false"}">'
-                    f'{e(tr("people.side_" + k))}</button>' for k in ("people", "agents"))
-    close = e(tr("people.close"))
+    # The member list (1l): the head is a title with how many people and agents are listed (filled in by people.js);
+    # the body holds the tree of people with their agents under them, and one sentence (loading, could not be read).
+    close, members = e(tr("people.close")), e(tr("people.title"))
     people = (f'<aside id="member-panel" class="right-panel" aria-label="{e(tr("bar.members"))}" hidden>'
-              f'<div class="right-head"><div id="member-switch" class="seg" role="group" '
-              f'aria-label="{e(tr("people.switch"))}">{sides}</div><span class="spacer"></span>'
+              f'<div class="right-head"><h2 class="right-title">{members}'
+              f'<span id="member-counts" class="right-counts"></span></h2><span class="spacer"></span>'
               f'<button type="button" class="icon-btn right-close" aria-label="{close}" title="{close}">'
               f'<span class="cross" aria-hidden="true"></span></button></div>'
-              f'<div id="member-body" class="right-body member-body"></div></aside>')
+              f'<div id="member-body" class="right-body member-body">'
+              f'<ul id="member-tree" class="mtree" role="tree" aria-label="{members}"></ul>'
+              f'<p id="member-said" class="member-said" role="status"></p></div></aside>')
     search, clear = e(tr("srch.label")), e(tr("srch.close"))
     found = (f'<aside id="search-results" class="right-panel" aria-label="{search}" hidden>'
              f'<div class="right-head"><div class="search-box" role="search">{glyph("search", 16)}'

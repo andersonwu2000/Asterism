@@ -388,6 +388,19 @@
   var menu = null;
   var ITEMS = "[role^=menuitem]:not([aria-disabled=true])";
 
+  // Whether a menu or a popup says on what opened it that it is open (aria-expanded): a control that has the state.
+  // Not a tree's row: there aria-expanded says whether the row's children are shown (the explorer's folders, the
+  // member tree's people), and a menu or a card opened from the row leaves it as it is.
+  function tellsOpen(el) {
+    return !!(el && el.hasAttribute && el.hasAttribute("aria-expanded") && el.getAttribute("role") !== "treeitem");
+  }
+  // What opened a menu or a popup, as the page is now: a list drawn again since has a new element with the same
+  // data-key (the focus goes back to that one).
+  function current(el) {
+    if (!el || el.isConnected || !el.dataset || !el.dataset.key) return el;
+    return document.querySelector('[data-key="' + el.dataset.key.replace(/["\\]/g, "\\$&") + '"]') || el;
+  }
+
   // The keys every menu shares: the arrows, Home and End move; a letter goes to the next item starting with it.
   // True when the key was one of them.
   A.menuKeys = function (box, ev) {
@@ -458,8 +471,8 @@
       try { menu.box.hidePopover(); } catch (err) { /* already hidden */ }
     }
     menu.box.classList.remove("shown");
-    var opener = menu.opener;
-    if (opener && opener.setAttribute && opener.hasAttribute("aria-expanded")) opener.setAttribute("aria-expanded", "false");
+    var opener = current(menu.opener);
+    if (tellsOpen(opener)) opener.setAttribute("aria-expanded", "false");
     menu.opener = null;
     if ((refocus || hadFocus) && opener && opener.isConnected) opener.focus({preventScroll: true});
   }
@@ -557,7 +570,7 @@
     if (m.box.hasAttribute("popover")) {
       try { m.box.showPopover(); } catch (err) { /* shown by the class */ }
     }
-    if (m.opener && m.opener.hasAttribute && m.opener.hasAttribute("aria-expanded")) m.opener.setAttribute("aria-expanded", "true");
+    if (tellsOpen(m.opener)) m.opener.setAttribute("aria-expanded", "true");
     fill(items);
     place();
   };
@@ -647,8 +660,10 @@
   //
   // A popover (the project menu, a profile card): shown by its control, closed by Escape, a
   // click outside, the focus leaving it or A.popup.close(); the focus goes into it and back to the control. One at a
-  // time. A menu or a dialog opened from inside it does not count as outside.
-  //   A.popup.open(box, anchor, {align: "start" | "end", at: {left, right, top, bottom}, focus: element, onClose})
+  // time. A menu or a dialog opened from inside it does not count as outside. `back`: what opened it when that is not
+  // the element it is placed by (a row of the member tree, the card placed by the row's name): the focus goes back
+  // there, and a press on it closes the box.
+  //   A.popup.open(box, anchor, {align: "start" | "end", at: {left, right, top, bottom}, focus: element, back, onClose})
 
   var pop = null, popShut = null;
 
@@ -669,15 +684,16 @@
   A.popup = {
     open: function (box, anchor, opts) {
       opts = opts || {};
-      if (popShut && popShut.by === anchor && Date.now() - popShut.at < 600) { popShut = null; return false; }
+      var owner = opts.back || anchor;
+      if (popShut && popShut.by === owner && Date.now() - popShut.at < 600) { popShut = null; return false; }
       A.popup.close(false);
-      pop = {box: box, anchor: anchor, at: opts.at || null, align: opts.align, onClose: opts.onClose};
+      pop = {box: box, anchor: anchor, owner: owner, at: opts.at || null, align: opts.align, onClose: opts.onClose};
       box.hidden = false;
       box.classList.add("shown");
       if (box.hasAttribute("popover")) {
         try { box.showPopover(); } catch (err) { /* shown by the class */ }
       }
-      if (anchor.hasAttribute && anchor.hasAttribute("aria-expanded")) anchor.setAttribute("aria-expanded", "true");
+      if (tellsOpen(owner)) owner.setAttribute("aria-expanded", "true");
       popPlace();
       var first = opts.focus || box.querySelector("a[href], button:not([disabled]), input, select, textarea, [tabindex]");
       (first || box).focus({preventScroll: true});
@@ -692,8 +708,8 @@
       }
       was.box.classList.remove("shown");
       was.box.hidden = true;
-      var a = was.anchor;
-      if (a.hasAttribute && a.hasAttribute("aria-expanded")) a.setAttribute("aria-expanded", "false");
+      var a = current(was.owner);
+      if (tellsOpen(a)) a.setAttribute("aria-expanded", "false");
       var hadFocus = was.box.contains(document.activeElement) || document.activeElement === document.body;
       if ((refocus || hadFocus) && a.isConnected) a.focus({preventScroll: true});
       if (was.onClose) was.onClose();
@@ -705,7 +721,7 @@
   document.addEventListener("pointerdown", function (ev) {
     if (!pop || inside(ev.target)) return;
     // A press on the control that opened it closes it, and the click that follows does not open it again.
-    popShut = pop.anchor.contains && pop.anchor.contains(ev.target) ? {by: pop.anchor, at: Date.now()} : null;
+    popShut = pop.owner.contains && pop.owner.contains(ev.target) ? {by: pop.owner, at: Date.now()} : null;
     A.popup.close(false);
   }, true);
   document.addEventListener("keydown", function (ev) {

@@ -24,12 +24,14 @@
     directory: A.parseJSON(rail.dataset.directory, {}),   // name -> {kind, online, owner, avatar}
     members: null,                    // what /api/members answered last
     current: null,                    // the place open on the messages page
-    listeners: [], memberListeners: []
+    listeners: [], memberListeners: [], readListeners: []
   };
   var PERMS = A.parseJSON(rail.dataset.perms, []);
   A.can = function (perm) { return PERMS.indexOf(perm) >= 0; };
   S.onChange = function (fn) { S.listeners.push(fn); if (S.places) fn(S.places); };
   S.onMembers = function (fn) { S.memberListeners.push(fn); if (S.members) fn(S.members); };
+  // After each reading of the members, whether it could be read (the member list says when it could not).
+  S.onMembersRead = function (fn) { S.readListeners.push(fn); };
   S.setCurrent = function (place) { S.current = place; draw(true); };
 
   // ------------------------------------------------------------------ the lists
@@ -178,6 +180,7 @@
   var membersRaw = "";
   S.loadMembers = async function () {
     var r = await A.request(API + "members");
+    S.readListeners.forEach(function (fn) { fn(r.ok); });
     if (!r.ok) return S.members;
     var raw = JSON.stringify(r.data);
     if (raw === membersRaw) return S.members;

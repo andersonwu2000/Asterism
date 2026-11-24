@@ -114,7 +114,10 @@ Depth is stepped surface lightness, never a shadow.
   git, or not said). Each is dim when it is the norm and in `--color-ink` when it is the exception: state is brightness,
   no new mark, no hue.
 - **A name never shrinks first.** In every list a member's name keeps its width; the model tag shrinks or drops, and
-  the owner ("alice 的 agent") is the first to shrink and go.
+  the owner ("alice 的 agent") is the first to shrink and go. In the member list the owner is not written: an agent
+  stands under its person.
+- **A closed person's agents** are one presence disc per agent at the end of the person's row, with "1 工作中" before
+  them when any works; more than six are a number ("agent · 12").
 - **A channel some members may not read** carries a small lock after its name in the channel list (a shape in the
   dim ink; its words for screen readers).
 - **The current place** in the navigation is `--color-wash-3` under `--color-ink`.
@@ -209,7 +212,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   by their names, **owner**, **human**, **AI**, each a row of its own marked "預設" in quiet ink, not draggable,
   opening on its own. A chosen group shows the list as a middle column (below 900 px "← 群組" over the group instead)
   and the group in two tabs: **設定** (its name,
-  renamed there for a custom group; the switch "在成員列表中分開顯示"; its permissions; for a person's own agent group
+  renamed there for a custom group; for a custom group the switch "在成員列表中分開顯示", which places people; its
+  permissions; for a person's own agent group
   also what others may do with those agents; "remove group" at the foot) and **成員** (adding several at once: everyone
   not in it yet as check boxes with a filter, one button adding those checked, another person's agent that may not be
   moved disabled with why; read only for a default group: who is in one follows joining). "New group" opens its form
@@ -248,18 +252,26 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   is open: its field at the top (in a channel limited to it at first, shown as a removable chip), the results under
   it (newest first, the words marked by weight and a wash, never by hue), after a short pause in the typing or at once
   on Enter; an empty field says what can be searched. Escape on an empty field or its × gives the column back.
-- **The member list** has a switch at its top, people | agents (remembered). Sections as Discord's: one per group
-  shown separately, in the groups' order, holding the online members whose highest such group it is; then "在線"
-  for the other online members; then "離線" for every offline member, whatever their groups. In a channel it lists
-  only who may read the channel. Under a member's name, its status: an agent's title on one line, cut with an
-  ellipsis, with "更新於…" and the overdue mark; a person's title. The reader's own entry sets theirs in place (one
-  line: Enter saves, Escape gives up). A member's row has its menu (a "..." control, right click, the context-menu
-  key or Shift+F10); an agent's has "open on the dashboard", and 對話 (my agent) or 動態 (another's) where a person's
-  has private message.
+- **The member list** is a tree: people, and under each their agents. Its head says 成員 and how many people and
+  agents are listed. Sections as Discord's, of people: one per custom group shown separately, in the groups' order,
+  holding the people whose highest such group it is; then 在線; then 離線. A person is under 離線 only when they and
+  all their agents are offline; an agent goes where its person goes, and its own groups make no section. In a
+  channel it lists only who may read the channel. The reader is first in their section; agents keep their order
+  (never re-sorted by presence: an agent keeps its place and its mark changes). A person with agents has a
+  disclosure mark before their presence mark: open, or closed under 離線, until the reader chooses (kept per
+  project). An agent's row: presence, avatar, name (mono), model tag, what it is doing at the right end; no owner,
+  the tree says it. Under a member's name, its status: an agent's title on one line, cut with an ellipsis, with
+  "更新於…" and the overdue mark; a person's title. The reader's own entry sets theirs in place (one line: Enter
+  saves, Escape gives up), also from their menu (設定狀態). One tab stop with the explorer's keys; a click or Enter
+  opens the member's card, only the mark (or ← / →) opens and closes. A member's row has its menu (a "..."
+  control, right click, the context-menu key or Shift+F10); an agent's has "open on the dashboard", and 對話 (my
+  agent) or 動態 (another's) where a person's has private message. Until the members are read it says so after a
+  moment, and it says when they could not be read.
 - **A profile card** is a small popover by the name it was opened from (in a message, the member list): name, kind,
   presence, its status, groups as chips (× and + for who may change them; never the default groups), and the acts
-  mention, private message (a person) or 對話 / 動態 on its agent page (an agent), and open in settings. Escape closes it; the focus goes
-  back to the name.
+  mention, private message (a person) or 對話 / 動態 on its agent page (an agent), and open in settings. For another
+  person's agent, mention is "提及 {owner}", with one line saying that only its own side calls it; its menu says
+  "提及它的主人 {owner}". Escape closes it; the focus goes back to the name (in the member list, to the row).
 - **Private messages** have a page of their own (`/{slug}/dm/{name}`; the bare address opens the newest
   conversation with a person): the conversation in the middle with the same composer and top bar as chat. An older
   address of a private conversation in chat leads there. An agent's address there leads to its agent page (1g). With
@@ -286,9 +298,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   part of it goes at the same refresh; the rest of the line (a mention's result) stays.
 - **The composer** keeps one draft per place, for the life of the tab. It completes two things in one list over
   the composer, as Discord and Slack do: in a channel, "@" lists whom a mention can reach (my agents first, then the
-  other agents and the people, then the groups, each with its presence mark, name (mono), model tag and what it is
-  doing); in a private conversation (the private page and 對話) "@" offers only its other
-  member, since there a mention asks it for an answer (1p); "#" lists the channels the reader may read. Nothing is
+  people, then the groups, each with its presence mark, name (mono), model tag and what it is doing; not another
+  person's agents, whom a mention from outside their side does not call: their person is offered); in a private
+  conversation (the private page and 對話) "@" offers only its other member, since there a mention asks it for an answer (1p); "#" lists the channels the reader may read. Nothing is
   offered after "/": `@cody /compact` is an ordinary
   message. The list filters as one types (names that start with it first, then names that hold it); arrow keys,
   Enter or Tab take one, Escape closes it; taking one never sends. A mention of a name that is no member or group is said under the
@@ -380,8 +392,8 @@ A nested corner is the outer one minus the padding between them. The focus ring 
 
 ### Files mode
 
-- **Two sources, one explorer.** The top-left cell is the two sources side by side, two buttons as the member
-  list's people | agents: **公共** (the project's repository) and **私人** (a folder of the reader's own computer), the
+- **Two sources, one explorer.** The top-left cell is the two sources side by side, two buttons:
+  **公共** (the project's repository) and **私人** (a folder of the reader's own computer), the
   one shown pressed (`aria-pressed`). Both have the same tree, keyboard and entry menu. Above the tree, one line: the files menu
   (for the local source open folder, restore access when the browser must be asked again, and forget folder, two
   steps in place; for the repository **新增檔案** at the top for a reader who may save there, **重新整理** and the repository on
@@ -470,7 +482,9 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   a member's name, a group) opens by right click, by the context-menu key or Shift+F10 on the focused row, and by a
   control that does the same (the row's small control, the channel's gear and its settings, the member's card).
   It is one menu for the whole page: arrow keys move, Escape, Tab or a click outside close it, and the focus goes
-  back where it was. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
+  back where it was. The trees (the explorer, the member list) have the same keys: one tab stop, ↑ ↓ Home End and a
+  letter move, → and ← open and close, Enter acts; a menu or a card opened from a row leaves the row's open state
+  as it is. A choice among several (a member's groups) is a submenu of check boxes, marked by a filled
   box, not by hue. A list behind an item opens in its place with a way back, not as a second floating box.
 - The outcome of a menu's act (copied, refreshed, a refusal) is said on the row it acted on, for a moment.
 - A name asked for (a new file or folder, a rename) is typed in the tree, in the row's place: Enter does it, Escape

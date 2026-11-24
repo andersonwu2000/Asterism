@@ -1,19 +1,22 @@
 // People (Asterism.people), on the messages pages and in the settings layer:
 // - the rules of who may put whom into or out of which group and remove whom (the server's: projects.change_groups
 //   and remove_member; only what will pass is offered), and the acts themselves with their confirmations;
-// - in chat and private messages, the member list in the right column (#member-panel): a switch at its top between
-//   people and agents (remembered), then sections as Discord's: one per group shown separately, in the groups'
-//   order, holding the online members whose highest such group it is; "online" for the other online members;
-//   "offline" for every offline member. In a channel only who may read it (its permissions' readers). A row keeps the
-//   name's width; what an agent is doing stays by it (frame.js, S.workMark), the owner note goes first. Under each
-//   member, its status (1s, statuses.js): an agent's title on one line, cut with an ellipsis, with "更新於 3 小時前" and
-//   the overdue mark; a person's title; the reader's own entry sets it in place (one line). A member's row has a "..."
-//   control, right click, the context-menu key or Shift+F10 for the member's menu;
+// - in chat and private messages, the member list in the right column (#member-panel, 1l): a head with the title and
+//   how many people and agents are listed, then one tree (#member-tree) of people with each person's agents under
+//   them, in sections of people as Discord's: one per custom group shown separately, in the groups' order, holding the
+//   present people whose highest such group it is; "online" for the other present people; "offline" for the others.
+//   A person is present when they or one of their listed agents is online; an agent goes where its person goes. In a
+//   channel only who may read it (its permissions' readers). A person with agents opens and closes them by a mark
+//   (kept per project); a closed one shows a disc per agent. Under each member, its status (1s, statuses.js): an
+//   agent's title on one line, cut with an ellipsis, with "更新於 3 小時前" and the overdue mark; a person's title; the
+//   reader's own entry sets it in place (one line). A row opens the member's card; its "..." control, right click, the
+//   context-menu key or Shift+F10 the member's menu; the tree is one tab stop with the explorer's keys;
 // - a profile card (a popover: name, kind, presence, its status, groups with x and +, and mention, private message
-//   for a person or, for an agent, 對話 (one's own) or 動態 (anybody else's) on its agent page (1g), open in settings),
-//   opened by any name marked data-member (in a message, the member list); the member's menu gives the same acts, with
-//   the groups as a submenu of check boxes, for an agent "open on the dashboard", and removal at the foot. The card and
-//   the menu work wherever the room is (#chat): chat, private messages and the agent page.
+//   for a person or, for an agent, 對話 (one's own) or 動態 (anybody else's) on its agent page (1g), open in settings;
+//   for another person's agent, mention its person, with one line saying why), opened by any name marked data-member
+//   (in a message) or a row of the member list; the member's menu gives the same acts, with the groups as a submenu of
+//   check boxes, for an agent "open on the dashboard", for the reader "set the status", and removal at the foot. The
+//   card and the menu work wherever the room is (#chat): chat, private messages and the agent page.
 // Default groups (owner, human, ai) are never shown as groups here: only in the settings layer.
 // The data is /api/members as the frame reads it (Asterism.side) or as the settings layer holds it.
 "use strict";
@@ -190,6 +193,7 @@
   var chat = document.getElementById("chat");
   if (!chat || !A.side) return;
   var S = A.side, St = A.statuses;
+  var tree = document.getElementById("member-tree");
 
   function view() { return S.members; }
   function rulesNow() { return view() ? P.rules(view()) : null; }
@@ -206,6 +210,8 @@
     return found.who.owner === ME ? {label: t("people.agent_chat"), href: page}
                                   : {label: t("people.agent_activity"), href: page + "&view=activity"};
   }
+  // Another person's agent: a mention from outside its own side calls nobody (1e), so its person is mentioned instead.
+  function otherSide(found) { return !!(found && found.isAgent && found.who.owner && found.who.owner !== ME); }
   function kindText(found) {
     return found.isAgent ? t("mem.agent_of", {owner: found.who.owner}) : t("people.person");
   }
@@ -285,12 +291,17 @@
     if (upd) status.appendChild(upd);
     card.insertBefore(status, groups);
 
+    // Another person's agent: one quiet line says why its person is the one mentioned (1l).
+    var other = otherSide(found);
+    if (other) card.appendChild(make("p", "card-why", t("people.other_side", {owner: who.owner, name: name})));
     var acts = make("div", "card-acts");
     if (A.chat) {
-      acts.appendChild(A.button("btn", t("people.mention"), function () {
-        A.popup.close(false);
-        A.chat.mention(name);
-      }));
+      var whom = other ? who.owner : name;
+      acts.appendChild(A.button("btn", other ? t("people.mention_owner_short", {owner: whom}) : t("people.mention"),
+                                function () {
+                                  A.popup.close(false);
+                                  A.chat.mention(whom);
+                                }));
     }
     var way = talk(found);
     if (way) {
@@ -300,23 +311,33 @@
       acts.appendChild(pm);
     }
     if (rules.mayManage()) {
-      var st = make("a", "btn quiet", t("people.open_settings"));
-      st.href = settingsHref(name);
-      acts.appendChild(st);
+      var set = make("a", "btn quiet", t("people.open_settings"));
+      set.href = settingsHref(name);
+      acts.appendChild(set);
     }
     card.append(acts, out);
   }
 
-  P.card = function (name, anchor) {
-    if (A.popup.isOpen(card) && shown && shown.anchor === anchor) { A.popup.close(true); return; }
-    var now = shown = {name: name, anchor: anchor};
+  // The card by `anchor`; `back`: what opened it when that is not the anchor (a row of the member tree: the card is
+  // placed by the row's name, and the focus goes back to the row).
+  P.card = function (name, anchor, back) {
+    var owner = back || anchor;
+    if (A.popup.isOpen(card) && shown && shown.anchor === owner) { A.popup.close(true); return; }
+    var now = shown = {name: name, anchor: owner};
     fillCard(name);
-    if (!A.popup.open(card, anchor, {onClose: function () { if (shown === now) shown = null; }})) {
+    if (!A.popup.open(card, anchor, {back: back, onClose: function () { if (shown === now) shown = null; }})) {
       if (shown === now) shown = null;
       return;
     }
     if (!view()) S.loadMembers().then(function () { if (shown && shown.name === name) fillCard(name); });
   };
+
+  // The card from `el`: from a row of the member tree, by the row's name; else by `el`.
+  function cardFrom(name, el) {
+    var row = el && el.closest ? el.closest(".prow[role=treeitem]") : null;
+    if (row) P.card(name, row.querySelector(".prow-name") || row, row);
+    else P.card(name, el);
+  }
 
   // ------------------------------------------------------------------ the menu of a member
 
@@ -326,12 +347,26 @@
     return "/" + encodeURIComponent(SLUG) + "/work" + (own ? "?group=" + encodeURIComponent(own.name) : "");
   }
 
+  // Another person: profile, mention, private message, groups, settings, removal. The reader: profile, mention, set
+  // the status (the field on their row in the member list), groups, settings. One's own agent: profile, mention, 對話,
+  // the dashboard, groups, settings, removal. Another person's agent: profile, mention its person, 動態, the
+  // dashboard, groups, settings, removal. Each only for who may.
   P.menu = function (name, where, opener) {
     var rules = rulesNow(), found = rules ? rules.find(name) : null;
-    var items = [{label: t("people.profile"), run: function () { P.card(name, opener); }}];
-    if (A.chat) items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
+    var items = [{label: t("people.profile"), run: function () { cardFrom(name, opener); }}];
+    if (A.chat) {
+      if (otherSide(found)) {
+        items.push({label: t("people.mention_owner", {owner: found.who.owner}),
+                    run: function () { A.chat.mention(found.who.owner); }});
+      } else {
+        items.push({label: t("people.mention"), run: function () { A.chat.mention(name); }});
+      }
+    }
     var way = talk(found);
     if (way) items.push(way);
+    if (found && !found.isAgent && name === ME && St && tree) {
+      items.push({label: t("st.set"), run: function () { editMine(found.who); }});
+    }
     if (found) {
       if (found.isAgent) items.push({label: t("people.open_dashboard"), href: dashboardHref(name)});
       var boxes = P.groupItems(rules, found.who, found.isAgent, function (r) { after(r, null); });
@@ -346,22 +381,24 @@
     A.menu(Object.assign({label: t("people.acts", {name: name})}, where), items, opener);
   };
 
-  // Any name marked data-member: a click opens the card, right click or the menu keys the menu.
+  // Any name marked data-member: a click opens the card, right click or the menu keys the menu. The member tree has
+  // its own (below).
+  function outside(el) { return !!el && !(tree && tree.contains(el)); }
   document.addEventListener("click", function (ev) {
     var el = ev.target.closest && ev.target.closest("[data-member]");
-    if (!el || card.contains(el)) return;
+    if (!outside(el) || card.contains(el)) return;
     ev.preventDefault();
     P.card(el.dataset.member, el);
   });
   document.addEventListener("contextmenu", function (ev) {
     var el = ev.target.closest && ev.target.closest("[data-member]");
-    if (!el) return;
+    if (!outside(el)) return;
     ev.preventDefault();
     P.menu(el.dataset.member, {x: ev.clientX, y: ev.clientY}, el);
   });
   document.addEventListener("keydown", function (ev) {
     var el = ev.target.closest && ev.target.closest("[data-member]");
-    if (!el || !(ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey))) return;
+    if (!outside(el) || !(ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey))) return;
     ev.preventDefault();
     P.menu(el.dataset.member, {anchor: el}, el);
   });
@@ -374,70 +411,205 @@
     return b;
   };
 
-  // ------------------------------------------------------------------ the member list
+  // ------------------------------------------------------------------ the member list (1l)
+  //
+  // One tree (#member-tree): people at the first level, each person's agents under them (as the server orders them,
+  // never by presence: an agent keeps its place and its mark changes). Sections of people, by the family's presence:
+  // a person is present when they or one of their listed agents is online. The head says how many people and agents
+  // are listed; #member-said says when the list is loading or could not be read. A person with agents has a
+  // disclosure mark: open, or closed under 離線, until the reader presses it (kept per project in this browser,
+  // `asterism-member-open:{slug}`, only the people pressed). Any row opens the member's card; only the mark (or the
+  // arrow keys) opens and closes. One tab stop, with the explorer's keys.
 
-  var panel = document.getElementById("member-panel"), body = document.getElementById("member-body");
-  var sw = document.getElementById("member-switch");
-  var SIDE_KEY = "asterism-member-side:" + SLUG;
-  var side = A.store.get(SIDE_KEY, "people") === "agents" ? "agents" : "people";
+  var body = document.getElementById("member-body"), said = document.getElementById("member-said");
+  var countsEl = document.getElementById("member-counts");
+  var OPEN_KEY = "asterism-member-open:" + SLUG, MANY = 6, LOADING_MS = 600;
+  A.store.take("asterism-member-side:" + SLUG);          // the people | agents control of earlier versions
+  var kept = {};                // person -> open or closed, the people the reader pressed (as stored, else this page's)
+  var stop = null;              // the data-key of the row holding the tree's tab stop
+  var turning = null;           // the person whose mark turns in this drawing
+  var failed = false, waited = false, ids = 0;
 
-  function memberRow(found) {
-    var who = found.who, li = make("li", "prow");
-    var line = make("div", "prow-line");
-    var b = P.nameButton(who.name, "prow-btn", "");
-    b.dataset.key = "m:" + who.name;
-    b.appendChild(S.presence(dirOf(found)));
-    b.appendChild(S.avatar(who.name, 20, {kind: found.isAgent ? "agent" : "person", avatar: who.avatar}));
-    b.appendChild(make("span", "prow-name" + (found.isAgent ? " mono" : ""), who.name));
-    var model = found.isAgent ? A.modelTag(who.model) : null;
-    if (model) b.appendChild(model);
-    // The name keeps its width; what it is doing stays beside it; the model tag shrinks, the owner goes first.
-    var state = found.isAgent ? S.workMark(who, "prow-state") : null;
-    if (state) b.appendChild(state);
-    var note = found.isAgent ? (who.owner === ME ? t("nav.my_agent") : t("mem.agent_of", {owner: who.owner}))
-             : who.name === ME ? t("people.you") : "";
-    if (note) b.appendChild(make("span", "prow-note", note));
-    var acts = A.button("row-acts");
-    acts.appendChild(A.glyph("dots"));
-    acts.setAttribute("aria-label", t("people.member_acts", {name: who.name}));
-    acts.title = t("people.member_acts", {name: who.name});
-    acts.setAttribute("aria-haspopup", "menu");
-    acts.setAttribute("aria-expanded", "false");
-    acts.dataset.key = "ma:" + who.name;
-    acts.addEventListener("click", function () { P.menu(who.name, {anchor: acts}, acts); });
-    line.append(b, acts);
-    li.appendChild(line);
-    li.appendChild(statusLine(found));
+  function keptNow() {
+    var k = A.store.get(OPEN_KEY, null);
+    if (k && typeof k === "object" && !Array.isArray(k)) kept = k;
+    return kept;
+  }
+  function isOpen(name, section) {
+    var k = keptNow();
+    return Object.prototype.hasOwnProperty.call(k, name) ? !!k[name] : section !== "off";
+  }
+  function keepOpen(name, on) {
+    var k = keptNow();
+    k[name] = !!on;
+    kept = k;
+    A.store.set(OPEN_KEY, k);
+  }
+  // A name that is no person of the project any more is dropped (when the members are read).
+  function prune(v) {
+    var k = keptNow(), names = v.people.map(function (p) { return p.name; }), left = {}, gone = false;
+    Object.keys(k).forEach(function (n) { if (names.indexOf(n) >= 0) left[n] = k[n]; else gone = true; });
+    if (!gone) return;
+    kept = left;
+    A.store.set(OPEN_KEY, left);
+  }
+
+  // Who is listed: in a channel who may read it (as Discord's member list), in a private conversation everyone.
+  function listed(v) {
+    var may = readers.place === S.current && readers.names ? readers.names : null;
+    function keep(kind) { return function (x) { return !may || (may[kind] || []).indexOf(x.name) >= 0; }; }
+    return {people: v.people.filter(keep("people")), agents: v.agents.filter(keep("agents"))};
+  }
+
+  // The sections: one per custom group shown separately, in the groups' order, for the present people whose highest
+  // such group it is; then 在線 for the other present people; then 離線 for the others (they and all their listed
+  // agents offline). The reader first in their section, then as the server gives them. A listed agent whose person is
+  // not listed (two readings a moment apart) is a row of the first level at the end of its section, never dropped.
+  function sections(v, list) {
+    var rules = P.rules(v), apart = v.groups.filter(function (g) { return g.kind === "custom" && g.separate; });
+    var names = list.people.map(function (p) { return p.name; });
+    var families = list.people.map(function (p) {
+      return {who: p, agents: list.agents.filter(function (a) { return a.owner === p.name; })};
+    });
+    families = families.filter(function (f) { return f.who.name === ME; })
+                       .concat(families.filter(function (f) { return f.who.name !== ME; }));
+    list.agents.forEach(function (a) {
+      if (names.indexOf(a.owner) < 0) families.push({who: a, lone: true, agents: []});
+    });
+    var by = {}, online = [], offline = [];
+    families.forEach(function (f) {
+      if (!(f.who.online || f.agents.some(function (a) { return a.online; }))) { offline.push(f); return; }
+      var top = f.lone ? null : apart.filter(function (g) { return f.who.groups.indexOf(g.name) >= 0; })[0];
+      if (top) (by[top.name] = by[top.name] || []).push(f); else online.push(f);
+    });
+    var out = apart.filter(function (g) { return by[g.name]; }).map(function (g) {
+      return {key: "g:" + g.name, title: t("people.section", {name: rules.label(g), n: by[g.name].length}),
+              families: by[g.name]};
+    });
+    out.push({key: "on", title: t("people.online", {n: online.length}), hint: t("people.online_hint"),
+              families: online});
+    out.push({key: "off", title: t("people.offline", {n: offline.length}), hint: t("people.offline_hint"),
+              families: offline});
+    return out.filter(function (s) { return s.families.length; });
+  }
+
+  function idOf(el) {
+    if (!el.id) el.id = "mt" + (++ids);
+    return el.id;
+  }
+  // A row is named by its name and state and described by the rest (aria-labelledby and aria-describedby, the parts
+  // the row draws).
+  function words(li, named, described) {
+    li.setAttribute("aria-labelledby", named.filter(Boolean).map(idOf).join(" "));
+    var d = described.filter(Boolean);
+    if (d.length) li.setAttribute("aria-describedby", d.map(idOf).join(" "));
+  }
+
+  function treeRow(name, cls, level, pos, size) {
+    var li = make("li", "prow " + cls);
+    li.setAttribute("role", "treeitem");
+    li.setAttribute("aria-level", String(level));
+    li.setAttribute("aria-posinset", String(pos));
+    li.setAttribute("aria-setsize", String(size));
+    li.dataset.key = "m:" + name;
+    li.dataset.name = name;
+    li.tabIndex = -1;
     return li;
   }
 
-  // The sections: the groups shown separately (in their order) for the online members whose highest such group
-  // it is, then the other online members, then every offline member.
-  function sections(v, list, isAgent) {
-    var rules = P.rules(v), apart = v.groups.filter(function (g) { return g.separate && !rules.isDefault(g); });
-    var by = {}, online = [], offline = [];
-    list.forEach(function (who) {
-      if (!who.online) { offline.push(who); return; }
-      var top = apart.filter(function (g) { return who.groups.indexOf(g.name) >= 0; })[0];
-      if (top) (by[top.name] = by[top.name] || []).push(who); else online.push(who);
-    });
-    var out = apart.filter(function (g) { return by[g.name]; }).map(function (g) {
-      return {key: "g:" + g.name, title: t("people.section", {name: rules.label(g), n: by[g.name].length}), list: by[g.name]};
-    });
-    out.push({key: "on", title: t("people.online", {n: online.length}), list: online});
-    out.push({key: "off", title: t("people.offline", {n: offline.length}), list: offline});
-    return out.filter(function (s) { return s.list.length; }).map(function (s) {
-      s.isAgent = isAgent;
-      return s;
-    });
+  // "...": the member's menu (out of the tab order: the row has the context-menu key and Shift+F10).
+  function actsButton(name) {
+    var acts = A.button("row-acts");
+    acts.appendChild(A.glyph("dots"));
+    acts.tabIndex = -1;
+    acts.setAttribute("aria-label", t("people.member_acts", {name: name}));
+    acts.title = t("people.member_acts", {name: name});
+    acts.setAttribute("aria-haspopup", "menu");
+    return acts;
   }
 
-  // A member's status under its row: an agent's title (one line, the whole of it in its tooltip), when it was updated
-  // and the overdue mark; a person's title; the reader's own, set in place.
+  // A closed person's agents at the end of their row: one presence disc per agent in their order (more than six:
+  // their number), and before them "1 工作中" when any works; for screen readers one sentence.
+  function brood(agents) {
+    var on = agents.filter(function (a) { return a.online; }).length;
+    var k = agents.filter(function (a) { return a.online && a.work === "active"; }).length;
+    var box = make("span", "prow-brood"), marks = make("span", "prow-brood-marks");
+    marks.setAttribute("aria-hidden", "true");
+    if (k) marks.appendChild(make("span", "prow-brood-work", t("people.brood_working", {k: k})));
+    if (agents.length > MANY) {
+      marks.appendChild(make("span", "prow-brood-many", t("people.brood_many", {n: agents.length})));
+    } else {
+      agents.forEach(function (a) { marks.appendChild(make("span", "presence agent" + (a.online ? " on" : ""))); });
+    }
+    var sentence = make("span", "vh", t("people.brood_label", {n: agents.length, on: on, k: k}));
+    box.append(marks, sentence);
+    return {box: box, sentence: sentence};
+  }
+
+  // A person's row: the disclosure mark (when they have listed agents; else its room), presence, avatar, name; at the
+  // end, when closed, their agents' discs, and 你 on the reader's own; under it their status.
+  function personRow(f, sec, pos, size) {
+    var who = f.who, li = treeRow(who.name, "person", 1, pos, size), line = make("div", "prow-line");
+    var has = f.agents.length > 0, open = has && isOpen(who.name, sec.key), mark;
+    if (has) {
+      li.setAttribute("aria-expanded", String(open));
+      mark = A.button("prow-mark");
+      mark.tabIndex = -1;
+      mark.setAttribute("aria-label", t(open ? "people.hide_agents" : "people.show_agents", {name: who.name}));
+      var turns = turning === who.name, tw = make("span", "twisty" + ((turns ? !open : open) ? " open" : ""));
+      tw.setAttribute("aria-hidden", "true");
+      mark.appendChild(tw);
+      if (turns) requestAnimationFrame(function () { tw.classList.toggle("open", open); });
+    } else {
+      mark = make("span", "prow-mark none");
+    }
+    var presence = S.presence({kind: "person", online: who.online}), name = make("span", "prow-name", who.name);
+    line.append(mark, presence, S.avatar(who.name, 20, {kind: "person", avatar: who.avatar}), name);
+    var end = make("span", "prow-end"), sentence = null, you = null;
+    if (has && !open) {
+      var b = brood(f.agents);
+      end.appendChild(b.box);
+      sentence = b.sentence;
+    }
+    if (who.name === ME) end.appendChild(you = make("span", "prow-you", t("people.you")));
+    end.appendChild(actsButton(who.name));
+    line.appendChild(end);
+    var status = statusLine({who: who, isAgent: false});
+    li.append(line, status);
+    words(li, [name, presence], [status.querySelector(".pstatus-text, .st-mine-btn:not(.dim)"), you, sentence]);
+    return li;
+  }
+
+  // An agent's row: presence, avatar, name (mono), model tag, at the end what it is doing; under it its status, with
+  // when it was updated and the overdue mark. No owner: the tree says it.
+  function agentRow(a, level, pos, size, lone) {
+    var li = treeRow(a.name, "agent" + (lone ? " lone" : ""), level, pos, size), line = make("div", "prow-line");
+    li.dataset.owner = a.owner || "";
+    var presence = S.presence({kind: "agent", online: a.online}), name = make("span", "prow-name mono", a.name);
+    line.append(presence, S.avatar(a.name, 16, {kind: "agent", avatar: a.avatar}), name);
+    var model = A.modelTag(a.model);
+    if (model) line.appendChild(model);
+    var end = make("span", "prow-end"), work = S.workMark(a, "prow-state");
+    if (work) end.appendChild(work);
+    end.appendChild(actsButton(a.name));
+    line.appendChild(end);
+    var status = statusLine({who: a, isAgent: true});
+    li.append(line, status);
+    words(li, [name, presence, work],
+          [model, status.querySelector(".pstatus-text"), status.querySelector(".st-updated")]);
+    return li;
+  }
+
+  // A member's status under its row: its title (one line, the whole of it in its tooltip), for an agent when it was
+  // updated and the overdue mark; the reader's own, set in place (its control out of the tab order: the row's menu
+  // has 設定狀態).
   function statusLine(found) {
     var who = found.who, st = who.status || {}, box = make("div", "pstatus");
     if (!found.isAgent && who.name === ME && St) {
-      box.appendChild(St.mine(st.title || "", function () { S.loadMembers(); }));
+      var mine = St.mine(st.title || "", function () { S.loadMembers(); });
+      var b = mine.querySelector(".st-mine-btn");
+      if (b) b.tabIndex = -1;
+      box.appendChild(mine);
       return box;
     }
     if (st.title) {
@@ -451,52 +623,161 @@
     return box;
   }
 
-  function drawSwitch() {
-    Array.prototype.forEach.call(sw.querySelectorAll("[data-side]"), function (b) {
-      b.setAttribute("aria-pressed", String(b.dataset.side === side));
-    });
+  function rows() { return Array.prototype.slice.call(tree.querySelectorAll("[role=treeitem]")); }
+  function rowByKey(key) {
+    return key ? tree.querySelector('[role=treeitem][data-key="' + key.replace(/["\\]/g, "\\$&") + '"]') : null;
+  }
+  function rowOf(name) { return rowByKey("m:" + name); }
+  function holdStop(row) {
+    rows().forEach(function (r) { r.tabIndex = r === row ? 0 : -1; });
+    stop = row ? row.dataset.key : null;
+  }
+  function focusRow(row) {
+    if (!row) return;
+    holdStop(row);
+    row.focus({preventScroll: true});
+    row.scrollIntoView({block: "nearest"});
+  }
+
+  // The sentence under the tree: loading (after a moment), could not be read, nobody here.
+  function sayState(empty) {
+    if (!said) return;
+    var text = failed ? t("people.failed") : !view() ? (waited ? t("people.loading") : "")
+             : empty ? t("people.none_here") : "";
+    if (said.textContent !== text) said.textContent = text;
   }
 
   function drawList() {
     var v = view();
-    if (!panel || !body || !v) return;
-    drawSwitch();
-    A.keepFocus(body, function () {
-      body.textContent = "";
-      var list = side === "agents" ? v.agents : v.people;
-      // In a channel, only who may read it (as Discord's member list); in a private conversation, everyone.
-      var may = readers.place === S.current && readers.names ? readers.names[side] : null;
-      if (may) list = list.filter(function (who) { return may.indexOf(who.name) >= 0; });
-      sections(v, list, side === "agents").forEach(function (s) {
-        var sec = make("section", "psec"), ul = make("ul", "plist");
-        sec.appendChild(make("h3", "", s.title));
-        s.list.forEach(function (who) { ul.appendChild(memberRow({who: who, isAgent: s.isAgent})); });
-        sec.appendChild(ul);
-        body.appendChild(sec);
+    if (!tree) return;
+    if (!v) { sayState(false); return; }
+    var list = listed(v), secs = sections(v, list);
+    if (countsEl) countsEl.textContent = t("people.counts", {p: list.people.length, a: list.agents.length});
+    // What had the focus: a row, a control in it, or the reader's own status field.
+    var a = document.activeElement, inside = !!(a && tree.contains(a));
+    var row = inside ? a.closest("[role=treeitem]") : null;
+    var own = inside && a.dataset && a.dataset.key && a.dataset.key.indexOf("st-mine") === 0 ? a.dataset.key : null;
+    var top = body ? body.scrollTop : 0;
+    tree.textContent = "";
+    secs.forEach(function (s, i) {
+      var sec = make("li", "psec"), headId = "mh" + (++ids) + "-" + i;
+      sec.setAttribute("role", "group");
+      var head = make("div", "psec-head", s.title);
+      head.id = headId;
+      head.setAttribute("role", "presentation");
+      var named = [headId];
+      if (s.hint) {
+        head.title = s.hint;
+        var hint = make("span", "vh", s.hint);
+        named.push(idOf(hint));
+        sec.appendChild(hint);
+      }
+      sec.setAttribute("aria-labelledby", named.join(" "));
+      var ul = make("ul", "plist");
+      ul.setAttribute("role", "none");
+      s.families.forEach(function (f, j) {
+        if (f.lone) { ul.appendChild(agentRow(f.who, 1, j + 1, s.families.length, true)); return; }
+        var p = personRow(f, s, j + 1, s.families.length);
+        ul.appendChild(p);
+        if (p.getAttribute("aria-expanded") !== "true") return;
+        f.agents.forEach(function (ag, k) { ul.appendChild(agentRow(ag, 2, k + 1, f.agents.length, false)); });
       });
-      if (!list.length) body.appendChild(make("p", "dim", t("people.none_here")));
+      sec.prepend(head);
+      sec.appendChild(ul);
+      tree.appendChild(sec);
     });
+    var all = rows();
+    holdStop(rowByKey(stop) || all[0] || null);
+    if (body) body.scrollTop = top;
+    sayState(!all.length);
+    if (!inside) return;
+    // The focus stays where it was: the same field or row; a row gone, its person's (an agent hidden as its person
+    // closed, or gone); else the tab stop.
+    var again = (own && tree.querySelector('[data-key="' + own + '"]')) || (row && rowByKey(row.dataset.key)) ||
+                (row && row.dataset.owner && rowOf(row.dataset.owner)) || rowByKey(stop);
+    if (again && again.getAttribute("role") === "treeitem") holdStop(again);
+    if (again) again.focus({preventScroll: true});
   }
 
-  if (sw) {
-    sw.addEventListener("click", function (ev) {
-      var b = ev.target.closest("[data-side]");
-      if (!b || b.dataset.side === side) return;
-      side = b.dataset.side;
-      A.store.set(SIDE_KEY, side);
-      drawList();
-    });
+  // Open or close a person's agents, in place; kept. The focus goes to the person's row.
+  function fold(name, on) {
+    keepOpen(name, on);
+    turning = name;
+    stop = "m:" + name;
+    drawList();
+    turning = null;
+    focusRow(rowOf(name));
   }
-  if (body) {
-    // The member's menu from the row (right click, the context-menu key and Shift+F10 come from the name button).
-    body.addEventListener("contextmenu", function (ev) {
-      var row = ev.target.closest(".prow");
-      if (!row || ev.target.closest("[data-member]") || ev.target.closest(".pstatus")) return;
-      var b = row.querySelector("[data-member]");
-      if (!b) return;
-      ev.preventDefault();
-      P.menu(b.dataset.member, {x: ev.clientX, y: ev.clientY}, b);
+
+  // The reader's own status, from their menu: the field on their row (the member list shown first).
+  function editMine(me) {
+    if (A.right && A.right.current !== "members") A.right.show("members");
+    St.edit(me.status && me.status.title ? me.status.title : "");
+  }
+
+  function openCard(row) { P.card(row.dataset.name, row.querySelector(".prow-name") || row, row); }
+
+  if (tree) {
+    tree.addEventListener("click", function (ev) {
+      var row = ev.target.closest("[role=treeitem]");
+      if (!row || ev.target.closest(".st-mine")) return;             // the reader's own status: its field
+      if (ev.target.closest(".prow-mark:not(.none)")) {
+        fold(row.dataset.name, row.getAttribute("aria-expanded") !== "true");
+        return;
+      }
+      var acts = ev.target.closest(".row-acts");
+      focusRow(row);
+      if (acts) { P.menu(row.dataset.name, {anchor: acts}, row); return; }
+      var sel = window.getSelection ? window.getSelection() : null;
+      if (sel && !sel.isCollapsed && row.contains(sel.anchorNode)) return;   // text chosen in the row, not a press
+      openCard(row);
     });
+    // Right click: the member's menu at the pointer; on a status line the browser's own.
+    tree.addEventListener("contextmenu", function (ev) {
+      var row = ev.target.closest("[role=treeitem]");
+      if (!row || ev.target.closest(".pstatus")) return;
+      ev.preventDefault();
+      focusRow(row);
+      P.menu(row.dataset.name, ev.clientX || ev.clientY ? {x: ev.clientX, y: ev.clientY} : {anchor: row}, row);
+    });
+    tree.addEventListener("keydown", function (ev) {
+      if (ev.target.closest(".st-mine-form")) return;                // while the field is open, the keys are its
+      var row = ev.target.closest("[role=treeitem]");
+      if (!row) return;
+      var all = rows(), i = all.indexOf(row), name = row.dataset.name, open = row.getAttribute("aria-expanded");
+      function go(j) { if (all[j]) { ev.preventDefault(); focusRow(all[j]); } }
+      if (ev.key === "ArrowDown") go(i + 1);
+      else if (ev.key === "ArrowUp") go(i - 1);
+      else if (ev.key === "Home") go(0);
+      else if (ev.key === "End") go(all.length - 1);
+      else if (ev.key === "ArrowRight") {
+        ev.preventDefault();
+        if (open === "false") fold(name, true);
+        else if (open === "true" && all[i + 1] && all[i + 1].dataset.owner === name) go(i + 1);
+      } else if (ev.key === "ArrowLeft") {
+        ev.preventDefault();
+        if (open === "true") fold(name, false);
+        else if (row.getAttribute("aria-level") === "2") focusRow(rowOf(row.dataset.owner));
+      } else if ((ev.key === "Enter" || ev.key === " ") && ev.target === row) {
+        ev.preventDefault();
+        openCard(row);
+      } else if (ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) {
+        ev.preventDefault();
+        P.menu(name, {anchor: row}, row);
+      } else if (ev.key.length === 1 && /\S/.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        var k = ev.key.toLowerCase();
+        for (var j = 1; j <= all.length; j++) {
+          var x = all[(i + j) % all.length];
+          if ((x.dataset.name || "").toLowerCase().indexOf(k) === 0) { go((i + j) % all.length); break; }
+        }
+      }
+    });
+    // A row keeps the tab stop once it had the focus.
+    tree.addEventListener("focusin", function (ev) {
+      var row = ev.target.closest("[role=treeitem]");
+      if (row && row.tabIndex !== 0) holdStop(row);
+    });
+    setTimeout(function () { waited = true; if (!view()) sayState(false); }, LOADING_MS);
   }
 
   function redraw() {
@@ -521,7 +802,15 @@
   S.setCurrent = function (place) { setCurrent(place); loadReaders(); };
 
   if (St) St.onChange(function () { drawList(); });
-  S.onMembers(function () {
+  if (S.onMembersRead) {
+    S.onMembersRead(function (ok) {
+      if (failed === !ok) return;
+      failed = !ok;
+      sayState(!!tree && !tree.querySelector("[role=treeitem]"));
+    });
+  }
+  S.onMembers(function (v) {
+    prune(v);
     loadReaders();
     redraw();
     // The card follows the data, unless an act is armed in it or a menu from it is open.

@@ -16,8 +16,8 @@
 // messages important for the reader in the whole project, from the frame's places.
 // The composer keeps one draft per place (sessionStorage: this tab's, gone with it). It completes, in one list over the
 // composer (arrow keys, Enter or Tab, Escape; it never sends): in a channel, "@" and the members (my agents first, then
-// the other agents and the people, then the groups); "#" and the channels. A mention of a name that is no member or
-// group holds the message back once, said under the composer, and sending again sends it as it is. A mention that
+// the people, then the groups; not another person's agents, 1l); "#" and the channels. A mention of a name that is no
+// member or group holds the message back once, said under the composer, and sending again sends it as it is. A mention that
 // reached someone is drawn in bold. Names are read as the server reads a mention (render.js, A.mentionAt: the longest known
 // name the text goes on with, so a group named in any script is found without a space after it). The send control is an
 // icon, dim and off while the field is empty.
@@ -1163,9 +1163,10 @@
     return null;
   }
 
-  // Whom a mention can name, in the order offered: my agents, the other agents and the people (not me), the groups;
-  // in a channel none it is closed to (2a: its `closed_to`). In a private conversation only its other member (the
-  // place is that member's name).
+  // Whom a mention can name, in the order offered: my agents, the people (not me), the groups; another person's agent
+  // is not offered, since a mention from outside its own side calls nobody (1e): its person is (1l). In a channel
+  // none it is closed to (2a: its `closed_to`). In a private conversation only its other member (the place is that
+  // member's name).
   function mentionable() {
     if (!isChannel(state.place)) {
       var d = A.side.directory[state.place] || {kind: "person"};
@@ -1181,10 +1182,6 @@
       agents.filter(function (a) { return a.owner === ME; }).forEach(function (a) {
         out.push({name: a.name, kind: "agent", model: a.model, who: a, note: t("nav.my_agent")});
       });
-      agents.filter(function (a) { return a.owner !== ME; }).forEach(function (a) {
-        out.push({name: a.name, kind: "agent", model: a.model, who: a,
-                  note: a.owner ? t("msg.agent_of", {owner: a.owner}) : t("msg.kind_agent")});
-      });
       (v.people || []).filter(function (p) { return p.name !== ME; }).forEach(function (p) {
         out.push({name: p.name, kind: "person", note: ""});
       });
@@ -1195,7 +1192,9 @@
     } else {                              // before the members are read: the names the page came with
       Object.keys(A.side.directory).forEach(function (n) {
         var d = A.side.directory[n];
-        if (n !== ME) out.push({name: n, kind: d.kind, note: d.owner === ME ? t("nav.my_agent") : ""});
+        if (n !== ME && !(d.kind === "agent" && d.owner !== ME)) {
+          out.push({name: n, kind: d.kind, note: d.owner === ME ? t("nav.my_agent") : ""});
+        }
       });
     }
     var here = (state.places.channels || []).filter(function (c) { return "#" + c.name === state.place; })[0];

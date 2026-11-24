@@ -184,4 +184,9 @@
     return box;
   };
   St.busy = function () { return St.writing !== null; };
+  // The same field opened from elsewhere (the reader's menu in the member list: 設定狀態), with `title` in it.
+  St.edit = function (title) {
+    if (St.writing === null) St.writing = title || "";
+    changed();
+  };
 })();
