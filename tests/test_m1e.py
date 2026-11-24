@@ -67,7 +67,7 @@ def test_the_switches_that_opened_an_agent_to_others_are_gone(w):
     assert w.alice.c.post(f"/{SLUG}/api/my/switches", json={"others_regroup": False}).status_code == 200
     groups = w.alice.c.get(f"/{SLUG}/api/members").json()["groups"]
     own = next(g for g in groups if g["name"] == "alice-agents")
-    r = w.alice.c.post(f"/{SLUG}/api/groups/{own['id']}", json={"permissions": own["permissions"] + ["others_mention"]})
+    r = w.alice.c.post(f"/{SLUG}/api/groups/{own['name']}", json={"permissions": own["permissions"] + ["others_mention"]})
     assert r.status_code == 400, "no permission of that name any more: " + r.text
     for page in (f"/{SLUG}", f"/{SLUG}/me/agents", f"/{SLUG}/settings/groups"):
         html = w.alice.c.get(page).text
