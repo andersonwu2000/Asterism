@@ -392,12 +392,14 @@ ADDED_PERMISSIONS = {"owner": ["manage_channels"]}
 
 # Permissions withdrawn after they shipped: taken out of every group's list when a database is opened (a list that
 # holds none of them is left as it is). The task board was withdrawn in 1s, with the permissions and the switch that
-# only served it.
-DROPPED_PERMISSIONS = ("assign_tasks", "edit_tasks", "coordinate_tasks", "others_assign")
+# only served it; the switches that opened a person's agents to others (others_mention, others_channel) in 1e.
+DROPPED_PERMISSIONS = ("assign_tasks", "edit_tasks", "coordinate_tasks", "others_assign", "others_mention",
+                       "others_channel")
 
 # The four switches of an ownership group were columns until f6; since then they are permissions of that group, kept
 # in its JSON list. A database made by an earlier version has the switches that were on moved into the list, and the
-# columns dropped, when opened (others_assign then goes with the tasks, DROPPED_PERMISSIONS).
+# columns dropped, when opened (others_assign then goes with the tasks, others_mention and others_channel as
+# withdrawn in 1e: DROPPED_PERMISSIONS; others_regroup alone stays).
 SWITCH_COLUMNS = ("others_mention", "others_channel", "others_assign", "others_regroup")
 
 

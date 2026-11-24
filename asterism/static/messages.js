@@ -1074,7 +1074,12 @@
     });
     var wait = waiting && waiting.length ? waitingText(waiting, true) : "", rest = [];
     if (!wait && by.offline.length) rest.push(t("msg.sent_offline", {names: by.offline.join(", ")}));
-    if (by.closed.length) rest.push(t("msg.sent_closed", {names: by.closed.join(", ")}));
+    // A mention that does not call: someone else's agent (only its own side calls it, 1e), or a member of mine that
+    // cannot read this channel.
+    var others = by.closed.filter(function (n) { var d = A.side.directory[n]; return d && d.kind === "agent" && d.owner !== ME; });
+    var shut = by.closed.filter(function (n) { return others.indexOf(n) < 0; });
+    if (others.length) rest.push(t("msg.sent_closed", {names: others.join(", ")}));
+    if (shut.length) rest.push(t("msg.sent_shut", {names: shut.join(", ")}));
     if (by.unknown.length) rest.push(t("msg.sent_unknown", {names: by.unknown.join(", ")}));
     return {wait: wait, rest: rest.join(" ")};
   }

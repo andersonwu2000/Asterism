@@ -24,8 +24,10 @@ DEFAULT_GROUPS = [
     ("ai", ["read", "post"]),
 ]
 # The permissions only a person's own agent group (ownership) carries, set only by that person: what others may do
-# with that person's agents (until f6 they were called its switches, and the API still sets them that way too).
-SWITCHES = ("others_mention", "others_channel", "others_regroup")
+# with that person's agents (until f6 they were called its switches, and the API still sets them that way too). Since
+# 1e an agent is reached from its own side only: the switches that let others mention it or let it hear their channel
+# talk are withdrawn; what remains is that others may change the groups of these agents.
+SWITCHES = ("others_regroup",)
 OWNERSHIP_SUFFIX = "-agents"
 NAME_RULE = "A name is 1 to 40 letters, digits, '.', '_' or '-', starting with a letter or digit."
 GROUP_NAME_RULE = ("A group's name is 1 to 40 letters or digits of any script, '.', '_' or '-', starting with a letter or "
@@ -466,7 +468,7 @@ def create_group(pj: Project, actor: Actor, name: Any, perms: Any) -> dict[str, 
 
 def _check_permissions(perms: Any, own: bool = False) -> list[str]:
     """A list of permission names from the catalogue, returned in the catalogue's order; with `own` (a person's own
-    agent group) also the four of what others may do with that person's agents, which no other group carries."""
+    agent group) also what others may do with that person's agents (SWITCHES), which no other group carries."""
     allowed = PERMISSIONS + list(SWITCHES) if own else PERMISSIONS
     if not isinstance(perms, list) or not all(isinstance(p, str) and p in allowed for p in perms):
         why = "" if own else (" (" + ", ".join(SWITCHES) + " are carried only by a person's own agent group)")
@@ -553,7 +555,7 @@ def change_group(pj: Project, actor: Actor, name: str, perms: Any) -> dict[str, 
       permission they do not hold themselves;
     - `owner` always holds every permission and is not changed;
     - a person's own agent group: only that person sets it; besides the ordinary permissions (its agents still never
-      hold more than their person) it alone carries the four of what others may do with that person's agents."""
+      hold more than their person) it alone carries what others may do with that person's agents (SWITCHES)."""
     _person_only(actor)
     g = group_by_name(pj, name)
     if not g:

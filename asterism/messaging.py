@@ -541,7 +541,6 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     """Write each reader's level and the agents' deliveries (inside the caller's transaction). Returns the
     answer's mention results and the agents to wake. `fixed`: the level of a schedule's run, which takes the
     place of mentions and of what the agent is doing (_scheduled_level)."""
-    s = config.get()
     channel = place.startswith("#")
     shut: set[str] = set()              # members who may not read the channel: no level, nothing delivered
     if channel:
@@ -561,11 +560,7 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     via_group = _group_member_keys(pj, [g["id"] for _, kind, g in found if kind == "group"])
     muted = {f"{r['member_kind']}:{r['member_id']}" for r in pj.db.execute(
         "SELECT member_kind, member_id FROM mutes WHERE channel = ?", (place[1:],))} if channel else set()
-    recent = {r["sender_id"] for r in pj.db.execute(
-        "SELECT DISTINCT sender_id FROM messages WHERE sender_kind = 'agent' AND place = ? AND sent >= ? AND id != ?",
-        (place, t - s.recent_speaker_s, mid))} if channel else set()
     asker = orig["sender_id"] if orig is not None and orig["sender_kind"] == "agent" and _asked(pj, orig, sender) else None
-    switches: dict[int, dict[str, bool]] = {}
     online: dict[int, bool] = {}
     reach: dict[int, bool] = {}
     levels: dict[str, str] = {}
@@ -574,7 +569,7 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
         mentioned = r.key in direct or r.key in via_group
         if r.kind == "person":
             if fixed is not None:
-                level = _scheduled_level(fixed, r.key in muted, True, False, False)
+                level = _scheduled_level(fixed, r.key in muted, True)
             else:
                 level = ("important" if not channel or mentioned else "muted" if r.key in muted else "normal")
         else:
@@ -583,23 +578,17 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
             # An agent held offline is still sent what it is given while its path is there (1o); a mention's
             # result still says offline.
             reach[r.id] = online[r.id] or presence.reachable(pj.slug, a, pj.db)
-            if r.person_id not in switches:
-                switches[r.person_id] = projects.switches(pj, r.person_id)
-            sw = switches[r.person_id]
+            # 1e: an agent is reached from its own side only (its person, an agent of its person): a mention by
+            # anybody else does not call it, and nothing is handed over because it spoke in the channel lately.
             own = sender.kind != "system" and sender.person_id == r.person_id
-            heard = channel and not mentioned and r.key not in muted and reach[r.id] and r.id in recent
             if fixed is not None:
-                level = _scheduled_level(fixed, r.key in muted, own, sw["others_mention"], sw["others_channel"])
+                level = _scheduled_level(fixed, r.key in muted, own)
             elif own and mentioned:
-                level = "important"
-            elif not own and mentioned and sw["others_mention"]:
                 level = "important"
             elif not channel:
                 level = "normal"                # 1p: a private message is important only by a mention of its reader
             elif asker == r.id:
-                level = "normal"
-            elif heard and (own or sw["others_channel"]):
-                level = "normal"
+                level = "normal"                # the answer to its own question, whoever answers
             else:
                 level = "muted"
             # A normal private message is handed over as an important one is, at once or when the agent is back (1p);
@@ -639,17 +628,16 @@ def _distribute(pj: Project, mid: int, place: str, sender: Member, found: list[t
     return results, woken
 
 
-def _scheduled_level(level: str, muted: bool, own: bool, others_mention: bool, others_channel: bool) -> str:
-    """A reader's level for a run of a schedule at `level`. A person counts as on the creator's side.
-    - important: important for a person and for an agent of the creator's side; another person's agent only
-      with its others_mention switch on (as if it had been mentioned);
-    - normal: normal for a person and for an agent of the creator's side or with others_channel on, whatever the
-      agent is doing; muted where the reader muted the channel;
-    - muted: muted."""
+def _scheduled_level(level: str, muted: bool, own: bool) -> str:
+    """A reader's level for a run of a schedule at `level`. A person counts as on the creator's side; an agent is on
+    it when it is an agent of the creator (1e: anybody else's agents are not reached by a schedule).
+    - important: important for a person and for an agent of the creator's side;
+    - normal: normal for them, unless the reader muted the channel;
+    - muted: muted, as for every other agent."""
     if level == "important":
-        return "important" if own or others_mention else "muted"
+        return "important" if own else "muted"
     if level == "normal":
-        return "normal" if not muted and (own or others_channel) else "muted"
+        return "normal" if not muted and own else "muted"
     return "muted"
 
 

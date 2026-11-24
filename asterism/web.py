@@ -1078,7 +1078,7 @@ async def oauth_authorize(request: Request) -> Response:
         return RedirectResponse(oauth.back_to_client(redirect, error="access_denied", state=p.get("state")), status_code=302)
     try:
         projects.require(pj, actor, "manage_own_agents", "Authorising agents needs the manage_own_agents permission.")
-        if p.get("switches") == "1":        # the consent form always sends the four switches
+        if p.get("switches") == "1":        # the consent form always sends every switch
             projects.set_switches(pj, actor, {k: p.get(k) in ("1", "on", "true") for k in projects.SWITCHES})
     except ApiError as e:
         return page_error(request, e, person)

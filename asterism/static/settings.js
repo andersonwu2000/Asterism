@@ -558,12 +558,12 @@
     if (g.kind === "ownership") return g.owner === view.me.name;
     return rules.mine("manage_groups") && rules.holdsAll(g.permissions);
   }
-  // Everything a group may carry, in the catalogue's order: a person's own agent group also the four of its own.
+  // Everything a group may carry, in the catalogue's order: a person's own agent group also its own switches.
   function carried(g) { return g.kind === "ownership" ? CATALOGUE.concat(SWITCHES) : CATALOGUE; }
 
   function permRow(g, p, editable) {
     var row = make("div", "perm-row"), box = make("input"), id = "perm-" + p;
-    var own = SWITCHES.indexOf(p) >= 0;          // one of the four only a person's own agent group carries
+    var own = SWITCHES.indexOf(p) >= 0;          // a switch: only a person's own agent group carries it
     box.type = "checkbox";
     box.id = id;
     box.checked = g.permissions.indexOf(p) >= 0;

@@ -691,7 +691,7 @@ def _me_sections(tr: Translator, slug: str, me: dict[str, Any], project: str) ->
     account as a fact, the language and the look of the pages (profile); their computers and connectors (me.js draws
     them from /api/my and /api/me/computers); who writes their changes to the shared files, the server with their
     GitHub authorization or one of their computers (writing: me.js, from /api/me/writer, /api/me/computers and
-    can-write); what others may do with their agents (the four permissions of their own agent group, each saved as it
+    can-write); what others may do with their agents (the permissions of their own agent group, each saved as it
     changes)."""
     langs = "".join(f'<button type="button" class="seg-btn" data-locale="{e(loc)}" lang="{e(loc)}" '
                     f'aria-pressed="{"true" if loc == tr.locale else "false"}">{e(tr("me.lang." + loc))}</button>'
@@ -763,7 +763,7 @@ def _groups_section(tr: Translator, mine: list[str], permissions: list[str]) -> 
 
 
 def switch_boxes(tr: Translator, values: dict[str, bool]) -> str:
-    """The four switches of the consent page, sent with its form."""
+    """The switches of the consent page, sent with its form."""
     return "".join(f'<div class="check"><label><input type="checkbox" name="{k}" value="1"{" checked" if values.get(k) else ""}>'
                    f' {e(tr("switch." + k))}</label></div>' for k in SWITCHES)
 
