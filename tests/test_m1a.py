@@ -134,10 +134,8 @@ def online(c, name):
     return bool(row and row["online"])
 
 
-def authorise(srv, person: httpx.Client, kind="claude-code", computer="pc-1", switches=None) -> str:
+def authorise(srv, person: httpx.Client, kind="claude-code", computer="pc-1") -> str:
     """A person makes an agent invitation link and a computer redeems it: that computer's credential."""
-    if switches:
-        assert person.post(f"/{SLUG}/api/my/switches", json=switches).status_code == 200
     r = person.post(f"/{SLUG}/api/my/agent-invites")
     assert r.status_code == 201, r.text
     link = r.json()["url"]
@@ -276,7 +274,6 @@ def test_a_session_registers_as_an_agent_of_its_person(srv, alice, cred_a):
     assert a.register("fern").json()["how"] == "same"
     assert a.register("moss").status_code == 409, "one session is one agent; it must leave first"
     my = alice.get(f"/{SLUG}/api/my").json()
-    assert my["switches"] == {"others_regroup": False}
     assert any(a_["name"] == "fern" for a_ in my["agents"]) and any(c["kind"] == "computer" for c in my["credentials"])
 
 
@@ -336,14 +333,11 @@ def test_an_agent_never_manages_and_groups_follow_the_owner(srv, alice, bob, cre
     assert as_agent.post(f"/{SLUG}/api/members/bob/remove").status_code in (401, 403)
     # a person gives an agent only groups the person holds
     assert bob.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 403
-    # someone else, even with the permission, needs the owner's switch
-    assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 403
-    r = bob.post(f"/{SLUG}/api/my/switches", json={"others_regroup": True})
-    assert r.status_code == 200 and r.json()["switches"] == {"others_regroup": True}
+    # who manages groups changes the groups of somebody else's agent as a person's (2b: no switch of its person)
     assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 200
     assert "stewards" in agent_row(bob, "birch")["groups"]
-    assert bob.post(f"/{SLUG}/api/my/switches", json={"others_regroup": False}).status_code == 200
-    assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": [], "remove": ["stewards"]}).status_code == 403
+    assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": [], "remove": ["stewards"]}).status_code == 200
+    assert alice.post(f"/{SLUG}/api/members/birch/groups", json={"add": ["stewards"], "remove": []}).status_code == 200
     # nobody but the owner edits an ownership group
     assert alice.post(f"/{SLUG}/api/members/fern/groups", json={"add": ["bob-agents"], "remove": []}).status_code in (400, 403, 409)
 

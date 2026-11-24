@@ -1,4 +1,4 @@
-"""f6a: permissions that hold, channel permissions, the switches as permissions, making and unmaking projects,
+"""f6a: permissions that hold, channel permissions, a person's own agent group, making and unmaking projects,
 channels and groups, default groups closed to hand changes, a nickname per project, a language, v1's favicon.
 
     python -m pytest tests/test_m1f6.py -q
@@ -72,21 +72,20 @@ def test_channel_permissions_need_manage_channels(w):
     assert overrides(w.alice, "notices", {"nobody-group": {"post": "deny"}}).status_code in (400, 404)
 
 
-# ------------------------------------------------------------------ the switches are permissions
+# ------------------------------------------------------------------ a person's own agent group
 
-def test_the_switches_are_permissions_of_a_persons_agent_group(w):
+def test_a_persons_agent_group_is_set_only_by_that_person(w):
+    """Until 2b this group also carried the switches (what others may do with that person's agents). The last of
+    them is withdrawn: it carries ordinary permissions only, and still only its person sets them."""
     own = "alice-agents"
-    w.alice.switches(others_regroup=True)
-    perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
-    assert "others_regroup" in perms
-    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": [p for p in perms if p != "others_regroup"]})
+    r = w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": ["read"]})
     assert r.status_code == 200, r.text
     perms = next(g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"] if g["name"] == own)["permissions"]
-    assert "others_regroup" not in perms
-    assert w.alice.c.get(f"/{SLUG}/api/my").json()["switches"] == {"others_regroup": False}, "the switch is that permission"
+    assert perms == ["read"]
     assert w.bob.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": []}).status_code == 403
+    assert w.alice.c.post(f"/{SLUG}/api/groups/{own}", json={"permissions": []}).status_code == 200
     r = w.alice.c.post(f"/{SLUG}/api/groups", json={"name": "wrongly", "permissions": ["read", "others_regroup"]})
-    assert r.status_code == 400, "only a person's agent group carries them"
+    assert r.status_code == 400, "no permission of that name"
 
 
 # ------------------------------------------------------------------ default groups

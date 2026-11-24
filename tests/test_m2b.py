@@ -55,7 +55,8 @@ def test_the_switches_are_gone(w):
     assert "switches" not in my, my.keys()
     assert w.alice.c.post(f"/{SLUG}/api/my/switches", json={"others_regroup": True}).status_code in (404, 405)
     groups = {g["name"]: g for g in w.alice.c.get(f"/{SLUG}/api/members").json()["groups"]}
-    assert groups["alice-agents"]["permissions"] == [], "an ownership group carries no permission of its own any more"
+    assert groups["alice-agents"]["permissions"] == [] and "switches" not in groups["alice-agents"], \
+        "a person's agent group carries no switch any more"
     r = w.alice.c.post(f"/{SLUG}/api/groups/alice-agents", json={"permissions": ["others_regroup"]})
     assert r.status_code == 400, r.text
     for page in (f"/{SLUG}", f"/{SLUG}/me/agents", f"/{SLUG}/settings/groups"):

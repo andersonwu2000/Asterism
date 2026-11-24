@@ -176,8 +176,9 @@ def test_every_page_renders_and_escapes(srv):
     assert "Lab &lt;b&gt;&amp;" in alice.get("/lab/members").text
     _, q = connector_token(srv, alice)
     consent = alice.get("/oauth/authorize", params=q)
-    assert consent.status_code == 200 and "others_regroup" in consent.text
-    assert not any(k in consent.text for k in ("others_mention", "others_channel")), "withdrawn in 1e"
+    assert consent.status_code == 200
+    assert not any(k in consent.text for k in ("others_mention", "others_channel", "others_regroup")), \
+        "the switches are withdrawn (1e, 2b): the consent page asks for none"
     assert httpx.get(srv + "/lab/members", follow_redirects=False).headers["location"].startswith("/login?next=")
     bob = signed_in(srv, "bob")
     assert bob.get("/lab/members").status_code == 403 and bob.get("/lab/admin").status_code == 403

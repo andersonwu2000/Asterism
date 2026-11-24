@@ -58,13 +58,7 @@ def test_an_agent_is_handed_only_what_its_own_side_addresses_to_it_and_answers_t
 
 
 def test_the_switches_that_opened_an_agent_to_others_are_gone(w):
-    for name in ("others_mention", "others_channel"):
-        r = w.alice.c.post(f"/{SLUG}/api/my/switches", json={name: True})
-        assert r.status_code == 400 and r.json()["error"] == "invalid_switches", (name, r.text)
-    my = w.alice.c.get(f"/{SLUG}/api/my").json()
-    assert my["switches"] == {"others_regroup": False}, my["switches"]
-    assert w.alice.c.post(f"/{SLUG}/api/my/switches", json={"others_regroup": True}).status_code == 200
-    assert w.alice.c.post(f"/{SLUG}/api/my/switches", json={"others_regroup": False}).status_code == 200
+    """(Since 2b there is no switch at all, nor a way to set one: tests/test_m2b.py.)"""
     groups = w.alice.c.get(f"/{SLUG}/api/members").json()["groups"]
     own = next(g for g in groups if g["name"] == "alice-agents")
     r = w.alice.c.post(f"/{SLUG}/api/groups/{own['name']}", json={"permissions": own["permissions"] + ["others_mention"]})

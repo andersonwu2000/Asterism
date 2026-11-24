@@ -156,10 +156,6 @@ class Person:
     def channel(self, name) -> dict:
         return next(c for c in self.places()["channels"] if c["name"] == name)
 
-    def switches(self, **values):
-        r = self.c.post(f"/{SLUG}/api/my/switches", json=values)
-        assert r.status_code == 200, r.text
-
     def members(self) -> dict:
         return self.c.get(f"/{SLUG}/api/members").json()
 
