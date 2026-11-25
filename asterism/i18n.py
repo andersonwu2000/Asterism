@@ -851,6 +851,8 @@ CATALOGUE: dict[str, dict[str, str]] = {
         "sch.acts": "排程的動作：{text}",
         "sch.scope_all": "全部排程",
         "sch.no_time": "請填第一次發出的時間。",
+        "sch.past_repeat": "這個時間已經過了，第一次會在下一個週期時間發出。",
+        "sch.past_once": "這個時間已經過了，儲存後會立刻發出。",
 
         "ag.tabs": "這一頁的分頁",
         "ag.tab.schedules": "排程訊息",
@@ -1880,6 +1882,8 @@ CATALOGUE["en"] = {
         "sch.acts": "Schedule actions: {text}",
         "sch.scope_all": "All schedules",
         "sch.no_time": "Please enter the first send time.",
+        "sch.past_repeat": "This time has passed: the first message goes out at the schedule's next time.",
+        "sch.past_once": "This time has passed: the message goes out as soon as you save.",
 
         "ag.tabs": "Tabs on this page",
         "ag.tab.schedules": "Scheduled messages",

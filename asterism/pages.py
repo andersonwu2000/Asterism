@@ -993,7 +993,7 @@ def work(tr: Translator, person: dict[str, Any], frame: dict[str, Any], tab: str
         scripts = ["vendor/marked/marked.min.js", "vendor/dompurify/purify.min.js", "vendor/katex/katex.min.js",
                    "render.js", "paths.js", "people.js", "statuses.js", "workpage.js", "dashboard.js"]
     else:
-        data.update({"places": view["places"], "min-every": view["min_every_s"]})
+        data.update({"places": view["places"], "min-every": view["min_every_s"], "now-s": view["now_s"]})
         form = '<form id="schedule-form" class="ag-form sch-form" hidden></form>' if view["can_create"] else ""
         content = f'{form}<div id="schedules" class="ag-view"></div>'
         scripts = ["workpage.js", "schedules.js"]

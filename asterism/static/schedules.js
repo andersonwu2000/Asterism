@@ -18,6 +18,7 @@
   var ME = G.me, API = G.api;
   var PLACES = A.parseJSON(root.dataset.places, {channels: [], people: [], agents: []});
   var MIN_EVERY = Number(root.dataset.minEvery) || 300;
+  var NOW_MS = (Number(root.dataset.nowS) || 60) * 1000;   // how far past a time still counts as now (the server's)
   var LEVELS = ["important", "normal", "muted"];
   var data = [], raw = "", loaded = false, opened = {};
 
@@ -98,19 +99,50 @@
     n.setAttribute("aria-label", t("sch.every_n"));
     n.value = s && s.every_s ? String(s.every_s % 3600 === 0 ? s.every_s / 3600 : Math.max(1, Math.round(s.every_s / 60)))
                              : String(Math.max(1, Math.ceil(MIN_EVERY / 60)));
-    function sync() { n.hidden = repeat.value === "once"; }
-    sync();
+    // Under the start: one dim line while the time entered is past (more than the server's minute), saying what
+    // saving does then (2c): a repeating schedule starts at the next time of its grid (the list says when, after
+    // saving: no grid arithmetic here), one that runs once goes out at once. When changing a schedule, only while its
+    // times would be set again (its start or how often changed).
+    var past = make("small", "sch-past");
+    past.id = "sch-past-" + (s ? s.id : "new");
+    past.setAttribute("aria-live", "polite");
+    start.setAttribute("aria-describedby", past.id);
+    function timesSet() {
+      if (!s) return true;
+      return start.value !== localInput(new Date(s.start_at)) || everyOf() !== s.every_s;
+    }
+    function tellPast() {
+      var at = new Date(start.value).getTime();
+      var said = !isNaN(at) && Date.now() - at > NOW_MS && timesSet()
+        ? t(repeat.value === "once" ? "sch.past_once" : "sch.past_repeat") : "";
+      if (past.textContent !== said) past.textContent = said;
+    }
+    function sync() { n.hidden = repeat.value === "once"; tellPast(); }
+    function everyOf() {
+      return repeat.value === "once" ? null : Math.round(Number(n.value) * (repeat.value === "hours" ? 3600 : 60));
+    }
     var how = make("span", "sch-repeat");
     how.append(repeat.el, n, make("small", "muted", MIN_EVERY >= 60 ? t("sch.min_minutes", {n: MIN_EVERY / 60})
                                                                      : t("sch.min_seconds", {n: MIN_EVERY})));
+    var startField = make("div", "sch-field-box");             // the line is not part of the field's name
+    startField.append(field(t("sch.start"), start), past);
     box.append(field(t("sch.to"), to.el), field(t("sch.level"), level.el), field(t("sch.text"), text, true),
-               field(t("sch.start"), start), field(t("sch.repeat"), how));
+               startField, field(t("sch.repeat"), how));
+    sync();
+    ["input", "change"].forEach(function (k) {
+      start.addEventListener(k, tellPast);
+      n.addEventListener(k, tellPast);
+    });
+    // The time entered becomes past while the form is open: looked at again every few seconds while it is there.
+    var ticking = setInterval(function () {
+      if (!box.isConnected && ticking) { clearInterval(ticking); ticking = 0; return; }
+      tellPast();
+    }, 5000);
 
     function read() {
       var at = fromInput(start.value);
       if (!at) return null;
-      var every = repeat.value === "once" ? null : Math.round(Number(n.value) * (repeat.value === "hours" ? 3600 : 60));
-      var body = {to: to.value, text: text.value, level: level.value, start_at: at, every_s: every};
+      var body = {to: to.value, text: text.value, level: level.value, start_at: at, every_s: everyOf()};
       if (!s) return body;
       var changed = {};
       if (body.to !== s.to) changed.to = body.to;

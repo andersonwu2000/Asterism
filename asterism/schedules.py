@@ -2,9 +2,11 @@
 
 A run is an ordinary message from the creator (messaging.post_scheduled): what differs is that mentions are
 not looked for, every reader's level comes from the schedule, and one schedule never stacks the answers an
-agent owes. A repeating schedule runs on its grid start_at + k * every_s; a time missed (the server was down,
-the schedule was paused, or it was made with a start in the past) is made up for by one run, then it is back
-on its grid. A schedule that runs once is removed when it has run. One that cannot run (its creator lost the
+agent owes. A repeating schedule runs on its grid start_at + k * every_s. Its first run, when it is made or its
+start or interval is changed, is the first time of its grid that is not more than a minute past (NOW_S): a start in
+the future runs at the start, a start within the last minute runs at once, an older start runs nothing at once
+(2c). A time missed later (the server was down, the schedule was paused) is made up for by one run, then it is back
+on its grid. A schedule that runs once runs at its time, at once when that is past, and is removed when it has run. One that cannot run (its creator lost the
 permissions, or its place is no longer one they can post to) is paused with the reason until somebody resumes
 or removes it. The background task (upkeep) runs what is due and sleeps until next_due.
 """
@@ -22,6 +24,9 @@ from .projects import Actor, Project
 
 NEEDS = ("create_schedule",)   # and post where it posts: a channel's own (an override may grant it), else the project's
 CONTENT = ("to", "text", "level", "start_at", "every_s")
+# How far past a time may be and still be "now": the form's times are whole minutes, so the minute being entered is up
+# to a minute past by the time it arrives. A repeating schedule whose first time of its grid is within it runs at once.
+NOW_S = 60
 
 
 # --------------------------------------------------------------------------- reading
@@ -125,11 +130,13 @@ def _why(pj: Project, r: sqlite3.Row, because: str) -> str:
 
 
 def _first_at(start: float, every: int | None, now: float) -> float:
-    """When a schedule whose times were (re)set runs first: at start_at; when that is past, at once if it runs
-    once, else at the first time of its grid that is not past."""
-    if start >= now or every is None:
+    """When a schedule whose times are set (it is made, or its start or interval is changed) runs first: one that runs
+    once at start_at (at once when that is past); a repeating one at the first time of its grid start_at + k * every_s
+    (k >= 0) that is not more than NOW_S past (2c): a start in the future at the start, a start within the last minute
+    at once, an older start at the next time of its grid."""
+    if every is None or start >= now - NOW_S:
         return start
-    return start + math.ceil((now - start) / every) * every
+    return start + math.ceil((now - NOW_S - start) / every) * every
 
 
 def _after_run(start: float, every: int, t: float) -> float:
@@ -151,7 +158,8 @@ def create(pj: Project, actor: Actor, body: dict[str, Any]) -> dict[str, Any]:
     with pj.db:
         sid = pj.db.execute("INSERT INTO schedules (person_id, place, to_name, text, level, start_at, every_s, next_at, "
                             "created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (actor.person_id, place, to, text, level, start, every, start, t)).lastrowid
+                            (actor.person_id, place, to, text, level, start, every, _first_at(start, every, t),
+                             t)).lastrowid
     util.log("schedule_made", project=pj.slug, schedule=sid, by=actor.person_id)
     presence.kick()
     return {"schedule": view(pj, _row(pj, sid))}

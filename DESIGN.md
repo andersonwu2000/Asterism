@@ -394,7 +394,11 @@ A nested corner is the outer one minus the padding between them. The focus ring 
   "還沒有狀態" when it has none. For the agent's own person, "要求每 __ 小時更新" with 設定 and 不要求, saved in place;
   for others, "每 N 小時更新" as dim text.
 - A schedule says where to, when next over how often, its text and its last message or why it is paused. Every row's
-  acts are behind one "..." control; a new schedule is a form in place, which Escape closes.
+  acts are behind one "..." control; a new schedule is a form in place, which Escape closes. A repeating schedule
+  first runs at the first time of its grid that is not more than a minute past (a start in the future at the start,
+  one in the last minute at once, an older one at its next time: nothing is sent at once for times long past); one
+  that runs once goes out at once when its time is past. Under the form's first time, while the time entered is more
+  than a minute past, one dim line says which of the two will happen; the list says the time after saving.
 
 ### Files mode
 

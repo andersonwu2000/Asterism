@@ -1208,6 +1208,7 @@ def _work_page(request: Request, tab: str) -> Response:
     view = {"can_create": {"create_schedule", "post"} <= mine, "can_manage": "manage_members" in mine}
     if tab == "schedules":
         view["min_every_s"] = config.get().schedule_min_every_s
+        view["now_s"] = schedules.NOW_S
         view["places"] = {"channels": messaging.channel_names(pj, messaging.person_member(pj, actor.person_id)),
                           "people": [r["name"] for r in pj.db.execute(
                               "SELECT name FROM people WHERE person_id != ? ORDER BY name", (actor.person_id,))],
